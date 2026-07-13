@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from database.postgres import get_db_cursor
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+from datetime import datetime
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["Alerts"])
 
