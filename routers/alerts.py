@@ -1,11 +1,14 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from database.postgres import get_db_cursor
+from database.postgres import get_async_db_conn
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from datetime import datetime
+import uuid
+import json
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["Alerts"])
+
 
 class AlertAction(BaseModel):
     action: str # CLOSE_SAR or CLOSE_FALSE_POSITIVE
@@ -13,10 +16,10 @@ class AlertAction(BaseModel):
     sar_xml_generate: bool = False
 
 @router.get("")
-def list_alerts():
+async def list_alerts():
     try:
-        with get_db_cursor() as cur:
-            cur.execute(
+        async with get_async_db_conn() as conn:
+            rows = await conn.fetch(
                 """
                 SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.explainability_payload, a.status, a.created_at,
                        t.amount, t.currency, t.timestamp,
@@ -28,7 +31,6 @@ def list_alerts():
                 ORDER BY a.created_at DESC;
                 """
             )
-            rows = cur.fetchall()
             alerts = []
             for row in rows:
                 alerts.append({
@@ -36,7 +38,7 @@ def list_alerts():
                     "rule_name": row[1],
                     "threat_level": row[2],
                     "ai_risk_score": float(row[3]) if row[3] else None,
-                    "explainability": row[4],
+                    "explainability": json.loads(row[4]) if isinstance(row[4], str) else row[4],
                     "status": row[5],
                     "created_at": row[6].isoformat(),
                     "transaction": {
@@ -52,16 +54,16 @@ def list_alerts():
         raise HTTPException(status_code=500, detail=f"Failed to list alerts: {str(e)}")
 
 @router.post("/{id}/action")
-def resolve_alert(id: str, payload: AlertAction):
+async def resolve_alert(id: str, payload: AlertAction):
     if payload.action not in ["CLOSE_SAR", "CLOSE_FALSE_POSITIVE"]:
         raise HTTPException(status_code=400, detail="Invalid action. Must be CLOSE_SAR or CLOSE_FALSE_POSITIVE")
 
     status = "CLOSED_SAR" if payload.action == "CLOSE_SAR" else "CLOSED_FALSE_POSITIVE"
 
     try:
-        with get_db_cursor() as cur:
+        async with get_async_db_conn() as conn:
             # Check alert exists
-            cur.execute(
+            alert = await conn.fetchrow(
                 """
                 SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score,
                        t.amount, t.currency, t.timestamp,
@@ -71,18 +73,17 @@ def resolve_alert(id: str, payload: AlertAction):
                 JOIN transactions t ON a.transaction_id = t.id
                 JOIN accounts s ON t.sender_account_id = s.id
                 JOIN accounts r ON t.receiver_account_id = r.id
-                WHERE a.id = %s;
+                WHERE a.id = $1;
                 """,
-                (id,)
+                uuid.UUID(id)
             )
-            alert = cur.fetchone()
             if not alert:
                 raise HTTPException(status_code=404, detail="Alert not found")
 
             # Update Alert Status
-            cur.execute(
-                "UPDATE alerts SET status = %s WHERE id = %s;",
-                (status, id)
+            await conn.execute(
+                "UPDATE alerts SET status = $1 WHERE id = $2;",
+                status, uuid.UUID(id)
             )
 
         # Generate SAR XML if requested

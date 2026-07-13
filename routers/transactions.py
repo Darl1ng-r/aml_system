@@ -3,10 +3,11 @@ from pydantic import BaseModel
 from datetime import datetime
 import uuid
 import logging
-from database.postgres import get_db_cursor
+from database.postgres import get_async_db_conn
 from services.rules import RulesEngine
 from services.ml_model import AMLAnomalyModel
 from services.redpanda import publish_transaction
+
 
 logger = logging.getLogger(__name__)
 
@@ -20,55 +21,51 @@ class TransactionRequest(BaseModel):
     timestamp: str
 
 @router.post("")
-def ingest_transaction(payload: TransactionRequest):
+async def ingest_transaction(payload: TransactionRequest):
     # Step 1: Look up sender and receiver in PostgreSQL to verify they exist
     try:
-        with get_db_cursor() as cur:
-            cur.execute(
-                "SELECT id, tenant_id, risk_score FROM accounts WHERE account_number = %s;",
-                (payload.sender_account,)
+        async with get_async_db_conn() as conn:
+            sender = await conn.fetchrow(
+                "SELECT id, tenant_id, risk_score FROM accounts WHERE account_number = $1;",
+                payload.sender_account
             )
-            sender = cur.fetchone()
             if not sender:
                 raise HTTPException(status_code=404, detail=f"Sender account {payload.sender_account} not found")
             sender_id, tenant_id, sender_risk = sender[0], sender[1], float(sender[2])
 
-            cur.execute(
-                "SELECT id, risk_score FROM accounts WHERE account_number = %s;",
-                (payload.receiver_account,)
+            receiver = await conn.fetchrow(
+                "SELECT id, risk_score FROM accounts WHERE account_number = $1;",
+                payload.receiver_account
             )
-            receiver = cur.fetchone()
             if not receiver:
                 raise HTTPException(status_code=404, detail=f"Receiver account {payload.receiver_account} not found")
             receiver_id, receiver_risk = receiver[0], float(receiver[1])
 
             # Get sender transaction velocity (number of txs in last 24 hours) from Postgres
-            cur.execute(
+            velocity_count = await conn.fetchval(
                 """
                 SELECT COUNT(*) FROM transactions 
-                WHERE sender_account_id = %s 
+                WHERE sender_account_id = $1 
                   AND timestamp >= NOW() - INTERVAL '24 hours';
                 """,
-                (sender_id,)
+                sender_id
             )
-            velocity_count = cur.fetchone()[0]
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database lookup failed: {str(e)}")
 
-    # Step 2: Synchronously run Rules Engine
-    triggered_rules = RulesEngine.evaluate_transaction(sender_id, receiver_id, payload.amount)
+    # Step 2: Run Rules Engine (asynchronously)
+    triggered_rules = await RulesEngine.evaluate_transaction(str(sender_id), str(receiver_id), payload.amount)
 
-    # Step 3: Synchronously run AI Anomaly Model
+    # Step 3: Run AI Anomaly Model
     model = AMLAnomalyModel()
     ml_result = model.predict_risk(payload.amount, sender_risk, receiver_risk, velocity_count)
     ai_score = ml_result["risk_score"]
     attributions = ml_result["attributions"]
 
     # Determine Compliance Decision
-    # If AI risk score is >= 0.75, or critical rules are triggered: HELD
     alert_triggered = ai_score >= 0.75 or len(triggered_rules) > 0
     decision = "HELD" if alert_triggered else "APPROVED"
     status = "HELD" if alert_triggered else "COMPLETED"
@@ -76,13 +73,16 @@ def ingest_transaction(payload: TransactionRequest):
     # Step 4: Write transaction to PostgreSQL
     tx_id = str(uuid.uuid4())
     try:
-        with get_db_cursor() as cur:
-            cur.execute(
+        async with get_async_db_conn() as conn:
+            # Parse iso format string to datetime
+            dt = datetime.fromisoformat(payload.timestamp.replace('Z', '+00:00'))
+            
+            await conn.execute(
                 """
                 INSERT INTO transactions (id, tenant_id, sender_account_id, receiver_account_id, amount, currency, status, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
                 """,
-                (tx_id, tenant_id, sender_id, receiver_id, payload.amount, payload.currency, status, payload.timestamp)
+                tx_id, tenant_id, sender_id, receiver_id, payload.amount, payload.currency, status, dt
             )
 
             # Create Alert if compliance triggered
@@ -92,12 +92,12 @@ def ingest_transaction(payload: TransactionRequest):
                 rule_name = triggered_rules[0] if triggered_rules else "BEHAVIORAL_ANOMALY"
                 
                 import json
-                cur.execute(
+                await conn.execute(
                     """
                     INSERT INTO alerts (tenant_id, transaction_id, rule_name, threat_level, ai_risk_score, explainability_payload)
-                    VALUES (%s, %s, %s, %s, %s, %s);
+                    VALUES ($1, $2, $3, $4, $5, $6);
                     """,
-                    (tenant_id, tx_id, rule_name, threat_level, ai_score, json.dumps(attributions))
+                    tenant_id, tx_id, rule_name, threat_level, ai_score, json.dumps(attributions)
                 )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to record transaction: {str(e)}")

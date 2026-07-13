@@ -38,39 +38,73 @@ def read_root():
     }
 
 @app.on_event("startup")
-def startup_db_clients():
+async def startup_db_clients():
     logger.info("Starting up database connections...")
     # Trigger lazy load validation
-    from database.postgres import get_db_connection
-    from database.redis_db import get_redis_client
-    from database.neo4j_db import get_neo4j_driver
-    from database.elasticsearch_db import get_elasticsearch_client
+    from database.postgres import init_db_pool
+    from database.redis_db import get_redis_client, get_async_redis_client
+    from database.neo4j_db import get_neo4j_driver, get_async_neo4j_driver
+    from database.elasticsearch_db import get_elasticsearch_client, get_async_elasticsearch_client
     
     try:
+        await init_db_pool()
+    except Exception as e:
+        logger.error(f"Could not initialize PostgreSQL asyncpg pool: {e}")
+        
+    try:
         get_redis_client()
+        await get_async_redis_client()
     except Exception as e:
         logger.warning(f"Could not connect to Redis: {e}")
         
     try:
         get_neo4j_driver()
+        await get_async_neo4j_driver()
     except Exception as e:
         logger.warning(f"Could not connect to Neo4j: {e}")
         
     try:
         get_elasticsearch_client()
+        await get_async_elasticsearch_client()
     except Exception as e:
         logger.warning(f"Could not connect to Elasticsearch: {e}")
 
 @app.on_event("shutdown")
-def shutdown_db_clients():
+async def shutdown_db_clients():
     logger.info("Closing database connections...")
-    # Close Postgres pool
+    # Close Postgres pools
+    from database.postgres import close_db_pool, connection_pool
+    from database.neo4j_db import close_neo4j_driver, close_async_neo4j_driver
+    from database.elasticsearch_db import get_async_elasticsearch_client
+    from database.redis_db import get_async_redis_client
+    try:
+        await close_db_pool()
+    except Exception as e:
+        logger.warning(f"Failed to close asyncpg pool: {e}")
+        
     if connection_pool:
         connection_pool.closeall()
         logger.info("PostgreSQL connection pool closed.")
         
-    # Close Neo4j driver
+    # Close Neo4j drivers
     try:
         close_neo4j_driver()
+        await close_async_neo4j_driver()
     except Exception as e:
-        logger.warning(f"Failed to close Neo4j driver: {e}")
+        logger.warning(f"Failed to close Neo4j drivers: {e}")
+        
+    # Close Elasticsearch async client
+    try:
+        es_async = await get_async_elasticsearch_client()
+        await es_async.close()
+        logger.info("Async Elasticsearch client closed.")
+    except Exception as e:
+        logger.warning(f"Failed to close Async Elasticsearch client: {e}")
+
+    # Close Redis async client
+    try:
+        redis_async = await get_async_redis_client()
+        await redis_async.close()
+        logger.info("Async Redis client closed.")
+    except Exception as e:
+        logger.warning(f"Failed to close Async Redis client: {e}")

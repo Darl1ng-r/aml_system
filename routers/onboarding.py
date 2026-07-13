@@ -1,10 +1,11 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from database.postgres import get_db_cursor
-from database.neo4j_db import get_neo4j_driver
+from database.postgres import get_async_db_conn
+from database.neo4j_db import get_async_neo4j_driver
 from routers.screening import search_sanctions, ScreeningRequest
 
 router = APIRouter(prefix="/api/v1/onboard", tags=["Onboarding"])
+
 
 class IndividualOnboard(BaseModel):
     tenant_id: str
@@ -27,11 +28,11 @@ class CorporateOnboard(BaseModel):
     ubos: list[UboDetail] = []
 
 @router.post("/individual")
-def onboard_individual(payload: IndividualOnboard):
+async def onboard_individual(payload: IndividualOnboard):
     # Step 1: Sanctions PEP Screening Check
     screen_req = ScreeningRequest(name=payload.name, date_of_birth=payload.date_of_birth)
     try:
-        screen_res = search_sanctions(screen_req)
+        screen_res = await search_sanctions(screen_req)
         # If high risk sanctions hit, default to a high risk score
         risk_score = 0.95 if screen_res["match_found"] else 0.10
     except Exception:
@@ -40,25 +41,24 @@ def onboard_individual(payload: IndividualOnboard):
 
     # Step 2: Save to PostgreSQL
     try:
-        with get_db_cursor() as cur:
+        async with get_async_db_conn() as conn:
             # Check if tenant exists
-            cur.execute("SELECT id FROM tenants WHERE id = %s;", (payload.tenant_id,))
-            if not cur.fetchone():
+            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", payload.tenant_id)
+            if not tenant:
                 raise HTTPException(status_code=400, detail="Invalid tenant_id")
 
             # Create Account
-            cur.execute(
+            account_id = await conn.fetchval(
                 """
                 INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING id;
                 """,
-                (payload.tenant_id, payload.account_number, payload.swift_bic, payload.name, risk_score)
+                payload.tenant_id, payload.account_number, payload.swift_bic, payload.name, risk_score
             )
-            account_id = cur.fetchone()[0]
             
             return {
-                "account_id": account_id,
+                "account_id": str(account_id),
                 "status": "APPROVED" if risk_score < 0.8 else "HELD_FOR_REVIEW",
                 "risk_score": risk_score
             }
@@ -68,24 +68,23 @@ def onboard_individual(payload: IndividualOnboard):
         raise HTTPException(status_code=500, detail=f"Onboarding failed: {str(e)}")
 
 @router.post("/corporate")
-def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_neo4j_driver)):
+async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_async_neo4j_driver)):
     # Step 1: Save to PostgreSQL (relational profile)
     try:
-        with get_db_cursor() as cur:
-            cur.execute("SELECT id FROM tenants WHERE id = %s;", (payload.tenant_id,))
-            if not cur.fetchone():
+        async with get_async_db_conn() as conn:
+            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", payload.tenant_id)
+            if not tenant:
                 raise HTTPException(status_code=400, detail="Invalid tenant_id")
 
             # Create company account
-            cur.execute(
+            account_id = await conn.fetchval(
                 """
                 INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING id;
                 """,
-                (payload.tenant_id, payload.account_number, payload.swift_bic, payload.company_name, 0.15)
+                payload.tenant_id, payload.account_number, payload.swift_bic, payload.company_name, 0.15
             )
-            account_id = cur.fetchone()[0]
     except Exception as e:
         if "unique constraint" in str(e).lower():
             raise HTTPException(status_code=400, detail="Account number already exists")
@@ -93,9 +92,9 @@ def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_neo4j_
 
     # Step 2: Save corporate structures & UBO tracing to Neo4j
     try:
-        with neo4j_driver.session() as session:
+        async with neo4j_driver.session() as session:
             # Create Company node
-            session.run(
+            await session.run(
                 """
                 MERGE (c:Company {registration_number: $reg_num})
                 ON CREATE SET c.name = $name, c.id = $id
@@ -107,7 +106,7 @@ def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_neo4j_
             )
             
             # Create Account node linked to Company
-            session.run(
+            await session.run(
                 """
                 MERGE (a:Account {id: $id})
                 SET a.account_number = $acc_num
@@ -122,7 +121,7 @@ def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_neo4j_
 
             # Create Person (UBO) nodes & OWNS_UBO relationships
             for ubo in payload.ubos:
-                session.run(
+                await session.run(
                     """
                     MERGE (p:Person {tax_id: $tax_id})
                     ON CREATE SET p.name = $name
@@ -137,7 +136,7 @@ def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_neo4j_
                 )
                 
         return {
-            "account_id": account_id,
+            "account_id": str(account_id),
             "status": "APPROVED",
             "ubo_count": len(payload.ubos)
         }

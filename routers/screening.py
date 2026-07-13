@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.params import Depends as DependsClass
 from pydantic import BaseModel
-from database.elasticsearch_db import get_elasticsearch_client
+from database.elasticsearch_db import get_async_elasticsearch_client
 from config import SANCTIONS_INDEX
 
 router = APIRouter(prefix="/api/v1/screening", tags=["Screening"])
@@ -41,7 +42,10 @@ def levenshtein_ratio(s1: str, s2: str) -> float:
     return (max_len - dist[len(s1)][len(s2)]) / max_len
 
 @router.post("/search")
-def search_sanctions(payload: ScreeningRequest, es=Depends(get_elasticsearch_client)):
+async def search_sanctions(payload: ScreeningRequest, es=Depends(get_async_elasticsearch_client)):
+    if isinstance(es, DependsClass) or es is None or not hasattr(es, "search"):
+        es = await get_async_elasticsearch_client()
+        
     try:
         # Search Elasticsearch sanctions index using fuzzy match
         query = {
@@ -56,7 +60,7 @@ def search_sanctions(payload: ScreeningRequest, es=Depends(get_elasticsearch_cli
             }
         }
         
-        response = es.search(index=SANCTIONS_INDEX, body=query, size=5)
+        response = await es.search(index=SANCTIONS_INDEX, body=query, size=5)
         hits = response.get("hits", {}).get("hits", [])
         
         if not hits:
@@ -87,3 +91,4 @@ def search_sanctions(payload: ScreeningRequest, es=Depends(get_elasticsearch_cli
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Screening query failed: {str(e)}")
+
