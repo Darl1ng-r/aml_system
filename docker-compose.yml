@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  # Relational Database: PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    container_name: aml-postgres
+    environment:
+      POSTGRES_DB: aml_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aml_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Graph Database: Neo4j
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: aml-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/passwordpassword
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "7474:7474" # HTTP Dashboard
+      - "7687:7687" # Bolt Protocol
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p passwordpassword 'RETURN 1'"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # In-Memory Cache: Redis
+  redis:
+    image: redis:7-alpine
+    container_name: aml-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Message Queue: Redpanda (Kafka API compatible)
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
+    container_name: aml-redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+      - --pandaproxy-addr 0.0.0.0:28082,OUTSIDE://0.0.0.0:8082
+      - --advertise-pandaproxy-addr PLAINTEXT://redpanda:28082,OUTSIDE://localhost:8082
+    ports:
+      - "9092:9092" # Kafka API external
+      - "8082:8082" # Schema registry/REST proxy external
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # Search Engine: Elasticsearch
+  elasticsearch:
+    image: elasticsearch:8.11.1
+    container_name: aml-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  redis_data:
+  redpanda_data:
+  elasticsearch_data:
