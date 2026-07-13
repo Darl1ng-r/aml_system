@@ -13,6 +13,12 @@ from config import SANCTIONS_INDEX
 def init_postgres():
     print("Initializing PostgreSQL tables...")
     create_tables_sql = """
+    -- Clean Reset for Local Dev
+    DROP TABLE IF EXISTS alerts CASCADE;
+    DROP TABLE IF EXISTS transactions CASCADE;
+    DROP TABLE IF EXISTS accounts CASCADE;
+    DROP TABLE IF EXISTS tenants CASCADE;
+
     -- Create Tenants Table
     CREATE TABLE IF NOT EXISTS tenants (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -25,7 +31,7 @@ def init_postgres():
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
         account_number VARCHAR(50) UNIQUE NOT NULL,
-        swift_bic VARCHAR(11),
+        swift_bic VARCHAR(20),
         owner_name VARCHAR(255) NOT NULL,
         risk_score NUMERIC(5, 2) DEFAULT 0.00,
         status VARCHAR(20) DEFAULT 'ACTIVE',
@@ -85,8 +91,8 @@ def init_postgres():
         count = cur.fetchone()[0]
         if count == 0:
             accounts_data = [
-                ("DE12003400567890111100", "DBANKDEF1XXX", "Alice Schmidt", 0.10),
-                ("US99887766554433221100", "CHASEUS33XXX", "Bob Jones", 0.15),
+                ("DE12003400567890111100", "DBANKDEFXXX", "Alice Schmidt", 0.10),
+                ("US99887766554433221100", "CHASEUS3XXX", "Bob Jones", 0.15),
                 ("GB44332211009988776655", "BARCGB22XXX", "Charlie Smith", 0.65), # higher risk
                 ("RU11223344556677889900", "SBERRU88XXX", "Vladimir Smirnov", 0.90)  # high risk/sanctions-sounding name
             ]

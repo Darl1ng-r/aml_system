@@ -10,34 +10,48 @@ class ScreeningRequest(BaseModel):
     date_of_birth: str | None = None
     threshold: float = 0.80
 
+def levenshtein_ratio(s1: str, s2: str) -> float:
+    """
+    Computes Levenshtein similarity ratio between s1 and s2 in range [0.0, 1.0]
+    """
+    s1, s2 = s1.lower().strip(), s2.lower().strip()
+    rows = len(s1) + 1
+    cols = len(s2) + 1
+    dist = [[0 for _ in range(cols)] for _ in range(rows)]
+    for i in range(1, rows):
+        dist[i][0] = i
+    for j in range(1, cols):
+        dist[0][j] = j
+        
+    for col in range(1, cols):
+        for row in range(1, rows):
+            if s1[row-1] == s2[col-1]:
+                cost = 0
+            else:
+                cost = 2
+            dist[row][col] = min(
+                dist[row-1][col] + 1,      # deletion
+                dist[row][col-1] + 1,      # insertion
+                dist[row-1][col-1] + cost  # substitution
+            )
+            
+    max_len = len(s1) + len(s2)
+    if max_len == 0:
+        return 1.0
+    return (max_len - dist[len(s1)][len(s2)]) / max_len
+
 @router.post("/search")
 def search_sanctions(payload: ScreeningRequest, es=Depends(get_elasticsearch_client)):
     try:
-        # Construct search query. 
-        # We try searching the name.phonetic field first. If the phonetic analysis 
-        # plugin is missing and we fell back, we query name with fuzziness.
+        # Search Elasticsearch sanctions index using fuzzy match
         query = {
             "query": {
-                "bool": {
-                    "should": [
-                        {
-                            "match": {
-                                "name.phonetic": {
-                                    "query": payload.name,
-                                    "boost": 2.0
-                                }
-                            }
-                        },
-                        {
-                            "match": {
-                                "name": {
-                                    "query": payload.name,
-                                    "fuzziness": "AUTO",
-                                    "prefix_length": 2
-                                }
-                            }
-                        }
-                    ]
+                "match": {
+                    "name": {
+                        "query": payload.name,
+                        "fuzziness": "AUTO",
+                        "prefix_length": 2
+                    }
                 }
             }
         }
@@ -53,24 +67,21 @@ def search_sanctions(payload: ScreeningRequest, es=Depends(get_elasticsearch_cli
                 "matched_entry": None
             }
             
-        # Select best hit
+        # Select best hit and compute exact string similarity ratio
         best_hit = hits[0]
-        score = best_hit["_score"]
         source = best_hit["_source"]
+        matched_name = source.get("name", "")
         
-        # Normalize score to an arbitrary [0.0, 1.0] range for matching
-        # Elasticsearch scores can be > 1.0, so we normalize relative to max score or scale it
-        normalized_score = min(score / 5.0, 1.0)
-        
-        match_found = normalized_score >= payload.threshold
+        similarity_score = levenshtein_ratio(payload.name, matched_name)
+        match_found = similarity_score >= payload.threshold
         
         return {
             "match_found": match_found,
-            "score": round(normalized_score, 2),
+            "score": round(similarity_score, 2),
             "source_list": source.get("source_list", "Unknown List"),
             "matched_entry": {
-                "name": source.get("name"),
-                "reason": "Phonetic or fuzzy match detected in global database"
+                "name": matched_name,
+                "reason": f"Fuzzy similarity match of {int(similarity_score * 100)}%"
             }
         }
         

@@ -103,7 +103,7 @@ def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_neo4j_
                 """,
                 reg_num=payload.registration_number,
                 name=payload.company_name,
-                id=account_id
+                id=str(account_id)
             )
             
             # Create Account node linked to Company
@@ -115,7 +115,7 @@ def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_neo4j_
                 MATCH (c:Company {registration_number: $reg_num})
                 MERGE (a)-[:BELONGS_TO]->(c)
                 """,
-                id=account_id,
+                id=str(account_id),
                 acc_num=payload.account_number,
                 reg_num=payload.registration_number
             )
