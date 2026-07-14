@@ -1,6 +1,11 @@
-const BASE_URL = 'http://localhost:8000';
+const BASE_URL = window.location.origin;
 let mockMode = false;
 let activeAlertId = null;
+
+// Pagination State
+let currentPage = 1;
+const pageSize = 10;
+let totalAlertsCount = 0;
 
 // Seed Mock Cases Database
 const mockAlerts = [
@@ -165,11 +170,12 @@ async function loadAlerts() {
     if (mockMode) {
         renderInbox(activeAlerts);
         updateDashboardMetrics(activeAlerts);
+        updatePaginationControls(activeAlerts.length);
         return;
     }
 
     try {
-        const response = await fetch(`${BASE_URL}/api/v1/alerts`, {
+        const response = await fetch(`${BASE_URL}/api/v1/alerts?page=${currentPage}&limit=${pageSize}`, {
             headers: getAuthHeaders()
         });
         
@@ -180,6 +186,10 @@ async function loadAlerts() {
         
         if (!response.ok) throw new Error();
         const data = await response.json();
+        
+        // Read X-Total-Count header
+        const xTotalCount = response.headers.get('X-Total-Count');
+        totalAlertsCount = xTotalCount ? parseInt(xTotalCount, 10) : data.length;
         
         // Enrich backend alerts with mock entities to make the investigation profile beautiful!
         activeAlerts = data.map((alert, idx) => {
@@ -198,7 +208,8 @@ async function loadAlerts() {
         
         renderInbox(activeAlerts);
         updateDashboardMetrics(activeAlerts);
-        log(`Synced ${data.length} telemetry cases from postgres connection pool.`, 'success');
+        updatePaginationControls(totalAlertsCount);
+        log(`Synced telemetry page ${currentPage} from postgres connection pool.`, 'success');
     } catch (e) {
         log('Failed connection. Falling back to memory ledger data.', 'warn');
         mockMode = true;
@@ -206,6 +217,40 @@ async function loadAlerts() {
         document.getElementById('app-status-text').innerText = 'Mock Database Mode';
         renderInbox(activeAlerts);
         updateDashboardMetrics(activeAlerts);
+        updatePaginationControls(activeAlerts.length);
+    }
+}
+
+function updatePaginationControls(totalCount) {
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    if (currentPage > totalPages) {
+        currentPage = totalPages;
+    }
+    
+    const start = totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+    const end = Math.min(currentPage * pageSize, totalCount);
+    
+    document.getElementById('pagination-start').innerText = start;
+    document.getElementById('pagination-end').innerText = end;
+    document.getElementById('pagination-total').innerText = totalCount;
+    document.getElementById('current-page-display').innerText = `Page ${currentPage} of ${totalPages}`;
+    
+    document.getElementById('prev-page-btn').disabled = (currentPage === 1);
+    document.getElementById('next-page-btn').disabled = (currentPage === totalPages);
+}
+
+function prevPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        loadAlerts();
+    }
+}
+
+function nextPage() {
+    const totalPages = Math.ceil(totalAlertsCount / pageSize);
+    if (currentPage < totalPages) {
+        currentPage++;
+        loadAlerts();
     }
 }
 
@@ -303,20 +348,29 @@ function selectCase(id) {
     const attributions = alert.explainability.attributions;
     Object.keys(attributions).forEach(key => {
         const score = attributions[key];
-        const percentage = Math.round(score * 100);
+        const isPositive = score >= 0;
+        const absoluteScore = Math.abs(score);
+        const percentage = Math.round(absoluteScore * 100);
         const shapItem = document.createElement('div');
         shapItem.className = 'shap-item';
+        
+        const barColor = isPositive ? 'var(--accent-orange)' : '#10b981';
+        const signText = isPositive ? '+' : '-';
+        
         shapItem.innerHTML = `
             <div class="shap-header">
                 <span style="text-transform: capitalize;">${key.replace(/_/g, ' ')} Risk</span>
-                <span>+${percentage}% weight</span>
+                <span style="color: ${isPositive ? 'var(--accent-orange)' : '#10b981'}; font-weight: 600;">${signText}${percentage}% impact</span>
             </div>
             <div class="shap-bar-bg">
-                <div class="shap-bar-fill" style="width: ${percentage}%"></div>
+                <div class="shap-bar-fill" style="width: ${percentage}%; background-color: ${barColor};"></div>
             </div>
         `;
         shapList.appendChild(shapItem);
     });
+
+    // Load Neo4j dynamic graph rendering
+    loadGraphData(id, alert);
 
     // Ledger Transactions
     const ledgerBody = document.getElementById('inbox-ledger-tbody');
@@ -352,28 +406,203 @@ function loadInboxTableHighlights(id) {
     });
 }
 
-// Interactive Network Graph Clicks
-function clickGraphNode(nodeType) {
+async function loadGraphData(alertId, alert) {
+    const gContainer = document.getElementById('svg-graph-content');
+    if (!gContainer) return;
+    gContainer.innerHTML = '';
+
+    if (mockMode) {
+        renderMockGraph(alert);
+        return;
+    }
+
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/alerts/${alertId}/graph`, {
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) throw new Error();
+        const graphData = await response.json();
+        renderNetworkGraph(graphData, alert);
+    } catch (e) {
+        log('Failed to fetch graph data from Neo4j. Rendering mock topology.', 'warn');
+        renderMockGraph(alert);
+    }
+}
+
+function renderNetworkGraph(graphData, alert) {
+    const g = document.getElementById('svg-graph-content');
+    g.innerHTML = '';
+
+    const nodes = graphData.nodes || [];
+    const edges = graphData.edges || [];
+
+    if (nodes.length === 0) {
+        renderMockGraph(alert);
+        return;
+    }
+
+    const senderAcc = alert.transaction.sender;
+    const receiverAcc = alert.transaction.receiver;
+
+    const nodePositions = {};
+    const companies = nodes.filter(n => n.type === 'Company');
+    const persons = nodes.filter(n => n.type === 'Person');
+    const accounts = nodes.filter(n => n.type === 'Account');
+    
+    // Position Accounts
+    let intermediateCount = 0;
+    accounts.forEach(node => {
+        const accNum = node.label;
+        if (accNum === senderAcc) {
+            nodePositions[node.id] = { x: 70, y: 120, color: 'var(--accent-blue)', text: 'SND' };
+        } else if (accNum === receiverAcc) {
+            nodePositions[node.id] = { x: 280, y: 120, color: 'var(--accent-red)', text: 'RCV' };
+        } else {
+            const offsetIdx = intermediateCount++;
+            nodePositions[node.id] = { x: 175, y: 180 + offsetIdx * 40, color: 'var(--text-secondary)', text: 'BRK' };
+        }
+    });
+
+    // Position Companies
+    companies.forEach((node, idx) => {
+        const offset = (idx - (companies.length - 1) / 2) * 80;
+        nodePositions[node.id] = { x: 175 + offset, y: 60, color: '#f59e0b', text: 'CO' };
+    });
+
+    // Position Persons (UBOs)
+    persons.forEach((node, idx) => {
+        const offset = (idx - (persons.length - 1) / 2) * 80;
+        nodePositions[node.id] = { x: 175 + offset, y: 20, color: '#10b981', text: 'UBO' };
+    });
+
+    // Draw Edges (Lines)
+    edges.forEach(edge => {
+        const sourcePos = nodePositions[edge.source];
+        const targetPos = nodePositions[edge.target];
+        if (!sourcePos || !targetPos) return;
+
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', sourcePos.x);
+        line.setAttribute('y1', sourcePos.y);
+        line.setAttribute('x2', targetPos.x);
+        line.setAttribute('y2', targetPos.y);
+        
+        let strokeColor = 'var(--text-secondary)';
+        let strokeWidth = '1.5';
+        let isDashed = false;
+
+        if (edge.type === 'TRANSFERS_TO') {
+            const amount = edge.properties.amount || 0;
+            if (amount > 10000) {
+                strokeColor = 'var(--accent-red)';
+                strokeWidth = '2.5';
+            } else {
+                strokeColor = 'var(--accent-blue)';
+                strokeWidth = '1.8';
+            }
+            line.setAttribute('marker-end', 'url(#arrow)');
+        } else if (edge.type === 'BELONGS_TO') {
+            strokeColor = 'var(--text-secondary)';
+            isDashed = true;
+        } else if (edge.type === 'OWNS_UBO') {
+            strokeColor = '#10b981';
+            isDashed = true;
+        }
+
+        line.setAttribute('stroke', strokeColor);
+        line.setAttribute('stroke-width', strokeWidth);
+        if (isDashed) {
+            line.setAttribute('stroke-dasharray', '3,3');
+        }
+
+        g.appendChild(line);
+    });
+
+    // Draw Nodes (Circles and Text)
+    nodes.forEach(node => {
+        const pos = nodePositions[node.id];
+        if (!pos) return;
+
+        const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        group.setAttribute('style', 'cursor: pointer;');
+        group.onclick = () => showNodeDetails(node);
+
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        circle.setAttribute('cx', pos.x);
+        circle.setAttribute('cy', pos.y);
+        circle.setAttribute('r', '16');
+        circle.setAttribute('fill', pos.color);
+        circle.setAttribute('stroke', '#ffffff');
+        circle.setAttribute('stroke-width', '2');
+        circle.setAttribute('class', 'graph-node');
+
+        const textType = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        textType.setAttribute('x', pos.x);
+        textType.setAttribute('y', pos.y + 3);
+        textType.setAttribute('font-size', '8');
+        textType.setAttribute('font-weight', 'bold');
+        textType.setAttribute('fill', '#ffffff');
+        textType.setAttribute('text-anchor', 'middle');
+        textType.setAttribute('pointer-events', 'none');
+        textType.textContent = pos.text;
+
+        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        label.setAttribute('x', pos.x);
+        const labelY = node.type === 'Account' ? pos.y + 26 : pos.y - 20;
+        label.setAttribute('y', labelY);
+        label.setAttribute('font-size', '8');
+        label.setAttribute('font-weight', '600');
+        label.setAttribute('fill', 'var(--text-primary)');
+        label.setAttribute('text-anchor', 'middle');
+        label.setAttribute('pointer-events', 'none');
+        
+        let labelText = node.label;
+        if (labelText.length > 15) {
+            labelText = labelText.substring(0, 12) + '...';
+        }
+        label.textContent = labelText;
+
+        group.appendChild(circle);
+        group.appendChild(textType);
+        group.appendChild(label);
+        g.appendChild(group);
+    });
+}
+
+function showNodeDetails(node) {
     const detailsDiv = document.getElementById('graph-node-details');
     const labelSpan = document.getElementById('selected-node-label');
     detailsDiv.style.display = 'block';
-
-    const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
-    if (!alert) return;
-
-    if (nodeType === 'sender') {
-        labelSpan.innerHTML = `<strong>Sender Node:</strong> Account ${alert.transaction.sender} (Owner: ${alert.entity.name}). Nationality: ${alert.entity.nationality}.`;
-        log(`Graph query: inspected sender node ${alert.transaction.sender.substring(0,8)}...`, 'info');
-    } else if (nodeType === 'receiver') {
-        labelSpan.innerHTML = `<strong>Receiver Node:</strong> Account ${alert.transaction.receiver} (Fuzzy Blocklist Target). Country risk index: High.`;
-        log(`Graph query: inspected beneficiary node ${alert.transaction.receiver.substring(0,8)}...`, 'info');
-    } else if (nodeType === 'corp') {
-        labelSpan.innerHTML = `<strong>Connected Entity:</strong> ${alert.entity.connected}. Shell holding company match registered in Panama Registry.`;
-        log('Graph query: inspected Panama corporate holding node.', 'warn');
-    } else if (nodeType === 'broker') {
-        labelSpan.innerHTML = `<strong>Intermediary Broker:</strong> Node represents multi-layered accounts routing high liquidity transactions.`;
-        log('Graph query: mapped intermediary transit bank node.', 'info');
+    
+    let detailText = `<strong>${node.type} Node:</strong> ${node.label}`;
+    if (node.type === 'Account') {
+        const risk = node.properties.risk_score ? `${Math.round(node.properties.risk_score * 100)}%` : '0%';
+        detailText += ` (Risk Score: ${risk}, Status: ${node.properties.status || 'ACTIVE'})`;
+    } else if (node.type === 'Company') {
+        detailText += ` (Reg Num: ${node.properties.registration_number || 'N/A'})`;
+    } else if (node.type === 'Person') {
+        detailText += ` (Tax ID: ${node.properties.tax_id || 'N/A'})`;
     }
+    
+    labelSpan.innerHTML = detailText;
+    log(`Inspected graph node: ${node.label}`, 'info');
+}
+
+function renderMockGraph(alert) {
+    const mockData = {
+        nodes: [
+            { id: "s", label: alert.transaction.sender, type: "Account", properties: { risk_score: 0.10, status: "ACTIVE" } },
+            { id: "r", label: alert.transaction.receiver, type: "Account", properties: { risk_score: 0.90, status: "ACTIVE" } },
+            { id: "c", label: alert.entity.connected || "Holding Gmbh", type: "Company", properties: { registration_number: "REG-999000" } },
+            { id: "p1", label: alert.entity.name, type: "Person", properties: { tax_id: "TAX-ALICE" } }
+        ],
+        edges: [
+            { source: "s", target: "r", type: "TRANSFERS_TO", properties: { amount: alert.transaction.amount } },
+            { source: "s", target: "c", type: "BELONGS_TO" },
+            { source: "p1", target: "c", type: "OWNS_UBO", properties: { percentage: 60.0 } }
+        ]
+    };
+    renderNetworkGraph(mockData, alert);
 }
 
 // Case action resolutions in Inbox

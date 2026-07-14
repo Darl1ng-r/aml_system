@@ -229,6 +229,17 @@
                         </tbody>
                     </table>
                 </div>
+                <!-- Pagination Controls -->
+                <div class="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1.25rem; border-top: 1px solid var(--border-color); font-size: 0.85rem; background-color: var(--card-bg);">
+                    <div style="color: var(--text-secondary);">
+                        Showing <span id="pagination-start" style="font-weight: 600; color: var(--text-primary);">0</span> to <span id="pagination-end" style="font-weight: 600; color: var(--text-primary);">0</span> of <span id="pagination-total" style="font-weight: 600; color: var(--text-primary);">0</span> alerts
+                    </div>
+                    <div style="display: flex; gap: 0.75rem; align-items: center;">
+                        <button class="btn btn-outline" id="prev-page-btn" onclick="prevPage()" style="padding: 0.25rem 0.6rem; font-size: 0.8rem; height: auto;">Previous</button>
+                        <span id="current-page-display" style="font-weight: 600; color: var(--text-primary);">Page 1 of 1</span>
+                        <button class="btn btn-outline" id="next-page-btn" onclick="nextPage()" style="padding: 0.25rem 0.6rem; font-size: 0.8rem; height: auto;">Next</button>
+                    </div>
+                </div>
                 <div id="inbox-empty" class="empty-state" style="display: none;">
                     <div class="empty-icon">📁</div>
                     <p>Inbox is empty! No pending compliance alerts found.</p>
@@ -321,34 +332,10 @@
                                         <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)"/>
                                     </marker>
                                 </defs>
-                                <!-- Connections (Edges) -->
-                                <line x1="70" y1="120" x2="175" y2="60" stroke="var(--text-secondary)" stroke-width="1.5" marker-end="url(#arrow)"/>
-                                <line x1="175" y1="60" x2="280" y2="120" stroke="var(--text-secondary)" stroke-width="1.5" marker-end="url(#arrow)"/>
-                                <line x1="70" y1="120" x2="280" y2="120" stroke="var(--accent-red)" stroke-width="2" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
-
-                                <!-- Intermediary Account Edge -->
-                                <line x1="175" y1="180" x2="280" y2="120" stroke="var(--text-secondary)" stroke-width="1.2" marker-end="url(#arrow)"/>
-
-                                <!-- Account Nodes -->
-                                <!-- Node A: Sender -->
-                                <circle cx="70" cy="120" r="18" fill="var(--accent-blue)" stroke="#ffffff" stroke-width="2" class="graph-node" onclick="clickGraphNode('sender')"/>
-                                <text x="70" y="124" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle" pointer-events="none">SND</text>
-                                <text x="70" y="148" font-size="9" font-weight="600" fill="var(--text-primary)" text-anchor="middle" pointer-events="none">Sender (DE)</text>
-
-                                <!-- Node B: Connected Corporation -->
-                                <circle cx="175" cy="60" r="18" fill="var(--text-secondary)" stroke="#ffffff" stroke-width="2" class="graph-node" onclick="clickGraphNode('corp')"/>
-                                <text x="175" y="64" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle" pointer-events="none">CORP</text>
-                                <text x="175" y="36" font-size="9" font-weight="600" fill="var(--text-primary)" text-anchor="middle" pointer-events="none">ACME Holdings</text>
-
-                                <!-- Node C: Intermediary Broker -->
-                                <circle cx="175" cy="180" r="18" fill="var(--text-secondary)" stroke="#ffffff" stroke-width="2" class="graph-node" onclick="clickGraphNode('broker')"/>
-                                <text x="175" y="184" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle" pointer-events="none">BRK</text>
-                                <text x="175" y="208" font-size="9" font-weight="600" fill="var(--text-primary)" text-anchor="middle" pointer-events="none">Intermediary</text>
-
-                                <!-- Node D: Receiver -->
-                                <circle cx="280" cy="120" r="18" fill="var(--accent-red)" stroke="#ffffff" stroke-width="2" class="graph-node" onclick="clickGraphNode('receiver')"/>
-                                <text x="280" y="124" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle" pointer-events="none">RCV</text>
-                                <text x="280" y="148" font-size="9" font-weight="600" fill="var(--text-primary)" text-anchor="middle" pointer-events="none">Receiver (US)</text>
+                                <!-- Dynamic Graph Content Container -->
+                                <g id="svg-graph-content">
+                                    <!-- Dynamic nodes and edges injected by app.js -->
+                                </g>
                             </svg>
                             <!-- Click details box -->
                             <div id="graph-node-details" style="display: none; background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.8rem; position: absolute; bottom: 1.5rem; left: 1.5rem; right: 1.5rem; box-shadow: var(--shadow-md);">

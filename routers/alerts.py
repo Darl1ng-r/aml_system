@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Response
 from pydantic import BaseModel
 from database.postgres import get_async_db_conn
+from database.neo4j_db import get_async_neo4j_driver
 from services.auth import get_current_user
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -17,9 +18,20 @@ class AlertAction(BaseModel):
     sar_xml_generate: bool = False
 
 @router.get("")
-async def list_alerts(current_user: dict = Depends(get_current_user)):
+async def list_alerts(
+    response: Response,
+    page: int = 1,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user)
+):
     try:
         async with get_async_db_conn() as conn:
+            # Get total count of alerts (ignoring pagination)
+            total_count = await conn.fetchval("SELECT COUNT(*) FROM alerts;")
+            
+            # Compute limit and offset
+            offset = (page - 1) * limit
+            
             rows = await conn.fetch(
                 """
                 SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.explainability_payload, a.status, a.created_at,
@@ -29,9 +41,12 @@ async def list_alerts(current_user: dict = Depends(get_current_user)):
                 JOIN transactions t ON a.transaction_id = t.id
                 JOIN accounts s ON t.sender_account_id = s.id
                 JOIN accounts r ON t.receiver_account_id = r.id
-                ORDER BY a.created_at DESC;
-                """
+                ORDER BY a.created_at DESC
+                LIMIT $1 OFFSET $2;
+                """,
+                limit, offset
             )
+            
             alerts = []
             for row in rows:
                 alerts.append({
@@ -50,9 +65,144 @@ async def list_alerts(current_user: dict = Depends(get_current_user)):
                         "receiver": row[11]
                     }
                 })
+            
+            # Expose and set custom total count header for frontend
+            response.headers["X-Total-Count"] = str(total_count)
+            response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
             return alerts
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list alerts: {str(e)}")
+
+@router.get("/{id}/graph")
+async def get_alert_graph(
+    id: str,
+    current_user: dict = Depends(get_current_user),
+    neo4j_driver=Depends(get_async_neo4j_driver)
+):
+    try:
+        alert_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+
+    try:
+        async with get_async_db_conn() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT s.account_number, r.account_number
+                FROM alerts a
+                JOIN transactions t ON a.transaction_id = t.id
+                JOIN accounts s ON t.sender_account_id = s.id
+                JOIN accounts r ON t.receiver_account_id = r.id
+                WHERE a.id = $1;
+                """,
+                alert_uuid
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Alert not found")
+            sender, receiver = row[0], row[1]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+
+    nodes = []
+    edges = []
+    node_ids = set()
+    edge_ids = set()
+
+    def add_node(node_id, label, node_type, props):
+        if node_id not in node_ids:
+            node_ids.add(node_id)
+            nodes.append({
+                "id": node_id,
+                "label": label,
+                "type": node_type,
+                "properties": props
+            })
+
+    try:
+        # Query Neo4j to build network graph surrounding sender/receiver and company structures/UBOs
+        query = """
+        MATCH (a:Account) WHERE a.account_number IN [$sender, $receiver]
+        OPTIONAL MATCH (a)-[t:TRANSFERS_TO]-(other:Account)
+        OPTIONAL MATCH (a)-[b:BELONGS_TO]->(c:Company)
+        OPTIONAL MATCH (p:Person)-[u:OWNS_UBO]->(c)
+        RETURN a, t, other, b, c, p, u LIMIT 50;
+        """
+        async with neo4j_driver.session() as session:
+            result = await session.run(query, sender=sender, receiver=receiver)
+            async for record in result:
+                # Process core account nodes
+                a_node = record.get("a")
+                if a_node:
+                    add_node(a_node.element_id, a_node.get("account_number"), "Account", dict(a_node))
+
+                # Process other account nodes
+                other_node = record.get("other")
+                if other_node:
+                    add_node(other_node.element_id, other_node.get("account_number"), "Account", dict(other_node))
+
+                # Process transaction edges
+                t_edge = record.get("t")
+                if t_edge and a_node and other_node:
+                    edge_id = f"tx_{t_edge.element_id}"
+                    if edge_id not in edge_ids:
+                        edge_ids.add(edge_id)
+                        edges.append({
+                            "id": edge_id,
+                            "source": t_edge.start_node_element_id,
+                            "target": t_edge.end_node_element_id,
+                            "type": "TRANSFERS_TO",
+                            "properties": {
+                                "amount": t_edge.get("amount"),
+                                "timestamp": t_edge.get("timestamp"),
+                                "status": t_edge.get("status")
+                            }
+                        })
+
+                # Process company nodes
+                c_node = record.get("c")
+                if c_node:
+                    add_node(c_node.element_id, c_node.get("name"), "Company", dict(c_node))
+
+                # Process belongs_to edge
+                b_edge = record.get("b")
+                if b_edge and a_node and c_node:
+                    edge_id = f"belongs_{b_edge.element_id}"
+                    if edge_id not in edge_ids:
+                        edge_ids.add(edge_id)
+                        edges.append({
+                            "id": edge_id,
+                            "source": b_edge.start_node_element_id,
+                            "target": b_edge.end_node_element_id,
+                            "type": "BELONGS_TO",
+                            "properties": {}
+                        })
+
+                # Process UBO Person nodes
+                p_node = record.get("p")
+                if p_node:
+                    add_node(p_node.element_id, p_node.get("name"), "Person", dict(p_node))
+
+                # Process owns_ubo edge
+                u_edge = record.get("u")
+                if u_edge and p_node and c_node:
+                    edge_id = f"owns_{u_edge.element_id}"
+                    if edge_id not in edge_ids:
+                        edge_ids.add(edge_id)
+                        edges.append({
+                            "id": edge_id,
+                            "source": u_edge.start_node_element_id,
+                            "target": u_edge.end_node_element_id,
+                            "type": "OWNS_UBO",
+                            "properties": {
+                                "percentage": u_edge.get("percentage")
+                            }
+                        })
+
+        return {"nodes": nodes, "edges": edges}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Neo4j query failed: {str(e)}")
 
 @router.post("/{id}/action")
 async def resolve_alert(id: str, payload: AlertAction, current_user: dict = Depends(get_current_user)):

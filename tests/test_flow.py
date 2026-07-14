@@ -1,5 +1,6 @@
 import urllib.request
 import urllib.error
+import urllib.parse
 import json
 import time
 import sys
@@ -10,10 +11,24 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 BASE_URL = "http://localhost:8000"
 
-def make_request(url: str, method: str = "GET", data: dict = None) -> dict:
-    req_data = json.dumps(data).encode('utf-8') if data else None
+TOKEN = None
+
+def make_request(url: str, method: str = "GET", data: dict = None, is_form: bool = False) -> dict:
+    global TOKEN
+    if is_form and data:
+        req_data = urllib.parse.urlencode(data).encode('utf-8')
+    else:
+        req_data = json.dumps(data).encode('utf-8') if data else None
+        
     req = urllib.request.Request(url, data=req_data, method=method)
-    req.add_header('Content-Type', 'application/json')
+    if is_form:
+        req.add_header('Content-Type', 'application/x-www-form-urlencoded')
+    else:
+        req.add_header('Content-Type', 'application/json')
+        
+    if TOKEN:
+        req.add_header('Authorization', f'Bearer {TOKEN}')
+        
     try:
         with urllib.request.urlopen(req, timeout=5) as response:
             return json.loads(response.read().decode('utf-8'))
@@ -26,7 +41,29 @@ def make_request(url: str, method: str = "GET", data: dict = None) -> dict:
         raise e
 
 def test_onboarding_and_screening():
+    global TOKEN
     print("\n--- 1. Testing KYC Sanctions Screening & Onboarding ---")
+    
+    # Authenticate via signup or login
+    print("Attempting to authenticate compliance analyst user sarah_jenkins...")
+    signup_payload = {
+        "username": "sarah_jenkins",
+        "password": "password123",
+        "role": "ANALYST"
+    }
+    try:
+        signup_res = make_request(f"{BASE_URL}/api/v1/auth/signup", "POST", signup_payload)
+        TOKEN = signup_res["access_token"]
+        print("Signup successful!")
+    except Exception:
+        print("Signup failed or user already exists. Attempting login fallback...")
+        login_payload = {
+            "username": "sarah_jenkins",
+            "password": "password123"
+        }
+        login_res = make_request(f"{BASE_URL}/api/v1/auth/login", "POST", login_payload, is_form=True)
+        TOKEN = login_res["access_token"]
+        print("Login fallback successful!")
     
     # Sanctions Search (Fuzzy Match: Vladimir Smirnov vs Wladimir Smirnow)
     print("Testing fuzzy screening search...")

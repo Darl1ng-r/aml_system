@@ -54,35 +54,38 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Could not validate Supabase credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "apikey": settings.supabase_key
+    }
+    
+    import aiohttp
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        role: str = payload.get("role", "ANALYST")
-        if username is None:
-            raise credentials_exception
-    except jwt.PyJWTError:
-        raise credentials_exception
-        
-    try:
-        async with get_async_db_conn() as conn:
-            user = await conn.fetchrow(
-                "SELECT id, username, role FROM users WHERE username = $1;",
-                username
-            )
-            if not user:
-                raise credentials_exception
-            return {
-                "id": str(user[0]),
-                "username": user[1],
-                "role": user[2]
-            }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{settings.supabase_url}/auth/v1/user", headers=headers) as resp:
+                if resp.status != 200:
+                    raise credentials_exception
+                user_data = await resp.json()
+                
+                user_metadata = user_data.get("user_metadata", {})
+                role = user_metadata.get("role", "ANALYST")
+                email = user_data.get("email", "")
+                username = email.split("@")[0] if email else "anonymous"
+                
+                return {
+                    "id": user_data.get("id"),
+                    "username": username,
+                    "role": role,
+                    "email": email
+                }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Authentication database lookup failed: {str(e)}"
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Supabase Auth verification offline or failed: {str(e)}"
         )

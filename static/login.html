@@ -118,6 +118,7 @@
             display: none;
         }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
         // Immediately redirect if already logged in
         if (localStorage.getItem('jwt_token')) {
@@ -186,7 +187,16 @@
     </div>
 
     <script>
-        const BASE_URL = window.location.origin;
+        const supabaseUrl = 'https://xzhsdffpnrlpcitiectz.supabase.co';
+        const supabaseKey = 'sb_publishable_wnGvRWC4UBh0aQgROrflow_6XN36H0z';
+        
+        // Initialize Supabase Client
+        const supabaseClient = supabase.createClient(supabaseUrl, supabaseKey);
+
+        function getEmailFromUsername(val) {
+            if (val.includes('@')) return val;
+            return `${val.trim()}@aml.com`;
+        }
 
         function switchAuthTab(type) {
             document.getElementById('auth-error').style.display = 'none';
@@ -207,35 +217,29 @@
 
         async function handleLoginSubmit(event) {
             event.preventDefault();
-            const username = document.getElementById('login-username').value.trim();
+            const usernameInput = document.getElementById('login-username').value.trim();
+            const email = getEmailFromUsername(usernameInput);
             const password = document.getElementById('login-password').value;
             const errorEl = document.getElementById('auth-error');
 
             errorEl.style.display = 'none';
 
             try {
-                const params = new URLSearchParams();
-                params.append('username', username);
-                params.append('password', password);
-
-                const response = await fetch(`${BASE_URL}/api/v1/auth/login`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded'
-                    },
-                    body: params
+                const { data, error } = await supabaseClient.auth.signInWithPassword({
+                    email: email,
+                    password: password
                 });
 
-                if (response.ok) {
-                    const data = await response.json();
-                    localStorage.setItem('jwt_token', data.access_token);
-                    localStorage.setItem('username', data.username);
-                    localStorage.setItem('role', data.role);
+                if (error) throw new Error(error.message);
+
+                if (data && data.session) {
+                    localStorage.setItem('jwt_token', data.session.access_token);
+                    localStorage.setItem('username', data.user.email.split('@')[0]);
+                    
+                    const role = data.user.user_metadata?.role || 'ANALYST';
+                    localStorage.setItem('role', role);
                     
                     window.location.href = '/dashboard';
-                } else {
-                    const err = await response.json();
-                    throw new Error(err.detail || 'Access denied. Incorrect credentials.');
                 }
             } catch (e) {
                 errorEl.innerText = e.message;
@@ -245,7 +249,8 @@
 
         async function handleSignupSubmit(event) {
             event.preventDefault();
-            const username = document.getElementById('signup-username').value.trim();
+            const usernameInput = document.getElementById('signup-username').value.trim();
+            const email = getEmailFromUsername(usernameInput);
             const password = document.getElementById('signup-password').value;
             const role = document.getElementById('signup-role').value;
             const errorEl = document.getElementById('auth-error');
@@ -261,33 +266,33 @@
             }
 
             try {
-                const response = await fetch(`${BASE_URL}/api/v1/auth/signup`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        username: username,
-                        password: password,
-                        role: role
-                    })
+                const { data, error } = await supabaseClient.auth.signUp({
+                    email: email,
+                    password: password,
+                    options: {
+                        data: {
+                            role: role
+                        }
+                    }
                 });
 
-                if (response.ok) {
-                    const data = await response.json();
-                    successEl.innerText = 'Account successfully registered!';
+                if (error) throw new Error(error.message);
+
+                if (data) {
+                    successEl.innerText = 'Account registered successfully!';
                     successEl.style.display = 'block';
 
-                    localStorage.setItem('jwt_token', data.access_token);
-                    localStorage.setItem('username', data.username);
-                    localStorage.setItem('role', data.role);
-
-                    setTimeout(() => {
-                        window.location.href = '/dashboard';
-                    }, 1200);
-                } else {
-                    const err = await response.json();
-                    throw new Error(err.detail || 'Registration failed.');
+                    if (data.session) {
+                        localStorage.setItem('jwt_token', data.session.access_token);
+                        localStorage.setItem('username', data.user.email.split('@')[0]);
+                        localStorage.setItem('role', role);
+                        
+                        setTimeout(() => {
+                            window.location.href = '/dashboard';
+                        }, 1200);
+                    } else {
+                        successEl.innerText = 'Verification email sent. Please verify to log in.';
+                    }
                 }
             } catch (e) {
                 errorEl.innerText = e.message;
