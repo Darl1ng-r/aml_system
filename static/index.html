@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compliance Case Management Console</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+    <header>
+        <div class="logo-section">
+            <div class="logo-icon">C</div>
+            <div class="logo-title">
+                <h1>Compliance Case Management Console</h1>
+                <p>Anti-Money Laundering (AML) Control Center</p>
+            </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 1rem;">
+            <span id="user-welcome-text" style="font-size: 0.85rem; font-weight: 600; display: none; color: var(--text-secondary);">Welcome, Analyst</span>
+            <button id="logout-button" class="logout-btn" onclick="logout()" style="display: none;">Logout</button>
+            <div class="status-badge" id="app-status-badge">
+                <span class="status-indicator"></span>
+                <span id="app-status-text">Connecting to Gateway...</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Navigation Tabs -->
+        <div class="nav-tabs">
+            <button class="tab-btn active" onclick="switchTab('executive-tab', this)">Executive Dashboard</button>
+            <button class="tab-btn" onclick="switchTab('inbox-tab', this)">Alert Inbox & Triage</button>
+            <button class="tab-btn" onclick="switchTab('sandbox-tab', this)">Phonetic Sandbox</button>
+        </div>
+
+        <!-- TAB 1: EXECUTIVE DASHBOARD -->
+        <div id="executive-tab" class="tab-content active">
+            <!-- Metrics KPI row -->
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <span class="metric-label">Active Cases</span>
+                    <span class="metric-value" id="metric-active-cases">0</span>
+                </div>
+                <div class="metric-card">
+                    <span class="metric-label">Avg Resolution Time</span>
+                    <span class="metric-value">4.2 hrs</span>
+                </div>
+                <div class="metric-card escalation">
+                    <span class="metric-label">Escalation Rate</span>
+                    <span class="metric-value">12.8%</span>
+                </div>
+                <div class="metric-card critical-severity">
+                    <span class="metric-label">Critical Pending</span>
+                    <span class="metric-value" id="metric-critical-cases">0</span>
+                </div>
+            </div>
+
+            <!-- Dashboard Charts and Leaderboard Split -->
+            <div class="panel-split" style="margin-top: 1rem;">
+                <!-- Charts Area (Left) -->
+                <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                    <!-- Line Chart -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Alert Frequency Trend (Daily)</h2>
+                        </div>
+                        <div class="card-body" style="align-items: center; justify-content: center; min-height: 250px;">
+                            <!-- SVG Trend Line Chart -->
+                            <svg width="100%" height="200" viewBox="0 0 500 200" preserveAspectRatio="none" style="overflow: visible;">
+                                <defs>
+                                    <linearGradient id="chart-grad" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="0%" stop-color="var(--accent-blue)" stop-opacity="0.2"/>
+                                        <stop offset="100%" stop-color="var(--accent-blue)" stop-opacity="0.0"/>
+                                    </linearGradient>
+                                </defs>
+                                <!-- Grid lines -->
+                                <line x1="0" y1="50" x2="500" y2="50" stroke="#e9e5d8" stroke-dasharray="4,4"/>
+                                <line x1="0" y1="100" x2="500" y2="100" stroke="#e9e5d8" stroke-dasharray="4,4"/>
+                                <line x1="0" y1="150" x2="500" y2="150" stroke="#e9e5d8" stroke-dasharray="4,4"/>
+                                
+                                <!-- Filled Area under path -->
+                                <path d="M 0 170 L 80 140 L 160 160 L 240 100 L 320 80 L 400 120 L 480 50 L 500 50 L 500 200 L 0 200 Z" fill="url(#chart-grad)"></path>
+                                <!-- Line Path -->
+                                <path d="M 0 170 L 80 140 L 160 160 L 240 100 L 320 80 L 400 120 L 480 50" fill="none" stroke="var(--accent-blue)" stroke-width="3" stroke-linecap="round"></path>
+                                
+                                <!-- Dots -->
+                                <circle cx="80" cy="140" r="4" fill="var(--accent-blue)"/>
+                                <circle cx="160" cy="160" r="4" fill="var(--accent-blue)"/>
+                                <circle cx="240" cy="100" r="4" fill="var(--accent-blue)"/>
+                                <circle cx="320" cy="80" r="4" fill="var(--accent-blue)"/>
+                                <circle cx="400" cy="120" r="4" fill="var(--accent-blue)"/>
+                                <circle cx="480" cy="50" r="4" fill="var(--accent-blue)"/>
+                                
+                                <!-- Axis Labels -->
+                                <text x="10" y="195" font-size="9" fill="var(--text-secondary)">Mon</text>
+                                <text x="90" y="195" font-size="9" fill="var(--text-secondary)">Tue</text>
+                                <text x="170" y="195" font-size="9" fill="var(--text-secondary)">Wed</text>
+                                <text x="250" y="195" font-size="9" fill="var(--text-secondary)">Thu</text>
+                                <text x="330" y="195" font-size="9" fill="var(--text-secondary)">Fri</text>
+                                <text x="410" y="195" font-size="9" fill="var(--text-secondary)">Sat</text>
+                                <text x="470" y="195" font-size="9" fill="var(--text-secondary)">Sun</text>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <!-- Category Bar Distribution -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 class="card-title">Alerts Category Distribution</h2>
+                        </div>
+                        <div class="card-body">
+                            <div style="display: flex; flex-direction: column; gap: 1rem;">
+                                <div>
+                                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem;">
+                                        <span>Structuring Velocity (SMURFING)</span>
+                                        <strong>42% (18 Cases)</strong>
+                                    </div>
+                                    <div class="bar-progress-container"><div class="bar-progress-fill" style="width: 42%; background-color: var(--accent-orange);"></div></div>
+                                </div>
+                                <div>
+                                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem;">
+                                        <span>High-Value Out-of-Pattern</span>
+                                        <strong>33% (14 Cases)</strong>
+                                    </div>
+                                    <div class="bar-progress-container"><div class="bar-progress-fill" style="width: 33%; background-color: var(--accent-blue);"></div></div>
+                                </div>
+                                <div>
+                                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem;">
+                                        <span>PEP & Sanctions Screen Hit</span>
+                                        <strong>25% (11 Cases)</strong>
+                                    </div>
+                                    <div class="bar-progress-container"><div class="bar-progress-fill" style="width: 25%; background-color: var(--accent-red);"></div></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Analyst Leaderboard (Right) -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">Analyst Workload Leaderboard</h2>
+                    </div>
+                    <div class="table-container">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Analyst Name</th>
+                                    <th>Active Cases</th>
+                                    <th>Resolution Rate</th>
+                                    <th>Risk Exposure</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><strong>Sarah Jenkins</strong></td>
+                                    <td><span class="badge badge-orange">4 Active</span></td>
+                                    <td>94%</td>
+                                    <td><span class="badge badge-red">Critical</span></td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Alex Rivera</strong></td>
+                                    <td><span class="badge badge-orange">3 Active</span></td>
+                                    <td>88%</td>
+                                    <td><span class="badge badge-blue">Medium</span></td>
+                                </tr>
+                                <tr>
+                                    <td><strong>David Chen</strong></td>
+                                    <td><span class="badge badge-green">2 Active</span></td>
+                                    <td>91%</td>
+                                    <td><span class="badge badge-orange">High</span></td>
+                                </tr>
+                                <tr>
+                                    <td><strong>Emma Watson</strong></td>
+                                    <td><span class="badge badge-green">1 Active</span></td>
+                                    <td>96%</td>
+                                    <td><span class="badge badge-blue">Low</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="card-body">
+                        <div class="empty-state" style="margin: 0; padding: 1.5rem; border-style: solid; background-color: rgba(61,107,153,0.04);">
+                            <p style="font-size: 0.8rem; line-height: 1.4;">Compliance workloads are distributed dynamically. Click the <strong>Alert Inbox & Triage</strong> tab to assign and escalate incoming alerts.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 2: ALERT INBOX & INVESTIGATION PORTAL -->
+        <div id="inbox-tab" class="tab-content" style="gap: 2rem;">
+            <!-- Filter Bar & Alerts Triage Table -->
+            <div class="card">
+                <div class="card-header" style="flex-wrap: wrap; gap: 1rem;">
+                    <h2 class="card-title">Alerts Triage Inbox</h2>
+                    <div style="display: flex; gap: 0.75rem; align-items: center;">
+                        <input type="text" id="inbox-search" placeholder="Search account..." oninput="filterInboxTable()" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
+                        <select id="inbox-filter-severity" onchange="filterInboxTable()" style="padding: 0.4rem 0.8rem; font-size: 0.85rem; height: 34px;">
+                            <option value="ALL">All Severities</option>
+                            <option value="CRITICAL">Critical</option>
+                            <option value="HIGH">High</option>
+                        </select>
+                        <button class="btn btn-outline" onclick="loadAlerts()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;">Refresh</button>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Alert ID</th>
+                                <th>Severity</th>
+                                <th>Risk Score</th>
+                                <th>Trigger Name</th>
+                                <th>Target Entity</th>
+                                <th>Triggered At</th>
+                                <th>Assignee</th>
+                            </tr>
+                        </thead>
+                        <tbody id="inbox-tbody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+                <div id="inbox-empty" class="empty-state" style="display: none;">
+                    <div class="empty-icon">📁</div>
+                    <p>Inbox is empty! No pending compliance alerts found.</p>
+                </div>
+            </div>
+
+            <!-- Case 360-Degree Split Investigation View -->
+            <div id="investigation-split-portal" class="panel-split" style="display: none; border-top: 2px solid var(--border-color); padding-top: 2rem;">
+                <!-- Left Column: Entity Profile, XAI, Ledger -->
+                <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                    <!-- Entity Profile Card -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">Entity Profile (KYC Audit)</h3>
+                            <span class="badge badge-green" id="profile-kyc-status">KYC Verified</span>
+                        </div>
+                        <div class="card-body">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                                <div class="detail-group">
+                                    <span class="detail-label">Name</span>
+                                    <span class="detail-value" id="profile-name">Alice Schmidt</span>
+                                </div>
+                                <div class="detail-group">
+                                    <span class="detail-label">Nationality</span>
+                                    <span class="detail-value" id="profile-nationality">Germany</span>
+                                </div>
+                                <div class="detail-group">
+                                    <span class="detail-label">Risk Tier</span>
+                                    <span class="detail-value" id="profile-tier" style="color: var(--accent-orange); font-weight: bold;">High Risk</span>
+                                </div>
+                                <div class="detail-group">
+                                    <span class="detail-label">Connected Corporate Entity</span>
+                                    <span class="detail-value" id="profile-connected">ACME Holdings Ltd</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- XAI explainability card -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">Explainable AI (XAI) Attribution</h3>
+                        </div>
+                        <div class="card-body">
+                            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;">This model attribution chart shows the risk weight contributions computed for the transaction:</p>
+                            <div class="shap-list" id="inbox-shap-list">
+                                <!-- SHAP bars will render here -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Relational Ledger Timeline -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">Account Transaction Ledger</h3>
+                        </div>
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Direction</th>
+                                        <th>Beneficiary</th>
+                                        <th>Amount</th>
+                                        <th>Risk Score</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="inbox-ledger-tbody">
+                                    <!-- Dynamic transaction lines -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Column: Interactive Graph Map & Action Console -->
+                <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+                    <!-- Interactive SVG Graph Map -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">Visual Money Flow (Graph Map)</h3>
+                            <span class="badge badge-blue">Interactive</span>
+                        </div>
+                        <div class="card-body" style="align-items: center; justify-content: center; min-height: 280px; position: relative;">
+                            <!-- Node Topology Graph via SVG -->
+                            <svg width="100%" height="240" viewBox="0 0 350 240" style="background-color: var(--bg-primary); border-radius: 8px; border: 1px solid var(--border-color); overflow: visible;">
+                                <!-- Arrows definitions -->
+                                <defs>
+                                    <marker id="arrow" viewBox="0 0 10 10" refX="22" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)"/>
+                                    </marker>
+                                </defs>
+                                <!-- Connections (Edges) -->
+                                <line x1="70" y1="120" x2="175" y2="60" stroke="var(--text-secondary)" stroke-width="1.5" marker-end="url(#arrow)"/>
+                                <line x1="175" y1="60" x2="280" y2="120" stroke="var(--text-secondary)" stroke-width="1.5" marker-end="url(#arrow)"/>
+                                <line x1="70" y1="120" x2="280" y2="120" stroke="var(--accent-red)" stroke-width="2" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+
+                                <!-- Intermediary Account Edge -->
+                                <line x1="175" y1="180" x2="280" y2="120" stroke="var(--text-secondary)" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+                                <!-- Account Nodes -->
+                                <!-- Node A: Sender -->
+                                <circle cx="70" cy="120" r="18" fill="var(--accent-blue)" stroke="#ffffff" stroke-width="2" class="graph-node" onclick="clickGraphNode('sender')"/>
+                                <text x="70" y="124" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle" pointer-events="none">SND</text>
+                                <text x="70" y="148" font-size="9" font-weight="600" fill="var(--text-primary)" text-anchor="middle" pointer-events="none">Sender (DE)</text>
+
+                                <!-- Node B: Connected Corporation -->
+                                <circle cx="175" cy="60" r="18" fill="var(--text-secondary)" stroke="#ffffff" stroke-width="2" class="graph-node" onclick="clickGraphNode('corp')"/>
+                                <text x="175" y="64" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle" pointer-events="none">CORP</text>
+                                <text x="175" y="36" font-size="9" font-weight="600" fill="var(--text-primary)" text-anchor="middle" pointer-events="none">ACME Holdings</text>
+
+                                <!-- Node C: Intermediary Broker -->
+                                <circle cx="175" cy="180" r="18" fill="var(--text-secondary)" stroke="#ffffff" stroke-width="2" class="graph-node" onclick="clickGraphNode('broker')"/>
+                                <text x="175" y="184" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle" pointer-events="none">BRK</text>
+                                <text x="175" y="208" font-size="9" font-weight="600" fill="var(--text-primary)" text-anchor="middle" pointer-events="none">Intermediary</text>
+
+                                <!-- Node D: Receiver -->
+                                <circle cx="280" cy="120" r="18" fill="var(--accent-red)" stroke="#ffffff" stroke-width="2" class="graph-node" onclick="clickGraphNode('receiver')"/>
+                                <text x="280" y="124" font-size="10" font-weight="bold" fill="#ffffff" text-anchor="middle" pointer-events="none">RCV</text>
+                                <text x="280" y="148" font-size="9" font-weight="600" fill="var(--text-primary)" text-anchor="middle" pointer-events="none">Receiver (US)</text>
+                            </svg>
+                            <!-- Click details box -->
+                            <div id="graph-node-details" style="display: none; background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.8rem; position: absolute; bottom: 1.5rem; left: 1.5rem; right: 1.5rem; box-shadow: var(--shadow-md);">
+                                <strong>Node Selected:</strong> <span id="selected-node-label">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Case Actions panel -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">Action Resolution Console</h3>
+                        </div>
+                        <div class="card-body" style="gap: 1rem;">
+                            <div class="form-group">
+                                <label for="inbox-justification">Investigation Justification Note</label>
+                                <textarea id="inbox-justification" rows="3" placeholder="Provide details on source of wealth, transaction rationale, or false positive reason..."></textarea>
+                            </div>
+                            <div class="btn-group">
+                                <button class="btn btn-danger" onclick="resolveInboxCase('CLOSE_SAR')" style="flex-grow: 1;">File & Escalate SAR (XML)</button>
+                                <button class="btn btn-outline" onclick="resolveInboxCase('CLOSE_FALSE_POSITIVE')">Dismiss False Positive</button>
+                            </div>
+
+                            <!-- Regulatory XML output details -->
+                            <div id="inbox-sar-display" style="display: none; border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 0.5rem;">
+                                <span class="detail-label">Regulatory Suspicious Activity Report XML</span>
+                                <pre id="inbox-sar-xml" style="margin-top: 0.5rem; font-size: 0.75rem; max-height: 150px;"></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Empty unselected view for case investigation details -->
+            <div id="investigation-empty-state" class="empty-state" style="padding: 4rem 2rem;">
+                <div class="empty-icon">🕵️‍♂️</div>
+                <h3>Triage Investigation Workbench</h3>
+                <p>Select any flagged alert from the inbox list above to open the visual graph, KYC profile, and attributions.</p>
+            </div>
+        </div>
+
+        <!-- TAB 3: PHONETIC SANDBOX (Sanctions lookup tool) -->
+        <div id="sandbox-tab" class="tab-content panel-search-layout">
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Sanctions Sandbox lookup</h2>
+                </div>
+                <div class="card-body" style="padding: 2.5rem;">
+                    <form id="sandbox-screening-form" onsubmit="runSandboxScreening(event)">
+                        <div style="display: grid; grid-template-columns: 2fr 1fr auto; gap: 1.5rem; align-items: flex-end;">
+                            <div class="form-group">
+                                <label for="sandbox-screen-name">Full Identity Name</label>
+                                <input type="text" id="sandbox-screen-name" placeholder="e.g. Wladimir Smirnow" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="sandbox-screen-threshold">Match Similarity Limit</label>
+                                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                    <input type="range" id="sandbox-screen-threshold" min="70" max="95" value="80" oninput="document.getElementById('threshold-val').innerText = this.value + '%'">
+                                    <span id="threshold-val" style="font-size: 0.9rem; font-weight: 600; min-width: 35px;">80%</span>
+                                </div>
+                            </div>
+                            <button type="submit" class="btn" style="height: 43px; padding: 0 2rem;">Query Lists</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Sanctions Verdict and spelling list hits -->
+            <div class="card" id="sandbox-verdict-card">
+                <div class="card-header">
+                    <h2 class="card-title">Screening Evaluation Outcome</h2>
+                    <span class="badge" id="sandbox-verdict-badge">Idle</span>
+                </div>
+                <div class="card-body" id="sandbox-verdict-body" style="display: none;">
+                    <div style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 1.5rem;">
+                        <div class="table-container" style="border: 1px solid var(--border-color); border-radius: 8px;">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Blocked Name Matches</th>
+                                        <th>List Directory</th>
+                                        <th>Fuzzy Score</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sandbox-hits-tbody">
+                                    <!-- hits populate here -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 1rem; background-color: var(--bg-primary); padding: 1.25rem; border-radius: 8px; border: 1px solid var(--border-color);">
+                            <span class="detail-label">Compliance Verdict Summary</span>
+                            <h3 id="sandbox-verdict-verdict" style="font-weight: bold; font-size: 1.1rem; color: var(--accent-red);">BLOCKED</h3>
+                            <p style="font-size: 0.85rem; line-height: 1.4; color: var(--text-secondary);">The phonetically evaluated lookup matched profiles in active sanctions lists. If matching an active transaction partner, compliance holds must be established immediately.</p>
+                        </div>
+                    </div>
+                </div>
+                <div id="sandbox-unselected" class="empty-state" style="margin: 0; border: none; padding: 4rem 2rem;">
+                    <div class="empty-icon">🔎</div>
+                    <p>Enter an individual or entity name above to perform phonetic searches across global sanctions database.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- System Audit Log Console -->
+        <div class="card">
+            <div class="card-header" style="padding: 0.75rem 1.25rem;">
+                <h3 class="card-title" style="font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-secondary);">Audit System Log Stream</h3>
+            </div>
+            <div class="live-log-feed" id="log-feed">
+                <!-- Log entries populate here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Overlay -->
+    <div id="login-overlay" class="login-overlay" style="display: none;">
+        <div class="login-card">
+            <h2 class="login-title">AML Console Login</h2>
+            <form id="login-form" onsubmit="handleLogin(event)">
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label for="login-username">Username</label>
+                    <input type="text" id="login-username" placeholder="e.g. sarah_jenkins" required>
+                </div>
+                <div class="form-group" style="margin-bottom: 1.5rem;">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" required>
+                </div>
+                <button type="submit" class="btn" style="width: 100%;">Sign In</button>
+            </form>
+            <div id="login-error-message" style="display: none; color: var(--accent-red); font-size: 0.85rem; text-align: center; font-weight: 600; margin-top: 0.5rem;">
+                Invalid username or password
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

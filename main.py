@@ -1,6 +1,8 @@
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from routers import onboarding, screening, transactions, alerts
+from routers import onboarding, screening, transactions, alerts, auth
 from database.postgres import connection_pool
 from database.neo4j_db import close_neo4j_driver
 import logging
@@ -24,10 +26,14 @@ app.add_middleware(
 )
 
 # Include Routers
+app.include_router(auth.router)
 app.include_router(onboarding.router)
 app.include_router(screening.router)
 app.include_router(transactions.router)
 app.include_router(alerts.router)
+
+# Mount static folder
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 def read_root():
@@ -36,6 +42,12 @@ def read_root():
         "service": "AML Platform Ingestion Gateway",
         "version": "1.0.0"
     }
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def read_dashboard():
+    with open("static/index.html", "r", encoding="utf-8") as f:
+        html_content = f.read()
+    return HTMLResponse(content=html_content)
 
 @app.on_event("startup")
 async def startup_db_clients():

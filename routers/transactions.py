@@ -7,6 +7,7 @@ from database.postgres import get_async_db_conn
 from services.rules import RulesEngine
 from services.ml_model import AMLAnomalyModel
 from services.redpanda import publish_transaction
+from services.auth import get_current_user
 
 
 logger = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ class TransactionRequest(BaseModel):
     timestamp: str
 
 @router.post("")
-async def ingest_transaction(payload: TransactionRequest, background_tasks: BackgroundTasks):
+async def ingest_transaction(payload: TransactionRequest, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
     # Step 1: Look up sender and receiver in PostgreSQL to verify they exist
     try:
         async with get_async_db_conn() as conn:

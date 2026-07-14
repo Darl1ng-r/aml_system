@@ -3,6 +3,7 @@ from fastapi.params import Depends as DependsClass
 from pydantic import BaseModel
 from database.elasticsearch_db import get_async_elasticsearch_client
 from config import SANCTIONS_INDEX
+from services.auth import get_current_user
 
 router = APIRouter(prefix="/api/v1/screening", tags=["Screening"])
 
@@ -88,7 +89,7 @@ async def perform_sanctions_search(name: str, threshold: float, es) -> dict:
     }
 
 @router.post("/search")
-async def search_sanctions(payload: ScreeningRequest, es=Depends(get_async_elasticsearch_client)):
+async def search_sanctions(payload: ScreeningRequest, es=Depends(get_async_elasticsearch_client), current_user: dict = Depends(get_current_user)):
     try:
         return await perform_sanctions_search(payload.name, payload.threshold, es)
     except Exception as e:

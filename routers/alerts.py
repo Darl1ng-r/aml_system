@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from database.postgres import get_async_db_conn
+from services.auth import get_current_user
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from datetime import datetime
@@ -16,7 +17,7 @@ class AlertAction(BaseModel):
     sar_xml_generate: bool = False
 
 @router.get("")
-async def list_alerts():
+async def list_alerts(current_user: dict = Depends(get_current_user)):
     try:
         async with get_async_db_conn() as conn:
             rows = await conn.fetch(
@@ -54,7 +55,7 @@ async def list_alerts():
         raise HTTPException(status_code=500, detail=f"Failed to list alerts: {str(e)}")
 
 @router.post("/{id}/action")
-async def resolve_alert(id: str, payload: AlertAction):
+async def resolve_alert(id: str, payload: AlertAction, current_user: dict = Depends(get_current_user)):
     if payload.action not in ["CLOSE_SAR", "CLOSE_FALSE_POSITIVE"]:
         raise HTTPException(status_code=400, detail="Invalid action. Must be CLOSE_SAR or CLOSE_FALSE_POSITIVE")
 

@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     elasticsearch_host: str = "http://localhost:9200"
     sanctions_index: str = "sanctions_list"
     
+    jwt_secret_key: str = "4d6d6f2284c8a2b5352cf510b65f3f01905786fdb4619d08e5e8e8fb2c4e61f2"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 1440
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

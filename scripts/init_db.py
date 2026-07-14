@@ -18,6 +18,7 @@ def init_postgres():
     DROP TABLE IF EXISTS transactions CASCADE;
     DROP TABLE IF EXISTS accounts CASCADE;
     DROP TABLE IF EXISTS tenants CASCADE;
+    DROP TABLE IF EXISTS users CASCADE;
 
     -- Create Tenants Table
     CREATE TABLE IF NOT EXISTS tenants (
@@ -70,6 +71,15 @@ def init_postgres():
 
     -- Create Alerts Index
     CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status) WHERE status IN ('NEW', 'UNDER_INVESTIGATION');
+
+    -- Create Users Table
+    CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        username VARCHAR(100) UNIQUE NOT NULL,
+        hashed_password VARCHAR(255) NOT NULL,
+        role VARCHAR(50) DEFAULT 'ANALYST',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
     """
 
     with get_db_cursor() as cur:
@@ -102,6 +112,36 @@ def init_postgres():
                     (tenant_id, acc_num, bic, owner, risk)
                 )
             print("PostgreSQL seeded with test accounts.")
+
+        # Seed Default Users
+        cur.execute("SELECT COUNT(*) FROM users;")
+        user_count = cur.fetchone()[0]
+        if user_count == 0:
+            import hashlib
+            import secrets
+            def hash_password(password: str) -> str:
+                salt = secrets.token_hex(16)
+                dk = hashlib.pbkdf2_hmac(
+                    'sha256',
+                    password.encode('utf-8'),
+                    salt.encode('utf-8'),
+                    100000
+                )
+                return f"pbkdf2_sha256$100000${salt}${dk.hex()}"
+
+            analysts = [
+                ("sarah_jenkins", "password123", "ANALYST"),
+                ("alex_rivera", "password123", "ANALYST"),
+                ("david_chen", "password123", "ANALYST"),
+                ("emma_watson", "password123", "ANALYST"),
+            ]
+            for username, pwd, role in analysts:
+                hashed = hash_password(pwd)
+                cur.execute(
+                    "INSERT INTO users (username, hashed_password, role) VALUES (%s, %s, %s);",
+                    (username, hashed, role)
+                )
+            print("PostgreSQL seeded with compliance analyst users.")
     print("PostgreSQL initialization complete.")
 
 def init_neo4j():
