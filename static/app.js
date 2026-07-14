@@ -89,55 +89,13 @@ function initAuth() {
     const token = localStorage.getItem('jwt_token');
     const username = localStorage.getItem('username');
     if (token && username) {
-        document.getElementById('login-overlay').style.display = 'none';
         document.getElementById('user-welcome-text').innerText = `Welcome, ${username.replace('_', ' ')}`;
         document.getElementById('user-welcome-text').style.display = 'inline';
         document.getElementById('logout-button').style.display = 'inline';
         checkServerStatus();
         loadAlerts();
     } else {
-        document.getElementById('login-overlay').style.display = 'flex';
-        document.getElementById('user-welcome-text').style.display = 'none';
-        document.getElementById('logout-button').style.display = 'none';
-    }
-}
-
-async function handleLogin(event) {
-    event.preventDefault();
-    const username = document.getElementById('login-username').value.trim();
-    const password = document.getElementById('login-password').value;
-    const errorEl = document.getElementById('login-error-message');
-    
-    errorEl.style.display = 'none';
-    log(`Authenticating user: ${username}...`, 'info');
-    
-    try {
-        const params = new URLSearchParams();
-        params.append('username', username);
-        params.append('password', password);
-        
-        const response = await fetch(`${BASE_URL}/api/v1/auth/login`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: params
-        });
-        
-        if (response.ok) {
-            const data = await response.json();
-            localStorage.setItem('jwt_token', data.access_token);
-            localStorage.setItem('username', data.username);
-            localStorage.setItem('role', data.role);
-            
-            log(`Authentication successful. Logged in as: ${data.username}`, 'success');
-            initAuth();
-        } else {
-            throw new Error();
-        }
-    } catch (e) {
-        errorEl.style.display = 'block';
-        log(`Authentication failed for user: ${username}`, 'err');
+        window.location.href = '/login';
     }
 }
 
@@ -146,7 +104,7 @@ function logout() {
     localStorage.removeItem('username');
     localStorage.removeItem('role');
     log('Logged out successfully.', 'info');
-    initAuth();
+    window.location.href = '/login';
 }
 
 function getAuthHeaders() {

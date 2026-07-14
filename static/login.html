@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AML Portal - Authenticate</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        body {
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            min-height: 100vh;
+        }
+        .auth-container {
+            width: 100%;
+            max-width: 440px;
+            margin: auto;
+        }
+        .auth-card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            box-shadow: var(--shadow-md);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .auth-header {
+            padding: 2.25rem 2.25rem 1.5rem 2.25rem;
+            text-align: center;
+            border-bottom: 1px solid var(--border-color);
+            background-color: rgba(44, 37, 32, 0.01);
+        }
+        .auth-logo {
+            width: 42px;
+            height: 42px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-green));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #ffffff;
+            font-weight: 800;
+            font-size: 1.5rem;
+            margin: 0 auto 1rem auto;
+        }
+        .auth-header h1 {
+            font-size: 1.35rem;
+            font-weight: 800;
+            color: var(--text-primary);
+            letter-spacing: -0.02em;
+        }
+        .auth-header p {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-top: 0.25rem;
+            font-weight: 500;
+        }
+        .auth-tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .auth-tab-btn {
+            flex: 1;
+            background: none;
+            border: none;
+            padding: 1rem;
+            font-family: inherit;
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--text-secondary);
+            cursor: pointer;
+            text-align: center;
+            transition: all var(--transition-speed);
+        }
+        .auth-tab-btn:hover {
+            color: var(--text-primary);
+            background-color: rgba(44, 37, 32, 0.01);
+        }
+        .auth-tab-btn.active {
+            color: var(--accent-blue);
+            border-bottom: 2px solid var(--accent-blue);
+            background-color: #ffffff;
+        }
+        .auth-body {
+            padding: 2.25rem;
+        }
+        .auth-form {
+            display: none;
+            flex-direction: column;
+            gap: 1.25rem;
+        }
+        .auth-form.active {
+            display: flex;
+        }
+        .error-banner {
+            background-color: rgba(204, 63, 53, 0.06);
+            border: 1px solid rgba(204, 63, 53, 0.15);
+            color: var(--accent-red);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-align: center;
+            display: none;
+        }
+        .success-banner {
+            background-color: rgba(29, 130, 83, 0.06);
+            border: 1px solid rgba(29, 130, 83, 0.15);
+            color: var(--accent-green);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-align: center;
+            display: none;
+        }
+    </style>
+    <script>
+        // Immediately redirect if already logged in
+        if (localStorage.getItem('jwt_token')) {
+            window.location.href = '/dashboard';
+        }
+    </script>
+</head>
+<body>
+
+    <div class="auth-container">
+        <div class="auth-card">
+            <div class="auth-header">
+                <div class="auth-logo">C</div>
+                <h1>AML Control Center</h1>
+                <p>Anti-Money Laundering & Case Management Gateway</p>
+            </div>
+            
+            <div class="auth-tabs">
+                <button id="tab-login" class="auth-tab-btn active" onclick="switchAuthTab('login')">Sign In</button>
+                <button id="tab-signup" class="auth-tab-btn" onclick="switchAuthTab('signup')">Create Account</button>
+            </div>
+
+            <div class="auth-body">
+                <div id="auth-error" class="error-banner" style="margin-bottom: 1.25rem;"></div>
+                <div id="auth-success" class="success-banner" style="margin-bottom: 1.25rem;"></div>
+
+                <!-- LOGIN FORM -->
+                <form id="form-login" class="auth-form active" onsubmit="handleLoginSubmit(event)">
+                    <div class="form-group">
+                        <label for="login-username">Username</label>
+                        <input type="text" id="login-username" placeholder="e.g. sarah_jenkins" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="login-password">Password</label>
+                        <input type="password" id="login-password" placeholder="••••••••" required>
+                    </div>
+                    <button type="submit" class="btn" style="width: 100%; margin-top: 0.5rem;">Access Console</button>
+                </form>
+
+                <!-- SIGNUP FORM -->
+                <form id="form-signup" class="auth-form" onsubmit="handleSignupSubmit(event)">
+                    <div class="form-group">
+                        <label for="signup-username">Username</label>
+                        <input type="text" id="signup-username" placeholder="e.g. alex_compliance" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="signup-password">Password</label>
+                        <input type="password" id="signup-password" placeholder="Minimum 6 characters" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="signup-role">Analyst Role</label>
+                        <select id="signup-role">
+                            <option value="ANALYST">Junior Analyst (Level 1)</option>
+                            <option value="AUDITOR">Compliance Auditor (Level 2)</option>
+                            <option value="ADMIN">Compliance Officer / Admin</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="signup-code">Agency Registry Code</label>
+                        <input type="text" id="signup-code" placeholder="Optional simulator activation code">
+                    </div>
+                    <button type="submit" class="btn btn-success" style="width: 100%; margin-top: 0.5rem;">Register Profile</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const BASE_URL = window.location.origin;
+
+        function switchAuthTab(type) {
+            document.getElementById('auth-error').style.display = 'none';
+            document.getElementById('auth-success').style.display = 'none';
+
+            if (type === 'login') {
+                document.getElementById('tab-login').classList.add('active');
+                document.getElementById('tab-signup').classList.remove('active');
+                document.getElementById('form-login').classList.add('active');
+                document.getElementById('form-signup').classList.remove('active');
+            } else {
+                document.getElementById('tab-login').classList.remove('active');
+                document.getElementById('tab-signup').classList.add('active');
+                document.getElementById('form-login').classList.remove('active');
+                document.getElementById('form-signup').classList.add('active');
+            }
+        }
+
+        async function handleLoginSubmit(event) {
+            event.preventDefault();
+            const username = document.getElementById('login-username').value.trim();
+            const password = document.getElementById('login-password').value;
+            const errorEl = document.getElementById('auth-error');
+
+            errorEl.style.display = 'none';
+
+            try {
+                const params = new URLSearchParams();
+                params.append('username', username);
+                params.append('password', password);
+
+                const response = await fetch(`${BASE_URL}/api/v1/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: params
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    localStorage.setItem('jwt_token', data.access_token);
+                    localStorage.setItem('username', data.username);
+                    localStorage.setItem('role', data.role);
+                    
+                    window.location.href = '/dashboard';
+                } else {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'Access denied. Incorrect credentials.');
+                }
+            } catch (e) {
+                errorEl.innerText = e.message;
+                errorEl.style.display = 'block';
+            }
+        }
+
+        async function handleSignupSubmit(event) {
+            event.preventDefault();
+            const username = document.getElementById('signup-username').value.trim();
+            const password = document.getElementById('signup-password').value;
+            const role = document.getElementById('signup-role').value;
+            const errorEl = document.getElementById('auth-error');
+            const successEl = document.getElementById('auth-success');
+
+            errorEl.style.display = 'none';
+            successEl.style.display = 'none';
+
+            if (password.length < 6) {
+                errorEl.innerText = 'Password must be at least 6 characters long.';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            try {
+                const response = await fetch(`${BASE_URL}/api/v1/auth/signup`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        password: password,
+                        role: role
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    successEl.innerText = 'Account successfully registered!';
+                    successEl.style.display = 'block';
+
+                    localStorage.setItem('jwt_token', data.access_token);
+                    localStorage.setItem('username', data.username);
+                    localStorage.setItem('role', data.role);
+
+                    setTimeout(() => {
+                        window.location.href = '/dashboard';
+                    }, 1200);
+                } else {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'Registration failed.');
+                }
+            } catch (e) {
+                errorEl.innerText = e.message;
+                errorEl.style.display = 'block';
+            }
+        }
+    </script>
+</body>
+</html>

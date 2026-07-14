@@ -49,6 +49,12 @@ def read_dashboard():
         html_content = f.read()
     return HTMLResponse(content=html_content)
 
+@app.get("/login", response_class=HTMLResponse)
+def read_login():
+    with open("static/login.html", "r", encoding="utf-8") as f:
+        html_content = f.read()
+    return HTMLResponse(content=html_content)
+
 @app.on_event("startup")
 async def startup_db_clients():
     logger.info("Starting up database connections...")
