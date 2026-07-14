@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
     
+    supabase_url: str = "https://xzhsdffpnrlpcitiectz.supabase.co"
+    supabase_key: str = "sb_publishable_wnGvRWC4UBh0aQgROrflow_6XN36H0z"
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
