@@ -2,7 +2,7 @@ import pg8000
 import queue
 from contextlib import contextmanager
 import logging
-from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_URL
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
@@ -21,7 +21,7 @@ class TransactionRequest(BaseModel):
     timestamp: str
 
 @router.post("")
-async def ingest_transaction(payload: TransactionRequest):
+async def ingest_transaction(payload: TransactionRequest, background_tasks: BackgroundTasks):
     # Step 1: Look up sender and receiver in PostgreSQL to verify they exist
     try:
         async with get_async_db_conn() as conn:
@@ -115,7 +115,7 @@ async def ingest_transaction(payload: TransactionRequest):
         "status": status,
         "timestamp": payload.timestamp
     }
-    publish_transaction(redpanda_payload)
+    background_tasks.add_task(publish_transaction, redpanda_payload)
 
     return {
         "transaction_id": tx_id,

@@ -47,12 +47,8 @@ def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
         MERGE (r:Account {id: $receiver_id})
         ON CREATE SET r.account_number = $receiver_acc
         
-        CREATE (s)-[t:TRANSFERS_TO {
-            transaction_id: $tx_id,
-            amount: $amount,
-            status: $status,
-            timestamp: $epoch
-        }]->(r)
+        MERGE (s)-[t:TRANSFERS_TO {transaction_id: $tx_id}]->(r)
+        ON CREATE SET t.amount = $amount, t.status = $status, t.timestamp = $epoch
         """
         
         with neo4j_driver.session() as session:

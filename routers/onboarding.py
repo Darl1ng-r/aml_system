@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from database.postgres import get_async_db_conn
 from database.neo4j_db import get_async_neo4j_driver
-from routers.screening import search_sanctions, ScreeningRequest
+from database.elasticsearch_db import get_async_elasticsearch_client
+from routers.screening import perform_sanctions_search
 
 router = APIRouter(prefix="/api/v1/onboard", tags=["Onboarding"])
 
@@ -29,10 +30,9 @@ class CorporateOnboard(BaseModel):
 
 @router.post("/individual")
 async def onboard_individual(payload: IndividualOnboard):
-    # Step 1: Sanctions PEP Screening Check
-    screen_req = ScreeningRequest(name=payload.name, date_of_birth=payload.date_of_birth)
     try:
-        screen_res = await search_sanctions(screen_req)
+        es = await get_async_elasticsearch_client()
+        screen_res = await perform_sanctions_search(payload.name, 0.80, es)
         # If high risk sanctions hit, default to a high risk score
         risk_score = 0.95 if screen_res["match_found"] else 0.10
     except Exception:

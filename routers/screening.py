@@ -41,54 +41,56 @@ def levenshtein_ratio(s1: str, s2: str) -> float:
         return 1.0
     return (max_len - dist[len(s1)][len(s2)]) / max_len
 
-@router.post("/search")
-async def search_sanctions(payload: ScreeningRequest, es=Depends(get_async_elasticsearch_client)):
-    if isinstance(es, DependsClass) or es is None or not hasattr(es, "search"):
-        es = await get_async_elasticsearch_client()
-        
-    try:
-        # Search Elasticsearch sanctions index using fuzzy match
-        query = {
-            "query": {
-                "match": {
-                    "name": {
-                        "query": payload.name,
-                        "fuzziness": "AUTO",
-                        "prefix_length": 2
-                    }
+async def perform_sanctions_search(name: str, threshold: float, es) -> dict:
+    """
+    Core fuzzy sanctions search logic against Elasticsearch.
+    """
+    # Search Elasticsearch sanctions index using fuzzy match
+    query = {
+        "query": {
+            "match": {
+                "name": {
+                    "query": name,
+                    "fuzziness": "AUTO",
+                    "prefix_length": 2
                 }
             }
         }
-        
-        response = await es.search(index=SANCTIONS_INDEX, body=query, size=5)
-        hits = response.get("hits", {}).get("hits", [])
-        
-        if not hits:
-            return {
-                "match_found": False,
-                "score": 0.0,
-                "source_list": None,
-                "matched_entry": None
-            }
-            
-        # Select best hit and compute exact string similarity ratio
-        best_hit = hits[0]
-        source = best_hit["_source"]
-        matched_name = source.get("name", "")
-        
-        similarity_score = levenshtein_ratio(payload.name, matched_name)
-        match_found = similarity_score >= payload.threshold
-        
+    }
+    
+    response = await es.search(index=SANCTIONS_INDEX, body=query, size=5)
+    hits = response.get("hits", {}).get("hits", [])
+    
+    if not hits:
         return {
-            "match_found": match_found,
-            "score": round(similarity_score, 2),
-            "source_list": source.get("source_list", "Unknown List"),
-            "matched_entry": {
-                "name": matched_name,
-                "reason": f"Fuzzy similarity match of {int(similarity_score * 100)}%"
-            }
+            "match_found": False,
+            "score": 0.0,
+            "source_list": None,
+            "matched_entry": None
         }
         
+    # Select best hit and compute exact string similarity ratio
+    best_hit = hits[0]
+    source = best_hit["_source"]
+    matched_name = source.get("name", "")
+    
+    similarity_score = levenshtein_ratio(name, matched_name)
+    match_found = similarity_score >= threshold
+    
+    return {
+        "match_found": match_found,
+        "score": round(similarity_score, 2),
+        "source_list": source.get("source_list", "Unknown List"),
+        "matched_entry": {
+            "name": matched_name,
+            "reason": f"Fuzzy similarity match of {int(similarity_score * 100)}%"
+        }
+    }
+
+@router.post("/search")
+async def search_sanctions(payload: ScreeningRequest, es=Depends(get_async_elasticsearch_client)):
+    try:
+        return await perform_sanctions_search(payload.name, payload.threshold, es)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Screening query failed: {str(e)}")
 

@@ -26,7 +26,6 @@ def get_redis_client():
     return _redis_client
 
 async def get_async_redis_client():
-    global _async_es_client
     global _async_redis_client
     if _async_redis_client is None:
         try:
