@@ -74,9 +74,8 @@ def init_postgres():
 
     -- Create Users Table
     CREATE TABLE IF NOT EXISTS users (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY,
         username VARCHAR(100) UNIQUE NOT NULL,
-        hashed_password VARCHAR(255) NOT NULL,
         role VARCHAR(50) DEFAULT 'ANALYST',
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
@@ -117,29 +116,18 @@ def init_postgres():
         cur.execute("SELECT COUNT(*) FROM users;")
         user_count = cur.fetchone()[0]
         if user_count == 0:
-            import hashlib
-            import secrets
-            def hash_password(password: str) -> str:
-                salt = secrets.token_hex(16)
-                dk = hashlib.pbkdf2_hmac(
-                    'sha256',
-                    password.encode('utf-8'),
-                    salt.encode('utf-8'),
-                    100000
-                )
-                return f"pbkdf2_sha256$100000${salt}${dk.hex()}"
-
+            import uuid
             analysts = [
-                ("sarah_jenkins", "password123", "ANALYST"),
-                ("alex_rivera", "password123", "ANALYST"),
-                ("david_chen", "password123", "ANALYST"),
-                ("emma_watson", "password123", "ANALYST"),
+                ("sarah_jenkins", "ANALYST"),
+                ("alex_rivera", "ANALYST"),
+                ("david_chen", "ANALYST"),
+                ("emma_watson", "ANALYST"),
             ]
-            for username, pwd, role in analysts:
-                hashed = hash_password(pwd)
+            for username, role in analysts:
+                user_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{username}.aml.com"))
                 cur.execute(
-                    "INSERT INTO users (username, hashed_password, role) VALUES (%s, %s, %s);",
-                    (username, hashed, role)
+                    "INSERT INTO users (id, username, role) VALUES (%s, %s, %s);",
+                    (user_id, username, role)
                 )
             print("PostgreSQL seeded with compliance analyst users.")
     print("PostgreSQL initialization complete.")

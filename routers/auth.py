@@ -95,6 +95,19 @@ async def signup(payload: UserSignup):
                 data = await resp.json()
                 access_token = data.get("access_token")
                 
+                # Replicate user to local PostgreSQL database
+                user_info = data.get("user") if "user" in data else data
+                supabase_user_id = user_info.get("id")
+                if supabase_user_id:
+                    from database.postgres import get_async_db_conn
+                    async with get_async_db_conn() as conn:
+                        await conn.execute(
+                            "INSERT INTO users (id, username, role) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING;",
+                            supabase_user_id,
+                            payload.username,
+                            payload.role
+                        )
+                
                 return {
                     "access_token": access_token,
                     "token_type": "bearer",

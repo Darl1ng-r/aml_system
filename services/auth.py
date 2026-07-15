@@ -76,8 +76,21 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
                 email = user_data.get("email", "")
                 username = email.split("@")[0] if email else "anonymous"
                 
+                user_id = user_data.get("id")
+                
+                # Replicate user to local PostgreSQL database if not present
+                from database.postgres import get_async_db_conn
+                async with get_async_db_conn() as conn:
+                    await conn.execute(
+                        "INSERT INTO users (id, username, role) VALUES ($1, $2, $3) "
+                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username;",
+                        user_id,
+                        username,
+                        role
+                    )
+                
                 return {
-                    "id": user_data.get("id"),
+                    "id": user_id,
                     "username": username,
                     "role": role,
                     "email": email
