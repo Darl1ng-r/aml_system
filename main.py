@@ -3,13 +3,16 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
-# pg8000 connection_pool import removed
 from database.neo4j_db import close_neo4j_driver
 from config import settings
+import asyncio
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
+# Shutdown event shared between the FastAPI app and the sync worker
+_worker_shutdown_event = asyncio.Event()
 
 app = FastAPI(
     title="AML Compliance & Transaction Monitoring API",
@@ -128,12 +131,24 @@ async def startup_db_clients():
         logger.critical(f"CRITICAL: Could not connect to Elasticsearch: {e}")
         raise RuntimeError("Elasticsearch database is required for startup") from e
 
-    # 5. Autostart Neo4j Graph Synchronization Worker
+    # 5. Start Neo4j Graph Sync Worker (Redpanda consumer or PostgreSQL fallback)
     logger.info("Starting background Neo4j graph synchronization worker...")
-    asyncio.create_task(run_sync_worker())
+    asyncio.create_task(run_sync_worker(shutdown_event=_worker_shutdown_event))
 
 @app.on_event("shutdown")
 async def shutdown_db_clients():
+    # Signal the sync worker to stop cleanly before closing connections
+    _worker_shutdown_event.set()
+    await asyncio.sleep(1)  # give the consumer loop one cycle to exit
+
+    # Flush and close the Kafka producer
+    try:
+        from services.redpanda import close_producer
+        await close_producer()
+        logger.info("Kafka producer flushed and closed.")
+    except Exception as e:
+        logger.warning(f"Failed to close Kafka producer: {e}")
+
     logger.info("Closing database connections...")
     # Close Postgres pools
     from database.postgres import close_db_pool
@@ -144,16 +159,14 @@ async def shutdown_db_clients():
         await close_db_pool()
     except Exception as e:
         logger.warning(f"Failed to close asyncpg pool: {e}")
-        
-    # pg8000 connection_pool closeall removed
-        
+
     # Close Neo4j drivers
     try:
         close_neo4j_driver()
         await close_async_neo4j_driver()
     except Exception as e:
         logger.warning(f"Failed to close Neo4j drivers: {e}")
-        
+
     # Close Elasticsearch async client
     try:
         es_async = await get_async_elasticsearch_client()
@@ -169,3 +182,4 @@ async def shutdown_db_clients():
         logger.info("Async Redis client closed.")
     except Exception as e:
         logger.warning(f"Failed to close Async Redis client: {e}")
+
