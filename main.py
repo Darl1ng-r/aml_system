@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from routers import onboarding, screening, transactions, alerts, auth
+from routers import onboarding, screening, transactions, alerts, auth, rules, network
 # pg8000 connection_pool import removed
 from database.neo4j_db import close_neo4j_driver
 from config import settings
@@ -33,6 +33,8 @@ app.include_router(onboarding.router)
 app.include_router(screening.router)
 app.include_router(transactions.router)
 app.include_router(alerts.router)
+app.include_router(rules.router)
+app.include_router(network.router)
 
 # Mount static folder
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -67,9 +69,40 @@ async def startup_db_clients():
     # 1. Initialize & Fail-Fast PostgreSQL
     try:
         await init_db_pool()
+        # Run Phase 2 schema migrations
+        from database.postgres import get_async_db_conn
+        async with get_async_db_conn() as conn:
+            await conn.execute(
+                """
+                ALTER TABLE transactions ADD COLUMN IF NOT EXISTS country VARCHAR(3);
+                ALTER TABLE transactions ADD COLUMN IF NOT EXISTS merchant VARCHAR(100);
+                ALTER TABLE transactions ADD COLUMN IF NOT EXISTS device VARCHAR(100);
+                ALTER TABLE transactions ADD COLUMN IF NOT EXISTS channel VARCHAR(50);
+                
+                CREATE TABLE IF NOT EXISTS customer_profiles (
+                    account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+                    avg_amount NUMERIC(15, 2) DEFAULT 0.00,
+                    median_amount NUMERIC(15, 2) DEFAULT 0.00,
+                    variance_amount NUMERIC(15, 2) DEFAULT 0.00,
+                    daily_frequency NUMERIC(10, 4) DEFAULT 0.00,
+                    weekly_frequency NUMERIC(10, 4) DEFAULT 0.00,
+                    monthly_frequency INT DEFAULT 0,
+                    unique_receivers_count INT DEFAULT 0,
+                    unique_receiver_countries_count INT DEFAULT 0,
+                    avg_hour NUMERIC(4, 2) DEFAULT 0.00,
+                    variance_hour NUMERIC(6, 2) DEFAULT 0.00,
+                    top_countries TEXT[],
+                    top_merchants TEXT[],
+                    top_devices TEXT[],
+                    top_channels TEXT[],
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                );
+                """
+            )
+        logger.info("Phase 2 PostgreSQL schema migrations completed successfully.")
     except Exception as e:
-        logger.critical(f"CRITICAL: Could not initialize PostgreSQL pool: {e}")
-        raise RuntimeError("PostgreSQL database is required for startup") from e
+        logger.critical(f"CRITICAL: Could not initialize PostgreSQL or execute migrations: {e}")
+        raise RuntimeError("PostgreSQL database initialization failed") from e
         
     # 2. Initialize & Fail-Fast Redis
     try:

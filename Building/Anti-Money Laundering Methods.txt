@@ -1,0 +1,788 @@
+# Anti-Money Laundering (AML) Detection System
+## Technical Design & Detection Strategy
+
+**Version:** 1.0  
+**Purpose:** Technical specification for implementing the AML detection engine.
+
+---
+
+# Overview
+
+The goal of this system is to analyze financial transactions and identify suspicious activities that may indicate money laundering or other financial crimes.
+
+The system should **not rely on a single detection method**. Instead, it should combine multiple detection techniques to produce a unified **risk score** for every transaction, customer, and network of related entities.
+
+The detection engine should consist of the following layers:
+
+```
+                    Incoming Transactions
+                            │
+                            ▼
+                  Transaction Validation
+                            │
+                            ▼
+                    Data Enrichment Layer
+     (Customer, Device, IP, Country, Merchant, etc.)
+                            │
+                            ▼
+                     Rule-Based Detection
+                            │
+                            ▼
+                  Behavioral Analytics Engine
+                            │
+                            ▼
+                  Graph Analysis Engine
+                            │
+                            ▼
+                  Machine Learning Engine
+                            │
+                            ▼
+                     Risk Scoring Engine
+                            │
+                            ▼
+                  Alert Prioritization Engine
+                            │
+                            ▼
+                   Investigation Dashboard
+```
+
+---
+
+# Functional Requirements
+
+The AML engine must support:
+
+- Real-time transaction monitoring
+- Historical transaction analysis
+- Customer behavioral profiling
+- Relationship/network analysis
+- Configurable AML rules
+- Risk scoring
+- Explainable alerts
+- Case management support
+
+---
+
+# Detection Techniques
+
+## 1. Rule-Based Detection
+
+Rule-based detection provides deterministic alerts based on predefined business rules.
+
+Rules should be configurable without changing application code.
+
+### Examples
+
+### Large Transaction
+
+Detect transactions above configurable thresholds.
+
+Example:
+
+```
+IF Amount > $10,000
+
+THEN Alert
+```
+
+---
+
+### Structuring (Smurfing)
+
+Detect customers attempting to avoid reporting thresholds.
+
+Example:
+
+Instead of sending
+
+```
+$50,000
+```
+
+Customer sends
+
+```
+$9,000
+$9,200
+$8,900
+$8,700
+```
+
+within a short period.
+
+Implementation:
+
+- Sliding Time Window
+- Sum transactions
+- Check each transaction remains below threshold
+
+---
+
+### Rapid Movement of Funds
+
+Money enters an account and leaves almost immediately.
+
+Example:
+
+```
+Incoming Transfer
+
+↓
+
+5 minutes
+
+↓
+
+Outgoing Transfer
+```
+
+Implementation:
+
+```
+Time Difference
+
+Incoming Timestamp
+
+Outgoing Timestamp
+```
+
+Alert when transfer occurs within configurable period.
+
+---
+
+### Velocity Detection
+
+Monitor sudden increases in transaction frequency.
+
+Example
+
+Normal:
+
+```
+5 transactions/day
+```
+
+Today:
+
+```
+175 transactions
+```
+
+Detect abnormal spikes.
+
+---
+
+### Dormant Account Detection
+
+Account inactive for months.
+
+Suddenly receives or sends large amounts.
+
+---
+
+### Geographic Risk
+
+Increase risk score when transactions involve:
+
+- High-risk countries
+- Sanctioned jurisdictions
+- Tax havens
+- Countries under regulatory monitoring
+
+---
+
+### High-Risk Customer
+
+Increase score if customer is:
+
+- Politically Exposed Person (PEP)
+- On sanctions list
+- Previously investigated
+- Previously suspicious
+
+---
+
+# 2. Behavioral Analytics
+
+Each customer should have a behavioral profile.
+
+Examples of tracked metrics:
+
+- Average transaction amount
+- Median amount
+- Daily frequency
+- Weekly frequency
+- Monthly volume
+- Typical countries
+- Typical merchants
+- Device history
+- Login location
+- Time of day
+
+The engine compares every new transaction against historical behavior.
+
+Example
+
+Normal:
+
+```
+$50 - $200
+```
+
+Current:
+
+```
+$12,500
+```
+
+Increase anomaly score.
+
+---
+
+# 3. Statistical Anomaly Detection
+
+These algorithms identify transactions that significantly differ from expected behavior.
+
+Recommended techniques:
+
+## Z-Score
+
+```
+Z = (Value - Mean) / Standard Deviation
+```
+
+Useful for:
+
+- Amount anomalies
+- Frequency anomalies
+
+---
+
+## Isolation Forest
+
+Recommended.
+
+Advantages:
+
+- Handles large datasets
+- Excellent for anomaly detection
+- No labeled fraud data required
+
+Features:
+
+- Amount
+- Country
+- Merchant
+- Customer age
+- Frequency
+- Velocity
+
+---
+
+## Local Outlier Factor (LOF)
+
+Detects customers behaving differently than similar customers.
+
+---
+
+## One-Class SVM
+
+Learns normal behavior.
+
+Everything outside normal boundary becomes suspicious.
+
+---
+
+## DBSCAN
+
+Clusters similar transactions.
+
+Transactions outside clusters become anomalies.
+
+---
+
+# 4. Graph Analysis
+
+One of the most important AML techniques.
+
+Represent the financial ecosystem as a graph.
+
+## Nodes
+
+Examples:
+
+- Customer
+- Account
+- Company
+- Device
+- Phone Number
+- Email
+- Address
+- IP Address
+
+## Edges
+
+Examples:
+
+- Sent Money
+- Received Money
+- Owns Account
+- Shared Device
+- Shared Address
+- Shared Phone
+- Shared IP
+
+---
+
+## Circular Transactions
+
+Example
+
+```
+A → B → C → D → A
+```
+
+Possible layering activity.
+
+Algorithms:
+
+- Depth First Search
+- Tarjan Algorithm
+- Johnson Cycle Detection
+
+---
+
+## Fan-In Detection
+
+Many accounts sending money into one account.
+
+```
+A
+
+↓
+
+B
+
+↓
+
+C
+
+↓
+
+Target Account
+```
+
+Possible mule account.
+
+---
+
+## Fan-Out Detection
+
+One account disperses funds to many accounts.
+
+```
+Source
+
+↓
+
+A
+
+↓
+
+B
+
+↓
+
+C
+```
+
+Possible layering.
+
+---
+
+## Money Chains
+
+```
+A → B → C → D → E
+```
+
+Track long transaction paths.
+
+---
+
+## Community Detection
+
+Identify suspicious networks.
+
+Algorithms:
+
+- Louvain
+- Leiden
+- Label Propagation
+
+---
+
+## Centrality Analysis
+
+Identify important accounts.
+
+Metrics:
+
+- Degree Centrality
+- Betweenness Centrality
+- Eigenvector Centrality
+- PageRank
+
+---
+
+# 5. Temporal Pattern Detection
+
+Money laundering often follows repeated sequences.
+
+Example
+
+```
+Cash Deposit
+
+↓
+
+Transfer
+
+↓
+
+Crypto Exchange
+
+↓
+
+Withdrawal
+```
+
+Possible techniques:
+
+- Sequence Mining
+- Hidden Markov Models
+- Transformer Models
+
+---
+
+# 6. Entity Resolution
+
+Criminals often use slightly different identities.
+
+Example
+
+```
+John Smith
+
+Jonathan Smith
+
+J. Smith
+```
+
+Possible algorithms:
+
+- Levenshtein Distance
+- Jaro-Winkler
+- Cosine Similarity
+- Embedding Similarity
+
+Purpose:
+
+Merge likely duplicate identities.
+
+---
+
+# 7. Sanctions Screening
+
+Every customer should be checked against:
+
+- OFAC
+- United Nations Sanctions
+- European Union Sanctions
+- UK Sanctions
+- Politically Exposed Persons (PEP)
+
+Use fuzzy matching instead of exact matching.
+
+---
+
+# 8. Machine Learning
+
+Once historical labeled data exists, train classification models.
+
+Recommended models:
+
+- Random Forest
+- XGBoost
+- LightGBM
+- CatBoost
+
+Possible Features:
+
+- Transaction amount
+- Frequency
+- Country
+- Merchant
+- Customer age
+- Previous alerts
+- Velocity
+- Number of connected accounts
+- Graph centrality
+- Device count
+
+Output:
+
+Probability of money laundering.
+
+---
+
+# Risk Scoring Engine
+
+Each detector contributes to a unified risk score.
+
+Example
+
+| Detection | Score |
+|-----------|------:|
+| Large Transaction | +15 |
+| Structuring | +30 |
+| High-Risk Country | +25 |
+| Rapid Movement | +15 |
+| Shared Device | +10 |
+| Previous Alerts | +20 |
+
+Total:
+
+```
+115
+```
+
+Risk Categories:
+
+| Score | Risk |
+|--------|------|
+| 0-40 | Low |
+| 41-70 | Medium |
+| 71+ | High |
+
+---
+
+# Explainable Alerts
+
+Every alert must explain *why* it was generated.
+
+Example
+
+```
+Risk Score: 91
+
+Reasons:
+
+✓ 14 transactions below reporting threshold
+
+✓ Total exceeds reporting threshold
+
+✓ Funds transferred within 6 minutes
+
+✓ Destination country is high risk
+
+✓ Connected to 4 previously suspicious accounts
+
+✓ Circular transaction detected
+```
+
+Investigators should never receive only a score.
+
+---
+
+# Recommended Technology Stack
+
+## Backend
+
+- Node.js
+- NestJS (preferred)
+- TypeScript
+
+---
+
+## Database
+
+- PostgreSQL
+
+---
+
+## Graph Database
+
+- Neo4j
+
+Purpose:
+
+Relationship analysis.
+
+---
+
+## Cache
+
+- Redis
+
+Purpose:
+
+- Risk cache
+- Session cache
+- Customer profile cache
+
+---
+
+## Message Queue
+
+Recommended:
+
+- Apache Kafka
+
+Alternative:
+
+- RabbitMQ
+
+Purpose:
+
+Real-time transaction streaming.
+
+---
+
+## Search Engine
+
+- Elasticsearch
+or
+
+- OpenSearch
+
+Purpose:
+
+Fast customer and transaction search.
+
+---
+
+## Machine Learning Service
+
+Python
+
+Framework:
+
+- FastAPI
+
+Libraries:
+
+- Scikit-learn
+- XGBoost
+- PyTorch
+
+---
+
+## Object Storage
+
+- AWS S3
+- MinIO
+
+---
+
+## Monitoring
+
+- Prometheus
+- Grafana
+- OpenTelemetry
+
+---
+
+# Suggested Development Phases
+
+## Phase 1 — Core Detection Engine
+
+Implement:
+
+- Rule engine
+- Large transaction detection
+- Structuring detection
+- Velocity detection
+- Rapid movement detection
+- Geographic risk
+- Risk scoring
+- Investigator dashboard
+
+---
+
+## Phase 2 — Behavioral Analytics
+
+Implement:
+
+- Customer profiles
+- Statistical anomaly detection
+- Dynamic behavioral baselines
+- Customer risk scores
+
+---
+
+## Phase 3 — Graph Intelligence
+
+Implement:
+
+- Neo4j integration
+- Fan-In detection
+- Fan-Out detection
+- Circular transaction detection
+- Community detection
+- Relationship explorer
+
+---
+
+## Phase 4 — Artificial Intelligence
+
+Implement:
+
+- Isolation Forest
+- XGBoost
+- Entity Resolution
+- Risk propagation
+- Explainable AI
+
+---
+
+# Future Enhancements
+
+The system should be designed with extensibility in mind to support future capabilities such as:
+
+- Real-time sanctions list synchronization
+- Cryptocurrency wallet analysis
+- Blockchain transaction monitoring
+- Device fingerprinting
+- IP reputation scoring
+- Dark web intelligence integration
+- Adverse media screening
+- Case management workflow
+- Investigator collaboration tools
+- Regulatory report generation (SAR/STR)
+- Multi-tenant support
+- AI-assisted investigation summaries
+- Graph visualization dashboards
+
+---
+
+# Architecture Principles
+
+The system should follow these principles:
+
+- Modular architecture
+- Event-driven communication
+- Horizontally scalable services
+- Configurable rule engine
+- Explainable decisions
+- Low latency for real-time monitoring
+- Fault tolerance
+- Audit logging for every decision
+- Secure by design
+- Easy integration with banking systems
+
+---
+
+# Final Objective
+
+The AML platform should combine **rule-based detection**, **behavioral analytics**, **graph intelligence**, **statistical anomaly detection**, and **machine learning** into a unified risk-scoring system. Every alert must be explainable, configurable, and supported by evidence, enabling investigators to efficiently identify and prioritize potentially suspicious financial activity while minimizing false positives.

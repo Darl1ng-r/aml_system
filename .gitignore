@@ -1,0 +1,11 @@
+# Ignore datasets
+archive/
+
+# Ignore Python virtual environment and caches
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Ignore local environment configs
+.env
+.env.local

@@ -17,6 +17,7 @@ async def init_postgres():
     -- Clean Reset for Local Dev
     DROP TABLE IF EXISTS alerts CASCADE;
     DROP TABLE IF EXISTS transactions CASCADE;
+    DROP TABLE IF EXISTS customer_profiles CASCADE;
     DROP TABLE IF EXISTS accounts CASCADE;
     DROP TABLE IF EXISTS tenants CASCADE;
     DROP TABLE IF EXISTS users CASCADE;
@@ -40,6 +41,26 @@ async def init_postgres():
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
 
+    -- Create Customer Profiles Table (Phase 2 Baseline Cache)
+    CREATE TABLE IF NOT EXISTS customer_profiles (
+        account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+        avg_amount NUMERIC(15, 2) DEFAULT 0.00,
+        median_amount NUMERIC(15, 2) DEFAULT 0.00,
+        variance_amount NUMERIC(15, 2) DEFAULT 0.00,
+        daily_frequency NUMERIC(10, 4) DEFAULT 0.00,
+        weekly_frequency NUMERIC(10, 4) DEFAULT 0.00,
+        monthly_frequency INT DEFAULT 0,
+        unique_receivers_count INT DEFAULT 0,
+        unique_receiver_countries_count INT DEFAULT 0,
+        avg_hour NUMERIC(4, 2) DEFAULT 0.00,
+        variance_hour NUMERIC(6, 2) DEFAULT 0.00,
+        top_countries TEXT[],
+        top_merchants TEXT[],
+        top_devices TEXT[],
+        top_channels TEXT[],
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+
     -- Create Transactions Table
     CREATE TABLE IF NOT EXISTS transactions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -49,7 +70,11 @@ async def init_postgres():
         amount NUMERIC(15, 2) NOT NULL,
         currency VARCHAR(3) NOT NULL,
         status VARCHAR(20) DEFAULT 'COMPLETED',
-        timestamp TIMESTAMP WITH TIME ZONE NOT NULL
+        timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+        country VARCHAR(3),
+        merchant VARCHAR(100),
+        device VARCHAR(100),
+        channel VARCHAR(50)
     );
 
     -- Create Indexes for transactions
