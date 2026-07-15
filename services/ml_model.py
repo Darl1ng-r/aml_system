@@ -22,9 +22,11 @@ logger = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
-_MODEL_PATH = os.path.join(_SERVICE_DIR, "aml_model.joblib")
-_PARAMS_PATH = os.path.join(_SERVICE_DIR, "model_params.json")
-_REPORT_PATH = os.path.join(_SERVICE_DIR, "model_report.json")
+_PROJECT_ROOT = os.path.dirname(_SERVICE_DIR)
+_MODELS_DIR = os.path.join(_PROJECT_ROOT, "models")
+_MODEL_PATH = os.path.join(_MODELS_DIR, "aml_model.joblib")
+_PARAMS_PATH = os.path.join(_MODELS_DIR, "model_params.json")
+_REPORT_PATH = os.path.join(_MODELS_DIR, "model_report.json")
 
 # Feature names must match the order used during training
 FEATURE_NAMES = [

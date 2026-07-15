@@ -4,7 +4,7 @@ archive/
 # ML model artifacts — commit the .joblib model and reports (they are small)
 # To regenerate: python scripts/train_model.py
 # Uncomment below to exclude model from git (e.g. if it grows > 100MB):
-# services/aml_model.joblib
+# models/aml_model.joblib
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

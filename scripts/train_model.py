@@ -35,12 +35,14 @@ logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
 # Configuration
-# ─────────────────────────────────────────────────────────────
+MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
+os.makedirs(MODELS_DIR, exist_ok=True)
+
 TRANS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "archive", "HI-Small_Trans.csv")
-MODEL_OUTPUT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "services", "aml_model.joblib")
-PARAMS_OUTPUT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "services", "model_params.json")
-REPORT_OUTPUT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "services", "model_report.json")
-CALIBRATION_REPORT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_training_report.json")
+MODEL_OUTPUT_PATH = os.path.join(MODELS_DIR, "aml_model.joblib")
+PARAMS_OUTPUT_PATH = os.path.join(MODELS_DIR, "model_params.json")
+REPORT_OUTPUT_PATH = os.path.join(MODELS_DIR, "model_report.json")
+CALIBRATION_REPORT_PATH = os.path.join(MODELS_DIR, "model_training_report.json")
 
 # Maximum rows to load — HI-Small has 5M rows; 500k gives a solid sample in ~seconds
 MAX_ROWS = 500_000
