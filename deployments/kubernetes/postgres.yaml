@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aml-postgres
+  namespace: aml-system
+spec:
+  serviceName: aml-postgres-service
+  replicas: 2
+  selector:
+    matchLabels:
+      app: aml-postgres
+  template:
+    metadata:
+      labels:
+        app: aml-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+          name: dbport
+        env:
+        - name: POSTGRES_DB
+          value: aml_db
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aml-secrets
+              key: POSTGRES_PASSWORD
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1024Mi"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+# Read-Write Primary Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-postgres-primary
+  namespace: aml-system
+  labels:
+    app: aml-postgres
+spec:
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    statefulset.kubernetes.io/pod-name: aml-postgres-0
+---
+# Read-Only Replica Service (load-balances requests across all nodes for read operations)
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-postgres-replica
+  namespace: aml-system
+  labels:
+    app: aml-postgres
+spec:
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: aml-postgres

@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aml-redis
+  namespace: aml-system
+  labels:
+    app: aml-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aml-redis
+  template:
+    metadata:
+      labels:
+        app: aml-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+          name: redisport
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-redis-service
+  namespace: aml-system
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: aml-redis

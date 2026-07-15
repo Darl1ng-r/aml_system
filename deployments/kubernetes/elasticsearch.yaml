@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aml-elasticsearch
+  namespace: aml-system
+spec:
+  serviceName: aml-elasticsearch-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aml-elasticsearch
+  template:
+    metadata:
+      labels:
+        app: aml-elasticsearch
+    spec:
+      containers:
+      - name: elasticsearch
+        image: elasticsearch:8.11.0
+        ports:
+        - containerPort: 9200
+          name: http
+        env:
+        - name: discovery.type
+          value: single-node
+        - name: xpack.security.enabled
+          value: "false" # Set to true and load secrets in production
+        - name: ES_JAVA_OPTS
+          value: "-Xms1g -Xmx1g"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1.5Gi"
+          limits:
+            cpu: "1500m"
+            memory: "3Gi"
+        volumeMounts:
+        - name: elasticsearch-data
+          mountPath: /usr/share/elasticsearch/data
+  volumeClaimTemplates:
+  - metadata:
+      name: elasticsearch-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-elasticsearch-service
+  namespace: aml-system
+spec:
+  ports:
+  - port: 9200
+    targetPort: 9200
+  selector:
+    app: aml-elasticsearch

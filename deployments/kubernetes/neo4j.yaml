@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aml-neo4j
+  namespace: aml-system
+spec:
+  serviceName: aml-neo4j-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aml-neo4j
+  template:
+    metadata:
+      labels:
+        app: aml-neo4j
+    spec:
+      containers:
+      - name: neo4j
+        image: neo4j:5.15-community
+        ports:
+        - containerPort: 7474
+          name: http
+        - containerPort: 7687
+          name: bolt
+        env:
+        - name: NEO4J_AUTH
+          valueFrom:
+            secretKeyRef:
+              name: aml-secrets
+              key: NEO4J_PASSWORD
+        - name: NEO4J_PLUGINS
+          value: '["apoc"]'
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "1Gi"
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
+        volumeMounts:
+        - name: neo4j-data
+          mountPath: /data
+  volumeClaimTemplates:
+  - metadata:
+      name: neo4j-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-neo4j-service
+  namespace: aml-system
+spec:
+  ports:
+  - port: 7474
+    targetPort: 7474
+    name: http
+  - port: 7687
+    targetPort: 7687
+    name: bolt
+  selector:
+    app: aml-neo4j

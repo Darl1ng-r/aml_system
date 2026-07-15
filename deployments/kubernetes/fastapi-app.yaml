@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aml-fastapi-app
+  namespace: aml-system
+  labels:
+    app: aml-fastapi-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: aml-fastapi-app
+  template:
+    metadata:
+      labels:
+        app: aml-fastapi-app
+    spec:
+      containers:
+      - name: fastapi-app
+        image: aml-fastapi-app:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1024Mi"
+        envFrom:
+        - secretRef:
+            name: aml-secrets
+        - configMapRef:
+            name: aml-config
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-fastapi-service
+  namespace: aml-system
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+  selector:
+    app: aml-fastapi-app
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: aml-fastapi-hpa
+  namespace: aml-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aml-fastapi-app
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

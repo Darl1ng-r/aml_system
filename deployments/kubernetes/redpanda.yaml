@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aml-redpanda
+  namespace: aml-system
+  labels:
+    app: aml-redpanda
+spec:
+  serviceName: aml-redpanda-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: aml-redpanda
+  template:
+    metadata:
+      labels:
+        app: aml-redpanda
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - aml-redpanda
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: redpanda
+        image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
+        command:
+        - /bin/sh
+        - -c
+        - |
+          exec redpanda start \
+            --node-id $(echo $POD_NAME | awk -F'-' '{print $NF}') \
+            --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:9093 \
+            --advertise-kafka-addr internal://$(POD_IP):9092,external://$(POD_NAME).aml-redpanda-headless.aml-system.svc.cluster.local:9093 \
+            --pandaproxy-addr 0.0.0.0:8082 \
+            --advertise-pandaproxy-addr $(POD_IP):8082 \
+            --rpc-addr 0.0.0.0:33145 \
+            --advertise-rpc-addr $(POD_NAME).aml-redpanda-headless.aml-system.svc.cluster.local:33145 \
+            --mode dev-container \
+            --smp 1 \
+            --memory 1G \
+            --default-log-level=info
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        ports:
+        - containerPort: 9092
+          name: kafka-internal
+        - containerPort: 9093
+          name: kafka-external
+        - containerPort: 8082
+          name: proxy
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "1Gi"
+          limits:
+            cpu: "1000m"
+            memory: "2Gi"
+        volumeMounts:
+        - name: redpanda-data
+          mountPath: /var/lib/redpanda/data
+  volumeClaimTemplates:
+  - metadata:
+      name: redpanda-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-redpanda-headless
+  namespace: aml-system
+  labels:
+    app: aml-redpanda
+spec:
+  clusterIP: None
+  ports:
+  - port: 9092
+    name: kafka-internal
+  - port: 9093
+    name: kafka-external
+  selector:
+    app: aml-redpanda
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-redpanda-service
+  namespace: aml-system
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9092
+    targetPort: 9092
+    name: kafka
+  - port: 8082
+    targetPort: 8082
+    name: proxy
+  selector:
+    app: aml-redpanda
