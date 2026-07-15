@@ -79,15 +79,28 @@ def test_onboarding_and_screening():
     # Individual Onboarding
     # Let's find the tenant_id first from DB or assume a seed
     # Since we dropped and recreated tables, let's fetch the seeded tenant ID
-    from database.postgres import get_db_cursor
-    with get_db_cursor() as cur:
-        cur.execute("SELECT id FROM tenants LIMIT 1;")
-        tenant_id = str(cur.fetchone()[0])
-        
-        # Also clean up accounts from previous tests if any
-        cur.execute("DELETE FROM alerts;")
-        cur.execute("DELETE FROM transactions;")
-        cur.execute("DELETE FROM accounts WHERE account_number IN ('DE12345', 'US54321', 'CORP999');")
+    import asyncio
+    import asyncpg
+    from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+    
+    async def clean_and_fetch_tenant():
+        conn = await asyncpg.connect(
+            host=POSTGRES_HOST,
+            port=POSTGRES_PORT,
+            database=POSTGRES_DB,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD
+        )
+        try:
+            tenant_id = await conn.fetchval("SELECT id FROM tenants LIMIT 1;")
+            await conn.execute("DELETE FROM alerts;")
+            await conn.execute("DELETE FROM transactions;")
+            await conn.execute("DELETE FROM accounts WHERE account_number IN ('DE12345', 'US54321', 'CORP999');")
+            return str(tenant_id)
+        finally:
+            await conn.close()
+
+    tenant_id = asyncio.run(clean_and_fetch_tenant())
     
     print(f"Onboarding individual Alice Schmidt under Tenant {tenant_id}...")
     alice_payload = {

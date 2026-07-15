@@ -1,6 +1,6 @@
+import asyncio
 import sys
 import os
-import time
 import json
 import logging
 from datetime import datetime
@@ -9,13 +9,14 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import KAFKA_BOOTSTRAP_SERVERS, TRANSACTIONS_TOPIC
-from database.neo4j_db import get_neo4j_driver
-from database.postgres import get_db_cursor
+from database.neo4j_db import get_async_neo4j_driver
+from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+import asyncpg
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("sync_worker")
 
-def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
+async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
     """
     Syncs a transaction to Neo4j, creating nodes if missing and adding a TRANSFERS_TO edge.
     """
@@ -37,7 +38,7 @@ def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
             dt = datetime.fromisoformat(timestamp_str)
             epoch = int(dt.timestamp())
         except Exception:
-            epoch = int(time.time())
+            epoch = int(datetime.utcnow().timestamp())
 
         # Cypher Query to create accounts and the transfer relationship
         query = """
@@ -51,8 +52,8 @@ def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
         ON CREATE SET t.amount = $amount, t.status = $status, t.timestamp = $epoch
         """
         
-        with neo4j_driver.session() as session:
-            session.run(
+        async with neo4j_driver.session() as session:
+            await session.run(
                 query,
                 sender_id=sender_id,
                 sender_acc=sender_acc,
@@ -69,7 +70,7 @@ def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
         logger.error(f"Graph Sync Failed for transaction {tx_payload.get('transaction_id')}: {e}")
         return False
 
-def run_kafka_consumer(neo4j_driver):
+async def run_kafka_consumer(neo4j_driver):
     from confluent_kafka import Consumer, KafkaError
     
     conf = {
@@ -85,7 +86,8 @@ def run_kafka_consumer(neo4j_driver):
 
     try:
         while True:
-            msg = consumer.poll(1.0)
+            # Poll blocking confluent-kafka in a thread to keep async loop responsive
+            msg = await asyncio.to_thread(consumer.poll, 1.0)
             if msg is None:
                 continue
             if msg.error():
@@ -93,19 +95,19 @@ def run_kafka_consumer(neo4j_driver):
                     continue
                 else:
                     logger.error(f"Kafka error: {msg.error()}")
-                    time.sleep(2)
+                    await asyncio.sleep(2)
                     continue
 
             # Process transaction
             try:
                 tx_payload = json.loads(msg.value().decode('utf-8'))
-                sync_transaction_to_neo4j(tx_payload, neo4j_driver)
+                await sync_transaction_to_neo4j(tx_payload, neo4j_driver)
             except Exception as e:
                 logger.error(f"Failed to process message payload: {e}")
     finally:
         consumer.close()
 
-def run_postgres_poll_fallback(neo4j_driver):
+async def run_postgres_poll_fallback(neo4j_driver):
     """
     Fallback loop that polls PostgreSQL transactions table for un-synced transactions
     and writes them to Neo4j. (Simulates real-time messaging sync when Redpanda is unavailable).
@@ -115,12 +117,19 @@ def run_postgres_poll_fallback(neo4j_driver):
     
     while True:
         try:
-            with get_db_cursor() as cur:
+            conn = await asyncpg.connect(
+                host=POSTGRES_HOST,
+                port=POSTGRES_PORT,
+                database=POSTGRES_DB,
+                user=POSTGRES_USER,
+                password=POSTGRES_PASSWORD
+            )
+            try:
                 # Query recent transactions
-                cur.execute(
+                rows = await conn.fetch(
                     """
-                    SELECT t.id, t.sender_account_id, s.account_number, 
-                           t.receiver_account_id, r.account_number, 
+                    SELECT t.id, t.sender_account_id, s.account_number AS sender_acc, 
+                           t.receiver_account_id, r.account_number AS receiver_acc, 
                            t.amount, t.status, t.timestamp
                     FROM transactions t
                     JOIN accounts s ON t.sender_account_id = s.id
@@ -129,38 +138,39 @@ def run_postgres_poll_fallback(neo4j_driver):
                     LIMIT 50;
                     """
                 )
-                rows = cur.fetchall()
                 
                 for row in rows:
-                    tx_id = str(row[0])
+                    tx_id = str(row['id'])
                     if tx_id not in synced_tx_ids:
                         payload = {
                             "transaction_id": tx_id,
-                            "sender_id": str(row[1]),
-                            "sender_account": row[2],
-                            "receiver_id": str(row[3]),
-                            "receiver_account": row[4],
-                            "amount": float(row[5]),
-                            "status": row[6],
-                            "timestamp": row[7].isoformat()
+                            "sender_id": str(row['sender_account_id']),
+                            "sender_account": row['sender_acc'],
+                            "receiver_id": str(row['receiver_account_id']),
+                            "receiver_account": row['receiver_acc'],
+                            "amount": float(row['amount']),
+                            "status": row['status'],
+                            "timestamp": row['timestamp'].isoformat()
                         }
-                        success = sync_transaction_to_neo4j(payload, neo4j_driver)
+                        success = await sync_transaction_to_neo4j(payload, neo4j_driver)
                         if success:
                             synced_tx_ids.add(tx_id)
+            finally:
+                await conn.close()
                             
         except Exception as e:
             logger.error(f"PostgreSQL sync poll error: {e}")
             
-        time.sleep(5)
+        await asyncio.sleep(5)
 
-def main():
+async def main():
     logger.info("Initializing Graph Synchronization Worker...")
     
     # Wait for databases to start up
-    time.sleep(5)
+    await asyncio.sleep(5)
     
     try:
-        neo4j_driver = get_neo4j_driver()
+        neo4j_driver = await get_async_neo4j_driver()
     except Exception as e:
         logger.error(f"Could not connect to Neo4j. Exiting worker. Error: {e}")
         return
@@ -175,12 +185,12 @@ def main():
 
     if use_kafka:
         try:
-            run_kafka_consumer(neo4j_driver)
+            await run_kafka_consumer(neo4j_driver)
         except Exception as e:
             logger.error(f"Kafka consumer runtime failed: {e}. Falling back to PostgreSQL polling.")
-            run_postgres_poll_fallback(neo4j_driver)
+            await run_postgres_poll_fallback(neo4j_driver)
     else:
-        run_postgres_poll_fallback(neo4j_driver)
+        await run_postgres_poll_fallback(neo4j_driver)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

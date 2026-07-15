@@ -56,7 +56,12 @@ class AMLAnomalyModel:
         # Risk score (probability) via logistic sigmoid function
         score = 1.0 / (1.0 + math.exp(-z))
 
-        # Mathematically exact linear SHAP values: phi_i = beta_i * (x_i - E[x_i])
+        # Mathematically exact linear SHAP values in log-odds space: phi_i = beta_i * (x_i - E[x_i])
+        # Note: As demonstrated in Lundberg & Lee (NIPS 2017) Section 3.1, for linear models
+        # (like Logistic Regression predictions prior to the sigmoid activation), the Shapley 
+        # additive explanations are exactly equal to the coefficients multiplied by the deviation 
+        # of the feature value from its expected value (population mean). This provides an 
+        # exact, closed-form, and regulatory-auditable attribution.
         shap_amount = self.coefficients["amount"] * (norm_amount - self.feature_means["amount"])
         shap_sender = self.coefficients["sender_risk"] * (norm_sender - self.feature_means["sender_risk"])
         shap_receiver = self.coefficients["receiver_risk"] * (norm_receiver - self.feature_means["receiver_risk"])

@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: aml_db
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgrespassword}
     ports:
       - "5433:5432"
     volumes:
@@ -24,7 +24,7 @@ services:
     image: neo4j:5.15-community
     container_name: aml-neo4j
     environment:
-      NEO4J_AUTH: neo4j/passwordpassword
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-passwordpassword}
       NEO4J_PLUGINS: '["apoc"]'
     ports:
       - "7474:7474" # HTTP Dashboard
@@ -33,7 +33,7 @@ services:
       - neo4j_data:/data
       - neo4j_logs:/logs
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p passwordpassword 'RETURN 1'"]
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p $${NEO4J_PASSWORD:-passwordpassword} 'RETURN 1'"]
       interval: 10s
       timeout: 10s
       retries: 5

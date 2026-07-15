@@ -1,16 +1,17 @@
 import sys
 import os
 import time
+import asyncio
+import asyncpg
 
 # Add parent directory to sys.path to import local modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.postgres import get_db_cursor
 from database.neo4j_db import get_neo4j_driver
 from database.elasticsearch_db import get_elasticsearch_client
-from config import SANCTIONS_INDEX
+from config import SANCTIONS_INDEX, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
 
-def init_postgres():
+async def init_postgres():
     print("Initializing PostgreSQL tables...")
     create_tables_sql = """
     -- Clean Reset for Local Dev
@@ -81,55 +82,61 @@ def init_postgres():
     );
     """
 
-    with get_db_cursor() as cur:
-        cur.execute(create_tables_sql)
-        
-        # Seed Default Tenant
-        cur.execute("SELECT id FROM tenants WHERE name = 'Default Tenant' LIMIT 1;")
-        tenant = cur.fetchone()
-        if not tenant:
-            cur.execute("INSERT INTO tenants (name) VALUES ('Default Tenant') RETURNING id;")
-            tenant_id = cur.fetchone()[0]
-            print(f"Default tenant created with ID: {tenant_id}")
-        else:
-            tenant_id = tenant[0]
-            print(f"Default tenant found: {tenant_id}")
+    conn = await asyncpg.connect(
+        host=POSTGRES_HOST,
+        port=POSTGRES_PORT,
+        database=POSTGRES_DB,
+        user=POSTGRES_USER,
+        password=POSTGRES_PASSWORD
+    )
+    try:
+        async with conn.transaction():
+            await conn.execute(create_tables_sql)
+            
+            # Seed Default Tenant
+            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE name = 'Default Tenant' LIMIT 1;")
+            if not tenant:
+                tenant_id = await conn.fetchval("INSERT INTO tenants (name) VALUES ('Default Tenant') RETURNING id;")
+                print(f"Default tenant created with ID: {tenant_id}")
+            else:
+                tenant_id = tenant[0]
+                print(f"Default tenant found: {tenant_id}")
 
-        # Seed some mock accounts if table is empty
-        cur.execute("SELECT COUNT(*) FROM accounts;")
-        count = cur.fetchone()[0]
-        if count == 0:
-            accounts_data = [
-                ("DE12003400567890111100", "DBANKDEFXXX", "Alice Schmidt", 0.10),
-                ("US99887766554433221100", "CHASEUS3XXX", "Bob Jones", 0.15),
-                ("GB44332211009988776655", "BARCGB22XXX", "Charlie Smith", 0.65), # higher risk
-                ("RU11223344556677889900", "SBERRU88XXX", "Vladimir Smirnov", 0.90)  # high risk/sanctions-sounding name
-            ]
-            for acc_num, bic, owner, risk in accounts_data:
-                cur.execute(
-                    "INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score) VALUES (%s, %s, %s, %s, %s);",
-                    (tenant_id, acc_num, bic, owner, risk)
-                )
-            print("PostgreSQL seeded with test accounts.")
+            # Seed some mock accounts if table is empty
+            count = await conn.fetchval("SELECT COUNT(*) FROM accounts;")
+            if count == 0:
+                accounts_data = [
+                    ("DE12003400567890111100", "DBANKDEFXXX", "Alice Schmidt", 0.10),
+                    ("US99887766554433221100", "CHASEUS3XXX", "Bob Jones", 0.15),
+                    ("GB44332211009988776655", "BARCGB22XXX", "Charlie Smith", 0.65), # higher risk
+                    ("RU11223344556677889900", "SBERRU88XXX", "Vladimir Smirnov", 0.90)  # high risk/sanctions-sounding name
+                ]
+                for acc_num, bic, owner, risk in accounts_data:
+                    await conn.execute(
+                        "INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score) VALUES ($1, $2, $3, $4, $5);",
+                        tenant_id, acc_num, bic, owner, risk
+                    )
+                print("PostgreSQL seeded with test accounts.")
 
-        # Seed Default Users
-        cur.execute("SELECT COUNT(*) FROM users;")
-        user_count = cur.fetchone()[0]
-        if user_count == 0:
-            import uuid
-            analysts = [
-                ("sarah_jenkins", "ANALYST"),
-                ("alex_rivera", "ANALYST"),
-                ("david_chen", "ANALYST"),
-                ("emma_watson", "ANALYST"),
-            ]
-            for username, role in analysts:
-                user_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{username}.aml.com"))
-                cur.execute(
-                    "INSERT INTO users (id, username, role) VALUES (%s, %s, %s);",
-                    (user_id, username, role)
-                )
-            print("PostgreSQL seeded with compliance analyst users.")
+            # Seed Default Users
+            user_count = await conn.fetchval("SELECT COUNT(*) FROM users;")
+            if user_count == 0:
+                import uuid
+                analysts = [
+                    ("sarah_jenkins", "ANALYST"),
+                    ("alex_rivera", "ANALYST"),
+                    ("david_chen", "ANALYST"),
+                    ("emma_watson", "ANALYST"),
+                ]
+                for username, role in analysts:
+                    user_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{username}.aml.com"))
+                    await conn.execute(
+                        "INSERT INTO users (id, username, role) VALUES ($1, $2, $3);",
+                        user_id, username, role
+                    )
+                print("PostgreSQL seeded with compliance analyst users.")
+    finally:
+        await conn.close()
     print("PostgreSQL initialization complete.")
 
 def init_neo4j():
@@ -253,13 +260,13 @@ def init_elasticsearch():
     es.indices.refresh(index=SANCTIONS_INDEX)
     print("Elasticsearch seeded with sample sanction entries.")
 
-if __name__ == "__main__":
+async def async_main():
     print("Starting database initialization...")
     # Wait for databases to be up (if docker compose is starting them)
-    time.sleep(3)
+    await asyncio.sleep(3)
     
     try:
-        init_postgres()
+        await init_postgres()
     except Exception as e:
         print(f"Error initializing PostgreSQL: {e}")
         
@@ -274,3 +281,6 @@ if __name__ == "__main__":
         print(f"Error initializing Elasticsearch: {e}")
         
     print("Database initialization finished.")
+
+if __name__ == "__main__":
+    asyncio.run(async_main())

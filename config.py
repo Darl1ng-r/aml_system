@@ -5,11 +5,11 @@ class Settings(BaseSettings):
     postgres_port: int = 5433
     postgres_db: str = "aml_db"
     postgres_user: str = "postgres"
-    postgres_password: str = "postgrespassword"
+    postgres_password: str = ""
     
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = "passwordpassword"
+    neo4j_password: str = ""
     
     redis_host: str = "localhost"
     redis_port: int = 6379
@@ -20,12 +20,12 @@ class Settings(BaseSettings):
     elasticsearch_host: str = "http://localhost:9200"
     sanctions_index: str = "sanctions_list"
     
-    jwt_secret_key: str = "4d6d6f2284c8a2b5352cf510b65f3f01905786fdb4619d08e5e8e8fb2c4e61f2"
+    jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 1440
     
     supabase_url: str = "https://xzhsdffpnrlpcitiectz.supabase.co"
-    supabase_key: str = "sb_publishable_wnGvRWC4UBh0aQgROrflow_6XN36H0z"
+    supabase_key: str = ""
     
     allowed_origins: str = "http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000"
     

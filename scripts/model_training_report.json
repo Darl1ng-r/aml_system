@@ -1,0 +1,92 @@
+{
+    "test_metrics": {
+        "accuracy": 0.8,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1_score": 0.0,
+        "roc_auc": 0.6112500000000001,
+        "pr_auc": 0.29254104043211243
+    },
+    "threshold_calibration": [
+        {
+            "threshold": 0.1,
+            "tpr": 1.0,
+            "fpr": 1.0,
+            "precision": 0.2,
+            "f1_score": 0.33333333333333337,
+            "alert_volume": 1.0
+        },
+        {
+            "threshold": 0.2,
+            "tpr": 0.525,
+            "fpr": 0.390625,
+            "precision": 0.25149700598802394,
+            "f1_score": 0.340080971659919,
+            "alert_volume": 0.4175
+        },
+        {
+            "threshold": 0.3,
+            "tpr": 0.125,
+            "fpr": 0.040625,
+            "precision": 0.43478260869565216,
+            "f1_score": 0.19417475728155342,
+            "alert_volume": 0.0575
+        },
+        {
+            "threshold": 0.4,
+            "tpr": 0.025,
+            "fpr": 0.009375,
+            "precision": 0.4,
+            "f1_score": 0.04705882352941177,
+            "alert_volume": 0.0125
+        },
+        {
+            "threshold": 0.5,
+            "tpr": 0.0125,
+            "fpr": 0.0,
+            "precision": 1.0,
+            "f1_score": 0.02469135802469136,
+            "alert_volume": 0.0025
+        },
+        {
+            "threshold": 0.6,
+            "tpr": 0.0,
+            "fpr": 0.0,
+            "precision": 0,
+            "f1_score": 0,
+            "alert_volume": 0.0
+        },
+        {
+            "threshold": 0.7,
+            "tpr": 0.0,
+            "fpr": 0.0,
+            "precision": 0,
+            "f1_score": 0,
+            "alert_volume": 0.0
+        },
+        {
+            "threshold": 0.75,
+            "tpr": 0.0,
+            "fpr": 0.0,
+            "precision": 0,
+            "f1_score": 0,
+            "alert_volume": 0.0
+        },
+        {
+            "threshold": 0.8,
+            "tpr": 0.0,
+            "fpr": 0.0,
+            "precision": 0,
+            "f1_score": 0,
+            "alert_volume": 0.0
+        },
+        {
+            "threshold": 0.9,
+            "tpr": 0.0,
+            "fpr": 0.0,
+            "precision": 0,
+            "f1_score": 0,
+            "alert_volume": 0.0
+        }
+    ]
+}

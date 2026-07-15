@@ -56,34 +56,48 @@ def read_login():
 @app.on_event("startup")
 async def startup_db_clients():
     logger.info("Starting up database connections...")
-    # Trigger lazy load validation
+    import sys
+    import asyncio
     from database.postgres import init_db_pool
     from database.redis_db import get_redis_client, get_async_redis_client
     from database.neo4j_db import get_neo4j_driver, get_async_neo4j_driver
     from database.elasticsearch_db import get_elasticsearch_client, get_async_elasticsearch_client
+    from scripts.sync_worker import main as run_sync_worker
     
+    # 1. Initialize & Fail-Fast PostgreSQL
     try:
         await init_db_pool()
     except Exception as e:
-        logger.error(f"Could not initialize PostgreSQL asyncpg pool: {e}")
+        logger.critical(f"CRITICAL: Could not initialize PostgreSQL pool: {e}")
+        raise RuntimeError("PostgreSQL database is required for startup") from e
         
+    # 2. Initialize & Fail-Fast Redis
     try:
         get_redis_client()
         await get_async_redis_client()
     except Exception as e:
-        logger.warning(f"Could not connect to Redis: {e}")
+        logger.critical(f"CRITICAL: Could not connect to Redis: {e}")
+        raise RuntimeError("Redis cache is required for startup") from e
         
+    # 3. Initialize & Fail-Fast Neo4j
     try:
         get_neo4j_driver()
         await get_async_neo4j_driver()
     except Exception as e:
-        logger.warning(f"Could not connect to Neo4j: {e}")
+        logger.critical(f"CRITICAL: Could not connect to Neo4j: {e}")
+        raise RuntimeError("Neo4j database is required for startup") from e
         
+    # 4. Initialize & Fail-Fast Elasticsearch
     try:
         get_elasticsearch_client()
         await get_async_elasticsearch_client()
     except Exception as e:
-        logger.warning(f"Could not connect to Elasticsearch: {e}")
+        logger.critical(f"CRITICAL: Could not connect to Elasticsearch: {e}")
+        raise RuntimeError("Elasticsearch database is required for startup") from e
+
+    # 5. Autostart Neo4j Graph Synchronization Worker
+    logger.info("Starting background Neo4j graph synchronization worker...")
+    asyncio.create_task(run_sync_worker())
 
 @app.on_event("shutdown")
 async def shutdown_db_clients():
