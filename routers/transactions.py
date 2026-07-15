@@ -6,7 +6,7 @@ import logging
 import json
 from database.postgres import get_async_db_conn
 from services.rules import RulesEngine
-from services.ml_model import AMLAnomalyModel
+from services.ml_model import anomaly_model
 from services.redpanda import publish_transaction
 from services.auth import get_current_user, RoleChecker
 from services.rate_limiter import RateLimiter
@@ -30,34 +30,54 @@ async def ingest_transaction(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=100, window=60))
 ):
-    # Step 1: Look up sender and receiver in PostgreSQL to verify they exist
+    # Step 1: Look up sender, receiver, and velocity count in a single PostgreSQL query (1 round trip)
     try:
         async with get_async_db_conn() as conn:
-            sender = await conn.fetchrow(
-                "SELECT id, tenant_id, risk_score FROM accounts WHERE account_number = $1;",
-                payload.sender_account
-            )
-            if not sender:
-                raise HTTPException(status_code=404, detail=f"Sender account {payload.sender_account} not found")
-            sender_id, tenant_id, sender_risk = sender[0], sender[1], float(sender[2])
-
-            receiver = await conn.fetchrow(
-                "SELECT id, risk_score FROM accounts WHERE account_number = $1;",
+            row = await conn.fetchrow(
+                """
+                WITH sender_info AS (
+                    SELECT id, tenant_id, risk_score 
+                    FROM accounts 
+                    WHERE account_number = $1
+                ),
+                receiver_info AS (
+                    SELECT id, risk_score 
+                    FROM accounts 
+                    WHERE account_number = $2
+                ),
+                velocity_info AS (
+                    SELECT COUNT(*) AS velocity_count 
+                    FROM transactions 
+                    WHERE sender_account_id = (SELECT id FROM sender_info)
+                      AND timestamp >= NOW() - INTERVAL '24 hours'
+                )
+                SELECT 
+                    s.id AS sender_id, 
+                    s.tenant_id AS sender_tenant, 
+                    s.risk_score AS sender_risk,
+                    r.id AS receiver_id, 
+                    r.risk_score AS receiver_risk,
+                    COALESCE(v.velocity_count, 0) AS velocity_count
+                FROM (SELECT 1) dummy
+                LEFT JOIN sender_info s ON TRUE
+                LEFT JOIN receiver_info r ON TRUE
+                LEFT JOIN velocity_info v ON TRUE;
+                """,
+                payload.sender_account,
                 payload.receiver_account
             )
-            if not receiver:
+            
+            if not row or row["sender_id"] is None:
+                raise HTTPException(status_code=404, detail=f"Sender account {payload.sender_account} not found")
+            if row["receiver_id"] is None:
                 raise HTTPException(status_code=404, detail=f"Receiver account {payload.receiver_account} not found")
-            receiver_id, receiver_risk = receiver[0], float(receiver[1])
-
-            # Get sender transaction velocity (number of txs in last 24 hours) from Postgres
-            velocity_count = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM transactions 
-                WHERE sender_account_id = $1 
-                  AND timestamp >= NOW() - INTERVAL '24 hours';
-                """,
-                sender_id
-            )
+                
+            sender_id = row["sender_id"]
+            tenant_id = row["sender_tenant"]
+            sender_risk = float(row["sender_risk"])
+            receiver_id = row["receiver_id"]
+            receiver_risk = float(row["receiver_risk"])
+            velocity_count = int(row["velocity_count"])
 
     except HTTPException:
         raise
@@ -67,9 +87,8 @@ async def ingest_transaction(
     # Step 2: Run Rules Engine (asynchronously)
     triggered_rules = await RulesEngine.evaluate_transaction(str(sender_id), str(receiver_id), payload.amount)
 
-    # Step 3: Run AI Anomaly Model
-    model = AMLAnomalyModel()
-    ml_result = model.predict_risk(payload.amount, sender_risk, receiver_risk, velocity_count)
+    # Step 3: Run AI Anomaly Model (using pre-initialized singleton instance)
+    ml_result = anomaly_model.predict_risk(payload.amount, sender_risk, receiver_risk, velocity_count)
     ai_score = ml_result["risk_score"]
     attributions = ml_result["attributions"]
 

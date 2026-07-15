@@ -76,3 +76,6 @@ class AMLAnomalyModel:
                 "velocity": round(shap_velocity, 4)
             }
         }
+
+# Module-level singleton instance for high-performance reuse
+anomaly_model = AMLAnomalyModel()

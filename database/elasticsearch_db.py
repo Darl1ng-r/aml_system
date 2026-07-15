@@ -11,7 +11,11 @@ def get_elasticsearch_client():
     global _es_client
     if _es_client is None:
         try:
-            _es_client = Elasticsearch(hosts=[ELASTICSEARCH_HOST])
+            # Set connections_per_node=10 to explicitly configure persistent HTTP keep-alive connection pooling
+            _es_client = Elasticsearch(
+                hosts=[ELASTICSEARCH_HOST],
+                connections_per_node=10
+            )
             # Test connection
             if _es_client.ping():
                 logger.info("Elasticsearch connection established.")
@@ -26,7 +30,11 @@ async def get_async_elasticsearch_client():
     global _async_es_client
     if _async_es_client is None:
         try:
-            _async_es_client = AsyncElasticsearch(hosts=[ELASTICSEARCH_HOST])
+            # Set connections_per_node=10 to explicitly configure persistent HTTP keep-alive connection pooling
+            _async_es_client = AsyncElasticsearch(
+                hosts=[ELASTICSEARCH_HOST],
+                connections_per_node=10
+            )
             # Test connection
             if await _async_es_client.ping():
                 logger.info("Async Elasticsearch connection established.")

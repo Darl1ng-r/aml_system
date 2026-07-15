@@ -1,7 +1,10 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.params import Depends as DependsClass
 from pydantic import BaseModel
+import json
+import rapidfuzz
 from database.elasticsearch_db import get_async_elasticsearch_client
+from database.redis_db import get_async_redis_client
 from config import SANCTIONS_INDEX
 from services.auth import get_current_user, RoleChecker
 from services.rate_limiter import RateLimiter
@@ -16,32 +19,14 @@ class ScreeningRequest(BaseModel):
 def levenshtein_ratio(s1: str, s2: str) -> float:
     """
     Computes Levenshtein similarity ratio between s1 and s2 in range [0.0, 1.0]
+    using the high-performance C-optimized rapidfuzz library.
     """
     s1, s2 = s1.lower().strip(), s2.lower().strip()
-    rows = len(s1) + 1
-    cols = len(s2) + 1
-    dist = [[0 for _ in range(cols)] for _ in range(rows)]
-    for i in range(1, rows):
-        dist[i][0] = i
-    for j in range(1, cols):
-        dist[0][j] = j
-        
-    for col in range(1, cols):
-        for row in range(1, rows):
-            if s1[row-1] == s2[col-1]:
-                cost = 0
-            else:
-                cost = 2
-            dist[row][col] = min(
-                dist[row-1][col] + 1,      # deletion
-                dist[row][col-1] + 1,      # insertion
-                dist[row-1][col-1] + cost  # substitution
-            )
-            
     max_len = len(s1) + len(s2)
     if max_len == 0:
         return 1.0
-    return (max_len - dist[len(s1)][len(s2)]) / max_len
+    dist = rapidfuzz.distance.Levenshtein.distance(s1, s2, weights=(1, 1, 2))
+    return (max_len - dist) / max_len
 
 async def perform_sanctions_search(name: str, threshold: float, es) -> dict:
     """
@@ -96,8 +81,28 @@ async def search_sanctions(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
+    # Check Redis cache first to avoid ES lookup and Levenshtein computation
+    cache_key = f"sanctions:screening:{payload.name.lower().strip()}:{payload.threshold}"
     try:
-        return await perform_sanctions_search(payload.name, payload.threshold, es)
+        redis_client = await get_async_redis_client()
+        cached_result = await redis_client.get(cache_key)
+        if cached_result:
+            return json.loads(cached_result)
+    except Exception as e:
+        logger.warning(f"Failed to query Redis cache: {e}")
+        redis_client = None
+
+    try:
+        result = await perform_sanctions_search(payload.name, payload.threshold, es)
+        
+        # Cache the successful result with a 1-hour TTL
+        if redis_client:
+            try:
+                await redis_client.setex(cache_key, 3600, json.dumps(result))
+            except Exception as e:
+                logger.warning(f"Failed to save result to Redis cache: {e}")
+                
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Screening query failed: {str(e)}")
 
