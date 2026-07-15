@@ -1,9 +1,38 @@
 {
-  "test_metrics": {
-    "roc_auc": 0.953,
-    "pr_auc": 0.6521,
-    "best_f1": 0.1568,
-    "recommended_threshold": 0.9
+  "model_type": "XGBoostClassifier",
+  "training_samples": 400000,
+  "test_samples": 100000,
+  "laundering_rate": 0.000386,
+  "scale_pos_weight": 2596.4026,
+  "cv_roc_auc_mean": 0.9466,
+  "cv_roc_auc_std": 0.0192,
+  "test_roc_auc": 0.953,
+  "test_pr_auc": 0.6521,
+  "recommended_threshold": 0.9,
+  "best_f1": 0.1568,
+  "feature_names": [
+    "amount_log",
+    "amount_ratio",
+    "hour_of_day",
+    "high_risk_currency",
+    "currency_mismatch",
+    "payment_format",
+    "is_crypto",
+    "is_cash",
+    "is_reinvestment",
+    "is_round_amount"
+  ],
+  "shap_importances": {
+    "payment_format": 4.555673,
+    "amount_log": 3.385238,
+    "hour_of_day": 1.511298,
+    "is_reinvestment": 0.556314,
+    "high_risk_currency": 0.192866,
+    "is_cash": 0.044561,
+    "currency_mismatch": 0.026684,
+    "is_crypto": 0.004098,
+    "amount_ratio": 0.001872,
+    "is_round_amount": 0.0
   },
   "threshold_calibration": [
     {
