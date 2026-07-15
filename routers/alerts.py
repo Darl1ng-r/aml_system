@@ -5,7 +5,7 @@ from database.neo4j_db import get_async_neo4j_driver
 from services.auth import get_current_user, RoleChecker
 from services.rate_limiter import RateLimiter
 import xml.etree.ElementTree as ET
-from xml.dom import minidom
+# minidom import removed for XXE hardening
 from datetime import datetime
 import uuid
 import json
@@ -239,11 +239,17 @@ async def resolve_alert(
             if not alert:
                 raise HTTPException(status_code=404, detail="Alert not found")
 
-            # Update Alert Status
+            # Update Alert Status and assign the resolving officer
             await conn.execute(
-                "UPDATE alerts SET status = $1 WHERE id = $2;",
-                status, uuid.UUID(id)
+                "UPDATE alerts SET status = $1, assigned_officer_id = $2 WHERE id = $3;",
+                status, uuid.UUID(current_user["id"]), uuid.UUID(id)
             )
+
+        # Output structured audit trail log
+        logger.info(
+            f"AUDIT LOG: Analyst '{current_user['username']}' (ID: {current_user['id']}, Role: {current_user['role']}) "
+            f"resolved Alert {id} with Action '{payload.action}' -> Status: '{status}'."
+        )
 
         # Generate SAR XML if requested
         sar_xml = None
@@ -293,7 +299,6 @@ def generate_sar_xml(alert_data, justification: str) -> str:
     ET.SubElement(receiver, "AccountNumber").text = r_acc
     ET.SubElement(receiver, "OwnerName").text = r_owner
 
-    # Format XML beautifully
-    xml_str = ET.tostring(root, encoding="utf-8")
-    reparsed = minidom.parseString(xml_str)
-    return reparsed.toprettyxml(indent="  ")
+    # Format XML beautifully (hardening against XXE by avoiding minidom parsing)
+    ET.indent(root, space="  ")
+    return ET.tostring(root, encoding="utf-8").decode("utf-8")

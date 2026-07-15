@@ -21,7 +21,7 @@ class TransactionRequest(BaseModel):
     receiver_account: str
     amount: float
     currency: str
-    timestamp: str
+    timestamp: datetime
 
 @router.post("")
 async def ingest_transaction(
@@ -101,8 +101,8 @@ async def ingest_transaction(
     tx_id = str(uuid.uuid4())
     try:
         async with get_async_db_conn() as conn:
-            # Parse iso format string to datetime
-            dt = datetime.fromisoformat(payload.timestamp.replace('Z', '+00:00'))
+            # Pydantic validates payload.timestamp is a valid datetime object
+            dt = payload.timestamp
             
             await conn.execute(
                 """
@@ -139,7 +139,7 @@ async def ingest_transaction(
         "amount": payload.amount,
         "currency": payload.currency,
         "status": status,
-        "timestamp": payload.timestamp
+        "timestamp": payload.timestamp.isoformat()
     }
     background_tasks.add_task(publish_transaction, redpanda_payload)
 
