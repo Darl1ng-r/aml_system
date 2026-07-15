@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from routers import onboarding, screening, transactions, alerts, auth
-from database.postgres import connection_pool
+# pg8000 connection_pool import removed
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 import logging
@@ -103,7 +103,7 @@ async def startup_db_clients():
 async def shutdown_db_clients():
     logger.info("Closing database connections...")
     # Close Postgres pools
-    from database.postgres import close_db_pool, connection_pool
+    from database.postgres import close_db_pool
     from database.neo4j_db import close_neo4j_driver, close_async_neo4j_driver
     from database.elasticsearch_db import get_async_elasticsearch_client
     from database.redis_db import get_async_redis_client
@@ -112,9 +112,7 @@ async def shutdown_db_clients():
     except Exception as e:
         logger.warning(f"Failed to close asyncpg pool: {e}")
         
-    if connection_pool:
-        connection_pool.closeall()
-        logger.info("PostgreSQL connection pool closed.")
+    # pg8000 connection_pool closeall removed
         
     # Close Neo4j drivers
     try:

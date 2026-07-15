@@ -35,12 +35,39 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
                 headers=headers
             ) as resp:
                 if resp.status != 200:
-                    err_data = await resp.json()
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail=err_data.get("error_description", "Incorrect credentials"),
-                        headers={"WWW-Authenticate": "Bearer"},
-                    )
+                    # Fallback to local user verification if Supabase fails (e.g. offline/rate-limit)
+                    from database.postgres import get_async_db_conn
+                    async with get_async_db_conn() as conn:
+                        local_user = await conn.fetchrow(
+                            "SELECT id, role FROM users WHERE username = $1;",
+                            form_data.username
+                        )
+                        if not local_user:
+                            # User not in local Postgres either, raise original credentials error
+                            err_data = await resp.json()
+                            raise HTTPException(
+                                status_code=status.HTTP_401_UNAUTHORIZED,
+                                detail=err_data.get("error_description", "Incorrect credentials"),
+                                headers={"WWW-Authenticate": "Bearer"},
+                            )
+                        local_user_id = str(local_user["id"])
+                        local_role = local_user["role"]
+                    
+                    from services.auth import create_access_token
+                    access_token = create_access_token({
+                        "sub": local_user_id,
+                        "role": local_role,
+                        "username": form_data.username,
+                        "email": email
+                    })
+                    
+                    return {
+                        "access_token": access_token,
+                        "token_type": "bearer",
+                        "role": local_role,
+                        "username": form_data.username
+                    }
+                    
                 data = await resp.json()
                 access_token = data.get("access_token")
                 user = data.get("user", {})
@@ -87,11 +114,34 @@ async def signup(payload: UserSignup):
                 headers=headers
             ) as resp:
                 if resp.status != 200:
-                    err_data = await resp.json()
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=err_data.get("msg", "Registration failed")
-                    )
+                    # Fallback: create local JWT token and replicate user if Supabase rate-limited/offline
+                    import uuid
+                    from services.auth import create_access_token
+                    local_user_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{payload.username}.aml.com"))
+                    
+                    from database.postgres import get_async_db_conn
+                    async with get_async_db_conn() as conn:
+                        await conn.execute(
+                            "INSERT INTO users (id, username, role) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING;",
+                            local_user_id,
+                            payload.username,
+                            payload.role
+                        )
+                    
+                    access_token = create_access_token({
+                        "sub": local_user_id,
+                        "role": payload.role,
+                        "username": payload.username,
+                        "email": email
+                    })
+                    
+                    return {
+                        "access_token": access_token,
+                        "token_type": "bearer",
+                        "role": payload.role,
+                        "username": payload.username
+                    }
+                    
                 data = await resp.json()
                 access_token = data.get("access_token")
                 

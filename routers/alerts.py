@@ -10,6 +10,9 @@ from datetime import datetime
 import uuid
 import json
 
+import logging
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/alerts", tags=["Alerts"])
 
 

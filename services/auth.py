@@ -54,10 +54,38 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate Supabase credentials",
+        detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     
+    # 1. Attempt Local JWT Verification (useful for testing or fallback local users)
+    if SECRET_KEY:
+        try:
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            user_id = payload.get("sub")
+            role = payload.get("role", "ANALYST")
+            username = payload.get("username", "anonymous")
+            email = payload.get("email", f"{username}@aml.com")
+            
+            if user_id:
+                # Replicate user to local PostgreSQL database if not present
+                from database.postgres import get_async_db_conn
+                async with get_async_db_conn() as conn:
+                    await conn.execute(
+                        "INSERT INTO users (id, username, role) VALUES ($1, $2, $3) "
+                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username;",
+                        user_id, username, role
+                    )
+                return {
+                    "id": user_id,
+                    "username": username,
+                    "role": role,
+                    "email": email
+                }
+        except jwt.PyJWTError:
+            pass  # Fall back to Supabase check if local decode fails
+
+    # 2. Fallback to Supabase verification
     headers = {
         "Authorization": f"Bearer {token}",
         "apikey": settings.supabase_key
@@ -100,7 +128,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Supabase Auth verification offline or failed: {str(e)}"
+            detail=f"Auth verification offline or failed: {str(e)}"
         )
 
 
