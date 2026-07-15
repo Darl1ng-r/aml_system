@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from config import settings
 from pydantic import BaseModel, Field
+import jwt
 
 class UserSignup(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
@@ -53,31 +54,43 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
                         local_user_id = str(local_user["id"])
                         local_role = local_user["role"]
                     
-                    from services.auth import create_access_token
+                    from services.auth import create_access_token, create_refresh_token
                     access_token = create_access_token({
                         "sub": local_user_id,
                         "role": local_role,
                         "username": form_data.username,
                         "email": email
                     })
+                    refresh_token = create_refresh_token({
+                        "sub": local_user_id,
+                        "role": local_role,
+                        "username": form_data.username,
+                    })
                     
                     return {
                         "access_token": access_token,
+                        "refresh_token": refresh_token,
                         "token_type": "bearer",
                         "role": local_role,
                         "username": form_data.username
                     }
                     
-                data = await resp.json()
-                access_token = data.get("access_token")
-                user = data.get("user", {})
-                role = user.get("user_metadata", {}).get("role", "ANALYST")
-                
+                # Supabase does not issue our custom refresh token;
+                # we create our own so refresh flow is consistent.
+                from services.auth import create_refresh_token
+                user_id = user.get("id", "")
+                username = email.split("@")[0]
+                refresh_token = create_refresh_token({
+                    "sub": user_id,
+                    "role": role,
+                    "username": username,
+                })
                 return {
                     "access_token": access_token,
+                    "refresh_token": refresh_token,
                     "token_type": "bearer",
                     "role": role,
-                    "username": email.split("@")[0]
+                    "username": username
                 }
     except HTTPException:
         raise
@@ -171,3 +184,80 @@ async def signup(payload: UserSignup):
             status_code=500,
             detail=f"Supabase signup proxy failed: {str(e)}"
         )
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh", summary="Exchange refresh token for a new access token")
+async def refresh_access_token(body: RefreshRequest):
+    """
+    Validates the provided refresh token and issues a new short-lived access token.
+    Refresh tokens are checked against a Redis denylist to support server-side revocation.
+    """
+    from database.redis_db import get_async_redis_client
+    from services.auth import create_access_token, SECRET_KEY, ALGORITHM
+
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired refresh token.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        payload = jwt.decode(body.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") != "refresh":
+            raise credentials_exception
+
+        # Check Redis denylist — token revoked on logout
+        redis = await get_async_redis_client()
+        if redis:
+            is_revoked = await redis.get(f"token:revoked:{body.refresh_token}")
+            if is_revoked:
+                raise credentials_exception
+
+        # Issue a fresh access token
+        new_access_token = create_access_token({
+            "sub": payload.get("sub"),
+            "role": payload.get("role", "ANALYST"),
+            "username": payload.get("username", ""),
+        })
+        return {"access_token": new_access_token, "token_type": "bearer"}
+
+    except jwt.ExpiredSignatureError:
+        raise credentials_exception
+    except jwt.PyJWTError:
+        raise credentials_exception
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Token refresh failed: {str(e)}")
+
+
+@router.post("/logout", summary="Revoke refresh token (server-side logout)")
+async def logout(body: RefreshRequest):
+    """
+    Adds the refresh token to the Redis denylist (TTL = remaining token lifetime).
+    After logout, the token cannot be used to obtain new access tokens even if
+    it has not yet expired.
+    """
+    from database.redis_db import get_async_redis_client
+    from services.auth import SECRET_KEY, ALGORITHM
+    from datetime import datetime, timezone
+
+    try:
+        payload = jwt.decode(body.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        exp = payload.get("exp", 0)
+        ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 1)
+
+        redis = await get_async_redis_client()
+        if redis:
+            await redis.setex(f"token:revoked:{body.refresh_token}", ttl, "1")
+
+        return {"detail": "Logged out successfully. Refresh token revoked."}
+    except jwt.PyJWTError:
+        # Token is invalid/expired — it can't be used anyway, so logout is a no-op
+        return {"detail": "Logged out. Token was already invalid or expired."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")

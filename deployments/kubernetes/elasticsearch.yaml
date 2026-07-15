@@ -24,9 +24,14 @@ spec:
         - name: discovery.type
           value: single-node
         - name: xpack.security.enabled
-          value: "false" # Set to true and load secrets in production
-        - name: ES_JAVA_OPTS
-          value: "-Xms1g -Xmx1g"
+          value: "true"
+        - name: xpack.security.http.ssl.enabled
+          value: "false"  # TLS handled by ingress controller
+        - name: ELASTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aml-secrets
+              key: ELASTIC_PASSWORD
         resources:
           requests:
             cpu: "500m"

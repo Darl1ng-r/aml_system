@@ -19,15 +19,27 @@ class Settings(BaseSettings):
     
     elasticsearch_host: str = "http://localhost:9200"
     sanctions_index: str = "sanctions_list"
+    # Set ELASTIC_USER / ELASTIC_PASSWORD in .env when xpack.security is enabled.
+    # Leave empty for local dev running without security.
+    elastic_user: str = "elastic"
+    elastic_password: str = ""
     
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 1440
+    # Short-lived access token — 30 minutes.
+    # Clients should use the refresh token to silently renew.
+    access_token_expire_minutes: int = 30
+    # Long-lived refresh token — 7 days.
+    refresh_token_expire_days: int = 7
     
     supabase_url: str = "https://xzhsdffpnrlpcitiectz.supabase.co"
     supabase_key: str = ""
     
-    allowed_origins: str = "http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000"
+    # Comma-separated list of allowed frontend origins.
+    # ⚠️  Do NOT include the API server itself (localhost:8000).
+    # Override via ALLOWED_ORIGINS in .env for production.
+    # Example: ALLOWED_ORIGINS=https://aml.yourdomain.com
+    allowed_origins: str = "http://localhost:3000"
     
     model_config = SettingsConfigDict(
         env_file=".env",
