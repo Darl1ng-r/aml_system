@@ -22,18 +22,20 @@ def compute_dynamic_risk(
     var_amount = float(baseline.get("variance_amount", 0.0))
     std_amount = math.sqrt(var_amount)
     
-    # Establish a minimum standard deviation to avoid division by zero and handle constant history
-    min_std = avg_amount * 0.1 if avg_amount > 0.0 else 1.0
-    effective_std = std_amount if std_amount > 0.0 else min_std
-    
-    z_score = (amount - avg_amount) / effective_std
-    
-    # Map Z-score to a [0.0, 1.0] probability-like space
-    # We focus on positive deviations (amount larger than average)
-    if amount > avg_amount:
-        # Linear scaling: Z-score of 3.0 or higher maps to 1.0
-        z_score_prob = min(max((amount - avg_amount) / (3.0 * effective_std), 0.0), 1.0)
+    if avg_amount > 0.0:
+        # Establish a minimum standard deviation to avoid division by zero and handle constant history
+        min_std = avg_amount * 0.1
+        effective_std = std_amount if std_amount > 0.0 else min_std
+        z_score = (amount - avg_amount) / effective_std
+        
+        # Map Z-score to a [0.0, 1.0] probability-like space
+        # We focus on positive deviations (amount larger than average)
+        if amount > avg_amount:
+            z_score_prob = min(max((amount - avg_amount) / (3.0 * effective_std), 0.0), 1.0)
+        else:
+            z_score_prob = 0.0
     else:
+        z_score = 0.0
         z_score_prob = 0.0
 
     # 2. Blend scores

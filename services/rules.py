@@ -82,7 +82,7 @@ class RulesEngine:
         large_config = config.get("rules", {}).get("LARGE_TRANSACTION", {})
         if large_config.get("enabled", True):
             threshold = large_config.get("threshold", 10000.0)
-            if amount >= threshold:
+            if amount > threshold:
                 triggered_rules.append("LARGE_TRANSACTION_THRESHOLD")
                 
         # 2. STRUCTURING_SMURFING Rule (Redis-based 24h sliding window)
@@ -113,19 +113,20 @@ class RulesEngine:
                     except (ValueError, IndexError):
                         pass
                 
-                total_amount = sum(tx_amounts)
-                all_below = all(amt < threshold for amt in tx_amounts)
-                if total_amount >= threshold and all_below and len(tx_amounts) >= 2:
+                below_threshold_txs = [amt for amt in tx_amounts if amt < threshold]
+                total_amount = sum(below_threshold_txs)
+                if total_amount > threshold and len(below_threshold_txs) >= 2:
                     triggered_rules.append("STRUCTURING_VELOCITY_24H")
             except Exception as e:
                 logger.error(f"Structuring check Redis error: {e}")
-
+ 
         # 3. VELOCITY_MONITORING Rule (Z-score deviation in daily volume/count)
         velocity_config = config.get("rules", {}).get("VELOCITY_MONITORING", {})
         if velocity_config.get("enabled", True):
             history_days = velocity_config.get("history_days", 30)
             dev_threshold = velocity_config.get("deviation_threshold", 3.0)
             try:
+                tx_time = timestamp or datetime.now(timezone.utc)
                 async with get_async_db_conn() as conn:
                     # Fetch past average & standard deviation
                     hist_row = await conn.fetchrow(
@@ -142,12 +143,12 @@ class RulesEngine:
                                 SUM(amount) as daily_amount
                             FROM transactions
                             WHERE sender_account_id = $1::uuid
-                              AND timestamp >= NOW() - $2 * INTERVAL '1 day'
-                              AND timestamp < DATE_TRUNC('day', NOW())
+                              AND timestamp >= $3::timestamptz - $2 * INTERVAL '1 day'
+                              AND timestamp < DATE_TRUNC('day', $3::timestamptz)
                             GROUP BY DATE_TRUNC('day', timestamp)
                         ) daily_stats;
                         """,
-                        sender_id, history_days
+                        sender_id, history_days, tx_time
                     )
                     
                     # Fetch today's count & amount from DB
@@ -158,9 +159,10 @@ class RulesEngine:
                             COALESCE(SUM(amount), 0) as today_amount
                         FROM transactions
                         WHERE sender_account_id = $1::uuid
-                          AND timestamp >= DATE_TRUNC('day', NOW());
+                          AND timestamp >= DATE_TRUNC('day', $2::timestamptz)
+                          AND timestamp <= $2::timestamptz;
                         """,
-                        sender_id
+                        sender_id, tx_time
                     )
                     
                     avg_count = float(hist_row["avg_daily_count"])
@@ -168,18 +170,19 @@ class RulesEngine:
                     avg_amount = float(hist_row["avg_daily_amount"])
                     stddev_amount = float(hist_row["stddev_daily_amount"])
                     
-                    today_count = int(today_row["today_count"]) + 1
-                    today_amount = float(today_row["today_amount"]) + amount
-                    
-                    stddev_count = stddev_count if stddev_count > 0 else 1.0
-                    stddev_amount = stddev_amount if stddev_amount > 0 else (avg_amount if avg_amount > 0 else 1.0)
-                    
-                    count_z = (today_count - avg_count) / stddev_count
-                    amount_z = (today_amount - avg_amount) / stddev_amount
-                    
-                    if count_z > dev_threshold or amount_z > dev_threshold:
-                        triggered_rules.append("VELOCITY_MONITORING_SPIKE")
-                        logger.warning(f"Velocity spike deviation triggered for {sender_id}. Count Z: {count_z:.2f}, Amount Z: {amount_z:.2f}")
+                    if avg_count > 0.0:
+                        today_count = int(today_row["today_count"]) + 1
+                        today_amount = float(today_row["today_amount"]) + amount
+                        
+                        stddev_count = stddev_count if stddev_count > 0 else 1.0
+                        stddev_amount = stddev_amount if stddev_amount > 0 else (avg_amount if avg_amount > 0 else 1.0)
+                        
+                        count_z = (today_count - avg_count) / stddev_count
+                        amount_z = (today_amount - avg_amount) / stddev_amount
+                        
+                        if count_z > dev_threshold or amount_z > dev_threshold:
+                            triggered_rules.append("VELOCITY_MONITORING_SPIKE")
+                            logger.warning(f"Velocity spike deviation triggered for {sender_id}. Count Z: {count_z:.2f}, Amount Z: {amount_z:.2f}")
             except Exception as e:
                 logger.error(f"Velocity rule Postgres error: {e}")
 
@@ -261,7 +264,7 @@ class RulesEngine:
                             current_time = current_time.replace(tzinfo=timezone.utc)
                             
                         inactivity_days = (current_time - last_activity).days
-                        if inactivity_days >= dormant_period_days and amount >= activation_threshold:
+                        if inactivity_days >= dormant_period_days and amount > activation_threshold:
                             triggered_rules.append("DORMANT_ACCOUNT_ACTIVATION")
             except Exception as e:
                 logger.error(f"Dormant account check error: {e}")
