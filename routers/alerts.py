@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, Response
 from pydantic import BaseModel
 from database.postgres import get_async_db_conn
 from database.neo4j_db import get_async_neo4j_driver
-from services.auth import get_current_user
+from services.auth import get_current_user, RoleChecker
+from services.rate_limiter import RateLimiter
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from datetime import datetime
@@ -22,7 +23,8 @@ async def list_alerts(
     response: Response,
     page: int = 1,
     limit: int = 100,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
     try:
         async with get_async_db_conn() as conn:
@@ -76,8 +78,9 @@ async def list_alerts(
 @router.get("/{id}/graph")
 async def get_alert_graph(
     id: str,
-    current_user: dict = Depends(get_current_user),
-    neo4j_driver=Depends(get_async_neo4j_driver)
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    neo4j_driver=Depends(get_async_neo4j_driver),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
     try:
         alert_uuid = uuid.UUID(id)
@@ -205,7 +208,12 @@ async def get_alert_graph(
         raise HTTPException(status_code=500, detail=f"Neo4j query failed: {str(e)}")
 
 @router.post("/{id}/action")
-async def resolve_alert(id: str, payload: AlertAction, current_user: dict = Depends(get_current_user)):
+async def resolve_alert(
+    id: str, 
+    payload: AlertAction, 
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
     if payload.action not in ["CLOSE_SAR", "CLOSE_FALSE_POSITIVE"]:
         raise HTTPException(status_code=400, detail="Invalid action. Must be CLOSE_SAR or CLOSE_FALSE_POSITIVE")
 

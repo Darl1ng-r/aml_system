@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     supabase_url: str = "https://xzhsdffpnrlpcitiectz.supabase.co"
     supabase_key: str = "sb_publishable_wnGvRWC4UBh0aQgROrflow_6XN36H0z"
     
+    allowed_origins: str = "http://localhost:3000,http://localhost:8000,http://127.0.0.1:8000"
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

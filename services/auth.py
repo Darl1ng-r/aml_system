@@ -102,3 +102,17 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Supabase Auth verification offline or failed: {str(e)}"
         )
+
+
+class RoleChecker:
+    def __init__(self, allowed_roles: list[str]):
+        self.allowed_roles = allowed_roles
+
+    def __call__(self, current_user: dict = Depends(get_current_user)):
+        if current_user.get("role") not in self.allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Operation not permitted for this user role.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return current_user

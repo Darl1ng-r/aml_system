@@ -4,7 +4,7 @@ from database.postgres import get_async_db_conn
 from database.neo4j_db import get_async_neo4j_driver
 from database.elasticsearch_db import get_async_elasticsearch_client
 from routers.screening import perform_sanctions_search
-from services.auth import get_current_user
+from services.auth import get_current_user, RoleChecker
 
 router = APIRouter(prefix="/api/v1/onboard", tags=["Onboarding"])
 
@@ -30,7 +30,7 @@ class CorporateOnboard(BaseModel):
     ubos: list[UboDetail] = []
 
 @router.post("/individual")
-async def onboard_individual(payload: IndividualOnboard, current_user: dict = Depends(get_current_user)):
+async def onboard_individual(payload: IndividualOnboard, current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))):
     try:
         es = await get_async_elasticsearch_client()
         screen_res = await perform_sanctions_search(payload.name, 0.80, es)
@@ -69,7 +69,7 @@ async def onboard_individual(payload: IndividualOnboard, current_user: dict = De
         raise HTTPException(status_code=500, detail=f"Onboarding failed: {str(e)}")
 
 @router.post("/corporate")
-async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_async_neo4j_driver), current_user: dict = Depends(get_current_user)):
+async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_async_neo4j_driver), current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))):
     # Step 1: Save to PostgreSQL (relational profile)
     try:
         async with get_async_db_conn() as conn:

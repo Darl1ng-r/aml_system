@@ -3,11 +3,13 @@ from pydantic import BaseModel
 from datetime import datetime
 import uuid
 import logging
+import json
 from database.postgres import get_async_db_conn
 from services.rules import RulesEngine
 from services.ml_model import AMLAnomalyModel
 from services.redpanda import publish_transaction
-from services.auth import get_current_user
+from services.auth import get_current_user, RoleChecker
+from services.rate_limiter import RateLimiter
 
 
 logger = logging.getLogger(__name__)
@@ -22,7 +24,12 @@ class TransactionRequest(BaseModel):
     timestamp: str
 
 @router.post("")
-async def ingest_transaction(payload: TransactionRequest, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
+async def ingest_transaction(
+    payload: TransactionRequest, 
+    background_tasks: BackgroundTasks, 
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=100, window=60))
+):
     # Step 1: Look up sender and receiver in PostgreSQL to verify they exist
     try:
         async with get_async_db_conn() as conn:
@@ -92,7 +99,6 @@ async def ingest_transaction(payload: TransactionRequest, background_tasks: Back
                 threat_level = "CRITICAL" if ai_score >= 0.90 else ("HIGH" if ai_score >= 0.75 else "MEDIUM")
                 rule_name = triggered_rules[0] if triggered_rules else "BEHAVIORAL_ANOMALY"
                 
-                import json
                 await conn.execute(
                     """
                     INSERT INTO alerts (tenant_id, transaction_id, rule_name, threat_level, ai_risk_score, explainability_payload)

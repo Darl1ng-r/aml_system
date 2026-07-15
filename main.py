@@ -1,10 +1,11 @@
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from routers import onboarding, screening, transactions, alerts, auth
 from database.postgres import connection_pool
 from database.neo4j_db import close_neo4j_driver
+from config import settings
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -17,9 +18,10 @@ app = FastAPI(
 )
 
 # Enable CORS for frontend dashboard console
+allowed_origins_list = [origin.strip() for origin in settings.allowed_origins.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,17 +45,13 @@ def read_root():
         "version": "1.0.0"
     }
 
-@app.get("/dashboard", response_class=HTMLResponse)
+@app.get("/dashboard", response_class=FileResponse)
 def read_dashboard():
-    with open("static/index.html", "r", encoding="utf-8") as f:
-        html_content = f.read()
-    return HTMLResponse(content=html_content)
+    return FileResponse("static/index.html")
 
-@app.get("/login", response_class=HTMLResponse)
+@app.get("/login", response_class=FileResponse)
 def read_login():
-    with open("static/login.html", "r", encoding="utf-8") as f:
-        html_content = f.read()
-    return HTMLResponse(content=html_content)
+    return FileResponse("static/login.html")
 
 @app.on_event("startup")
 async def startup_db_clients():
