@@ -387,6 +387,152 @@ async def bulk_resolve_alerts(
         logger.error(f"Bulk alert action failed: {e}")
         raise HTTPException(status_code=500, detail=f"Bulk action failed: {str(e)}")
 
+
+@router.get("/export/csv")
+async def export_alerts_csv(
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=10, window=60))
+):
+    """
+    Exports full PostgreSQL compliance alerts audit ledger as downloadable CSV file.
+    """
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT a.id, a.threat_level, a.ai_risk_score, a.rule_name, a.status, a.created_at,
+                       t.amount, t.currency, s.account_number AS sender, r.account_number AS receiver,
+                       COALESCE(u.username, 'Unassigned') AS assignee
+                FROM alerts a
+                JOIN transactions t ON a.transaction_id = t.id
+                JOIN accounts s ON t.sender_account_id = s.id
+                JOIN accounts r ON t.receiver_account_id = r.id
+                LEFT JOIN users u ON a.assigned_officer_id = u.id
+                ORDER BY a.created_at DESC;
+                """
+            )
+
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow([
+                "Alert ID", "Threat Level", "AI Risk Score", "Rule Trigger",
+                "Status", "Triggered At", "Amount", "Currency", "Sender Account",
+                "Receiver Account", "Assigned Officer"
+            ])
+
+            for row in rows:
+                writer.writerow([
+                    str(row["id"]),
+                    row["threat_level"],
+                    f"{round(float(row['ai_risk_score'] or 0) * 100, 1)}%",
+                    row["rule_name"],
+                    row["status"],
+                    row["created_at"].isoformat(),
+                    float(row["amount"]),
+                    row["currency"],
+                    row["sender"],
+                    row["receiver"],
+                    row["assignee"]
+                ])
+
+            output.seek(0)
+            filename = f"aml_alerts_audit_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+            return StreamingResponse(
+                iter([output.getvalue()]),
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+    except Exception as e:
+        logger.error(f"CSV export failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
+@router.get("/export/pdf")
+async def export_alerts_pdf(
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=10, window=60))
+):
+    """
+    Generates a printable audit report with FinCEN regulatory compliance layout.
+    """
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT a.id, a.threat_level, a.ai_risk_score, a.rule_name, a.status, a.created_at,
+                       t.amount, t.currency, s.account_number AS sender, r.account_number AS receiver,
+                       COALESCE(u.username, 'Unassigned') AS assignee
+                FROM alerts a
+                JOIN transactions t ON a.transaction_id = t.id
+                JOIN accounts s ON t.sender_account_id = s.id
+                JOIN accounts r ON t.receiver_account_id = r.id
+                LEFT JOIN users u ON a.assigned_officer_id = u.id
+                ORDER BY a.created_at DESC
+                LIMIT 50;
+                """
+            )
+
+            table_rows_html = ""
+            for r in rows:
+                score = f"{round(float(r['ai_risk_score'] or 0) * 100)}%"
+                table_rows_html += f"""
+                <tr>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd; font-family: monospace;">{str(r['id'])[:8]}...</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;"><strong>{r['threat_level']}</strong></td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{score}</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{r['rule_name']}</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">${float(r['amount']):,.2f} {r['currency']}</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{r['status']}</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{r['assignee']}</td>
+                </tr>
+                """
+
+            html_content = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>AML Compliance & Regulatory Audit Report</title>
+                <style>
+                    body {{ font-family: 'Helvetica Neue', Arial, sans-serif; margin: 20px; color: #1e293b; }}
+                    h1 {{ color: #3d6b99; border-bottom: 2px solid #3d6b99; padding-bottom: 6px; }}
+                    table {{ width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 12px; }}
+                    th {{ background: #f1f5f9; text-align: left; padding: 8px; border-bottom: 2px solid #cbd5e1; }}
+                    .footer {{ margin-top: 30px; font-size: 10px; color: #64748b; border-top: 1px solid #e2e8f0; padding-top: 10px; }}
+                </style>
+            </head>
+            <body onload="window.print()">
+                <h1>AML Audit Report & Case Ledger</h1>
+                <p><strong>Generated At:</strong> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+                <p><strong>Auditor / Officer:</strong> {current_user['username']} ({current_user['role']})</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Alert ID</th>
+                            <th>Threat</th>
+                            <th>Risk Score</th>
+                            <th>Trigger Rule</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>Assigned Officer</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {table_rows_html}
+                    </tbody>
+                </table>
+                <div class="footer">
+                    Confidential AML Regulatory Compliance Document — FinCEN / BSA Audit Log Record.
+                </div>
+            </body>
+            </html>
+            """
+            return HTMLResponse(content=html_content)
+    except Exception as e:
+        logger.error(f"PDF/HTML report generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Report export failed: {str(e)}")
+
 def generate_sar_xml(alert_data, justification: str) -> str:
     """
     Generates a regulatory FinCEN-compatible Suspicious Activity Report XML payload

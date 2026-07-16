@@ -591,6 +591,40 @@ async function executeBulkResolve(action) {
     }
 }
 
+async function exportAlertsCSV() {
+    log('Preparing compliance CSV audit export download...', 'info');
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/alerts/export/csv`, {
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) throw new Error();
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `aml_alerts_audit_${new Date().toISOString().slice(0, 10)}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        log('CSV compliance audit export successfully downloaded.', 'success');
+    } catch (e) {
+        log('CSV export failed. Please verify API connection.', 'warn');
+    }
+}
+
+async function exportAlertsPDF() {
+    log('Generating FinCEN regulatory audit report preview...', 'info');
+    try {
+        const token = localStorage.getItem('jwt_token');
+        const win = window.open(`${BASE_URL}/api/v1/alerts/export/pdf`, '_blank');
+        if (win) win.focus();
+        log('Audit report preview window launched.', 'success');
+    } catch (e) {
+        log('Failed to launch audit report preview.', 'warn');
+    }
+}
+
 function filterInboxTable() {
     const searchVal = document.getElementById('inbox-search').value.toLowerCase();
     const severityVal = document.getElementById('inbox-filter-severity').value;
