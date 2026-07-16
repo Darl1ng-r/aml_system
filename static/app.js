@@ -315,6 +315,8 @@ function initWebSocket() {
                 } else if (data.event === 'STR_BATCH_TRANSMITTED') {
                     log(`🚀 REAL-TIME EVENT: Transmitted STR batch package ${data.batch_id}. Status: ${data.status}`, 'success');
                     loadSTRBatches();
+                } else if (data.event === 'WATCHLIST_SYNCED') {
+                    log(`🔄 REAL-TIME EVENT: Global Watchlists Synced! ${data.total_records} records processed across OFAC, World-Check & Dow Jones.`, 'success');
                 }
             } catch (e) {
                 // Ignore raw strings
@@ -1465,4 +1467,23 @@ function renderMockSTRBatches() {
             created_at: new Date().toISOString()
         }
     ]);
+}
+
+async function syncGlobalWatchlists() {
+    log('Triggering live watchlist synchronization across OFAC, World-Check, and Dow Jones data sources...', 'info');
+    if (mockMode) {
+        log('Mock global watchlist sync completed successfully.', 'success');
+        return;
+    }
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/watchlist/sync`, {
+            method: 'POST',
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) throw new Error();
+        const res = await response.json();
+        log(`Watchlist Synchronization Complete: Processed ${res.total_records_processed} total entries across OFAC, World-Check & Dow Jones.`, 'success');
+    } catch (e) {
+        log('Watchlist synchronization failed. Please check provider API keys.', 'warn');
+    }
 }

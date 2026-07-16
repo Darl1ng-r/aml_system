@@ -331,8 +331,16 @@
         <!-- TAB 3: PHONETIC SANDBOX (Sanctions lookup tool) -->
         <div id="sandbox-tab" class="tab-content panel-search-layout">
             <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title">Sanctions Sandbox lookup</h2>
+                <div class="card-header" style="flex-wrap: wrap; gap: 0.5rem;">
+                    <div>
+                        <h2 class="card-title">Multi-Tier Watchlist & PEP Screening Portal</h2>
+                        <div style="display: flex; gap: 0.35rem; margin-top: 0.25rem;">
+                            <span class="badge badge-blue">OFAC SDN Live XML</span>
+                            <span class="badge badge-green">Refinitiv World-Check Gateway</span>
+                            <span class="badge badge-orange">Dow Jones Watchlist API</span>
+                        </div>
+                    </div>
+                    <button onclick="syncGlobalWatchlists()" class="btn btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;">🔄 Sync Watchlists</button>
                 </div>
                 <div class="card-body" style="padding: 2.5rem;">
                     <form id="sandbox-screening-form" onsubmit="runSandboxScreening(event)">
