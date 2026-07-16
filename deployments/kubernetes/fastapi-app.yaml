@@ -14,6 +14,28 @@ spec:
     metadata:
       labels:
         app: aml-fastapi-app
+      annotations:
+        # HashiCorp Vault Agent Injector Configuration
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "aml-api-role"
+        vault.hashicorp.com/agent-inject-secret-ca.crt: "pki/issue/aml-cluster-role"
+        vault.hashicorp.com/agent-inject-template-ca.crt: |
+          {{- with secret "pki/issue/aml-cluster-role" "common_name=aml-fastapi-app.aml-system.svc.cluster.local" -}}
+          {{ .Data.issuing_ca }}
+          {{- end -}}
+        vault.hashicorp.com/agent-inject-secret-tls.crt: "pki/issue/aml-cluster-role"
+        vault.hashicorp.com/agent-inject-template-tls.crt: |
+          {{- with secret "pki/issue/aml-cluster-role" "common_name=aml-fastapi-app.aml-system.svc.cluster.local" -}}
+          {{ .Data.certificate }}
+          {{- end -}}
+        vault.hashicorp.com/agent-inject-secret-tls.key: "pki/issue/aml-cluster-role"
+        vault.hashicorp.com/agent-inject-template-tls.key: |
+          {{- with secret "pki/issue/aml-cluster-role" "common_name=aml-fastapi-app.aml-system.svc.cluster.local" -}}
+          {{ .Data.private_key }}
+          {{- end -}}
+        vault.hashicorp.com/secret-volume-path-ca.crt: "/var/run/secrets/tls/ca.crt"
+        vault.hashicorp.com/secret-volume-path-tls.crt: "/var/run/secrets/tls/tls.crt"
+        vault.hashicorp.com/secret-volume-path-tls.key: "/var/run/secrets/tls/tls.key"
     spec:
       containers:
       - name: fastapi-app
@@ -28,6 +50,16 @@ spec:
           limits:
             cpu: "1000m"
             memory: "1024Mi"
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /var/run/secrets/tls
+          readOnly: true
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret
+          optional: true
+
         envFrom:
         - secretRef:
             name: aml-secrets

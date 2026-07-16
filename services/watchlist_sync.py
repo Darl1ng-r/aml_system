@@ -40,9 +40,10 @@ DOWJONES_API_KEY = os.getenv("DOWJONES_API_KEY", "dowjones_api_key_demo_2026")
 class WatchlistSyncEngine:
     """Engine responsible for fetching, parsing, and indexing live global watchlists."""
 
-    async def fetch_ofac_sdn_feed((self)) -> List[Dict[str, Any]]:
+    async def fetch_ofac_sdn_feed(self) -> List[Dict[str, Any]]:
         """Downloads and parses the official U.S. Treasury OFAC SDN XML feed."""
-        logger.info(f"Downloading official OFAC SDN XML feed from {OFAC_SDN_URL}...")        try:
+        logger.info(f"Downloading official OFAC SDN XML feed from {OFAC_SDN_URL}...")
+        try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 res = await client.get(OFAC_SDN_URL)
                 if res.status_code == 200:
@@ -114,7 +115,13 @@ class WatchlistSyncEngine:
             try:
                 # Route PEP entries to PEP_INDEX; Sanctions to SANCTIONS_INDEX
                 target_index = PEP_INDEX if "pep_tier" in record or "PEP" in record.get("source_list", "") else SANCTIONS_INDEX
-                await es.index(index=target_index, document=record)
+                
+                # Generate deterministic ID for idempotent upserting
+                name_clean = record.get("name", "").strip().lower()
+                source_clean = record.get("source_list", "").strip().lower()
+                doc_id = hashlib.sha256(f"{name_clean}:{source_clean}".encode("utf-8")).hexdigest()[:32]
+
+                await es.index(index=target_index, id=doc_id, document=record)
                 if target_index == PEP_INDEX:
                     indexed_pep += 1
                 else:

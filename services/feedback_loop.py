@@ -6,6 +6,7 @@ feature vectors, and retrains the Isolation Forest model online to continuously
 reduce false-positive rates on recurring normal transaction patterns.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -17,6 +18,7 @@ from database.postgres import get_async_db_conn
 from services.isolation_forest import IsolationForestScratch, _iforest_model
 
 logger = logging.getLogger(__name__)
+
 
 
 class ActiveLearningFeedbackService:
@@ -83,11 +85,11 @@ class ActiveLearningFeedbackService:
                     f"label={'FALSE_POSITIVE' if label == 0 else 'TRUE_SAR'} | analyst={analyst_id}"
                 )
 
-                # Check feedback count to trigger automatic online model retraining cycle
+                # Check feedback count to trigger automatic online model retraining cycle in background
                 count = await conn.fetchval("SELECT COUNT(*) FROM ml_feedback_samples;")
                 if count > 0 and count % 5 == 0:
-                    logger.info(f"[Active Learning] Triggering automatic online model retraining cycle ({count} samples recorded).")
-                    await self.retrain_model_with_feedback()
+                    logger.info(f"[Active Learning] Dispatching background online model retraining task ({count} samples recorded).")
+                    asyncio.create_task(self.retrain_model_with_feedback())
 
                 return True
         except Exception as e:

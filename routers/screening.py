@@ -2,7 +2,10 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.params import Depends as DependsClass
 from pydantic import BaseModel
 import json
+import logging
 import rapidfuzz
+
+logger = logging.getLogger(__name__)
 from database.elasticsearch_db import get_async_elasticsearch_client
 from database.redis_db import get_async_redis_client
 from config import SANCTIONS_INDEX
