@@ -5,10 +5,18 @@ from config import settings
 from pydantic import BaseModel, Field
 import jwt
 
+from pydantic import BaseModel, Field, field_validator
+from observability.sanitizer import sanitize_text
+
 class UserSignup(BaseModel):
-    username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6)
-    role: str = "ANALYST"
+    username: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
+    password: str = Field(..., min_length=6, max_length=128)
+    role: str = Field("ANALYST", max_length=20, pattern=r"^(ADMIN|ANALYST|AUDITOR)$")
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def sanitize_username(cls, v: str) -> str:
+        return sanitize_text(v)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 

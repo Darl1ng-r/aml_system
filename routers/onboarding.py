@@ -9,25 +9,43 @@ from services.auth import get_current_user, RoleChecker
 router = APIRouter(prefix="/api/v1/onboard", tags=["Onboarding"])
 
 
+from pydantic import BaseModel, Field, field_validator
+from observability.sanitizer import sanitize_text
+
 class IndividualOnboard(BaseModel):
-    tenant_id: str
-    account_number: str
-    swift_bic: str | None = None
-    name: str
-    date_of_birth: str | None = None
+    tenant_id: str = Field(..., min_length=1, max_length=50)
+    account_number: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    swift_bic: str | None = Field(None, min_length=8, max_length=11, pattern=r"^[A-Z0-9]{8,11}$")
+    name: str = Field(..., min_length=1, max_length=200)
+    date_of_birth: str | None = Field(None, max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @field_validator("name", "tenant_id", "account_number", mode="before")
+    @classmethod
+    def sanitize_individual_fields(cls, v: str) -> str:
+        return sanitize_text(v)
 
 class UboDetail(BaseModel):
-    name: str
-    tax_id: str
-    ownership_percentage: float
+    name: str = Field(..., min_length=1, max_length=200)
+    tax_id: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    ownership_percentage: float = Field(..., ge=0.01, le=100.0)
+
+    @field_validator("name", "tax_id", mode="before")
+    @classmethod
+    def sanitize_ubo_fields(cls, v: str) -> str:
+        return sanitize_text(v)
 
 class CorporateOnboard(BaseModel):
-    tenant_id: str
-    company_name: str
-    registration_number: str
-    account_number: str
-    swift_bic: str | None = None
-    ubos: list[UboDetail] = []
+    tenant_id: str = Field(..., min_length=1, max_length=50)
+    company_name: str = Field(..., min_length=1, max_length=200)
+    registration_number: str = Field(..., min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    account_number: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    swift_bic: str | None = Field(None, min_length=8, max_length=11, pattern=r"^[A-Z0-9]{8,11}$")
+    ubos: list[UboDetail] = Field(default_factory=list, max_length=50)
+
+    @field_validator("company_name", "registration_number", "tenant_id", "account_number", mode="before")
+    @classmethod
+    def sanitize_corporate_fields(cls, v: str) -> str:
+        return sanitize_text(v)
 
 @router.post("/individual")
 async def onboard_individual(payload: IndividualOnboard, current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))):

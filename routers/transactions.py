@@ -18,16 +18,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["Transactions"])
 
+from pydantic import BaseModel, Field, field_validator
+from observability.sanitizer import sanitize_text
+
 class TransactionRequest(BaseModel):
-    sender_account: str
-    receiver_account: str
-    amount: float
-    currency: str
+    sender_account: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    receiver_account: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    amount: float = Field(..., gt=0.0, le=1_000_000_000.0)
+    currency: str = Field("USD", min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
     timestamp: datetime
-    country: str | None = None
-    merchant: str | None = None
-    device: str | None = None
-    channel: str | None = None
+    country: str | None = Field(None, min_length=2, max_length=3, pattern=r"^[A-Za-z]{2,3}$")
+    merchant: str | None = Field(None, max_length=100)
+    device: str | None = Field(None, max_length=100)
+    channel: str | None = Field(None, max_length=50)
+
+    @field_validator("sender_account", "receiver_account", "merchant", "device", "channel", mode="before")
+    @classmethod
+    def sanitize_input_strings(cls, v: str | None) -> str | None:
+        return sanitize_text(v) if v is not None else None
 
 @router.post("")
 async def ingest_transaction(

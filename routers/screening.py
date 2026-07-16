@@ -11,10 +11,18 @@ from services.rate_limiter import RateLimiter
 
 router = APIRouter(prefix="/api/v1/screening", tags=["Screening"])
 
+from pydantic import BaseModel, Field, field_validator
+from observability.sanitizer import sanitize_text
+
 class ScreeningRequest(BaseModel):
-    name: str
-    date_of_birth: str | None = None
-    threshold: float = 0.80
+    name: str = Field(..., min_length=1, max_length=200)
+    date_of_birth: str | None = Field(None, max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    threshold: float = Field(0.80, ge=0.50, le=1.00)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def sanitize_name(cls, v: str) -> str:
+        return sanitize_text(v)
 
 def levenshtein_ratio(s1: str, s2: str) -> float:
     """

@@ -16,10 +16,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/alerts", tags=["Alerts"])
 
 
+from pydantic import Field, field_validator
+from observability.sanitizer import sanitize_text
+
 class AlertAction(BaseModel):
-    action: str # CLOSE_SAR or CLOSE_FALSE_POSITIVE
-    justification: str
+    action: str = Field(..., pattern=r"^(CLOSE_SAR|CLOSE_FALSE_POSITIVE)$")
+    justification: str = Field(..., min_length=3, max_length=2000)
     sar_xml_generate: bool = False
+
+    @field_validator("justification", mode="before")
+    @classmethod
+    def sanitize_justification(cls, v: str) -> str:
+        return sanitize_text(v)
 
 @router.get("")
 async def list_alerts(
