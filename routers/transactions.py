@@ -237,6 +237,21 @@ async def ingest_transaction(
     # Recalculate customer behavior baseline in background
     background_tasks.add_task(calculate_customer_baseline, str(sender_id))
 
+    # Broadcast real-time WebSocket event to active dashboard clients
+    from routers.metrics import ws_manager
+    event_payload = {
+        "event": "NEW_ALERT" if alert_triggered else "NEW_TRANSACTION",
+        "transaction_id": tx_id,
+        "amount": payload.amount,
+        "currency": payload.currency,
+        "risk_score": dynamic_score,
+        "alert_triggered": alert_triggered,
+        "threat_level": threat_level if alert_triggered else "NONE",
+        "rule_name": triggered_rules[0] if triggered_rules else "NORMAL",
+        "timestamp": payload.timestamp.isoformat()
+    }
+    background_tasks.add_task(ws_manager.broadcast, event_payload)
+
     return {
         "transaction_id": tx_id,
         "decision": decision,

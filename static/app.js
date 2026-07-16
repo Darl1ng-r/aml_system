@@ -7,6 +7,12 @@ let currentPage = 1;
 const pageSize = 10;
 let totalAlertsCount = 0;
 
+// Chart Instances & Network Instance
+let trendChartInstance = null;
+let categoryChartInstance = null;
+let visNetworkInstance = null;
+let liveWebSocket = null;
+
 // Seed Mock Cases Database
 const mockAlerts = [
     {
@@ -88,6 +94,8 @@ let activeAlerts = [...mockAlerts];
 window.addEventListener('load', () => {
     log('System Initializing: Compliance Case Management Console v1.0.0', 'info');
     initAuth();
+    initWebSocket();
+    loadDashboardAnalytics();
 });
 
 function initAuth() {
@@ -136,6 +144,46 @@ async function checkServerStatus() {
     }
 }
 
+// ── Real-Time WebSocket Connection ────────────────────────────────────────────
+function initWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/live-stream`;
+
+    try {
+        liveWebSocket = new WebSocket(wsUrl);
+
+        liveWebSocket.onopen = () => {
+            log('Established live WebSocket connection for event feeds.', 'success');
+        };
+
+        liveWebSocket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.event === 'NEW_ALERT') {
+                    log(`⚡ REAL-TIME EVENT: New Alert Triggered! Rule: ${data.rule_name}, Threat: ${data.threat_level}`, 'err');
+                    loadAlerts();
+                    loadDashboardAnalytics();
+                } else if (data.event === 'NEW_TRANSACTION') {
+                    log(`📥 LIVE TRANSACTION: Ingested $${data.amount} ${data.currency} (Score: ${Math.round(data.risk_score * 100)}%)`, 'info');
+                } else if (data.event === 'ALERT_RESOLVED') {
+                    log(`✅ REAL-TIME EVENT: Case Resolved. Status: ${data.status}`, 'success');
+                    loadAlerts();
+                    loadDashboardAnalytics();
+                }
+            } catch (e) {
+                // Ignore raw strings
+            }
+        };
+
+        liveWebSocket.onclose = () => {
+            log('WebSocket feed disconnected. Attempting auto-reconnect in 5s...', 'warn');
+            setTimeout(initWebSocket, 5000);
+        };
+    } catch (e) {
+        logger.warning('WebSocket initialization failed.');
+    }
+}
+
 function log(msg, type = 'info') {
     const feed = document.getElementById('log-feed');
     if (!feed) return;
@@ -164,12 +212,164 @@ function switchTab(tabId, btn) {
     log(`Switched to tab views: ${tabId.replace('-tab', '')}`, 'info');
 }
 
+// ── Dynamic Dashboard Analytics & Chart.js ─────────────────────────────────────
+async function loadDashboardAnalytics() {
+    if (mockMode) {
+        renderMockCharts();
+        return;
+    }
+
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/metrics/dashboard`, {
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) throw new Error();
+        const metrics = await response.json();
+
+        // 1. KPI Cards
+        document.getElementById('metric-active-cases').innerText = metrics.active_cases || 0;
+        document.getElementById('metric-critical-cases').innerText = metrics.critical_cases || 0;
+
+        // 2. Render Chart.js Daily Trend Line Chart
+        renderDailyTrendChart(metrics.daily_trend.labels, metrics.daily_trend.data);
+
+        // 3. Render Chart.js Category Distribution Doughnut Chart
+        renderCategoryChart(metrics.category_distribution);
+
+        // 4. Render Analyst Leaderboard Table
+        renderLeaderboard(metrics.analyst_leaderboard);
+
+    } catch (e) {
+        log('Failed to fetch dashboard metrics. Rendering mock analytics.', 'warn');
+        renderMockCharts();
+    }
+}
+
+function renderDailyTrendChart(labels, data) {
+    const ctx = document.getElementById('alert-trend-chart');
+    if (!ctx) return;
+
+    if (trendChartInstance) {
+        trendChartInstance.data.labels = labels;
+        trendChartInstance.data.datasets[0].data = data;
+        trendChartInstance.update();
+        return;
+    }
+
+    trendChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Daily Alert Count',
+                data: data,
+                borderColor: '#3d6b99',
+                backgroundColor: 'rgba(61, 107, 153, 0.15)',
+                borderWidth: 3,
+                fill: true,
+                tension: 0.35,
+                pointRadius: 4,
+                pointBackgroundColor: '#3d6b99'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, grid: { color: 'rgba(0, 0, 0, 0.05)' } },
+                x: { grid: { display: false } }
+            }
+        }
+    });
+}
+
+function renderCategoryChart(categories) {
+    const ctx = document.getElementById('alert-category-chart');
+    if (!ctx) return;
+
+    const labels = categories.map(c => c.category.replace(/_/g, ' '));
+    const counts = categories.map(c => c.count);
+
+    if (categoryChartInstance) {
+        categoryChartInstance.data.labels = labels;
+        categoryChartInstance.data.datasets[0].data = counts;
+        categoryChartInstance.update();
+        return;
+    }
+
+    categoryChartInstance = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+            labels: labels,
+            datasets: [{
+                data: counts,
+                backgroundColor: [
+                    '#d97706',
+                    '#3d6b99',
+                    '#dc2626',
+                    '#10b981',
+                    '#8b5cf6'
+                ],
+                borderWidth: 2,
+                borderColor: '#ffffff'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'right', labels: { boxWidth: 12, font: { size: 11 } } }
+            }
+        }
+    });
+}
+
+function renderLeaderboard(analysts) {
+    const tbody = document.getElementById('leaderboard-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    if (!analysts || analysts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-secondary);">No active analyst workloads recorded.</td></tr>';
+        return;
+    }
+
+    analysts.forEach(item => {
+        const tr = document.createElement('tr');
+        const badgeClass = item.active_cases >= 4 ? 'badge-red' : (item.active_cases >= 2 ? 'badge-orange' : 'badge-green');
+        const tierBadgeClass = item.risk_tier === 'Critical' ? 'badge-red' : (item.risk_tier === 'High' ? 'badge-orange' : 'badge-blue');
+
+        tr.innerHTML = `
+            <td><strong>${item.username.replace('_', ' ')}</strong></td>
+            <td><span class="badge ${badgeClass}">${item.active_cases} Active</span></td>
+            <td>${item.resolution_rate}</td>
+            <td><span class="badge ${tierBadgeClass}">${item.risk_tier}</span></td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function renderMockCharts() {
+    renderDailyTrendChart(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], [12, 19, 14, 25, 22, 30, 18]);
+    renderCategoryChart([
+        { category: "STRUCTURING_SMURFING", count: 18 },
+        { category: "LARGE_TRANSACTION", count: 14 },
+        { category: "SANCTIONS_MATCH", count: 11 }
+    ]);
+    renderLeaderboard([
+        { username: "Sarah Jenkins", active_cases: 4, resolution_rate: "94%", risk_tier: "Critical" },
+        { username: "Alex Rivera", active_cases: 3, resolution_rate: "88%", risk_tier: "High" },
+        { username: "David Chen", active_cases: 2, resolution_rate: "91%", risk_tier: "Normal" },
+        { username: "Emma Watson", active_cases: 1, resolution_rate: "96%", risk_tier: "Normal" }
+    ]);
+}
+
 // TAB 1 & 2: Alerts and Triage loading
 async function loadAlerts() {
     log('Loading telemetry cases queue...', 'info');
     if (mockMode) {
         renderInbox(activeAlerts);
-        updateDashboardMetrics(activeAlerts);
         updatePaginationControls(activeAlerts.length);
         return;
     }
@@ -187,11 +387,9 @@ async function loadAlerts() {
         if (!response.ok) throw new Error();
         const data = await response.json();
         
-        // Read X-Total-Count header
         const xTotalCount = response.headers.get('X-Total-Count');
         totalAlertsCount = xTotalCount ? parseInt(xTotalCount, 10) : data.length;
         
-        // Enrich backend alerts with mock entities to make the investigation profile beautiful!
         activeAlerts = data.map((alert, idx) => {
             const seed = mockAlerts[idx % mockAlerts.length];
             return {
@@ -207,7 +405,6 @@ async function loadAlerts() {
         });
         
         renderInbox(activeAlerts);
-        updateDashboardMetrics(activeAlerts);
         updatePaginationControls(totalAlertsCount);
         log(`Synced telemetry page ${currentPage} from postgres connection pool.`, 'success');
     } catch (e) {
@@ -216,7 +413,6 @@ async function loadAlerts() {
         document.getElementById('app-status-badge').classList.remove('online');
         document.getElementById('app-status-text').innerText = 'Mock Database Mode';
         renderInbox(activeAlerts);
-        updateDashboardMetrics(activeAlerts);
         updatePaginationControls(activeAlerts.length);
     }
 }
@@ -254,21 +450,13 @@ function nextPage() {
     }
 }
 
-function updateDashboardMetrics(alertsList) {
-    const activeCases = alertsList.filter(a => a.status === 'NEW');
-    const criticalCases = activeCases.filter(a => a.threat_level === 'CRITICAL');
-    
-    document.getElementById('metric-active-cases').innerText = activeCases.length;
-    document.getElementById('metric-critical-cases').innerText = criticalCases.length;
-}
-
 function renderInbox(alertsList) {
     const tbody = document.getElementById('inbox-tbody');
     const empty = document.getElementById('inbox-empty');
     if (!tbody) return;
     tbody.innerHTML = '';
 
-    const activeCases = alertsList.filter(a => a.status === 'NEW');
+    const activeCases = alertsList.filter(a => a.status === 'NEW' || a.status === 'OPEN');
 
     if (activeCases.length === 0) {
         empty.style.display = 'flex';
@@ -327,12 +515,10 @@ function selectCase(id) {
     const alert = activeAlerts.find(a => a.alert_id === id);
     if (!alert) return;
 
-    // Show Portal
     document.getElementById('investigation-empty-state').style.display = 'none';
     document.getElementById('investigation-split-portal').style.display = 'grid';
     document.getElementById('inbox-sar-display').style.display = 'none';
 
-    // Entity details
     document.getElementById('profile-name').innerText = alert.entity.name;
     document.getElementById('profile-nationality').innerText = alert.entity.nationality;
     document.getElementById('profile-tier').innerText = alert.entity.tier;
@@ -342,37 +528,37 @@ function selectCase(id) {
     kycStatus.innerText = alert.entity.kyc;
     kycStatus.className = alert.entity.kyc.includes('Verified') ? 'badge badge-green' : 'badge badge-orange';
 
-    // Attributions SHAP
     const shapList = document.getElementById('inbox-shap-list');
     shapList.innerHTML = '';
     const attributions = alert.explainability.attributions;
-    Object.keys(attributions).forEach(key => {
-        const score = attributions[key];
-        const isPositive = score >= 0;
-        const absoluteScore = Math.abs(score);
-        const percentage = Math.round(absoluteScore * 100);
-        const shapItem = document.createElement('div');
-        shapItem.className = 'shap-item';
-        
-        const barColor = isPositive ? 'var(--accent-orange)' : '#10b981';
-        const signText = isPositive ? '+' : '-';
-        
-        shapItem.innerHTML = `
-            <div class="shap-header">
-                <span style="text-transform: capitalize;">${key.replace(/_/g, ' ')} Risk</span>
-                <span style="color: ${isPositive ? 'var(--accent-orange)' : '#10b981'}; font-weight: 600;">${signText}${percentage}% impact</span>
-            </div>
-            <div class="shap-bar-bg">
-                <div class="shap-bar-fill" style="width: ${percentage}%; background-color: ${barColor};"></div>
-            </div>
-        `;
-        shapList.appendChild(shapItem);
-    });
+    if (attributions) {
+        Object.keys(attributions).forEach(key => {
+            const score = attributions[key];
+            const isPositive = score >= 0;
+            const absoluteScore = Math.abs(score);
+            const percentage = Math.round(absoluteScore * 100);
+            const shapItem = document.createElement('div');
+            shapItem.className = 'shap-item';
+            
+            const barColor = isPositive ? 'var(--accent-orange)' : '#10b981';
+            const signText = isPositive ? '+' : '-';
+            
+            shapItem.innerHTML = `
+                <div class="shap-header">
+                    <span style="text-transform: capitalize;">${key.replace(/_/g, ' ')} Risk</span>
+                    <span style="color: ${isPositive ? 'var(--accent-orange)' : '#10b981'}; font-weight: 600;">${signText}${percentage}% impact</span>
+                </div>
+                <div class="shap-bar-bg">
+                    <div class="shap-bar-fill" style="width: ${percentage}%; background-color: ${barColor};"></div>
+                </div>
+            `;
+            shapList.appendChild(shapItem);
+        });
+    }
 
-    // Load Neo4j dynamic graph rendering
+    // Load Neo4j dynamic Vis.js network graph rendering
     loadGraphData(id, alert);
 
-    // Ledger Transactions
     const ledgerBody = document.getElementById('inbox-ledger-tbody');
     ledgerBody.innerHTML = '';
     alert.ledger.forEach(item => {
@@ -387,7 +573,6 @@ function selectCase(id) {
         ledgerBody.appendChild(tr);
     });
 
-    // Node highlight details reset
     document.getElementById('graph-node-details').style.display = 'none';
     log(`Auditing Case: Profile loaded for ${alert.entity.name}`, 'info');
 }
@@ -395,10 +580,9 @@ function selectCase(id) {
 function loadInboxTableHighlights(id) {
     const tbody = document.getElementById('inbox-tbody');
     if (!tbody) return;
-    const activeCases = activeAlerts.filter(a => a.status === 'NEW');
+    const activeCases = activeAlerts.filter(a => a.status === 'NEW' || a.status === 'OPEN');
     Array.from(tbody.children).forEach((tr, index) => {
-        const clickId = activeCases[index].alert_id;
-        if (clickId === id) {
+        if (activeCases[index] && activeCases[index].alert_id === id) {
             tr.classList.add('active');
         } else {
             tr.classList.remove('active');
@@ -407,10 +591,6 @@ function loadInboxTableHighlights(id) {
 }
 
 async function loadGraphData(alertId, alert) {
-    const gContainer = document.getElementById('svg-graph-content');
-    if (!gContainer) return;
-    gContainer.innerHTML = '';
-
     if (mockMode) {
         renderMockGraph(alert);
         return;
@@ -422,21 +602,22 @@ async function loadGraphData(alertId, alert) {
         });
         if (!response.ok) throw new Error();
         const graphData = await response.json();
-        renderNetworkGraph(graphData, alert);
+        renderVisNetworkGraph(graphData, alert);
     } catch (e) {
         log('Failed to fetch graph data from Neo4j. Rendering mock topology.', 'warn');
         renderMockGraph(alert);
     }
 }
 
-function renderNetworkGraph(graphData, alert) {
-    const g = document.getElementById('svg-graph-content');
-    g.innerHTML = '';
+// ── Interactive Vis.js Force-Directed Graph Rendering ─────────────────────────
+function renderVisNetworkGraph(graphData, alert) {
+    const container = document.getElementById('vis-graph-container');
+    if (!container) return;
 
-    const nodes = graphData.nodes || [];
-    const edges = graphData.edges || [];
+    const rawNodes = graphData.nodes || [];
+    const rawEdges = graphData.edges || [];
 
-    if (nodes.length === 0) {
+    if (rawNodes.length === 0) {
         renderMockGraph(alert);
         return;
     }
@@ -444,128 +625,94 @@ function renderNetworkGraph(graphData, alert) {
     const senderAcc = alert.transaction.sender;
     const receiverAcc = alert.transaction.receiver;
 
-    const nodePositions = {};
-    const companies = nodes.filter(n => n.type === 'Company');
-    const persons = nodes.filter(n => n.type === 'Person');
-    const accounts = nodes.filter(n => n.type === 'Account');
-    
-    // Position Accounts
-    let intermediateCount = 0;
-    accounts.forEach(node => {
-        const accNum = node.label;
-        if (accNum === senderAcc) {
-            nodePositions[node.id] = { x: 70, y: 120, color: 'var(--accent-blue)', text: 'SND' };
-        } else if (accNum === receiverAcc) {
-            nodePositions[node.id] = { x: 280, y: 120, color: 'var(--accent-red)', text: 'RCV' };
-        } else {
-            const offsetIdx = intermediateCount++;
-            nodePositions[node.id] = { x: 175, y: 180 + offsetIdx * 40, color: 'var(--text-secondary)', text: 'BRK' };
-        }
-    });
+    const visNodes = rawNodes.map(n => {
+        let color = '#3d6b99';
+        let shape = 'dot';
+        let size = 18;
 
-    // Position Companies
-    companies.forEach((node, idx) => {
-        const offset = (idx - (companies.length - 1) / 2) * 80;
-        nodePositions[node.id] = { x: 175 + offset, y: 60, color: '#f59e0b', text: 'CO' };
-    });
-
-    // Position Persons (UBOs)
-    persons.forEach((node, idx) => {
-        const offset = (idx - (persons.length - 1) / 2) * 80;
-        nodePositions[node.id] = { x: 175 + offset, y: 20, color: '#10b981', text: 'UBO' };
-    });
-
-    // Draw Edges (Lines)
-    edges.forEach(edge => {
-        const sourcePos = nodePositions[edge.source];
-        const targetPos = nodePositions[edge.target];
-        if (!sourcePos || !targetPos) return;
-
-        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', sourcePos.x);
-        line.setAttribute('y1', sourcePos.y);
-        line.setAttribute('x2', targetPos.x);
-        line.setAttribute('y2', targetPos.y);
-        
-        let strokeColor = 'var(--text-secondary)';
-        let strokeWidth = '1.5';
-        let isDashed = false;
-
-        if (edge.type === 'TRANSFERS_TO') {
-            const amount = edge.properties.amount || 0;
-            if (amount > 10000) {
-                strokeColor = 'var(--accent-red)';
-                strokeWidth = '2.5';
+        if (n.type === 'Account') {
+            if (n.label === senderAcc) {
+                color = '#3b82f6';
+                size = 22;
+            } else if (n.label === receiverAcc) {
+                color = '#dc2626';
+                size = 22;
             } else {
-                strokeColor = 'var(--accent-blue)';
-                strokeWidth = '1.8';
+                color = '#64748b';
             }
-            line.setAttribute('marker-end', 'url(#arrow)');
-        } else if (edge.type === 'BELONGS_TO') {
-            strokeColor = 'var(--text-secondary)';
-            isDashed = true;
-        } else if (edge.type === 'OWNS_UBO') {
-            strokeColor = '#10b981';
-            isDashed = true;
+        } else if (n.type === 'Company') {
+            color = '#d97706';
+            shape = 'diamond';
+            size = 20;
+        } else if (n.type === 'Person') {
+            color = '#10b981';
+            shape = 'star';
+            size = 20;
         }
 
-        line.setAttribute('stroke', strokeColor);
-        line.setAttribute('stroke-width', strokeWidth);
-        if (isDashed) {
-            line.setAttribute('stroke-dasharray', '3,3');
-        }
-
-        g.appendChild(line);
+        return {
+            id: n.id,
+            label: n.label.length > 15 ? n.label.substring(0, 12) + '...' : n.label,
+            title: `${n.type}: ${n.label}`,
+            color: { background: color, border: '#ffffff', highlight: { background: '#f59e0b', border: '#ffffff' } },
+            shape: shape,
+            size: size,
+            font: { color: '#1e293b', size: 11, face: 'Plus Jakarta Sans' },
+            nodeData: n
+        };
     });
 
-    // Draw Nodes (Circles and Text)
-    nodes.forEach(node => {
-        const pos = nodePositions[node.id];
-        if (!pos) return;
+    const visEdges = rawEdges.map(e => {
+        let color = '#94a3b8';
+        let width = 2;
+        let dashes = false;
 
-        const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        group.setAttribute('style', 'cursor: pointer;');
-        group.onclick = () => showNodeDetails(node);
-
-        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        circle.setAttribute('cx', pos.x);
-        circle.setAttribute('cy', pos.y);
-        circle.setAttribute('r', '16');
-        circle.setAttribute('fill', pos.color);
-        circle.setAttribute('stroke', '#ffffff');
-        circle.setAttribute('stroke-width', '2');
-        circle.setAttribute('class', 'graph-node');
-
-        const textType = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        textType.setAttribute('x', pos.x);
-        textType.setAttribute('y', pos.y + 3);
-        textType.setAttribute('font-size', '8');
-        textType.setAttribute('font-weight', 'bold');
-        textType.setAttribute('fill', '#ffffff');
-        textType.setAttribute('text-anchor', 'middle');
-        textType.setAttribute('pointer-events', 'none');
-        textType.textContent = pos.text;
-
-        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        label.setAttribute('x', pos.x);
-        const labelY = node.type === 'Account' ? pos.y + 26 : pos.y - 20;
-        label.setAttribute('y', labelY);
-        label.setAttribute('font-size', '8');
-        label.setAttribute('font-weight', '600');
-        label.setAttribute('fill', 'var(--text-primary)');
-        label.setAttribute('text-anchor', 'middle');
-        label.setAttribute('pointer-events', 'none');
-        
-        let labelText = node.label;
-        if (labelText.length > 15) {
-            labelText = labelText.substring(0, 12) + '...';
+        if (e.type === 'TRANSFERS_TO') {
+            const amt = e.properties.amount || 0;
+            color = amt > 10000 ? '#dc2626' : '#3b82f6';
+            width = amt > 10000 ? 3 : 2;
+        } else if (e.type === 'BELONGS_TO' || e.type === 'OWNS_UBO') {
+            color = '#10b981';
+            dashes = true;
         }
-        label.textContent = labelText;
 
-        group.appendChild(circle);
-        group.appendChild(textType);
-        group.appendChild(label);
-        g.appendChild(group);
+        return {
+            from: e.source,
+            to: e.target,
+            label: e.type,
+            color: { color: color },
+            width: width,
+            dashes: dashes,
+            arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+            font: { size: 9, align: 'middle' }
+        };
+    });
+
+    const data = {
+        nodes: new vis.DataSet(visNodes),
+        edges: new vis.DataSet(visEdges)
+    };
+
+    const options = {
+        physics: {
+            barnesHut: { gravitationalConstant: -3000, centralGravity: 0.3, springLength: 95 },
+            stabilization: { iterations: 150 }
+        },
+        interaction: { hover: true, zoomView: true, dragView: true }
+    };
+
+    if (visNetworkInstance) {
+        visNetworkInstance.destroy();
+    }
+
+    visNetworkInstance = new vis.Network(container, data, options);
+
+    visNetworkInstance.on('selectNode', (params) => {
+        const selectedId = params.nodes[0];
+        const targetNode = visNodes.find(n => n.id === selectedId);
+        if (targetNode) {
+            showNodeDetails(targetNode.nodeData);
+        }
     });
 }
 
@@ -602,7 +749,7 @@ function renderMockGraph(alert) {
             { source: "p1", target: "c", type: "OWNS_UBO", properties: { percentage: 60.0 } }
         ]
     };
-    renderNetworkGraph(mockData, alert);
+    renderVisNetworkGraph(mockData, alert);
 }
 
 // Case action resolutions in Inbox
@@ -631,6 +778,7 @@ async function resolveInboxCase(action) {
 
             setTimeout(() => {
                 loadAlerts();
+                loadDashboardAnalytics();
                 document.getElementById('investigation-empty-state').style.display = 'flex';
                 document.getElementById('investigation-split-portal').style.display = 'none';
                 document.getElementById('inbox-justification').value = '';
@@ -670,6 +818,7 @@ async function resolveInboxCase(action) {
 
         setTimeout(() => {
             loadAlerts();
+            loadDashboardAnalytics();
             document.getElementById('investigation-empty-state').style.display = 'flex';
             document.getElementById('investigation-split-portal').style.display = 'none';
             document.getElementById('inbox-justification').value = '';
@@ -778,7 +927,6 @@ function renderSandboxVerdict(matches, threshold) {
 
     const badge = document.getElementById('sandbox-verdict-badge');
     const verdictTitle = document.getElementById('sandbox-verdict-verdict');
-    const countEl = document.getElementById('metric-sanctions');
 
     if (validMatches.length > 0) {
         badge.innerText = 'MATCH FOUND';
@@ -795,15 +943,13 @@ function renderSandboxVerdict(matches, threshold) {
             `;
             tbody.appendChild(tr);
         });
-        countEl.innerText = parseInt(countEl.innerText || "0") + validMatches.length;
         log(`Sanctions evaluation hit: Found ${validMatches.length} profiles matching threshold limits!`, 'err');
     } else {
-        badge.innerText = 'PASSED';
+        badge.innerText = 'NO HITS';
         badge.className = 'badge badge-green';
-        verdictTitle.innerText = 'NO SANCTIONS MATCH DETECTED';
-        verdictTitle.style.color = 'var(--accent-green)';
-        
-        tbody.innerHTML = `<tr><td colspan="3" style="text-align: center; color: var(--text-secondary);">Identity checked passed. No records matched the ${Math.round(threshold*100)}% threshold score.</td></tr>`;
-        log('Sanctions evaluation passed: No entries matching threshold levels found.', 'success');
+        verdictTitle.innerText = 'NO MATCHING SANCTIONS PROFILES';
+        verdictTitle.style.color = '#10b981';
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--text-secondary);">No sanctioned profiles met the minimum similarity threshold.</td></tr>';
+        log('Sanctions evaluation completed: Identity cleared.', 'info');
     }
 }

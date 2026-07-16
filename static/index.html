@@ -6,6 +6,10 @@
     <title>Compliance Case Management Console</title>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
+    <!-- Enterprise UI Visualization Libraries: Chart.js & Vis.js Network -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <link href="https://unpkg.com/vis-network/styles/vis-network.min.css" rel="stylesheet" type="text/css" />
     <script>
         if (!localStorage.getItem('jwt_token')) {
             window.location.href = '/login';
@@ -70,43 +74,10 @@
                     <div class="card">
                         <div class="card-header">
                             <h2 class="card-title">Alert Frequency Trend (Daily)</h2>
+                            <span class="badge badge-blue">Live Stream</span>
                         </div>
-                        <div class="card-body" style="align-items: center; justify-content: center; min-height: 250px;">
-                            <!-- SVG Trend Line Chart -->
-                            <svg width="100%" height="200" viewBox="0 0 500 200" preserveAspectRatio="none" style="overflow: visible;">
-                                <defs>
-                                    <linearGradient id="chart-grad" x1="0" y1="0" x2="0" y2="1">
-                                        <stop offset="0%" stop-color="var(--accent-blue)" stop-opacity="0.2"/>
-                                        <stop offset="100%" stop-color="var(--accent-blue)" stop-opacity="0.0"/>
-                                    </linearGradient>
-                                </defs>
-                                <!-- Grid lines -->
-                                <line x1="0" y1="50" x2="500" y2="50" stroke="#e9e5d8" stroke-dasharray="4,4"/>
-                                <line x1="0" y1="100" x2="500" y2="100" stroke="#e9e5d8" stroke-dasharray="4,4"/>
-                                <line x1="0" y1="150" x2="500" y2="150" stroke="#e9e5d8" stroke-dasharray="4,4"/>
-                                
-                                <!-- Filled Area under path -->
-                                <path d="M 0 170 L 80 140 L 160 160 L 240 100 L 320 80 L 400 120 L 480 50 L 500 50 L 500 200 L 0 200 Z" fill="url(#chart-grad)"></path>
-                                <!-- Line Path -->
-                                <path d="M 0 170 L 80 140 L 160 160 L 240 100 L 320 80 L 400 120 L 480 50" fill="none" stroke="var(--accent-blue)" stroke-width="3" stroke-linecap="round"></path>
-                                
-                                <!-- Dots -->
-                                <circle cx="80" cy="140" r="4" fill="var(--accent-blue)"/>
-                                <circle cx="160" cy="160" r="4" fill="var(--accent-blue)"/>
-                                <circle cx="240" cy="100" r="4" fill="var(--accent-blue)"/>
-                                <circle cx="320" cy="80" r="4" fill="var(--accent-blue)"/>
-                                <circle cx="400" cy="120" r="4" fill="var(--accent-blue)"/>
-                                <circle cx="480" cy="50" r="4" fill="var(--accent-blue)"/>
-                                
-                                <!-- Axis Labels -->
-                                <text x="10" y="195" font-size="9" fill="var(--text-secondary)">Mon</text>
-                                <text x="90" y="195" font-size="9" fill="var(--text-secondary)">Tue</text>
-                                <text x="170" y="195" font-size="9" fill="var(--text-secondary)">Wed</text>
-                                <text x="250" y="195" font-size="9" fill="var(--text-secondary)">Thu</text>
-                                <text x="330" y="195" font-size="9" fill="var(--text-secondary)">Fri</text>
-                                <text x="410" y="195" font-size="9" fill="var(--text-secondary)">Sat</text>
-                                <text x="470" y="195" font-size="9" fill="var(--text-secondary)">Sun</text>
-                            </svg>
+                        <div class="card-body" style="padding: 1rem;">
+                            <canvas id="alert-trend-chart" style="max-height: 220px; width: 100%;"></canvas>
                         </div>
                     </div>
 
@@ -115,30 +86,8 @@
                         <div class="card-header">
                             <h2 class="card-title">Alerts Category Distribution</h2>
                         </div>
-                        <div class="card-body">
-                            <div style="display: flex; flex-direction: column; gap: 1rem;">
-                                <div>
-                                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem;">
-                                        <span>Structuring Velocity (SMURFING)</span>
-                                        <strong>42% (18 Cases)</strong>
-                                    </div>
-                                    <div class="bar-progress-container"><div class="bar-progress-fill" style="width: 42%; background-color: var(--accent-orange);"></div></div>
-                                </div>
-                                <div>
-                                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem;">
-                                        <span>High-Value Out-of-Pattern</span>
-                                        <strong>33% (14 Cases)</strong>
-                                    </div>
-                                    <div class="bar-progress-container"><div class="bar-progress-fill" style="width: 33%; background-color: var(--accent-blue);"></div></div>
-                                </div>
-                                <div>
-                                    <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem;">
-                                        <span>PEP & Sanctions Screen Hit</span>
-                                        <strong>25% (11 Cases)</strong>
-                                    </div>
-                                    <div class="bar-progress-container"><div class="bar-progress-fill" style="width: 25%; background-color: var(--accent-red);"></div></div>
-                                </div>
-                            </div>
+                        <div class="card-body" style="padding: 1rem;">
+                            <canvas id="alert-category-chart" style="max-height: 200px; width: 100%;"></canvas>
                         </div>
                     </div>
                 </div>
@@ -158,37 +107,14 @@
                                     <th>Risk Exposure</th>
                                 </tr>
                             </thead>
-                            <tbody>
-                                <tr>
-                                    <td><strong>Sarah Jenkins</strong></td>
-                                    <td><span class="badge badge-orange">4 Active</span></td>
-                                    <td>94%</td>
-                                    <td><span class="badge badge-red">Critical</span></td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Alex Rivera</strong></td>
-                                    <td><span class="badge badge-orange">3 Active</span></td>
-                                    <td>88%</td>
-                                    <td><span class="badge badge-blue">Medium</span></td>
-                                </tr>
-                                <tr>
-                                    <td><strong>David Chen</strong></td>
-                                    <td><span class="badge badge-green">2 Active</span></td>
-                                    <td>91%</td>
-                                    <td><span class="badge badge-orange">High</span></td>
-                                </tr>
-                                <tr>
-                                    <td><strong>Emma Watson</strong></td>
-                                    <td><span class="badge badge-green">1 Active</span></td>
-                                    <td>96%</td>
-                                    <td><span class="badge badge-blue">Low</span></td>
-                                </tr>
+                            <tbody id="leaderboard-tbody">
+                                <!-- Dynamic Rows Injected by app.js -->
                             </tbody>
                         </table>
                     </div>
                     <div class="card-body">
                         <div class="empty-state" style="margin: 0; padding: 1.5rem; border-style: solid; background-color: rgba(61,107,153,0.04);">
-                            <p style="font-size: 0.8rem; line-height: 1.4;">Compliance workloads are distributed dynamically. Click the <strong>Alert Inbox & Triage</strong> tab to assign and escalate incoming alerts.</p>
+                            <p style="font-size: 0.8rem; line-height: 1.4;">Compliance workloads are distributed dynamically from PostgreSQL metrics. Click the <strong>Alert Inbox & Triage</strong> tab to assign and escalate incoming alerts.</p>
                         </div>
                     </div>
                 </div>
@@ -317,26 +243,15 @@
 
                 <!-- Right Column: Interactive Graph Map & Action Console -->
                 <div style="display: flex; flex-direction: column; gap: 1.5rem;">
-                    <!-- Interactive SVG Graph Map -->
+                    <!-- Interactive Vis.js Network Graph Map -->
                     <div class="card">
                         <div class="card-header">
                             <h3 class="card-title">Visual Money Flow (Graph Map)</h3>
-                            <span class="badge badge-blue">Interactive</span>
+                            <span class="badge badge-blue">Interactive Force Network</span>
                         </div>
-                        <div class="card-body" style="align-items: center; justify-content: center; min-height: 280px; position: relative;">
-                            <!-- Node Topology Graph via SVG -->
-                            <svg width="100%" height="240" viewBox="0 0 350 240" style="background-color: var(--bg-primary); border-radius: 8px; border: 1px solid var(--border-color); overflow: visible;">
-                                <!-- Arrows definitions -->
-                                <defs>
-                                    <marker id="arrow" viewBox="0 0 10 10" refX="22" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)"/>
-                                    </marker>
-                                </defs>
-                                <!-- Dynamic Graph Content Container -->
-                                <g id="svg-graph-content">
-                                    <!-- Dynamic nodes and edges injected by app.js -->
-                                </g>
-                            </svg>
+                        <div class="card-body" style="align-items: center; justify-content: center; min-height: 280px; position: relative; padding: 0.75rem;">
+                            <!-- Node Topology Graph via Vis.js Network -->
+                            <div id="vis-graph-container" style="height: 260px; width: 100%; border-radius: 8px; border: 1px solid var(--border-color); background-color: var(--bg-primary);"></div>
                             <!-- Click details box -->
                             <div id="graph-node-details" style="display: none; background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.8rem; position: absolute; bottom: 1.5rem; left: 1.5rem; right: 1.5rem; box-shadow: var(--shadow-md);">
                                 <strong>Node Selected:</strong> <span id="selected-node-label">-</span>
