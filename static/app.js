@@ -1250,25 +1250,28 @@ async function runSandboxScreening(event) {
     const name = document.getElementById('sandbox-screen-name').value.trim();
     const thresholdVal = parseFloat(document.getElementById('sandbox-screen-threshold').value) / 100;
 
-    log(`Phonetic Sandbox query: Identity="${name}", threshold=${thresholdVal}`, 'info');
+    log(`Multi-Tier Screening query: Identity="${name}", threshold=${thresholdVal}`, 'info');
 
     if (mockMode) {
         setTimeout(() => {
-            let matches = [];
+            let resultPayload = { match_found: false, sanctions_hit: { match_found: false }, pep_hit: { match_found: false } };
             const normName = name.toLowerCase();
             if (normName.includes('smirnov') || normName.includes('smirnow')) {
-                matches = [
-                    { name: 'Wladimir Smirnow', list: 'OFAC SDN Blocklist', score: 0.88 },
-                    { name: 'V. Smirnov LLC', list: 'EU Consolidated Sanctions', score: 0.74 }
-                ];
-            } else if (normName.includes('petrov')) {
-                matches = [
-                    { name: 'Ivan Petrov', list: 'EU Consolidated Sanctions', score: 0.92 }
-                ];
+                resultPayload = {
+                    match_found: true,
+                    sanctions_hit: { match_found: true, score: 0.88, source_list: 'OFAC SDN Blocklist', matched_entry: { name: 'Wladimir Smirnow' } },
+                    pep_hit: { match_found: false }
+                };
+            } else if (normName.includes('petrov') || normName.includes('minister')) {
+                resultPayload = {
+                    match_found: true,
+                    sanctions_hit: { match_found: false },
+                    pep_hit: { match_found: true, score: 0.92, pep_tier: 'TIER_2_GOVERNMENT_MINISTER', position: 'Minister of Energy', country: 'RU', source_list: 'Global PEP Register', matched_entry: { name: 'Ivan Petrov' } }
+                };
             }
 
-            renderSandboxVerdict(matches, thresholdVal);
-        }, 500);
+            renderSandboxVerdict(resultPayload, thresholdVal);
+        }, 400);
         return;
     }
 
@@ -1289,59 +1292,65 @@ async function runSandboxScreening(event) {
 
         if (!response.ok) throw new Error();
         const result = await response.json();
-
-        let matches = [];
-        if (result.match_found && result.matched_entry) {
-            matches.push({
-                name: result.matched_entry.name,
-                list: result.source_list || 'OFAC SDN List',
-                score: result.score
-            });
-        }
-        renderSandboxVerdict(matches, thresholdVal);
+        renderSandboxVerdict(result, thresholdVal);
 
     } catch (e) {
-        log('API screening error. Running offline phonetic lookup...', 'warn');
+        log('API screening error. Running offline lookup...', 'warn');
         mockMode = true;
         runSandboxScreening(event);
     }
 }
 
-function renderSandboxVerdict(matches, threshold) {
+function renderSandboxVerdict(res, threshold) {
     document.getElementById('sandbox-unselected').style.display = 'none';
     document.getElementById('sandbox-verdict-body').style.display = 'block';
 
     const tbody = document.getElementById('sandbox-hits-tbody');
     tbody.innerHTML = '';
 
-    const validMatches = matches.filter(m => m.score >= threshold);
+    const sanctionsHit = res.sanctions_hit && res.sanctions_hit.match_found ? res.sanctions_hit : null;
+    const pepHit = res.pep_hit && res.pep_hit.match_found ? res.pep_hit : null;
 
     const badge = document.getElementById('sandbox-verdict-badge');
     const verdictTitle = document.getElementById('sandbox-verdict-verdict');
 
-    if (validMatches.length > 0) {
-        badge.innerText = 'MATCH FOUND';
+    if (sanctionsHit) {
+        badge.innerText = 'SANCTIONS BLOCKLIST HIT';
         badge.className = 'badge badge-red';
-        verdictTitle.innerText = 'BLOCKED PROFILE HITS IDENTIFIED';
+        verdictTitle.innerText = 'MANDATORY BLOCKLIST HIT IDENTIFIED (FREEZE FUNDS)';
         verdictTitle.style.color = 'var(--accent-red)';
-        
-        validMatches.forEach(hit => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td><strong>${hit.name}</strong></td>
-                <td>${hit.list}</td>
-                <td><strong style="color: var(--accent-red);">${Math.round(hit.score * 100)}%</strong></td>
-            `;
-            tbody.appendChild(tr);
-        });
-        log(`Sanctions evaluation hit: Found ${validMatches.length} profiles matching threshold limits!`, 'err');
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><strong style="color: var(--accent-red);">🚫 ${sanctionsHit.matched_entry.name}</strong></td>
+            <td><span class="badge badge-red">${sanctionsHit.source_list || 'OFAC SDN List'}</span></td>
+            <td><strong style="color: var(--accent-red);">${Math.round(sanctionsHit.score * 100)}%</strong></td>
+        `;
+        tbody.appendChild(tr);
+        log(`SANCTIONS BLOCKLIST HIT: ${sanctionsHit.matched_entry.name} matched ${sanctionsHit.source_list}`, 'err');
+
+    } else if (pepHit) {
+        badge.innerText = 'PEP TIER MATCH (EDD REQUIRED)';
+        badge.className = 'badge badge-orange';
+        verdictTitle.innerText = `PEP TIER MATCH IDENTIFIED (${pepHit.pep_tier.replace(/_/g, ' ')})`;
+        verdictTitle.style.color = 'var(--accent-orange)';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><strong>👑 ${pepHit.matched_entry.name}</strong><br><small style="color: var(--text-secondary);">${pepHit.position} (${pepHit.country})</small></td>
+            <td><span class="badge badge-orange">${pepHit.pep_tier}</span></td>
+            <td><strong style="color: var(--accent-orange);">${Math.round(pepHit.score * 100)}%</strong></td>
+        `;
+        tbody.appendChild(tr);
+        log(`PEP TIER MATCH: ${pepHit.matched_entry.name} (${pepHit.position}) requires Enhanced Due Diligence (EDD).`, 'warn');
+
     } else {
-        badge.innerText = 'NO HITS';
+        badge.innerText = 'CLEARED';
         badge.className = 'badge badge-green';
-        verdictTitle.innerText = 'NO MATCHING SANCTIONS PROFILES';
+        verdictTitle.innerText = 'NO MATCHING SANCTIONS OR PEP PROFILES';
         verdictTitle.style.color = '#10b981';
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--text-secondary);">No sanctioned profiles met the minimum similarity threshold.</td></tr>';
-        log('Sanctions evaluation completed: Identity cleared.', 'info');
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--text-secondary);">No sanctioned profiles or PEP tier entities met the similarity threshold.</td></tr>';
+        log('Identity screening cleared: No blocklist or PEP tier matches.', 'info');
     }
 }
 

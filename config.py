@@ -83,4 +83,5 @@ TRANSACTIONS_TOPIC = settings.transactions_topic
 # Elasticsearch Config
 ELASTICSEARCH_HOST = settings.elasticsearch_host
 SANCTIONS_INDEX = settings.sanctions_index
+PEP_INDEX = getattr(settings, 'pep_index', 'pep_list')
 
