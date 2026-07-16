@@ -1,7 +1,5 @@
-import logging
-from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_URL
-
 from services.secrets_manager import get_postgres_dsn
+from services.tls_manager import get_ssl_context
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +13,10 @@ async def init_db_pool():
     global db_pool
     if db_pool is None:
         dsn = get_postgres_dsn()
+        ssl_ctx = get_ssl_context()
         db_pool = await asyncpg.create_pool(
             dsn=dsn,
+            ssl=ssl_ctx,
             min_size=5,
             max_size=20
         )

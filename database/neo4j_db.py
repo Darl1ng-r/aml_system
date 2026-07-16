@@ -1,6 +1,7 @@
 from neo4j import GraphDatabase, AsyncGraphDatabase
 import logging
 from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+from services.tls_manager import get_ssl_context
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +12,12 @@ def get_neo4j_driver():
     global _driver
     if _driver is None:
         try:
-            _driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+            ssl_ctx = get_ssl_context()
+            kwargs = {"auth": (NEO4J_USER, NEO4J_PASSWORD)}
+            if ssl_ctx:
+                kwargs["encrypted"] = True
+                kwargs["ssl_context"] = ssl_ctx
+            _driver = GraphDatabase.driver(NEO4J_URI, **kwargs)
             logger.info("Neo4j driver initialized successfully.")
         except Exception as e:
             logger.error(f"Failed to create Neo4j driver: {e}")
@@ -29,7 +35,12 @@ async def get_async_neo4j_driver():
     global _async_driver
     if _async_driver is None:
         try:
-            _async_driver = AsyncGraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+            ssl_ctx = get_ssl_context()
+            kwargs = {"auth": (NEO4J_USER, NEO4J_PASSWORD)}
+            if ssl_ctx:
+                kwargs["encrypted"] = True
+                kwargs["ssl_context"] = ssl_ctx
+            _async_driver = AsyncGraphDatabase.driver(NEO4J_URI, **kwargs)
             logger.info("Async Neo4j driver initialized successfully.")
         except Exception as e:
             logger.error(f"Failed to create Async Neo4j driver: {e}")

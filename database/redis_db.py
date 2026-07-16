@@ -2,6 +2,7 @@ import redis
 import redis.asyncio as async_redis
 import logging
 from config import REDIS_HOST, REDIS_PORT
+from services.tls_manager import get_ssl_context
 
 logger = logging.getLogger(__name__)
 
@@ -12,11 +13,17 @@ def get_redis_client():
     global _redis_client
     if _redis_client is None:
         try:
-            _redis_client = redis.Redis(
-                host=REDIS_HOST,
-                port=REDIS_PORT,
-                decode_responses=True
-            )
+            ssl_ctx = get_ssl_context()
+            kwargs = {
+                "host": REDIS_HOST,
+                "port": REDIS_PORT,
+                "decode_responses": True
+            }
+            if ssl_ctx:
+                kwargs["ssl"] = True
+                kwargs["ssl_context"] = ssl_ctx
+
+            _redis_client = redis.Redis(**kwargs)
             # Test connection
             _redis_client.ping()
             logger.info("Redis connection established.")
@@ -29,11 +36,17 @@ async def get_async_redis_client():
     global _async_redis_client
     if _async_redis_client is None:
         try:
-            _async_redis_client = async_redis.Redis(
-                host=REDIS_HOST,
-                port=REDIS_PORT,
-                decode_responses=True
-            )
+            ssl_ctx = get_ssl_context()
+            kwargs = {
+                "host": REDIS_HOST,
+                "port": REDIS_PORT,
+                "decode_responses": True
+            }
+            if ssl_ctx:
+                kwargs["ssl"] = True
+                kwargs["ssl_context"] = ssl_ctx
+
+            _async_redis_client = async_redis.Redis(**kwargs)
             await _async_redis_client.ping()
             logger.info("Async Redis connection established.")
         except Exception as e:

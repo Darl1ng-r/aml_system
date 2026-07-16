@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     otel_service_name: str = "aml-platform"
     otel_exporter_endpoint: str = "http://localhost:4317"
     
+    # Mutual TLS (mTLS) & In-Transit Encryption Settings
+    enable_tls: bool = False
+    tls_ca_cert: str | None = None
+    tls_client_cert: str | None = None
+    tls_client_key: str | None = None
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

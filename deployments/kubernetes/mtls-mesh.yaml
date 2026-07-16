@@ -1,0 +1,45 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Service Mesh Mutual TLS (mTLS) & Certificate Management
+# ════════════════════════════════════════════════════════════════════════════
+# Provides a STRICT namespace-wide mTLS policy for Istio / Linkerd service mesh,
+# ensuring all inter-service communications (FastAPI ↔ PostgreSQL, Neo4j,
+# Redis, Elasticsearch, Redpanda) are encrypted in-transit using mTLS certificates.
+# ════════════════════════════════════════════════════════════════════════════
+
+# 1. Istio Namespace-Wide Strict mTLS PeerAuthentication Policy
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: aml-default-strict-mtls
+  namespace: aml-system
+spec:
+  mtls:
+    mode: STRICT # Enforces TLS with client certificate verification for all internal pod connections
+
+---
+# 2. Cert-Manager Internal Service Certificate Issuer
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: aml-internal-services-tls
+  namespace: aml-system
+spec:
+  secretName: aml-internal-services-tls-secret
+  duration: 2160h # 90 days
+  renewBefore: 360h # 15 days before expiration
+  subject:
+    organizations:
+    - AML Compliance Services
+  commonName: aml-fastapi-app.aml-system.svc.cluster.local
+  dnsNames:
+  - aml-fastapi-app
+  - aml-fastapi-app.aml-system.svc.cluster.local
+  - aml-postgres
+  - aml-postgres-primary
+  - aml-neo4j
+  - aml-redis
+  - aml-elasticsearch
+  - aml-redpanda
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
