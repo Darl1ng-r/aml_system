@@ -321,6 +321,72 @@ async def assign_alert(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to assign alert: {str(e)}")
 
+
+class BulkAlertAction(BaseModel):
+    alert_ids: List[str] = Field(..., min_length=1, max_length=100)
+    action: str = Field(..., pattern=r"^(CLOSE_SAR|CLOSE_FALSE_POSITIVE)$")
+    justification: str = Field(..., min_length=5, max_length=2000)
+
+    @field_validator("justification", mode="before")
+    @classmethod
+    def sanitize_justification(cls, v: str) -> str:
+        return sanitize_text(v)
+
+
+@router.post("/bulk-action")
+async def bulk_resolve_alerts(
+    payload: BulkAlertAction,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=10, window=60))
+):
+    """
+    Executes atomic batch resolution for up to 100 alerts simultaneously in PostgreSQL.
+    """
+    status = "CLOSED_SAR" if payload.action == "CLOSE_SAR" else "CLOSED_FALSE_POSITIVE"
+    try:
+        alert_uuids = [uuid.UUID(aid) for aid in payload.alert_ids]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format in alert_ids array.")
+
+    try:
+        tenant_id = enforce_tenant_data_scope(current_user)
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            # Batch update all targeted alert records in PostgreSQL
+            result = await conn.execute(
+                """
+                UPDATE alerts
+                SET status = $1, assigned_officer_id = $2
+                WHERE id = ANY($3::uuid[]);
+                """,
+                status, uuid.UUID(current_user["id"]), alert_uuids
+            )
+            count = int(result.split(" ")[1]) if "UPDATE" in result else 0
+
+            # Log audit trail
+            logger.info(
+                f"AUDIT LOG: Analyst '{current_user['username']}' executed batch resolution on {count} alerts. "
+                f"Action: {payload.action}"
+            )
+
+            # Broadcast WebSocket notification
+            from routers.metrics import ws_manager
+            await ws_manager.broadcast({
+                "event": "BULK_ALERTS_RESOLVED",
+                "count": count,
+                "action": payload.action,
+                "resolved_by": current_user["username"]
+            })
+
+            return {
+                "processed_count": count,
+                "action": payload.action,
+                "status": status,
+                "message": f"Successfully processed {count} alerts in batch transaction."
+            }
+    except Exception as e:
+        logger.error(f"Bulk alert action failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Bulk action failed: {str(e)}")
+
 def generate_sar_xml(alert_data, justification: str) -> str:
     """
     Generates a regulatory FinCEN-compatible Suspicious Activity Report XML payload

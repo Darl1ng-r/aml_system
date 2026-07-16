@@ -490,6 +490,7 @@ function renderInbox(alertsList) {
         const receiverBrief = alert.transaction.receiver.substring(0, 10) + "...";
         
         tr.innerHTML = `
+            <td style="text-align: center;"><input type="checkbox" class="alert-row-checkbox" value="${alert.alert_id}" onclick="event.stopPropagation(); updateBulkActionBar();"></td>
             <td>${idStr}</td>
             <td>${threatBadge}</td>
             <td><strong>${Math.round(alert.ai_risk_score * 100)}%</strong></td>
@@ -500,6 +501,94 @@ function renderInbox(alertsList) {
         `;
         tbody.appendChild(tr);
     });
+    updateBulkActionBar();
+}
+
+function toggleSelectAllAlerts(masterCb) {
+    const checkboxes = document.querySelectorAll('.alert-row-checkbox');
+    checkboxes.forEach(cb => {
+        cb.checked = masterCb.checked;
+    });
+    updateBulkActionBar();
+}
+
+function updateBulkActionBar() {
+    const selectedBoxes = document.querySelectorAll('.alert-row-checkbox:checked');
+    const bar = document.getElementById('bulk-action-bar');
+    const countSpan = document.getElementById('bulk-selected-count');
+    const masterCb = document.getElementById('select-all-alerts');
+    const allBoxes = document.querySelectorAll('.alert-row-checkbox');
+
+    if (!bar || !countSpan) return;
+
+    const selectedCount = selectedBoxes.length;
+    countSpan.innerText = selectedCount;
+
+    if (selectedCount > 0) {
+        bar.style.display = 'flex';
+    } else {
+        bar.style.display = 'none';
+    }
+
+    if (masterCb && allBoxes.length > 0) {
+        masterCb.checked = (selectedCount === allBoxes.length);
+    }
+}
+
+async function executeBulkResolve(action) {
+    const selectedBoxes = Array.from(document.querySelectorAll('.alert-row-checkbox:checked'));
+    const ids = selectedBoxes.map(cb => cb.value);
+    if (ids.length === 0) return;
+
+    const actionText = action === 'CLOSE_SAR' ? 'File Regulatory SAR' : 'Dismiss as False Positive';
+    const note = prompt(`Enter mandatory investigation notes for batch processing ${ids.length} selected alerts (${actionText}):`);
+    if (!note || note.trim().length < 5) {
+        alert('A valid investigation justification (minimum 5 characters) is required for batch action execution.');
+        return;
+    }
+
+    log(`Executing batch ${action} on ${ids.length} selected cases...`, 'info');
+
+    if (mockMode) {
+        ids.forEach(id => {
+            const idx = activeAlerts.findIndex(a => a.alert_id === id);
+            if (idx !== -1) {
+                activeAlerts[idx].status = action === 'CLOSE_SAR' ? 'CLOSED_SAR' : 'CLOSED_FALSE_POSITIVE';
+            }
+        });
+        log(`Mock batch resolved ${ids.length} alerts successfully.`, 'success');
+        loadAlerts();
+        loadDashboardAnalytics();
+        return;
+    }
+
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/alerts/bulk-action`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({
+                alert_ids: ids,
+                action: action,
+                justification: note.trim()
+            })
+        });
+
+        if (response.status === 401) {
+            logout();
+            return;
+        }
+
+        if (!response.ok) throw new Error();
+        const res = await response.json();
+        log(`Batch Operation Succeeded: ${res.message}`, 'success');
+        loadAlerts();
+        loadDashboardAnalytics();
+    } catch (e) {
+        log('Bulk resolution failed. Please verify database pool or network connections.', 'warn');
+    }
 }
 
 function filterInboxTable() {

@@ -137,10 +137,23 @@
                         <button class="btn btn-outline" onclick="loadAlerts()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;">Refresh</button>
                     </div>
                 </div>
+
+                <!-- Sticky Bulk Operation Bar -->
+                <div id="bulk-action-bar" style="display: none; background: #3d6b99; color: #ffffff; padding: 0.5rem 1rem; border-radius: 6px; align-items: center; justify-content: space-between; margin: 0 1.25rem 0.75rem 1.25rem;">
+                    <div style="font-size: 0.85rem;">
+                        <strong id="bulk-selected-count">0</strong> alerts selected for batch operation
+                    </div>
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <button onclick="executeBulkResolve('CLOSE_FALSE_POSITIVE')" class="btn" style="background-color: #d97706; color: #fff; padding: 0.25rem 0.6rem; font-size: 0.75rem;">⚡ Batch Dismiss False Positive</button>
+                        <button onclick="executeBulkResolve('CLOSE_SAR')" class="btn" style="background-color: #dc2626; color: #fff; padding: 0.25rem 0.6rem; font-size: 0.75rem;">📑 Batch File SAR</button>
+                    </div>
+                </div>
+
                 <div class="table-container">
                     <table>
                         <thead>
                             <tr>
+                                <th style="width: 32px; text-align: center;"><input type="checkbox" id="select-all-alerts" onclick="toggleSelectAllAlerts(this)"></th>
                                 <th>Alert ID</th>
                                 <th>Severity</th>
                                 <th>Risk Score</th>
