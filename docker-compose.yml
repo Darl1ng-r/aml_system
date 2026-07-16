@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Relational Database: PostgreSQL
+  # Relational Database: PostgreSQL Primary
   postgres:
     image: postgres:15-alpine
     container_name: aml-postgres
@@ -9,12 +9,52 @@ services:
       POSTGRES_DB: aml_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgrespassword}
+      # Enable WAL-based replication on the primary
+      POSTGRES_INITDB_ARGS: "--data-checksums"
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./deployments/docker/postgres-primary.conf:/etc/postgresql/postgresql.conf:ro
+      - ./deployments/docker/pg_hba_replication.conf:/etc/postgresql/pg_hba.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf -c hba_file=/etc/postgresql/pg_hba.conf
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d aml_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Relational Database: PostgreSQL Read Replica
+  postgres-replica:
+    image: postgres:15-alpine
+    container_name: aml-postgres-replica
+    environment:
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgrespassword}
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: |
+      bash -c "
+      # If data directory is empty, bootstrap from the primary
+      if [ ! -s /var/lib/postgresql/data/PG_VERSION ]; then
+        echo 'Bootstrapping replica from primary...'
+        until pg_isready -h postgres -p 5432 -U postgres; do sleep 1; done
+        PGPASSWORD=$${PGPASSWORD} pg_basebackup \
+          -h postgres -p 5432 -U replicator -D /var/lib/postgresql/data \
+          -Fp -Xs -P -R
+        echo 'Replica bootstrapped.'
+      fi
+      exec postgres \
+        -c hot_standby=on \
+        -c primary_conninfo='host=postgres port=5432 user=replicator password=$${PGPASSWORD}'
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -52,28 +92,88 @@ services:
       timeout: 5s
       retries: 5
 
-  # Message Queue: Redpanda (Kafka API compatible)
-  redpanda:
+  # ════════════════════════════════════════════════════════════════════════
+  # Message Queue: Redpanda 3-Node Cluster
+  # ════════════════════════════════════════════════════════════════════════
+  redpanda-0:
     image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
-    container_name: aml-redpanda
+    container_name: aml-redpanda-0
     command:
       - redpanda start
       - --smp 1
+      - --memory 512M
       - --overprovisioned
+      - --node-id 0
       - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
-      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
-      - --pandaproxy-addr 0.0.0.0:28082,OUTSIDE://0.0.0.0:8082
-      - --advertise-pandaproxy-addr PLAINTEXT://redpanda:28082,OUTSIDE://localhost:8082
+      - --advertise-kafka-addr PLAINTEXT://redpanda-0:29092,OUTSIDE://localhost:9092
+      - --pandaproxy-addr 0.0.0.0:28082
+      - --advertise-pandaproxy-addr redpanda-0:28082
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr redpanda-0:33145
+      - --set redpanda.default_topic_replications=3
+      - --set redpanda.auto_create_topics_enabled=true
     ports:
-      - "9092:9092" # Kafka API external
-      - "8082:8082" # Schema registry/REST proxy external
+      - "9092:9092"   # Kafka API external
+      - "8082:28082"  # REST Proxy external
     volumes:
-      - redpanda_data:/var/lib/redpanda/data
+      - redpanda_0_data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info"]
+      test: ["CMD-SHELL", "rpk cluster info --brokers redpanda-0:29092"]
       interval: 10s
       timeout: 10s
       retries: 5
+
+  redpanda-1:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
+    container_name: aml-redpanda-1
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --node-id 1
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9192
+      - --advertise-kafka-addr PLAINTEXT://redpanda-1:29092,OUTSIDE://localhost:9192
+      - --pandaproxy-addr 0.0.0.0:28082
+      - --advertise-pandaproxy-addr redpanda-1:28082
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr redpanda-1:33145
+      - --seeds redpanda-0:33145
+      - --set redpanda.default_topic_replications=3
+      - --set redpanda.auto_create_topics_enabled=true
+    ports:
+      - "9192:9192"
+    volumes:
+      - redpanda_1_data:/var/lib/redpanda/data
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
+
+  redpanda-2:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
+    container_name: aml-redpanda-2
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --node-id 2
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9292
+      - --advertise-kafka-addr PLAINTEXT://redpanda-2:29092,OUTSIDE://localhost:9292
+      - --pandaproxy-addr 0.0.0.0:28082
+      - --advertise-pandaproxy-addr redpanda-2:28082
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr redpanda-2:33145
+      - --seeds redpanda-0:33145
+      - --set redpanda.default_topic_replications=3
+      - --set redpanda.auto_create_topics_enabled=true
+    ports:
+      - "9292:9292"
+    volumes:
+      - redpanda_2_data:/var/lib/redpanda/data
+    depends_on:
+      redpanda-0:
+        condition: service_healthy
 
   # Search Engine: Elasticsearch
   elasticsearch:
@@ -95,10 +195,31 @@ services:
       timeout: 10s
       retries: 5
 
+  # ════════════════════════════════════════════════════════════════════════
+  # Observability: Jaeger (All-in-One) — distributed tracing UI + collector
+  # ════════════════════════════════════════════════════════════════════════
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: aml-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC collector (used by OTel SDK)
+      - "4318:4318"     # OTLP HTTP collector
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:16686/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
 volumes:
   postgres_data:
+  postgres_replica_data:
   neo4j_data:
   neo4j_logs:
   redis_data:
-  redpanda_data:
+  redpanda_0_data:
+  redpanda_1_data:
+  redpanda_2_data:
   elasticsearch_data:

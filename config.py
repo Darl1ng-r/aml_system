@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # Example: ALLOWED_ORIGINS=https://aml.yourdomain.com
     allowed_origins: str = "http://localhost:3000"
     
+    # OpenTelemetry / Distributed Tracing
+    otel_service_name: str = "aml-platform"
+    otel_exporter_endpoint: str = "http://localhost:4317"
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

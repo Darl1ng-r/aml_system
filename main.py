@@ -3,12 +3,16 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
+from routers import health
 from database.neo4j_db import close_neo4j_driver
 from config import settings
+from observability.logging import setup_json_logging
+from observability.middleware import CorrelationIdMiddleware
 import asyncio
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# ── Structured JSON logging (must be called before any logger is used) ──
+setup_json_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Shutdown event shared between the FastAPI app and the sync worker
@@ -19,6 +23,10 @@ app = FastAPI(
     description="Synchronous transaction scoring and asynchronous graph auditing platform.",
     version="1.0.0"
 )
+
+# ── Middleware ────────────────────────────────────────────────────────────
+# Correlation-ID middleware (must be added BEFORE CORS so it wraps requests)
+app.add_middleware(CorrelationIdMiddleware)
 
 # Enable CORS for frontend dashboard console
 allowed_origins_list = [origin.strip() for origin in settings.allowed_origins.split(",") if origin.strip()]
@@ -31,6 +39,7 @@ app.add_middleware(
 )
 
 # Include Routers
+app.include_router(health.router)  # /health and /health/live — must be before static mount
 app.include_router(auth.router)
 app.include_router(onboarding.router)
 app.include_router(screening.router)
@@ -69,45 +78,38 @@ async def startup_db_clients():
     from database.elasticsearch_db import get_elasticsearch_client, get_async_elasticsearch_client
     from scripts.sync_worker import main as run_sync_worker
     
-    # 1. Initialize & Fail-Fast PostgreSQL
+    # ── 0. Initialise OpenTelemetry tracing ──────────────────────────────
+    try:
+        from observability.tracing import init_tracer
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        init_tracer(
+            service_name=settings.otel_service_name,
+            endpoint=settings.otel_exporter_endpoint,
+        )
+        FastAPIInstrumentor.instrument_app(app)
+        logger.info("OpenTelemetry FastAPI instrumentation enabled.")
+    except Exception as e:
+        logger.warning(f"OpenTelemetry init skipped (non-fatal): {e}")
+    
+    # ── 1. Initialize & Fail-Fast PostgreSQL ─────────────────────────────
     try:
         await init_db_pool()
-        # Run Phase 2 schema migrations
-        from database.postgres import get_async_db_conn
-        async with get_async_db_conn() as conn:
-            await conn.execute(
-                """
-                ALTER TABLE transactions ADD COLUMN IF NOT EXISTS country VARCHAR(3);
-                ALTER TABLE transactions ADD COLUMN IF NOT EXISTS merchant VARCHAR(100);
-                ALTER TABLE transactions ADD COLUMN IF NOT EXISTS device VARCHAR(100);
-                ALTER TABLE transactions ADD COLUMN IF NOT EXISTS channel VARCHAR(50);
-                
-                CREATE TABLE IF NOT EXISTS customer_profiles (
-                    account_id UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-                    avg_amount NUMERIC(15, 2) DEFAULT 0.00,
-                    median_amount NUMERIC(15, 2) DEFAULT 0.00,
-                    variance_amount NUMERIC(15, 2) DEFAULT 0.00,
-                    daily_frequency NUMERIC(10, 4) DEFAULT 0.00,
-                    weekly_frequency NUMERIC(10, 4) DEFAULT 0.00,
-                    monthly_frequency INT DEFAULT 0,
-                    unique_receivers_count INT DEFAULT 0,
-                    unique_receiver_countries_count INT DEFAULT 0,
-                    avg_hour NUMERIC(4, 2) DEFAULT 0.00,
-                    variance_hour NUMERIC(6, 2) DEFAULT 0.00,
-                    top_countries TEXT[],
-                    top_merchants TEXT[],
-                    top_devices TEXT[],
-                    top_channels TEXT[],
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                );
-                """
-            )
-        logger.info("Phase 2 PostgreSQL schema migrations completed successfully.")
     except Exception as e:
-        logger.critical(f"CRITICAL: Could not initialize PostgreSQL or execute migrations: {e}")
+        logger.critical(f"CRITICAL: Could not initialize PostgreSQL: {e}")
         raise RuntimeError("PostgreSQL database initialization failed") from e
+    
+    # ── 1b. Run Alembic migrations ───────────────────────────────────────
+    try:
+        from alembic.config import Config as AlembicConfig
+        from alembic import command as alembic_command
+        alembic_cfg = AlembicConfig("alembic.ini")
+        alembic_command.upgrade(alembic_cfg, "head")
+        logger.info("Alembic database migrations applied successfully.")
+    except Exception as e:
+        logger.critical(f"CRITICAL: Alembic migration failed: {e}")
+        raise RuntimeError("Database migration failed") from e
         
-    # 2. Initialize & Fail-Fast Redis
+    # ── 2. Initialize & Fail-Fast Redis ──────────────────────────────────
     try:
         get_redis_client()
         await get_async_redis_client()
@@ -115,7 +117,7 @@ async def startup_db_clients():
         logger.critical(f"CRITICAL: Could not connect to Redis: {e}")
         raise RuntimeError("Redis cache is required for startup") from e
         
-    # 3. Initialize & Fail-Fast Neo4j
+    # ── 3. Initialize & Fail-Fast Neo4j ──────────────────────────────────
     try:
         get_neo4j_driver()
         await get_async_neo4j_driver()
@@ -123,7 +125,7 @@ async def startup_db_clients():
         logger.critical(f"CRITICAL: Could not connect to Neo4j: {e}")
         raise RuntimeError("Neo4j database is required for startup") from e
         
-    # 4. Initialize & Fail-Fast Elasticsearch
+    # ── 4. Initialize & Fail-Fast Elasticsearch ──────────────────────────
     try:
         get_elasticsearch_client()
         await get_async_elasticsearch_client()
@@ -131,7 +133,7 @@ async def startup_db_clients():
         logger.critical(f"CRITICAL: Could not connect to Elasticsearch: {e}")
         raise RuntimeError("Elasticsearch database is required for startup") from e
 
-    # 5. Start Neo4j Graph Sync Worker (Redpanda consumer or PostgreSQL fallback)
+    # ── 5. Start Neo4j Graph Sync Worker ─────────────────────────────────
     logger.info("Starting background Neo4j graph synchronization worker...")
     asyncio.create_task(run_sync_worker(shutdown_event=_worker_shutdown_event))
 
@@ -183,3 +185,11 @@ async def shutdown_db_clients():
     except Exception as e:
         logger.warning(f"Failed to close Async Redis client: {e}")
 
+    # Shutdown OpenTelemetry tracer
+    try:
+        from opentelemetry import trace
+        provider = trace.get_tracer_provider()
+        if hasattr(provider, "shutdown"):
+            provider.shutdown()
+    except Exception:
+        pass

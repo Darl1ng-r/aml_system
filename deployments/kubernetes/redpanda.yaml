@@ -1,3 +1,9 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Redpanda 3-Node Cluster — Production Mode
+# ════════════════════════════════════════════════════════════════════════════
+# Switches from --mode dev-container to production settings with proper
+# seed server configuration for Raft cluster formation.
+# ════════════════════════════════════════════════════════════════════════════
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -28,23 +34,32 @@ spec:
             topologyKey: "kubernetes.io/hostname"
       containers:
       - name: redpanda
-        image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
+        image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
         command:
         - /bin/sh
         - -c
         - |
+          NODE_ID=$(echo $POD_NAME | awk -F'-' '{print $NF}')
           exec redpanda start \
-            --node-id $(echo $POD_NAME | awk -F'-' '{print $NF}') \
+            --node-id ${NODE_ID} \
             --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:9093 \
             --advertise-kafka-addr internal://$(POD_IP):9092,external://$(POD_NAME).aml-redpanda-headless.aml-system.svc.cluster.local:9093 \
             --pandaproxy-addr 0.0.0.0:8082 \
             --advertise-pandaproxy-addr $(POD_IP):8082 \
             --rpc-addr 0.0.0.0:33145 \
             --advertise-rpc-addr $(POD_NAME).aml-redpanda-headless.aml-system.svc.cluster.local:33145 \
-            --mode dev-container \
             --smp 1 \
             --memory 1G \
-            --default-log-level=info
+            --default-log-level=info \
+            --set redpanda.developer_mode=false \
+            --set redpanda.auto_create_topics_enabled=true \
+            --set redpanda.default_topic_replications=3 \
+            --set redpanda.transaction_coordinator_replication=3 \
+            --set redpanda.id_allocator_replication=3 \
+            --set redpanda.enable_idempotence=true \
+            --set redpanda.enable_transactions=true \
+            --set redpanda.empty_seed_starts_cluster=false \
+            --set redpanda.seed_servers='[{"host":{"address":"aml-redpanda-0.aml-redpanda-headless.aml-system.svc.cluster.local","port":33145}}]'
         env:
         - name: POD_NAME
           valueFrom:
@@ -61,13 +76,27 @@ spec:
           name: kafka-external
         - containerPort: 8082
           name: proxy
+        - containerPort: 33145
+          name: rpc
         resources:
           requests:
-            cpu: "250m"
+            cpu: "500m"
             memory: "1Gi"
           limits:
             cpu: "1000m"
             memory: "2Gi"
+        readinessProbe:
+          exec:
+            command: ["rpk", "cluster", "health"]
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          exec:
+            command: ["rpk", "cluster", "info"]
+          initialDelaySeconds: 20
+          periodSeconds: 15
+          failureThreshold: 5
         volumeMounts:
         - name: redpanda-data
           mountPath: /var/lib/redpanda/data
@@ -80,6 +109,7 @@ spec:
         requests:
           storage: 10Gi
 ---
+# Headless service for StatefulSet DNS (pod-to-pod cluster communication)
 apiVersion: v1
 kind: Service
 metadata:
@@ -94,9 +124,12 @@ spec:
     name: kafka-internal
   - port: 9093
     name: kafka-external
+  - port: 33145
+    name: rpc
   selector:
     app: aml-redpanda
 ---
+# ClusterIP service for client Kafka connections
 apiVersion: v1
 kind: Service
 metadata:

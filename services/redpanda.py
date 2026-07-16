@@ -20,6 +20,21 @@ from config import KAFKA_BOOTSTRAP_SERVERS, TRANSACTIONS_TOPIC
 
 logger = logging.getLogger(__name__)
 
+
+# ── OpenTelemetry trace-context helpers ────────────────────────────────────────
+def _inject_trace_headers() -> list[tuple[str, bytes]]:
+    """Returns Kafka headers carrying the current W3C traceparent."""
+    try:
+        from opentelemetry import context as otel_context
+        from opentelemetry.propagators import textmap
+        from opentelemetry.propagate import inject
+
+        carrier: dict[str, str] = {}
+        inject(carrier)
+        return [(k, v.encode("utf-8")) for k, v in carrier.items()]
+    except Exception:
+        return []
+
 # ── Singleton async producer ───────────────────────────────────────────────────
 _producer = None
 _producer_lock = asyncio.Lock()
@@ -73,10 +88,12 @@ async def publish_transaction_async(transaction_payload: dict) -> bool:
         return False
 
     try:
+        headers = _inject_trace_headers()
         await producer.send_and_wait(
             topic=TRANSACTIONS_TOPIC,
             key=transaction_payload.get("transaction_id", ""),
             value=transaction_payload,
+            headers=headers,
         )
         logger.info(
             f"Published tx {transaction_payload.get('transaction_id')} "

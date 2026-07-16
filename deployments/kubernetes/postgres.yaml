@@ -1,3 +1,39 @@
+# ════════════════════════════════════════════════════════════════════════════
+# PostgreSQL StatefulSet with Streaming Replication
+# ════════════════════════════════════════════════════════════════════════════
+# Pod 0 = Primary (read-write)
+# Pod 1 = Streaming Replica (hot standby, read-only)
+#
+# The init container on ordinal > 0 runs pg_basebackup to clone data from
+# the primary.  The replica starts with standby.signal and streams WAL
+# from the primary via primary_conninfo.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── ConfigMap: PostgreSQL configuration ──────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aml-postgres-config
+  namespace: aml-system
+data:
+  postgresql.conf: |
+    listen_addresses = '*'
+    port = 5432
+    wal_level = replica
+    max_wal_senders = 5
+    wal_keep_size = '256MB'
+    hot_standby = on
+    max_connections = 200
+    log_line_prefix = '%m [%p] %q%u@%d '
+    log_min_duration_statement = 500
+
+  pg_hba.conf: |
+    # TYPE  DATABASE  USER         ADDRESS    METHOD
+    local   all       all                     trust
+    host    all       all          0.0.0.0/0  md5
+    host    replication replicator 0.0.0.0/0  md5
+    host    replication postgres   0.0.0.0/0  md5
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -14,6 +50,56 @@ spec:
       labels:
         app: aml-postgres
     spec:
+      initContainers:
+      # ── Replication bootstrap (runs only on ordinal > 0) ──────────────
+      - name: replica-bootstrap
+        image: postgres:15-alpine
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aml-secrets
+              key: POSTGRES_PASSWORD
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        command:
+        - bash
+        - -c
+        - |
+          set -e
+          ORDINAL=${POD_NAME##*-}
+          if [ "$ORDINAL" = "0" ]; then
+            echo "Primary node — skipping replica bootstrap."
+            # Ensure the primary has the replicator role
+            exit 0
+          fi
+          # Only bootstrap if PGDATA is empty
+          if [ -s "$PGDATA/PG_VERSION" ]; then
+            echo "Data directory already initialised — skipping pg_basebackup."
+            exit 0
+          fi
+          echo "Bootstrapping replica from aml-postgres-0..."
+          until pg_isready -h aml-postgres-0.aml-postgres-service.aml-system.svc.cluster.local -p 5432 -U postgres; do
+            sleep 2
+          done
+          PGPASSWORD="$POSTGRES_PASSWORD" pg_basebackup \
+            -h aml-postgres-0.aml-postgres-service.aml-system.svc.cluster.local \
+            -p 5432 -U postgres -D "$PGDATA" -Fp -Xs -P -R
+          # Write standby.signal for hot standby mode
+          touch "$PGDATA/standby.signal"
+          # Write primary_conninfo into postgresql.auto.conf
+          cat >> "$PGDATA/postgresql.auto.conf" <<EOF
+          primary_conninfo = 'host=aml-postgres-0.aml-postgres-service.aml-system.svc.cluster.local port=5432 user=postgres password=$POSTGRES_PASSWORD'
+          EOF
+          echo "Replica bootstrap complete."
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+
       containers:
       - name: postgres
         image: postgres:15-alpine
@@ -30,6 +116,14 @@ spec:
             secretKeyRef:
               name: aml-secrets
               key: POSTGRES_PASSWORD
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        args:
+        - postgres
+        - -c
+        - config_file=/etc/postgresql/postgresql.conf
+        - -c
+        - hba_file=/etc/postgresql/pg_hba.conf
         resources:
           requests:
             cpu: "250m"
@@ -37,9 +131,33 @@ spec:
           limits:
             cpu: "1000m"
             memory: "1024Mi"
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+            - -d
+            - aml_db
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 15
+          periodSeconds: 10
         volumeMounts:
         - name: postgres-data
           mountPath: /var/lib/postgresql/data
+        - name: postgres-config
+          mountPath: /etc/postgresql
+      volumes:
+      - name: postgres-config
+        configMap:
+          name: aml-postgres-config
   volumeClaimTemplates:
   - metadata:
       name: postgres-data
@@ -49,7 +167,7 @@ spec:
         requests:
           storage: 10Gi
 ---
-# Read-Write Primary Service
+# Read-Write Primary Service (routes to pod-0 only)
 apiVersion: v1
 kind: Service
 metadata:
@@ -64,7 +182,23 @@ spec:
   selector:
     statefulset.kubernetes.io/pod-name: aml-postgres-0
 ---
-# Read-Only Replica Service (load-balances requests across all nodes for read operations)
+# Headless Service for StatefulSet DNS
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-postgres-service
+  namespace: aml-system
+  labels:
+    app: aml-postgres
+spec:
+  clusterIP: None
+  ports:
+  - port: 5432
+    targetPort: 5432
+  selector:
+    app: aml-postgres
+---
+# Read-Only Replica Service (load-balances read requests across all pods)
 apiVersion: v1
 kind: Service
 metadata:

@@ -34,8 +34,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import KAFKA_BOOTSTRAP_SERVERS, TRANSACTIONS_TOPIC
 from database.neo4j_db import get_async_neo4j_driver
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Use structured JSON logging if available; fall back to basic
+try:
+    from observability.logging import setup_json_logging
+    setup_json_logging()
+except ImportError:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("sync_worker")
+
+
+# ── OpenTelemetry helpers ──────────────────────────────────────────────────────
+def _extract_trace_context(headers):
+    """Extract W3C trace context from Kafka message headers."""
+    try:
+        from opentelemetry.propagate import extract
+        carrier = {}
+        if headers:
+            for key, value in headers:
+                carrier[key] = value.decode("utf-8") if isinstance(value, bytes) else value
+        return extract(carrier)
+    except Exception:
+        return None
+
+
+def _get_tracer():
+    try:
+        from observability.tracing import get_tracer
+        return get_tracer("sync_worker")
+    except ImportError:
+        return None
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 CONSUMER_GROUP_ID = "aml-graph-sync-group"
@@ -204,11 +231,23 @@ async def run_kafka_consumer(neo4j_driver, shutdown_event: asyncio.Event):
                     tx_payload = msg.value
                     tx_id = tx_payload.get("transaction_id", "unknown")
 
+                    # Link consumer span to the producer trace
+                    trace_ctx = _extract_trace_context(msg.headers)
+                    tracer = _get_tracer()
+
                     # Retry loop with exponential backoff
                     success = False
                     last_error = None
                     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
-                        success = await sync_transaction_to_neo4j(tx_payload, neo4j_driver)
+                        if tracer and trace_ctx:
+                            with tracer.start_as_current_span(
+                                "sync_to_neo4j",
+                                context=trace_ctx,
+                                attributes={"tx.id": tx_id, "retry.attempt": attempt},
+                            ):
+                                success = await sync_transaction_to_neo4j(tx_payload, neo4j_driver)
+                        else:
+                            success = await sync_transaction_to_neo4j(tx_payload, neo4j_driver)
                         if success:
                             break
                         last_error = f"Neo4j write failed on attempt {attempt}"
