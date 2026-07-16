@@ -1164,6 +1164,56 @@ async function resolveInboxCase(action) {
     }
 }
 
+async function submitSARToFinCEN() {
+    if (!activeAlertId) return;
+    const sarXml = document.getElementById('inbox-sar-xml').innerText;
+    if (!sarXml) {
+        alert('No generated SAR XML payload found for active case.');
+        return;
+    }
+
+    log(`Transmitting SAR electronically to U.S. FinCEN BSA E-Filing Gateway for case ${activeAlertId.substring(0, 8)}...`, 'info');
+
+    if (mockMode) {
+        const trackingId = `BSA-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+        document.getElementById('fincen-receipt-box').style.display = 'block';
+        document.getElementById('fincen-tracking-id-display').innerText = trackingId;
+        document.getElementById('fincen-status-display').innerText = 'ACKNOWLEDGED (Sandbox)';
+        log(`FinCEN Electronic Submission Receipt Verified: ${trackingId}`, 'success');
+        return;
+    }
+
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/fincen/sar/submit`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({
+                alert_id: activeAlertId,
+                sar_xml: sarXml
+            })
+        });
+
+        if (response.status === 401) {
+            logout();
+            return;
+        }
+
+        if (!response.ok) throw new Error();
+        const res = await response.json();
+
+        document.getElementById('fincen-receipt-box').style.display = 'block';
+        document.getElementById('fincen-tracking-id-display').innerText = res.fincen_tracking_id;
+        document.getElementById('fincen-status-display').innerText = res.status;
+        log(`FinCEN Electronic Receipt Ingested: Tracking ID=${res.fincen_tracking_id}, Status=${res.status}`, 'success');
+
+    } catch (e) {
+        log('FinCEN electronic submission API error. Please verify transmitter credentials.', 'warn');
+    }
+}
+
 function generateSARXML(alert, justification) {
     return `<?xml version="1.0" encoding="UTF-8"?>
 <SuspiciousActivityReport>

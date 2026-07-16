@@ -302,10 +302,17 @@
                                 <button class="btn btn-outline" onclick="resolveInboxCase('CLOSE_FALSE_POSITIVE')">Dismiss False Positive</button>
                             </div>
 
-                            <!-- Regulatory XML output details -->
+                            <!-- Regulatory FinCEN XML & Electronic E-Filing output details -->
                             <div id="inbox-sar-display" style="display: none; border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 0.5rem;">
-                                <span class="detail-label">Regulatory Suspicious Activity Report XML</span>
-                                <pre id="inbox-sar-xml" style="margin-top: 0.5rem; font-size: 0.75rem; max-height: 150px;"></pre>
+                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+                                    <span class="detail-label">Regulatory FinCEN SAR Payload</span>
+                                    <button onclick="submitSARToFinCEN()" class="btn btn-primary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; background-color: var(--accent-red); border: none;">⚡ Transmit to FinCEN Gateway</button>
+                                </div>
+                                <pre id="inbox-sar-xml" style="margin-top: 0.5rem; font-size: 0.75rem; max-height: 140px;"></pre>
+                                <div id="fincen-receipt-box" style="display: none; margin-top: 0.75rem; padding: 0.75rem; background: rgba(16,185,129,0.1); border: 1px solid var(--accent-green); border-radius: 6px; font-size: 0.8rem;">
+                                    <strong style="color: var(--accent-green);">FinCEN Electronic Receipt:</strong><br>
+                                    Tracking ID: <code id="fincen-tracking-id-display" style="font-weight: bold;">-</code> | Status: <span class="badge badge-green" id="fincen-status-display">ACKNOWLEDGED</span>
+                                </div>
                             </div>
                         </div>
                     </div>
