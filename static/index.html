@@ -29,6 +29,7 @@
             </div>
         </div>
         <div style="display: flex; align-items: center; gap: 1rem;">
+            <button id="shortcuts-btn" class="btn btn-outline" onclick="toggleShortcutsModal()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;" title="View Keyboard Shortcuts (?)">⌨️ Shortcuts</button>
             <button id="theme-toggle-btn" class="btn btn-outline" onclick="toggleTheme()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;">🌙 Dark Mode</button>
             <span id="user-welcome-text" style="font-size: 0.85rem; font-weight: 600; display: none; color: var(--text-secondary);">Welcome, Analyst</span>
             <button id="logout-button" class="logout-btn" onclick="logout()" style="display: none;">Logout</button>
@@ -388,6 +389,45 @@
             </div>
             <div class="live-log-feed" id="log-feed">
                 <!-- Log entries populate here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Keyboard Shortcuts Cheat Sheet Modal -->
+    <div id="shortcuts-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+        <div style="background-color: var(--card-bg); color: var(--text-primary); width: 100%; max-width: 500px; border-radius: 12px; border: 1px solid var(--border-color); padding: 1.5rem; box-shadow: var(--shadow-md);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.75rem;">
+                <h3 style="font-size: 1.1rem; font-weight: 700;">⌨️ Power Analyst Keyboard Shortcuts</h3>
+                <button onclick="toggleShortcutsModal()" class="btn btn-outline" style="padding: 0.2rem 0.5rem; font-size: 0.8rem;">Esc</button>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.85rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                    <span>Navigate Cases Queue Down / Up</span>
+                    <div><kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">J</kbd> / <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">K</kbd> or <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">↓</kbd> / <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">↑</kbd></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                    <span>Quick Dismiss False Positive</span>
+                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">F</kbd>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                    <span>Quick File Regulatory SAR</span>
+                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">S</kbd>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                    <span>Focus Justification Notes Box</span>
+                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">Enter</kbd>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                    <span>Close Investigation Portal / Deselect</span>
+                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">Esc</kbd>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>Toggle Keyboard Shortcuts Help</span>
+                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">?</kbd>
+                </div>
+            </div>
+            <div style="margin-top: 1.25rem; text-align: right;">
+                <button onclick="toggleShortcutsModal()" class="btn btn-primary" style="padding: 0.4rem 1rem; font-size: 0.85rem;">Close</button>
             </div>
         </div>
     </div>

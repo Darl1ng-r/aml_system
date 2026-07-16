@@ -123,6 +123,111 @@ function updateThemeToggleButton(theme) {
     }
 }
 
+// ── Power Analyst Keyboard Shortcuts Engine ───────────────────────────────────
+window.addEventListener('keydown', (e) => {
+    // Toggle Shortcuts Help modal on "?"
+    if (e.key === '?' && !isInputFieldActive()) {
+        e.preventDefault();
+        toggleShortcutsModal();
+        return;
+    }
+
+    // Close modal or investigation portal on "Esc"
+    if (e.key === 'Escape') {
+        const modal = document.getElementById('shortcuts-modal');
+        if (modal && modal.style.display === 'flex') {
+            toggleShortcutsModal();
+            return;
+        }
+        if (isInputFieldActive()) {
+            document.activeElement.blur();
+            return;
+        }
+        closeInvestigationPortal();
+        return;
+    }
+
+    // Ignore single-character hotkeys when typing in form fields
+    if (isInputFieldActive()) {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            const activeInput = document.activeElement;
+            if (activeInput && activeInput.id === 'inbox-justification') {
+                e.preventDefault();
+                resolveInboxCase('CLOSE_FALSE_POSITIVE');
+            }
+        }
+        return;
+    }
+
+    const activeCases = activeAlerts.filter(a => a.status === 'NEW' || a.status === 'OPEN');
+    if (activeCases.length === 0) return;
+
+    const currentIndex = activeCases.findIndex(a => a.alert_id === activeAlertId);
+
+    // Key "j" or "ArrowDown": Next Case
+    if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const nextIdx = (currentIndex < activeCases.length - 1) ? currentIndex + 1 : 0;
+        selectCase(activeCases[nextIdx].alert_id);
+    }
+    // Key "k" or "ArrowUp": Previous Case
+    else if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const prevIdx = (currentIndex > 0) ? currentIndex - 1 : activeCases.length - 1;
+        selectCase(activeCases[prevIdx].alert_id);
+    }
+    // Key "f": Quick Dismiss as False Positive
+    else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        if (activeAlertId) {
+            const noteInput = document.getElementById('inbox-justification');
+            if (noteInput && !noteInput.value.trim()) {
+                noteInput.value = "Automated audit triage: Verified non-suspicious transaction pattern.";
+            }
+            resolveInboxCase('CLOSE_FALSE_POSITIVE');
+        }
+    }
+    // Key "s": Quick File Regulatory SAR
+    else if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        if (activeAlertId) {
+            const noteInput = document.getElementById('inbox-justification');
+            if (noteInput && !noteInput.value.trim()) {
+                noteInput.value = "Automated audit triage: High-risk anomaly confirmed for FinCEN SAR reporting.";
+            }
+            resolveInboxCase('CLOSE_SAR');
+        }
+    }
+    // Key "Enter": Focus mandatory justification input box
+    else if (e.key === 'Enter') {
+        e.preventDefault();
+        const noteInput = document.getElementById('inbox-justification');
+        if (noteInput) {
+            noteInput.focus();
+        }
+    }
+});
+
+function isInputFieldActive() {
+    const activeEl = document.activeElement;
+    if (!activeEl) return false;
+    const tag = activeEl.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select';
+}
+
+function toggleShortcutsModal() {
+    const modal = document.getElementById('shortcuts-modal');
+    if (!modal) return;
+    modal.style.display = (modal.style.display === 'flex') ? 'none' : 'flex';
+}
+
+function closeInvestigationPortal() {
+    activeAlertId = null;
+    loadInboxTableHighlights(null);
+    document.getElementById('investigation-empty-state').style.display = 'flex';
+    document.getElementById('investigation-split-portal').style.display = 'none';
+}
+
 function initAuth() {
     const token = localStorage.getItem('jwt_token');
     const username = localStorage.getItem('username');
