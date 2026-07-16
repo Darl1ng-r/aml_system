@@ -169,6 +169,16 @@ function initWebSocket() {
                     log(`✅ REAL-TIME EVENT: Case Resolved. Status: ${data.status}`, 'success');
                     loadAlerts();
                     loadDashboardAnalytics();
+                } else if (data.event === 'ALERT_ASSIGNED') {
+                    log(`👤 REAL-TIME EVENT: Case assigned to ${data.assigned_officer}`, 'info');
+                    loadAlerts();
+                    loadDashboardAnalytics();
+                } else if (data.event === 'GRAPH_SYNCED') {
+                    log(`🕸️ REAL-TIME GRAPH: Synced edge $${data.amount} (${data.sender_account} → ${data.receiver_account})`, 'info');
+                    if (activeAlertId) {
+                        const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
+                        if (alert) loadGraphData(activeAlertId, alert);
+                    }
                 }
             } catch (e) {
                 // Ignore raw strings
