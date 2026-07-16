@@ -50,11 +50,13 @@ async def list_alerts(
                 """
                 SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.explainability_payload, a.status, a.created_at,
                        t.amount, t.currency, t.timestamp,
-                       s.account_number as sender, r.account_number as receiver
+                       s.account_number as sender, r.account_number as receiver,
+                       COALESCE(u.username, 'Unassigned') as assignee
                 FROM alerts a
                 JOIN transactions t ON a.transaction_id = t.id
                 JOIN accounts s ON t.sender_account_id = s.id
                 JOIN accounts r ON t.receiver_account_id = r.id
+                LEFT JOIN users u ON a.assigned_officer_id = u.id
                 ORDER BY a.created_at DESC
                 LIMIT $1 OFFSET $2;
                 """,
@@ -71,6 +73,7 @@ async def list_alerts(
                     "explainability": json.loads(row[4]) if isinstance(row[4], str) else row[4],
                     "status": row[5],
                     "created_at": row[6].isoformat(),
+                    "assignee": row[12],
                     "transaction": {
                         "amount": float(row[7]),
                         "currency": row[8],
@@ -270,16 +273,53 @@ async def resolve_alert(
         if payload.action == "CLOSE_SAR" and payload.sar_xml_generate:
             sar_xml = generate_sar_xml(alert, payload.justification)
 
-        return {
-            "alert_id": id,
-            "status": status,
-            "justification": payload.justification,
-            "sar_xml": sar_xml
-        }
+class AlertAssignment(BaseModel):
+    officer_username: str = Field(..., min_length=1, max_length=100)
+
+    @field_validator("officer_username", mode="before")
+    @classmethod
+    def sanitize_officer(cls, v: str) -> str:
+        return sanitize_text(v)
+
+@router.post("/{id}/assign")
+async def assign_alert(
+    id: str,
+    payload: AlertAssignment,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
+    try:
+        tenant_id = enforce_tenant_data_scope(current_user)
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            # Resolve user ID from username
+            officer = await conn.fetchrow(
+                "SELECT id FROM users WHERE username = $1;",
+                payload.officer_username
+            )
+            if not officer:
+                raise HTTPException(status_code=404, detail=f"Officer '{payload.officer_username}' not found.")
+
+            # Update assigned_officer_id
+            updated = await conn.execute(
+                "UPDATE alerts SET assigned_officer_id = $1 WHERE id = $2;",
+                officer["id"], uuid.UUID(id)
+            )
+            if updated == "UPDATE 0":
+                raise HTTPException(status_code=404, detail="Alert not found.")
+
+            # Broadcast WebSocket update
+            from routers.metrics import ws_manager
+            await ws_manager.broadcast({
+                "event": "ALERT_ASSIGNED",
+                "alert_id": id,
+                "assigned_officer": payload.officer_username
+            })
+
+            return {"alert_id": id, "assigned_officer": payload.officer_username, "status": "ASSIGNED"}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Alert update failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to assign alert: {str(e)}")
 
 def generate_sar_xml(alert_data, justification: str) -> str:
     """

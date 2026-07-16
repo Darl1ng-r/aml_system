@@ -752,6 +752,31 @@ function renderMockGraph(alert) {
     renderVisNetworkGraph(mockData, alert);
 }
 
+async function assignCaseToOfficer(officerUsername) {
+    if (!activeAlertId) return;
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/alerts/${activeAlertId}/assign`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({ officer_username: officerUsername })
+        });
+        if (response.status === 401) {
+            logout();
+            return;
+        }
+        if (!response.ok) throw new Error();
+        const res = await response.json();
+        log(`Case ${activeAlertId.substring(0, 8)} assigned to officer: ${res.assigned_officer}`, 'success');
+        loadAlerts();
+        loadDashboardAnalytics();
+    } catch (e) {
+        log('Failed to assign case officer.', 'warn');
+    }
+}
+
 // Case action resolutions in Inbox
 async function resolveInboxCase(action) {
     const justification = document.getElementById('inbox-justification').value.trim();
