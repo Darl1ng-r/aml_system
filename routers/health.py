@@ -1,41 +1,80 @@
 """
-Health Check Endpoints
-=======================
-Provides ``/health`` (deep) and ``/health/live`` (shallow) endpoints
-referenced by the Kubernetes liveness and readiness probes in fastapi-app.yaml.
+Hardened Health Check Endpoints
+================================
+Provides secure, topology-masked health endpoints:
 
-Deep check (readiness):
-    Pings PostgreSQL, Redis, Neo4j, and Elasticsearch.
-    Returns 200 if all dependencies are reachable, 503 otherwise.
+  - ``/health/live`` (Shallow Liveness):
+      Publicly accessible for Kubernetes liveness probes. Returns 200 OK.
 
-Shallow check (liveness):
-    Always returns 200 — proves the process is alive and accepting HTTP.
+  - ``/health`` (Deep Readiness & Topology Protection):
+      Pings backing services (PostgreSQL, Redis, Neo4j, Elasticsearch).
+      - Unauthenticated callers (e.g. public / standard K8s readiness probes):
+        Returns minimal 200 (healthy) or 503 (degraded) WITHOUT revealing service names,
+        latencies, or exception trace details.
+      - Authenticated callers (valid Bearer JWT or matching X-Health-Token):
+        Returns full detailed component breakdown for monitoring & internal diagnostics.
 """
 
 import logging
+import os
 import time
+from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, Request, Depends
 from fastapi.responses import JSONResponse
+from config import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Health"])
 
 
+def is_authenticated_health_request(
+    authorization: Optional[str] = Header(None),
+    x_health_token: Optional[str] = Header(None),
+) -> bool:
+    """
+    Validates whether the health request contains proper diagnostic clearance.
+    Clearance granted via:
+      1. Matching X-Health-Token header (matching HEALTH_CHECK_SECRET env var)
+      2. Valid Bearer JWT access token
+    """
+    health_secret = os.getenv("HEALTH_CHECK_SECRET")
+    if health_secret and x_health_token == health_secret:
+        return True
+
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ")[1]
+        try:
+            from services.secrets_manager import decode_jwt_with_rotation
+
+            decode_jwt_with_rotation(token, algorithm=settings.jwt_algorithm)
+            return True
+        except Exception:
+            pass
+
+    return False
+
+
 @router.get("/health/live")
 async def liveness():
-    """Lightweight liveness probe — always 200 if the process is running."""
+    """Lightweight liveness probe — returns 200 if process is running."""
     return {"status": "alive"}
 
 
 @router.get("/health")
-async def readiness():
+async def readiness(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_health_token: Optional[str] = Header(None),
+):
     """
-    Deep readiness probe — verifies every backing service is reachable.
+    Deep readiness probe with topology-masking defense.
 
-    Returns 200 when healthy, 503 when any dependency is down.
+    - Unauthenticated requests: Returns HTTP 200 or 503 with minimal status string only.
+    - Authenticated requests: Returns detailed service topology metrics & latencies.
     """
+    authenticated = is_authenticated_health_request(authorization, x_health_token)
     checks: dict[str, dict] = {}
     all_healthy = True
 
@@ -87,7 +126,7 @@ async def readiness():
 
         t0 = time.monotonic()
         es = await get_async_elasticsearch_client()
-        info = await es.info()
+        await es.info()
         latency_ms = round((time.monotonic() - t0) * 1000, 1)
         checks["elasticsearch"] = {"status": "ok", "latency_ms": latency_ms}
     except Exception as e:
@@ -95,8 +134,17 @@ async def readiness():
         all_healthy = False
 
     status_code = 200 if all_healthy else 503
-    body = {
-        "status": "healthy" if all_healthy else "degraded",
-        "checks": checks,
-    }
+
+    if authenticated:
+        # Full diagnostic report for internal authorized callers / monitoring dashboards
+        body = {
+            "status": "healthy" if all_healthy else "degraded",
+            "checks": checks,
+        }
+    else:
+        # Masked, non-disclosing response for public / unauthenticated readiness probes
+        body = {
+            "status": "healthy" if all_healthy else "degraded"
+        }
+
     return JSONResponse(content=body, status_code=status_code)
