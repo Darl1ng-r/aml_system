@@ -309,6 +309,12 @@ function initWebSocket() {
                         const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
                         if (alert) loadGraphData(activeAlertId, alert);
                     }
+                } else if (data.event === 'STR_BATCH_GENERATED') {
+                    log(`📦 REAL-TIME EVENT: Sealed STR batch container ${data.batch_id} with ${data.record_count} records.`, 'success');
+                    loadSTRBatches();
+                } else if (data.event === 'STR_BATCH_TRANSMITTED') {
+                    log(`🚀 REAL-TIME EVENT: Transmitted STR batch package ${data.batch_id}. Status: ${data.status}`, 'success');
+                    loadSTRBatches();
                 }
             } catch (e) {
                 // Ignore raw strings
@@ -1337,4 +1343,117 @@ function renderSandboxVerdict(matches, threshold) {
         tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; color: var(--text-secondary);">No sanctioned profiles met the minimum similarity threshold.</td></tr>';
         log('Sanctions evaluation completed: Identity cleared.', 'info');
     }
+}
+
+// ── TAB 4: Regulatory STR Batch Filings ───────────────────────────────────────
+async function loadSTRBatches() {
+    log('Fetching regulatory STR batch containers list...', 'info');
+    if (mockMode) {
+        renderMockSTRBatches();
+        return;
+    }
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/str/batch/list`, {
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) throw new Error();
+        const data = await response.json();
+        renderSTRBatches(data.batches || []);
+    } catch (e) {
+        log('Failed to fetch STR batch containers. Displaying mock ledger.', 'warn');
+        renderMockSTRBatches();
+    }
+}
+
+function renderSTRBatches(batches) {
+    const tbody = document.getElementById('str-batch-tbody');
+    const empty = document.getElementById('str-batch-empty');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    if (!batches || batches.length === 0) {
+        empty.style.display = 'flex';
+        return;
+    }
+    empty.style.display = 'none';
+
+    batches.forEach(b => {
+        const tr = document.createElement('tr');
+        const statusBadge = b.status === 'ACKNOWLEDGED' ? 'badge-green' : (b.status === 'GENERATED' ? 'badge-blue' : 'badge-orange');
+        const shortChecksum = b.checksum ? b.checksum.substring(0, 10) + '...' : '-';
+
+        tr.innerHTML = `
+            <td><code>${b.batch_id}</code></td>
+            <td><strong>${b.record_count} Records</strong></td>
+            <td><strong>$${b.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</strong></td>
+            <td><code>${shortChecksum}</code></td>
+            <td><span class="badge ${statusBadge}">${b.status}</span></td>
+            <td>${new Date(b.created_at).toLocaleString()}</td>
+            <td>
+                <div style="display: flex; gap: 0.35rem;">
+                    <a href="${BASE_URL}/api/v1/str/batch/${b.batch_id}/download" target="_blank" class="btn btn-outline" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">📥 XML</a>
+                    <button onclick="transmitSTRBatchPackage('${b.batch_id}')" class="btn btn-primary" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">⚡ Transmit</button>
+                </div>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+async function generateSTRBatchPackage() {
+    log('Compiling un-batched CLOSED_SAR reports into sealed STR batch container...', 'info');
+    if (mockMode) {
+        log('Mock STR batch package successfully sealed.', 'success');
+        renderMockSTRBatches();
+        return;
+    }
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/str/batch/generate`, {
+            method: 'POST',
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) throw new Error();
+        const res = await response.json();
+        if (res.batch_id) {
+            log(`Sealed regulatory STR batch container: ${res.batch_id} (${res.record_count} cases, total $${res.total_amount.toLocaleString()})`, 'success');
+            loadSTRBatches();
+        } else {
+            log(res.message || 'No pending un-batched STR reports found.', 'info');
+        }
+    } catch (e) {
+        log('Failed to generate STR batch container.', 'warn');
+    }
+}
+
+async function transmitSTRBatchPackage(batchId) {
+    log(`Transmitting full STR batch package ${batchId} to FinCEN/FIU gateway...`, 'info');
+    if (mockMode) {
+        log(`Mock STR batch ${batchId} transmitted successfully.`, 'success');
+        return;
+    }
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/str/batch/${batchId}/transmit`, {
+            method: 'POST',
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) throw new Error();
+        const res = await response.json();
+        log(`STR Batch Transmission Succeeded: Tracking ID=${res.fincen_tracking_id}, Status=${res.status}`, 'success');
+        loadSTRBatches();
+    } catch (e) {
+        log('Failed to transmit STR batch package.', 'warn');
+    }
+}
+
+function renderMockSTRBatches() {
+    renderSTRBatches([
+        {
+            batch_id: "STR-BATCH-20260716-A1F9C8E4",
+            record_count: 14,
+            total_amount: 142500.00,
+            checksum: "a3f5b7c89911223344556677889900aabbccdd",
+            status: "ACKNOWLEDGED",
+            created_at: new Date().toISOString()
+        }
+    ]);
 }

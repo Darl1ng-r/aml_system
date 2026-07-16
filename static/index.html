@@ -46,6 +46,7 @@
             <button class="tab-btn active" onclick="switchTab('executive-tab', this)">Executive Dashboard</button>
             <button class="tab-btn" onclick="switchTab('inbox-tab', this)">Alert Inbox & Triage</button>
             <button class="tab-btn" onclick="switchTab('sandbox-tab', this)">Phonetic Sandbox</button>
+            <button class="tab-btn" onclick="switchTab('str-batch-tab', this); loadSTRBatches();">📦 STR Batch Filings</button>
         </div>
 
         <!-- TAB 1: EXECUTIVE DASHBOARD -->
@@ -385,6 +386,41 @@
                 <div id="sandbox-unselected" class="empty-state" style="margin: 0; border: none; padding: 4rem 2rem;">
                     <div class="empty-icon">🔎</div>
                     <p>Enter an individual or entity name above to perform phonetic searches across global sanctions database.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 4: REGULATORY STR BATCH FILINGS CONSOLE -->
+        <div id="str-batch-tab" class="tab-content panel-search-layout">
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <h2 class="card-title">Regulatory STR Batch Filings Console</h2>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.2rem;">Automated compilation and FinCEN/FIU batch submission management</p>
+                    </div>
+                    <button onclick="generateSTRBatchPackage()" class="btn btn-primary" style="background-color: var(--accent-blue); padding: 0.5rem 1.25rem;">📦 Compile New STR Batch Package</button>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Batch ID</th>
+                                <th>Records Count</th>
+                                <th>Total Exposure Value</th>
+                                <th>SHA-256 Checksum</th>
+                                <th>Status</th>
+                                <th>Generated At</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="str-batch-tbody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+                <div id="str-batch-empty" class="empty-state" style="display: none;">
+                    <div class="empty-icon">📦</div>
+                    <p>No regulatory STR batch packages compiled yet. Click above to aggregate pending closed SAR reports.</p>
                 </div>
             </div>
         </div>

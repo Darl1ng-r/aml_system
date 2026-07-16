@@ -43,6 +43,7 @@ app.include_router(health.router)  # /health and /health/live — must be before
 app.include_router(auth.router)
 app.include_router(metrics.router)
 app.include_router(fincen.router)
+app.include_router(str_batch.router)
 app.include_router(onboarding.router)
 app.include_router(screening.router)
 app.include_router(transactions.router)
