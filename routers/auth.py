@@ -197,7 +197,8 @@ async def refresh_access_token(body: RefreshRequest):
     Refresh tokens are checked against a Redis denylist to support server-side revocation.
     """
     from database.redis_db import get_async_redis_client
-    from services.auth import create_access_token, SECRET_KEY, ALGORITHM
+    from services.auth import create_access_token, ALGORITHM
+    from services.secrets_manager import decode_jwt_with_rotation
 
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -206,7 +207,7 @@ async def refresh_access_token(body: RefreshRequest):
     )
 
     try:
-        payload = jwt.decode(body.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = decode_jwt_with_rotation(body.refresh_token, algorithm=ALGORITHM)
         if payload.get("type") != "refresh":
             raise credentials_exception
 
@@ -243,11 +244,12 @@ async def logout(body: RefreshRequest):
     it has not yet expired.
     """
     from database.redis_db import get_async_redis_client
-    from services.auth import SECRET_KEY, ALGORITHM
+    from services.auth import ALGORITHM
+    from services.secrets_manager import decode_jwt_with_rotation
     from datetime import datetime, timezone
 
     try:
-        payload = jwt.decode(body.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = decode_jwt_with_rotation(body.refresh_token, algorithm=ALGORITHM)
         exp = payload.get("exp", 0)
         ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 1)
 

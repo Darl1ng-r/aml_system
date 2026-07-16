@@ -44,14 +44,17 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     except Exception:
         return False
 
+from services.secrets_manager import get_jwt_signing_key, decode_jwt_with_rotation
+
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
-    """Issues a short-lived access token (default 30 min)."""
+    """Issues a short-lived access token (default 30 min) signed with the active primary key."""
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
         expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire, "type": "access"})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    signing_key = get_jwt_signing_key()
+    return jwt.encode(to_encode, signing_key, algorithm=ALGORITHM)
 
 
 def create_refresh_token(data: dict) -> str:
@@ -64,7 +67,8 @@ def create_refresh_token(data: dict) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=7)
     to_encode.update({"exp": expire, "type": "refresh"})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    signing_key = get_jwt_signing_key()
+    return jwt.encode(to_encode, signing_key, algorithm=ALGORITHM)
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
     credentials_exception = HTTPException(
@@ -73,34 +77,33 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    # 1. Attempt Local JWT Verification (useful for testing or fallback local users)
-    if SECRET_KEY:
-        try:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            user_id = payload.get("sub")
-            role = payload.get("role", "ANALYST")
-            username = payload.get("username", "anonymous")
-            email = payload.get("email", f"{username}@aml.com")
-            tenant_id = payload.get("tenant_id", "00000000-0000-0000-0000-000000000001")
-            
-            if user_id:
-                # Replicate user to local PostgreSQL database if not present
-                from database.postgres import get_async_db_conn
-                async with get_async_db_conn() as conn:
-                    await conn.execute(
-                        "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
-                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
-                        user_id, username, role, tenant_id
-                    )
-                return {
-                    "id": user_id,
-                    "username": username,
-                    "role": role,
-                    "email": email,
-                    "tenant_id": tenant_id
-                }
-        except jwt.PyJWTError:
-            pass  # Fall back to Supabase check if local decode fails
+    # 1. Attempt Local JWT Verification with key rotation fallback support
+    try:
+        payload = decode_jwt_with_rotation(token, algorithm=ALGORITHM)
+        user_id = payload.get("sub")
+        role = payload.get("role", "ANALYST")
+        username = payload.get("username", "anonymous")
+        email = payload.get("email", f"{username}@aml.com")
+        tenant_id = payload.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+        
+        if user_id:
+            # Replicate user to local PostgreSQL database if not present
+            from database.postgres import get_async_db_conn
+            async with get_async_db_conn() as conn:
+                await conn.execute(
+                    "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
+                    "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
+                    user_id, username, role, tenant_id
+                )
+            return {
+                "id": user_id,
+                "username": username,
+                "role": role,
+                "email": email,
+                "tenant_id": tenant_id
+            }
+    except jwt.PyJWTError:
+        pass  # Fall back to Supabase check if local decode fails
 
     # 2. Fallback to Supabase verification
     headers = {

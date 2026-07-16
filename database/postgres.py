@@ -1,6 +1,8 @@
 import logging
 from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_URL
 
+from services.secrets_manager import get_postgres_dsn
+
 logger = logging.getLogger(__name__)
 
 # --- asyncpg Async Support for FastAPI ---
@@ -12,8 +14,9 @@ db_pool = None
 async def init_db_pool():
     global db_pool
     if db_pool is None:
+        dsn = get_postgres_dsn()
         db_pool = await asyncpg.create_pool(
-            dsn=POSTGRES_URL,
+            dsn=dsn,
             min_size=5,
             max_size=20
         )
