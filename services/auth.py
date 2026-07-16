@@ -81,21 +81,23 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
             role = payload.get("role", "ANALYST")
             username = payload.get("username", "anonymous")
             email = payload.get("email", f"{username}@aml.com")
+            tenant_id = payload.get("tenant_id", "00000000-0000-0000-0000-000000000001")
             
             if user_id:
                 # Replicate user to local PostgreSQL database if not present
                 from database.postgres import get_async_db_conn
                 async with get_async_db_conn() as conn:
                     await conn.execute(
-                        "INSERT INTO users (id, username, role) VALUES ($1, $2, $3) "
-                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username;",
-                        user_id, username, role
+                        "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
+                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
+                        user_id, username, role, tenant_id
                     )
                 return {
                     "id": user_id,
                     "username": username,
                     "role": role,
-                    "email": email
+                    "email": email,
+                    "tenant_id": tenant_id
                 }
         except jwt.PyJWTError:
             pass  # Fall back to Supabase check if local decode fails
@@ -118,6 +120,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
                 role = user_metadata.get("role", "ANALYST")
                 email = user_data.get("email", "")
                 username = email.split("@")[0] if email else "anonymous"
+                tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
                 
                 user_id = user_data.get("id")
                 
@@ -125,18 +128,20 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
                 from database.postgres import get_async_db_conn
                 async with get_async_db_conn() as conn:
                     await conn.execute(
-                        "INSERT INTO users (id, username, role) VALUES ($1, $2, $3) "
-                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username;",
+                        "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
+                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
                         user_id,
                         username,
-                        role
+                        role,
+                        tenant_id
                     )
                 
                 return {
                     "id": user_id,
                     "username": username,
                     "role": role,
-                    "email": email
+                    "email": email,
+                    "tenant_id": tenant_id
                 }
     except HTTPException:
         raise

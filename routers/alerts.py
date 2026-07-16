@@ -30,7 +30,8 @@ async def list_alerts(
     _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
     try:
-        async with get_async_db_conn() as conn:
+        tenant_id = current_user.get("tenant_id")
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             # Get total count of alerts (ignoring pagination)
             total_count = await conn.fetchval("SELECT COUNT(*) FROM alerts;")
             
@@ -91,7 +92,8 @@ async def get_alert_graph(
         raise HTTPException(status_code=400, detail="Invalid alert ID format")
 
     try:
-        async with get_async_db_conn() as conn:
+        tenant_id = current_user.get("tenant_id")
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             row = await conn.fetchrow(
                 """
                 SELECT s.account_number, r.account_number
@@ -223,7 +225,8 @@ async def resolve_alert(
     status = "CLOSED_SAR" if payload.action == "CLOSE_SAR" else "CLOSED_FALSE_POSITIVE"
 
     try:
-        async with get_async_db_conn() as conn:
+        tenant_id = current_user.get("tenant_id")
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             # Check alert exists
             alert = await conn.fetchrow(
                 """

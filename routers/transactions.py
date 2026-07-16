@@ -38,7 +38,8 @@ async def ingest_transaction(
 ):
     # Step 1: Look up sender, receiver, and velocity count in a single PostgreSQL query (1 round trip)
     try:
-        async with get_async_db_conn() as conn:
+        user_tenant_id = current_user.get("tenant_id")
+        async with get_async_db_conn(tenant_id=user_tenant_id) as conn:
             row = await conn.fetchrow(
                 """
                 WITH sender_info AS (
@@ -169,7 +170,7 @@ async def ingest_transaction(
     # Step 4: Write transaction to PostgreSQL
     tx_id = str(uuid.uuid4())
     try:
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             # Pydantic validates payload.timestamp is a valid datetime object
             dt = payload.timestamp
             

@@ -99,15 +99,18 @@ async def calculate_customer_baseline(account_id: str) -> dict:
                     "top_channels": get_mode_list(channels)
                 }
 
-            # 2. Upsert baseline in PostgreSQL
+            # 2. Upsert baseline in PostgreSQL with tenant_id from accounts
             upsert_query = """
                 INSERT INTO customer_profiles (
-                    account_id, avg_amount, median_amount, variance_amount,
+                    account_id, tenant_id, avg_amount, median_amount, variance_amount,
                     daily_frequency, weekly_frequency, monthly_frequency,
                     unique_receivers_count, unique_receiver_countries_count,
                     avg_hour, variance_hour, top_countries, top_merchants, top_devices, top_channels, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+                )
+                SELECT $1, a.tenant_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW()
+                FROM accounts a WHERE a.id = $1::uuid
                 ON CONFLICT (account_id) DO UPDATE SET
+                    tenant_id = EXCLUDED.tenant_id,
                     avg_amount = EXCLUDED.avg_amount,
                     median_amount = EXCLUDED.median_amount,
                     variance_amount = EXCLUDED.variance_amount,

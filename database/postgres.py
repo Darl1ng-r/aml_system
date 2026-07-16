@@ -28,10 +28,14 @@ async def close_db_pool():
         logger.info("asyncpg connection pool closed.")
 
 @asynccontextmanager
-async def get_async_db_conn():
+async def get_async_db_conn(tenant_id: str | None = None):
     global db_pool
     if db_pool is None:
         await init_db_pool()
     async with db_pool.acquire() as conn:
         async with conn.transaction():
+            if tenant_id:
+                # Set transaction-scoped configuration variable for PostgreSQL Row Level Security (RLS)
+                await conn.execute("SELECT set_config('app.current_tenant_id', $1, true);", str(tenant_id))
             yield conn
+

@@ -42,7 +42,7 @@ async def onboard_individual(payload: IndividualOnboard, current_user: dict = De
 
     # Step 2: Save to PostgreSQL
     try:
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=payload.tenant_id) as conn:
             # Check if tenant exists
             tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", payload.tenant_id)
             if not tenant:
@@ -72,7 +72,7 @@ async def onboard_individual(payload: IndividualOnboard, current_user: dict = De
 async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_async_neo4j_driver), current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))):
     # Step 1: Save to PostgreSQL (relational profile)
     try:
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=payload.tenant_id) as conn:
             tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", payload.tenant_id)
             if not tenant:
                 raise HTTPException(status_code=400, detail="Invalid tenant_id")
