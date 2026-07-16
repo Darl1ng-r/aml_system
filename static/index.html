@@ -11,6 +11,8 @@
     <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <link href="https://unpkg.com/vis-network/styles/vis-network.min.css" rel="stylesheet" type="text/css" />
     <script>
+        const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', savedTheme);
         if (!localStorage.getItem('jwt_token')) {
             window.location.href = '/login';
         }
@@ -27,6 +29,7 @@
             </div>
         </div>
         <div style="display: flex; align-items: center; gap: 1rem;">
+            <button id="theme-toggle-btn" class="btn btn-outline" onclick="toggleTheme()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;">🌙 Dark Mode</button>
             <span id="user-welcome-text" style="font-size: 0.85rem; font-weight: 600; display: none; color: var(--text-secondary);">Welcome, Analyst</span>
             <button id="logout-button" class="logout-btn" onclick="logout()" style="display: none;">Logout</button>
             <div class="status-badge" id="app-status-badge">

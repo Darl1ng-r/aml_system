@@ -2,6 +2,7 @@
     --bg-primary: #f7f5f0;
     --bg-secondary: #ffffff;
     --bg-tertiary: #efece5;
+    --card-bg: #ffffff;
     --text-primary: #2c2520;
     --text-secondary: #756d66;
     --accent-green: #1d8253;
@@ -12,6 +13,22 @@
     --transition-speed: 0.2s;
     --shadow-sm: 0 1px 2px rgba(44, 37, 32, 0.05);
     --shadow-md: 0 4px 12px rgba(44, 37, 32, 0.04);
+}
+
+[data-theme="dark"] {
+    --bg-primary: #0b1120;
+    --bg-secondary: #1e293b;
+    --bg-tertiary: #111827;
+    --card-bg: #1e293b;
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+    --accent-green: #10b981;
+    --accent-red: #f87171;
+    --accent-orange: #fbbf24;
+    --accent-blue: #60a5fa;
+    --border-color: #334155;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
 
 * {
@@ -422,7 +439,7 @@ label {
 }
 
 input, select, textarea {
-    background-color: #ffffff;
+    background-color: var(--card-bg);
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 0.75rem 1rem;

@@ -93,10 +93,35 @@ let activeAlerts = [...mockAlerts];
 // Startup Sequence
 window.addEventListener('load', () => {
     log('System Initializing: Compliance Case Management Console v1.0.0', 'info');
+    initTheme();
     initAuth();
     initWebSocket();
     loadDashboardAnalytics();
 });
+
+function initTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+    updateThemeToggleButton(currentTheme);
+}
+
+function toggleTheme() {
+    const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', newTheme);
+    localStorage.setItem('theme', newTheme);
+    updateThemeToggleButton(newTheme);
+    log(`Switched interface theme to: ${newTheme.toUpperCase()} MODE`, 'info');
+}
+
+function updateThemeToggleButton(theme) {
+    const btn = document.getElementById('theme-toggle-btn');
+    if (!btn) return;
+    if (theme === 'dark') {
+        btn.innerText = '☀️ Light Mode';
+    } else {
+        btn.innerText = '🌙 Dark Mode';
+    }
+}
 
 function initAuth() {
     const token = localStorage.getItem('jwt_token');
