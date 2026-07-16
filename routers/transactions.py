@@ -44,9 +44,11 @@ async def ingest_transaction(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=100, window=60))
 ):
+    # Enforce Data-Level RBAC tenant scoping
+    user_tenant_id = enforce_tenant_data_scope(current_user)
+
     # Step 1: Look up sender, receiver, and velocity count in a single PostgreSQL query (1 round trip)
     try:
-        user_tenant_id = current_user.get("tenant_id")
         async with get_async_db_conn(tenant_id=user_tenant_id) as conn:
             row = await conn.fetchrow(
                 """

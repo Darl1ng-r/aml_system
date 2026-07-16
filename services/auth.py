@@ -167,3 +167,34 @@ class RoleChecker:
                 headers={"WWW-Authenticate": "Bearer"},
             )
         return current_user
+
+
+def enforce_tenant_data_scope(current_user: dict, target_tenant_id: str | None = None) -> str:
+    """
+    Enforces Data-Level RBAC scoping.
+    - Roles 'SUPER_ADMIN' and 'GLOBAL_AUDITOR' can access cross-tenant data.
+    - Roles 'ANALYST', 'AUDITOR', 'ADMIN' are strictly scoped to their assigned tenant_id.
+
+    Returns the authorized tenant_id to use for queries.
+    Raises HTTP 403 Forbidden if a user attempts cross-tenant data access without authorization.
+    """
+    user_role = current_user.get("role", "ANALYST")
+    user_tenant_id = str(current_user.get("tenant_id", ""))
+
+    # Super Admin and Global Auditor bypass single-tenant scoping
+    if user_role in ["SUPER_ADMIN", "GLOBAL_AUDITOR"]:
+        return target_tenant_id or user_tenant_id
+
+    # If target_tenant_id is explicitly requested, verify it matches user's tenant
+    if target_tenant_id and str(target_tenant_id) != user_tenant_id:
+        logger.warning(
+            f"DATA-LEVEL RBAC VIOLATION: User {current_user.get('username')} (Tenant: {user_tenant_id}, Role: {user_role}) "
+            f"attempted unauthorized access to Tenant {target_tenant_id}."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Data access is restricted to your assigned tenant."
+        )
+
+    return user_tenant_id
+

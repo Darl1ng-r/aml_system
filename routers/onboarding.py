@@ -49,6 +49,9 @@ class CorporateOnboard(BaseModel):
 
 @router.post("/individual")
 async def onboard_individual(payload: IndividualOnboard, current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))):
+    # Enforce Data-Level RBAC tenant scoping
+    authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
+
     try:
         es = await get_async_elasticsearch_client()
         screen_res = await perform_sanctions_search(payload.name, 0.80, es)
@@ -60,9 +63,9 @@ async def onboard_individual(payload: IndividualOnboard, current_user: dict = De
 
     # Step 2: Save to PostgreSQL
     try:
-        async with get_async_db_conn(tenant_id=payload.tenant_id) as conn:
+        async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
             # Check if tenant exists
-            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", payload.tenant_id)
+            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", authorized_tenant_id)
             if not tenant:
                 raise HTTPException(status_code=400, detail="Invalid tenant_id")
 
@@ -73,7 +76,7 @@ async def onboard_individual(payload: IndividualOnboard, current_user: dict = De
                 VALUES ($1, $2, $3, $4, $5)
                 RETURNING id;
                 """,
-                payload.tenant_id, payload.account_number, payload.swift_bic, payload.name, risk_score
+                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.name, risk_score
             )
             
             return {
@@ -88,10 +91,13 @@ async def onboard_individual(payload: IndividualOnboard, current_user: dict = De
 
 @router.post("/corporate")
 async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_async_neo4j_driver), current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))):
+    # Enforce Data-Level RBAC tenant scoping
+    authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
+
     # Step 1: Save to PostgreSQL (relational profile)
     try:
-        async with get_async_db_conn(tenant_id=payload.tenant_id) as conn:
-            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", payload.tenant_id)
+        async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
+            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", authorized_tenant_id)
             if not tenant:
                 raise HTTPException(status_code=400, detail="Invalid tenant_id")
 
@@ -102,7 +108,7 @@ async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_
                 VALUES ($1, $2, $3, $4, $5)
                 RETURNING id;
                 """,
-                payload.tenant_id, payload.account_number, payload.swift_bic, payload.company_name, 0.15
+                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.company_name, 0.15
             )
     except Exception as e:
         if "unique constraint" in str(e).lower():
