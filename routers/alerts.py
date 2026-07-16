@@ -223,10 +223,15 @@ async def get_alert_graph(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Neo4j query failed: {str(e)}")
 
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+
+# ...
+
 @router.post("/{id}/action")
 async def resolve_alert(
     id: str, 
     payload: AlertAction, 
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
@@ -266,6 +271,17 @@ async def resolve_alert(
         logger.info(
             f"AUDIT LOG: Analyst '{current_user['username']}' (ID: {current_user['id']}, Role: {current_user['role']}) "
             f"resolved Alert {id} with Action '{payload.action}' -> Status: '{status}'."
+        )
+
+        # Record human active learning feedback sample in background task
+        from services.feedback_loop import feedback_service
+        label = 0 if payload.action == "CLOSE_FALSE_POSITIVE" else 1
+        background_tasks.add_task(
+            feedback_service.record_feedback,
+            alert_id=id,
+            label=label,
+            analyst_id=current_user["id"],
+            justification=payload.justification
         )
 
         # Generate SAR XML if requested
