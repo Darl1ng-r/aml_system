@@ -245,9 +245,18 @@
                 <div style="display: flex; flex-direction: column; gap: 1.5rem;">
                     <!-- Interactive Vis.js Network Graph Map -->
                     <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title">Visual Money Flow (Graph Map)</h3>
-                            <span class="badge badge-blue">Interactive Force Network</span>
+                        <div class="card-header" style="flex-wrap: wrap; gap: 0.5rem;">
+                            <div>
+                                <h3 class="card-title">Visual Money Flow (Graph Map)</h3>
+                                <span class="badge badge-blue">Interactive Force Network</span>
+                            </div>
+                            <!-- Graph Interaction Toolbar -->
+                            <div style="display: flex; gap: 0.35rem; align-items: center;">
+                                <button onclick="zoomVisGraph(1.2)" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Zoom In">+</button>
+                                <button onclick="zoomVisGraph(0.8)" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Zoom Out">-</button>
+                                <button onclick="fitVisGraph()" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Fit Graph">Fit View</button>
+                                <button onclick="expandSelectedGraphNode()" class="btn btn-primary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Expand 2-Hop Network">🔍 Expand</button>
+                            </div>
                         </div>
                         <div class="card-body" style="align-items: center; justify-content: center; min-height: 280px; position: relative; padding: 0.75rem;">
                             <!-- Node Topology Graph via Vis.js Network -->

@@ -724,6 +724,53 @@ function renderVisNetworkGraph(graphData, alert) {
             showNodeDetails(targetNode.nodeData);
         }
     });
+
+    visNetworkInstance.on('doubleClick', (params) => {
+        if (params.nodes && params.nodes.length > 0) {
+            expandGraphNode(params.nodes[0]);
+        }
+    });
+}
+
+function zoomVisGraph(scaleFactor) {
+    if (!visNetworkInstance) return;
+    const currentScale = visNetworkInstance.getScale();
+    visNetworkInstance.moveTo({ scale: currentScale * scaleFactor, animation: { duration: 300 } });
+}
+
+function fitVisGraph() {
+    if (!visNetworkInstance) return;
+    visNetworkInstance.fit({ animation: { duration: 400 } });
+}
+
+async function expandSelectedGraphNode() {
+    if (!visNetworkInstance) return;
+    const selectedNodes = visNetworkInstance.getSelectedNodes();
+    if (selectedNodes.length === 0) {
+        alert('Please click a node in the graph map first to select it for expansion.');
+        return;
+    }
+    await expandGraphNode(selectedNodes[0]);
+}
+
+async function expandGraphNode(nodeId) {
+    log(`Expanding 2-hop graph topology for node: ${nodeId}...`, 'info');
+    if (mockMode) {
+        log(`Mock network expansion active for node ${nodeId}.`, 'info');
+        return;
+    }
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/network/expand/${nodeId}`, {
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) throw new Error();
+        const expandedData = await response.json();
+        const alert = activeAlerts.find(a => a.alert_id === activeAlertId) || mockAlerts[0];
+        renderVisNetworkGraph(expandedData, alert);
+        log(`Successfully expanded 2-hop network graph around node ${nodeId}.`, 'success');
+    } catch (e) {
+        log(`Failed to expand graph node ${nodeId}.`, 'warn');
+    }
 }
 
 function showNodeDetails(node) {
