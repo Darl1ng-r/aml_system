@@ -19,20 +19,20 @@ depends_on: Union[Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Add tenant_id column if not present (safeguarded for existing databases)
-    op.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns 
-                WHERE table_name='pep_entities' AND column_name='tenant_id'
-            ) THEN
-                ALTER TABLE pep_entities ADD COLUMN tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
-                CREATE INDEX idx_pep_entities_tenant ON pep_entities(tenant_id);
-            END IF;
-        END $$;
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
 
-        -- Enable & Force Row-Level Security (RLS) on pep_entities table
+    if inspector.has_table('pep_entities'):
+        columns = [c['name'] for c in inspector.get_columns('pep_entities')]
+        if 'tenant_id' not in columns:
+            op.add_column(
+                'pep_entities',
+                sa.Column('tenant_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('tenants.id', ondelete='CASCADE'), nullable=True)
+            )
+            op.create_index('idx_pep_entities_tenant', 'pep_entities', ['tenant_id'])
+
+    # Enable & Force Row-Level Security (RLS) on pep_entities table
+    op.execute("""
         ALTER TABLE pep_entities ENABLE ROW LEVEL SECURITY;
         ALTER TABLE pep_entities FORCE ROW LEVEL SECURITY;
 
@@ -57,6 +57,12 @@ def downgrade() -> None:
     op.execute("""
         DROP POLICY IF EXISTS rls_tenant_isolation ON pep_entities;
         ALTER TABLE pep_entities DISABLE ROW LEVEL SECURITY;
-        DROP INDEX IF EXISTS idx_pep_entities_tenant;
-        ALTER TABLE pep_entities DROP COLUMN IF EXISTS tenant_id;
     """)
+
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if inspector.has_table('pep_entities'):
+        columns = [c['name'] for c in inspector.get_columns('pep_entities')]
+        if 'tenant_id' in columns:
+            op.drop_index('idx_pep_entities_tenant', table_name='pep_entities')
+            op.drop_column('pep_entities', 'tenant_id')
