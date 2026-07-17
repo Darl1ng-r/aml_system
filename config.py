@@ -3,6 +3,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict  #fix
 class Settings(BaseSettings):
     postgres_host: str = "localhost"
     postgres_port: int = 5433
+    postgres_replica_host: str = "localhost"
+    postgres_replica_port: int = 5434
     postgres_db: str = "aml_db"
     postgres_user: str = "postgres"
     postgres_password: str = ""
@@ -81,10 +83,13 @@ settings = Settings()
 # PostgreSQL Config
 POSTGRES_HOST = settings.postgres_host
 POSTGRES_PORT = settings.postgres_port
+POSTGRES_REPLICA_HOST = settings.postgres_replica_host
+POSTGRES_REPLICA_PORT = settings.postgres_replica_port
 POSTGRES_DB = settings.postgres_db
 POSTGRES_USER = settings.postgres_user
 POSTGRES_PASSWORD = settings.postgres_password
 POSTGRES_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+POSTGRES_REPLICA_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_REPLICA_HOST}:{POSTGRES_REPLICA_PORT}/{POSTGRES_DB}"
 
 # Neo4j Config
 NEO4J_URI = settings.neo4j_uri

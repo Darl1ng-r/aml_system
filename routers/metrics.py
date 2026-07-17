@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
-from database.postgres import get_async_db_conn
+from database.postgres import get_async_db_read_conn
 from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
 
 logger = logging.getLogger(__name__)
@@ -77,7 +77,7 @@ async def get_dashboard_metrics(
     tenant_id = enforce_tenant_data_scope(current_user)
 
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
             # 1. KPI Counts
             active_cases = await conn.fetchval(
                 "SELECT COUNT(*) FROM alerts WHERE status = 'OPEN';"

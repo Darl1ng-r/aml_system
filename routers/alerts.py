@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Response, BackgroundTasks
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
-from database.postgres import get_async_db_conn
+from database.postgres import get_async_db_conn, get_async_db_read_conn
 from database.neo4j_db import get_async_neo4j_driver
 from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
@@ -43,7 +43,7 @@ async def list_alerts(
 ):
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
             # Get total count of alerts scoped to caller's tenant
             total_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM alerts WHERE tenant_id = $1;",
@@ -111,7 +111,7 @@ async def get_alert_graph(
 
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
             row = await conn.fetchrow(
                 """
                 SELECT s.account_number, r.account_number
@@ -451,7 +451,7 @@ async def export_alerts_csv(
     """
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
             rows = await conn.fetch(
                 """
                 SELECT a.id, a.threat_level, a.ai_risk_score, a.rule_name, a.status, a.created_at,
@@ -511,7 +511,7 @@ async def export_alerts_pdf(
     """
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
             rows = await conn.fetch(
                 """
                 SELECT a.id, a.threat_level, a.ai_risk_score, a.rule_name, a.status, a.created_at,

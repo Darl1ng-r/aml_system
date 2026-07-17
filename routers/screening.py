@@ -131,8 +131,8 @@ async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | N
 
     # Database Fallback for PEP entities (tenant-scoped to prevent cross-tenant data leakage)
     try:
-        from database.postgres import get_async_db_conn
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        from database.postgres import get_async_db_read_conn
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
             if tenant_id:
                 try:
                     t_uuid = uuid.UUID(str(tenant_id))

@@ -188,6 +188,11 @@ async def startup_db_clients():
     logger.info("Starting background Neo4j graph synchronization worker...")
     asyncio.create_task(run_sync_worker(shutdown_event=_worker_shutdown_event))
 
+    # ── 7. Start Periodic Background Watchlist Sync Task ─────────────────
+    from services.watchlist_sync import schedule_periodic_watchlist_sync
+    logger.info("Starting background periodic watchlist sync task...")
+    asyncio.create_task(schedule_periodic_watchlist_sync(interval_seconds=86400, shutdown_event=_worker_shutdown_event))
+
 @app.on_event("shutdown")
 async def shutdown_db_clients():
     # Signal the sync worker to stop cleanly before closing connections

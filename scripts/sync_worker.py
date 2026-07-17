@@ -437,9 +437,21 @@ async def main(shutdown_event: asyncio.Event | None = None):
         )
 
     if use_kafka:
-        await run_kafka_consumer(neo4j_driver, shutdown_event)
+        while not shutdown_event.is_set():
+            try:
+                await run_kafka_consumer(neo4j_driver, shutdown_event)
+                break
+            except Exception as e:
+                logger.error(f"Redpanda consumer crashed: {e}. Reconnecting in 5 seconds...")
+                await asyncio.sleep(5)
     else:
-        await run_postgres_poll_fallback(neo4j_driver, shutdown_event)
+        while not shutdown_event.is_set():
+            try:
+                await run_postgres_poll_fallback(neo4j_driver, shutdown_event)
+                break
+            except Exception as e:
+                logger.error(f"PostgreSQL polling worker crashed: {e}. Reconnecting in 5 seconds...")
+                await asyncio.sleep(5)
 
 
 if __name__ == "__main__":

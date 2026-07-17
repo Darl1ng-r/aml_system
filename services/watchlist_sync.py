@@ -389,3 +389,31 @@ class WatchlistSyncEngine:
 
 
 watchlist_sync_engine = WatchlistSyncEngine()
+
+
+async def schedule_periodic_watchlist_sync(interval_seconds: int = 86400, shutdown_event=None):
+    """
+    Executes a periodic background sync of global watchlists (default: every 24 hours).
+    Exits cleanly when shutdown_event is set.
+    """
+    import asyncio
+    logger.info(f"Starting periodic background watchlist sync scheduler (interval: {interval_seconds}s)...")
+    while True:
+        try:
+            if shutdown_event and shutdown_event.is_set():
+                break
+            await watchlist_sync_engine.sync_all_watchlists()
+        except Exception as e:
+            logger.error(f"Periodic background watchlist sync failed: {e}")
+
+        try:
+            if shutdown_event:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=interval_seconds)
+                break
+            else:
+                await asyncio.sleep(interval_seconds)
+        except asyncio.TimeoutError:
+            continue
+        except Exception as e:
+            logger.warning(f"Watchlist sync scheduler sleep interrupted: {e}")
+            break
