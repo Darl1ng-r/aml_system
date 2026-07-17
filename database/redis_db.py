@@ -17,7 +17,9 @@ def get_redis_client():
             kwargs = {
                 "host": REDIS_HOST,
                 "port": REDIS_PORT,
-                "decode_responses": True
+                "decode_responses": True,
+                "socket_connect_timeout": 1.0,
+                "socket_timeout": 1.0
             }
             if ssl_ctx:
                 kwargs["ssl"] = True
@@ -40,7 +42,9 @@ async def get_async_redis_client():
             kwargs = {
                 "host": REDIS_HOST,
                 "port": REDIS_PORT,
-                "decode_responses": True
+                "decode_responses": True,
+                "socket_connect_timeout": 1.0,
+                "socket_timeout": 1.0
             }
             if ssl_ctx:
                 kwargs["ssl"] = True

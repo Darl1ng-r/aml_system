@@ -289,6 +289,12 @@ async def resolve_alert(
         if payload.action == "CLOSE_SAR" and payload.sar_xml_generate:
             sar_xml = generate_sar_xml(alert, payload.justification)
 
+        return {"status": status, "sar_xml": sar_xml}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to resolve alert: {str(e)}")
+
 class AlertAssignment(BaseModel):
     officer_username: str = Field(..., min_length=1, max_length=100)
 
