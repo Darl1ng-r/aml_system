@@ -182,108 +182,11 @@ def init_neo4j():
                 print(f"Constraint execution warning (can be ignored if already exists): {e}")
     print("Neo4j unique constraints initialized.")
 
-def init_elasticsearch():
-    print("Initializing Elasticsearch indexes...")
-    es = get_elasticsearch_client()
-    
-    # Check if index exists
-    if es.indices.exists(index=SANCTIONS_INDEX):
-        print(f"Elasticsearch index '{SANCTIONS_INDEX}' already exists.")
-        return
-        
-    # Create index with Double Metaphone analyzer
-    # Standard Elasticsearch double_metaphone requires the phonetic analysis plugin.
-    # To be safe and compatible with standard out-of-the-box Elasticsearch images without plugins,
-    # we will declare a custom phonetic filter, but fall back if the plugin is not installed, or
-    # we configure standard fuzzy ngram analyzer which does excellent spelling tolerance.
-    # Let's configure it with standard analyzers + phonetic filters.
-    settings = {
-        "settings": {
-            "analysis": {
-                "filter": {
-                    "phonetic_filter": {
-                        "type": "phonetic",
-                        "encoder": "doublemetaphone",
-                        "replace": False
-                    }
-                },
-                "analyzer": {
-                    "phonetic_analyzer": {
-                        "tokenizer": "standard",
-                        "filter": [
-                            "lowercase",
-                            "phonetic_filter"
-                        ]
-                    }
-                }
-            }
-        },
-        "mappings": {
-            "properties": {
-                "name": {
-                    "type": "text",
-                    "fields": {
-                        "phonetic": {
-                            "type": "text",
-                            "analyzer": "phonetic_analyzer"
-                        },
-                        "keyword": {
-                            "type": "keyword"
-                        }
-                    }
-                },
-                "source_list": {
-                    "type": "keyword"
-                },
-                "date_of_birth": {
-                    "type": "date",
-                    "format": "yyyy-MM-dd"
-                }
-            }
-        }
-    }
-
-    try:
-        es.indices.create(index=SANCTIONS_INDEX, body=settings)
-        print(f"Elasticsearch index '{SANCTIONS_INDEX}' created successfully with phonetic configuration.")
-    except Exception as e:
-        print(f"Phonetic plugin might be missing; creating fallback fuzzy index... ({e})")
-        # Fallback without phonetic analysis plugin (using standard text search + fuzzy queries)
-        fallback_settings = {
-            "mappings": {
-                "properties": {
-                    "name": {
-                        "type": "text",
-                        "fields": {
-                            "keyword": {
-                                "type": "keyword"
-                            }
-                        }
-                    },
-                    "source_list": {
-                        "type": "keyword"
-                    },
-                    "date_of_birth": {
-                        "type": "date",
-                        "format": "yyyy-MM-dd"
-                    }
-                }
-            }
-        }
-        es.indices.create(index=SANCTIONS_INDEX, body=fallback_settings)
-        print(f"Fallback Elasticsearch index '{SANCTIONS_INDEX}' created successfully.")
-
-    # Seed PEP/Sanction dataset
-    mock_sanctions = [
-        {"name": "Wladimir Smirnow", "source_list": "OFAC Specially Designated Nationals (SDN)", "date_of_birth": "1974-05-12"},
-        {"name": "Ivan Petrov", "source_list": "EU Consolidated Sanctions List", "date_of_birth": "1980-09-20"},
-        {"name": "John Doe", "source_list": "UK Sanctions List", "date_of_birth": "1965-01-01"}
-    ]
-    
-    for i, entry in enumerate(mock_sanctions):
-        es.index(index=SANCTIONS_INDEX, id=str(i+1), document=entry)
-    es.indices.refresh(index=SANCTIONS_INDEX)
-    print("Elasticsearch seeded with sample sanction entries.")
+async def init_elasticsearch():
+    print("Initializing Elasticsearch indexes & executing seeding contract...")
+    from services.watchlist_sync import watchlist_sync_engine
+    result = await watchlist_sync_engine.ensure_indices_and_seed()
+    print(f"Elasticsearch index initialization & seeding completed: {result.get('status')}")
 
 async def async_main():
     print("Starting database initialization...")
@@ -301,7 +204,7 @@ async def async_main():
         print(f"Error initializing Neo4j: {e}")
         
     try:
-        init_elasticsearch()
+        await init_elasticsearch()
     except Exception as e:
         print(f"Error initializing Elasticsearch: {e}")
         

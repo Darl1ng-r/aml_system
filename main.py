@@ -147,7 +147,10 @@ async def startup_db_clients():
     # ── 4. Initialize & Fail-Fast Elasticsearch ──────────────────────────
     try:
         get_elasticsearch_client()
-        await get_async_elasticsearch_client()
+        es_async = await get_async_elasticsearch_client()
+        from services.watchlist_sync import watchlist_sync_engine
+        await watchlist_sync_engine.ensure_indices_and_seed(es_async)
+        logger.info("Elasticsearch sanctions and PEP indices verified and seeded.")
     except Exception as e:
         logger.critical(f"CRITICAL: Could not connect to Elasticsearch: {e}")
         raise RuntimeError("Elasticsearch database is required for startup") from e
