@@ -13,7 +13,7 @@ Provides API endpoints for active learning feedback stats and model retraining:
 """
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from database.postgres import get_async_db_conn
 from services.auth import RoleChecker
 from services.feedback_loop import feedback_service
@@ -24,31 +24,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/ml", tags=["Machine Learning & Feedback Loop"])
 
 
-@router.post("/retrain")
+@router.post("/retrain", status_code=status.HTTP_202_ACCEPTED)
 async def retrain_model_now(
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=5, window=60))
 ):
     """
-    Triggers an active online retraining cycle using human-validated analyst feedback.
+    Triggers an active online retraining cycle using human-validated analyst feedback asynchronously.
+    Returns 202 Accepted immediately to prevent blocking the HTTP response.
     """
-    try:
-        result = await feedback_service.retrain_model_with_feedback()
+    async def _async_retrain_and_broadcast():
+        try:
+            result = await feedback_service.retrain_model_with_feedback()
+            if result.get("status") == "RETRAINED":
+                from routers.metrics import ws_manager
+                await ws_manager.broadcast({
+                    "event": "ML_MODEL_RETRAINED",
+                    "samples_count": result["samples_count"],
+                    "false_positives_learned": result["false_positives_learned"],
+                    "retrained_by": current_user["username"]
+                })
+        except Exception as e:
+            logger.error(f"Async model retraining failed: {e}")
 
-        # Broadcast real-time WebSocket update
-        if result.get("status") == "RETRAINED":
-            from routers.metrics import ws_manager
-            await ws_manager.broadcast({
-                "event": "ML_MODEL_RETRAINED",
-                "samples_count": result["samples_count"],
-                "false_positives_learned": result["false_positives_learned"],
-                "retrained_by": current_user["username"]
-            })
+    background_tasks.add_task(_async_retrain_and_broadcast)
 
-        return result
-    except Exception as e:
-        logger.error(f"Manual model retraining failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Retraining failed: {str(e)}")
+    return {
+        "status": "QUEUED",
+        "message": "Model retraining task successfully dispatched in background.",
+        "triggered_by": current_user["username"]
+    }
 
 
 @router.get("/feedback-stats")

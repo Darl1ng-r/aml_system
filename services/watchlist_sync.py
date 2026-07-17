@@ -111,23 +111,29 @@ class WatchlistSyncEngine:
         indexed_sanctions = 0
         indexed_pep = 0
 
-        for record in all_records:
+        for idx, record in enumerate(all_records):
             try:
                 # Route PEP entries to PEP_INDEX; Sanctions to SANCTIONS_INDEX
                 target_index = PEP_INDEX if "pep_tier" in record or "PEP" in record.get("source_list", "") else SANCTIONS_INDEX
                 
-                # Generate deterministic ID for idempotent upserting
+                # Generate deterministic ID for idempotent upserting (name + source_list + idx)
                 name_clean = record.get("name", "").strip().lower()
                 source_clean = record.get("source_list", "").strip().lower()
-                doc_id = hashlib.sha256(f"{name_clean}:{source_clean}".encode("utf-8")).hexdigest()[:32]
+                doc_id = hashlib.sha256(f"{name_clean}:{source_clean}:{idx}".encode("utf-8")).hexdigest()[:32]
 
-                await es.index(index=target_index, id=doc_id, document=record)
+                await es.index(index=target_index, id=doc_id, document=record, op_type="index")
                 if target_index == PEP_INDEX:
                     indexed_pep += 1
                 else:
                     indexed_sanctions += 1
             except Exception as e:
                 logger.warning(f"Elasticsearch indexing bypass: {e}")
+
+        try:
+            await es.indices.refresh(index=SANCTIONS_INDEX)
+            await es.indices.refresh(index=PEP_INDEX)
+        except Exception as e:
+            logger.warning(f"Elasticsearch refresh warning: {e}")
 
         logger.info(
             f"[Watchlist Sync Engine] Completed full sync across OFAC, World-Check, and Dow Jones. "

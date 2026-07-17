@@ -137,9 +137,9 @@ class ActiveLearningFeedbackService:
 
                 X_train = np.array(training_features)
 
-                # Fit new Isolation Forest model incorporating human feedback
+                # Fit new Isolation Forest model incorporating human feedback off the main event loop
                 model = IsolationForestScratch(n_estimators=60, max_samples=min(256, X_train.shape[0]))
-                model.fit(X_train)
+                await asyncio.to_thread(model.fit, X_train)
 
                 from services import isolation_forest
                 isolation_forest._iforest_model = model
