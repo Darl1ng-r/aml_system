@@ -1,5 +1,7 @@
 from fastapi import Request, HTTPException, status
 import logging
+import time
+import uuid
 from database.redis_db import get_async_redis_client
 
 logger = logging.getLogger(__name__)
@@ -18,13 +20,19 @@ class RateLimiter:
             client_ip = request.client.host if request.client else "unknown"
             key = f"rate_limit:{request.url.path}:{client_ip}"
             
-            # Redis transaction/pipeline to increment and set expire atomically
+            now_ms = time.time() * 1000
+            window_start_ms = now_ms - (self.window * 1000)
+            member = f"{now_ms}:{uuid.uuid4().hex[:8]}"
+
+            # Redis pipeline for atomic sliding window using Sorted Set (ZSET)
             pipe = redis.pipeline()
-            await pipe.incr(key)
-            await pipe.expire(key, self.window, nx=True)
+            pipe.zremrangebyscore(key, 0, window_start_ms)
+            pipe.zadd(key, {member: now_ms})
+            pipe.zcard(key)
+            pipe.pexpire(key, self.window * 1000)
             results = await pipe.execute()
             
-            current_requests = results[0]
+            current_requests = results[2]
             if current_requests > self.limit:
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
