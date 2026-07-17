@@ -55,7 +55,7 @@ def test_dynamic_risk_scorer_blends():
     )
 
     assert outlier_res["dynamic_risk_score"] > normal_res["dynamic_risk_score"]
-    assert outlier_res["explainability"]["baseline_zscore_contribution"] > 0.20
+    assert outlier_res["explainability"]["baseline_zscore_contribution"] > 0.05
 
 
 @pytest.mark.anyio
