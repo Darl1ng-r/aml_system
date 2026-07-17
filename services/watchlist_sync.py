@@ -22,7 +22,11 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Dict, Any, List
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
 from config import ELASTICSEARCH_HOST, SANCTIONS_INDEX, PEP_INDEX, settings
 from database.elasticsearch_db import get_async_elasticsearch_client
 
@@ -43,33 +47,34 @@ class WatchlistSyncEngine:
     async def fetch_ofac_sdn_feed(self) -> List[Dict[str, Any]]:
         """Downloads and parses the official U.S. Treasury OFAC SDN XML feed."""
         logger.info(f"Downloading official OFAC SDN XML feed from {OFAC_SDN_URL}...")
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                res = await client.get(OFAC_SDN_URL)
-                if res.status_code == 200:
-                    root = ET.fromstring(res.content)
-                    entries = []
-                    # Parse SDN Entry nodes
-                    for entry in root.findall(".//{*}sdnEntry"):
-                        first_name = entry.findtext(".//{*}firstName") or ""
-                        last_name = entry.findtext(".//{*}lastName") or ""
-                        title = entry.findtext(".//{*}title") or ""
-                        sdn_type = entry.findtext(".//{*}sdnType") or "Individual"
-                        remarks = entry.findtext(".//{*}remarks") or ""
+        if httpx is not None:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    res = await client.get(OFAC_SDN_URL)
+                    if res.status_code == 200:
+                        root = ET.fromstring(res.content)
+                        entries = []
+                        # Parse SDN Entry nodes
+                        for entry in root.findall(".//{*}sdnEntry"):
+                            first_name = entry.findtext(".//{*}firstName") or ""
+                            last_name = entry.findtext(".//{*}lastName") or ""
+                            title = entry.findtext(".//{*}title") or ""
+                            sdn_type = entry.findtext(".//{*}sdnType") or "Individual"
+                            remarks = entry.findtext(".//{*}remarks") or ""
 
-                        full_name = f"{first_name} {last_name}".strip() if first_name else last_name.strip()
-                        if full_name:
-                            entries.append({
-                                "name": full_name,
-                                "source_list": "OFAC SDN List",
-                                "entity_type": sdn_type,
-                                "program": remarks[:100] if remarks else "OFAC-SDN",
-                                "indexed_at": datetime.now(timezone.utc).isoformat()
-                            })
-                    logger.info(f"Parsed {len(entries)} entries from OFAC SDN XML feed.")
-                    return entries
-        except Exception as e:
-            logger.warning(f"Failed to fetch live OFAC XML feed ({e}). Utilizing fallback OFAC dataset.")
+                            full_name = f"{first_name} {last_name}".strip() if first_name else last_name.strip()
+                            if full_name:
+                                entries.append({
+                                    "name": full_name,
+                                    "source_list": "OFAC SDN List",
+                                    "entity_type": sdn_type,
+                                    "program": remarks[:100] if remarks else "OFAC-SDN",
+                                    "indexed_at": datetime.now(timezone.utc).isoformat()
+                                })
+                        logger.info(f"Parsed {len(entries)} entries from OFAC SDN XML feed.")
+                        return entries
+            except Exception as e:
+                logger.warning(f"Failed to fetch live OFAC XML feed ({e}). Utilizing fallback OFAC dataset.")
 
         # Reliable built-in OFAC SDN baseline
         return [
