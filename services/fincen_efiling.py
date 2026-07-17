@@ -19,7 +19,11 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
-import httpx
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -44,7 +48,7 @@ class FinCENEfilingClient:
     def generate_signature(self, payload_bytes: bytes) -> str:
         """Computes HMAC-SHA256 signature for electronic transmission validation."""
         secret = FINCEN_FILE_PASSWORD.encode("utf-8")
-        return hmac.new(secret, payload_bytes, hashlib.sha256).hexdigest()
+        return hmac.new(secret, payload_bytes, digestmod=hashlib.sha256).hexdigest()
 
     def validate_sar_xml(self, xml_str: str) -> bool:
         """Validates XML structural conformance before transmission."""
@@ -87,6 +91,9 @@ class FinCENEfilingClient:
             }
 
         # Real FinCEN E-Filing HTTP Call
+        if httpx is None:
+            raise RuntimeError("httpx module is required for production FinCEN HTTP calls.")
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(self.api_url, content=payload_bytes, headers=headers)
