@@ -20,21 +20,32 @@ from starlette.responses import Response
 correlation_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "correlation_id", default=""
 )
+tenant_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "tenant_id", default=""
+)
+user_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "user_id", default=""
+)
 
 
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
     """
     FastAPI / Starlette middleware that:
     1. Reads ``X-Correlation-ID`` from the request (or generates a UUID4).
-    2. Stores it in ``correlation_id_var`` for the duration of the request.
-    3. Echoes it back in the response headers.
+    2. Stores ``correlation_id_var``, ``tenant_id_var``, and ``user_id_var`` in contextvars.
+    3. Echoes ``X-Correlation-ID`` back in the response headers.
     """
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         cid = request.headers.get("x-correlation-id", str(uuid.uuid4()))
+        tenant_id = request.headers.get("x-tenant-id", "")
+
         correlation_id_var.set(cid)
+        if tenant_id:
+            tenant_id_var.set(tenant_id)
+        user_id_var.set("")
 
         response = await call_next(request)
         response.headers["X-Correlation-ID"] = cid

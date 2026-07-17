@@ -89,6 +89,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         if user_id:
             # Replicate user to local PostgreSQL database if not present
             from database.postgres import get_async_db_conn
+            from observability.middleware import user_id_var, tenant_id_var
+            user_id_var.set(str(user_id))
+            tenant_id_var.set(str(tenant_id))
             async with get_async_db_conn() as conn:
                 await conn.execute(
                     "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
@@ -126,6 +129,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
                 tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
                 
                 user_id = user_data.get("id")
+                from observability.middleware import user_id_var, tenant_id_var
+                user_id_var.set(str(user_id))
+                tenant_id_var.set(str(tenant_id))
                 
                 # Replicate user to local PostgreSQL database if not present
                 from database.postgres import get_async_db_conn

@@ -267,10 +267,22 @@ async def resolve_alert(
                 status, uuid.UUID(current_user["id"]), uuid.UUID(id)
             )
 
-        # Output structured audit trail log
-        logger.info(
-            f"AUDIT LOG: Analyst '{current_user['username']}' (ID: {current_user['id']}, Role: {current_user['role']}) "
-            f"resolved Alert {id} with Action '{payload.action}' -> Status: '{status}'."
+        # Output audit-grade structured log
+        from observability.logging import log_audit_event
+        log_audit_event(
+            event_type="ALERT_RESOLUTION",
+            actor_id=current_user["id"],
+            actor_role=current_user["role"],
+            action=payload.action,
+            resource_type="ALERT",
+            resource_id=id,
+            tenant_id=tenant_id,
+            details={
+                "username": current_user["username"],
+                "resulting_status": status,
+                "justification": payload.justification,
+                "sar_xml_generated": bool(payload.action == "CLOSE_SAR" and payload.sar_xml_generate)
+            }
         )
 
         # Record human active learning feedback sample in background task
@@ -384,10 +396,22 @@ async def bulk_resolve_alerts(
             )
             count = int(result.split(" ")[1]) if "UPDATE" in result else 0
 
-            # Log audit trail
-            logger.info(
-                f"AUDIT LOG: Analyst '{current_user['username']}' executed batch resolution on {count} alerts. "
-                f"Action: {payload.action}"
+            # Output audit-grade structured log
+            from observability.logging import log_audit_event
+            log_audit_event(
+                event_type="BULK_ALERT_RESOLUTION",
+                actor_id=current_user["id"],
+                actor_role=current_user["role"],
+                action=payload.action,
+                resource_type="ALERT_BATCH",
+                resource_id=f"batch_{len(payload.alert_ids)}",
+                tenant_id=tenant_id,
+                details={
+                    "username": current_user["username"],
+                    "count": count,
+                    "alert_ids": payload.alert_ids,
+                    "justification": payload.justification
+                }
             )
 
             # Broadcast WebSocket notification
