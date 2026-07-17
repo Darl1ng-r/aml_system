@@ -137,12 +137,21 @@ class IsolationForestScratch:
 # System-wide Singleton model
 _iforest_model = None
 
+def _fit_isolation_forest_job(n_estimators: int, max_samples: int, X_train: np.ndarray) -> IsolationForestScratch:
+    """Standalone worker function for process-isolated model fitting (unblocking the GIL)."""
+    model = IsolationForestScratch(n_estimators=n_estimators, max_samples=max_samples)
+    model.fit(X_train)
+    return model
+
+
 async def retrain_system_iforest():
     global _iforest_model
     logger.info("Retraining system-wide Isolation Forest...")
     try:
         from database.postgres import get_async_db_conn
         from services.rules import get_rules_config
+        import asyncio
+        from concurrent.futures import ProcessPoolExecutor
         
         config = get_rules_config()
         geo_config = config.get("rules", {}).get("GEOGRAPHIC_SANCTIONS", {})
@@ -193,8 +202,13 @@ async def retrain_system_iforest():
                 
             X_train = np.array(features)
             
-        model = IsolationForestScratch(n_estimators=50, max_samples=256)
-        model.fit(X_train)
+        loop = asyncio.get_running_loop()
+        try:
+            with ProcessPoolExecutor(max_workers=1) as pool:
+                model = await loop.run_in_executor(pool, _fit_isolation_forest_job, 50, 256, X_train)
+        except Exception:
+            model = await asyncio.to_thread(_fit_isolation_forest_job, 50, 256, X_train)
+
         _iforest_model = model
         logger.info(f"System-wide Isolation Forest trained successfully on {X_train.shape[0]} samples.")
     except Exception as e:

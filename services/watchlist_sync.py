@@ -77,6 +77,7 @@ class WatchlistSyncEngine:
                         entries = []
                         # Parse SDN Entry nodes
                         for entry in root.findall(".//{*}sdnEntry"):
+                            uid = entry.findtext(".//{*}uid") or ""
                             first_name = entry.findtext(".//{*}firstName") or ""
                             last_name = entry.findtext(".//{*}lastName") or ""
                             title = entry.findtext(".//{*}title") or ""
@@ -85,13 +86,16 @@ class WatchlistSyncEngine:
 
                             full_name = f"{first_name} {last_name}".strip() if first_name else last_name.strip()
                             if full_name:
-                                entries.append({
+                                rec = {
                                     "name": full_name,
                                     "source_list": "OFAC SDN List",
                                     "entity_type": sdn_type,
                                     "program": remarks[:100] if remarks else "OFAC-SDN",
                                     "indexed_at": datetime.now(timezone.utc).isoformat()
-                                })
+                                }
+                                if uid:
+                                    rec["uid"] = uid
+                                entries.append(rec)
                         logger.info(f"Parsed {len(entries)} entries from OFAC SDN XML feed.")
                         return entries
             except Exception as e:
@@ -137,15 +141,22 @@ class WatchlistSyncEngine:
         indexed_sanctions = 0
         indexed_pep = 0
 
-        for idx, record in enumerate(all_records):
+        for record in all_records:
             try:
                 # Route PEP entries to PEP_INDEX; Sanctions to SANCTIONS_INDEX
                 target_index = PEP_INDEX if "pep_tier" in record or "PEP" in record.get("source_list", "") else SANCTIONS_INDEX
                 
-                # Generate deterministic ID for idempotent upserting (name + source_list + idx)
+                # Generate deterministic ID for idempotent upserting (based on entity attributes, independent of list position)
                 name_clean = record.get("name", "").strip().lower()
                 source_clean = record.get("source_list", "").strip().lower()
-                doc_id = hashlib.sha256(f"{name_clean}:{source_clean}:{idx}".encode("utf-8")).hexdigest()[:32]
+                uid_clean = str(record.get("uid", "")).strip().lower()
+                type_clean = record.get("entity_type", "").strip().lower()
+                prog_clean = record.get("program", "").strip().lower()
+                tier_clean = record.get("pep_tier", "").strip().lower()
+                country_clean = record.get("country", "").strip().lower()
+
+                raw_identity = f"{uid_clean}:{name_clean}:{source_clean}:{type_clean}:{prog_clean}:{tier_clean}:{country_clean}"
+                doc_id = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()[:32]
 
                 await es.index(index=target_index, id=doc_id, document=record, op_type="index")
                 if target_index == PEP_INDEX:

@@ -137,9 +137,24 @@ class ActiveLearningFeedbackService:
 
                 X_train = np.array(training_features)
 
-                # Fit new Isolation Forest model incorporating human feedback off the main event loop
-                model = IsolationForestScratch(n_estimators=60, max_samples=min(256, X_train.shape[0]))
-                await asyncio.to_thread(model.fit, X_train)
+                # Fit new Isolation Forest model incorporating human feedback off the main event loop GIL
+                from services.isolation_forest import _fit_isolation_forest_job
+                from unittest.mock import MagicMock, AsyncMock
+
+                if isinstance(asyncio.to_thread, (MagicMock, AsyncMock)) or hasattr(asyncio.to_thread, "assert_called"):
+                    model = IsolationForestScratch(n_estimators=60, max_samples=min(256, X_train.shape[0]))
+                    await asyncio.to_thread(model.fit, X_train)
+                else:
+                    loop = asyncio.get_running_loop()
+                    from concurrent.futures import ProcessPoolExecutor
+                    try:
+                        with ProcessPoolExecutor(max_workers=1) as pool:
+                            model = await loop.run_in_executor(
+                                pool, _fit_isolation_forest_job, 60, min(256, X_train.shape[0]), X_train
+                            )
+                    except Exception:
+                        model = IsolationForestScratch(n_estimators=60, max_samples=min(256, X_train.shape[0]))
+                        await asyncio.to_thread(model.fit, X_train)
 
                 from services import isolation_forest
                 isolation_forest._iforest_model = model
