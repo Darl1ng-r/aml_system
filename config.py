@@ -52,6 +52,23 @@ class Settings(BaseSettings):
     tls_client_cert: str | None = None
     tls_client_key: str | None = None
     
+    # ── HashiCorp Vault — secrets management ──────────────────────────────────
+    # Non-sensitive connection config (addresses / IDs used to *retrieve* secrets).
+    # Actual credentials (passwords, keys) are never stored in settings.
+    #
+    # vault_addr:      Full Vault server URL, e.g. http://vault:8200
+    #                  Leave empty for local dev — falls back to env vars.
+    # vault_role_id:   AppRole role_id for authentication.
+    # vault_secret_id: AppRole secret_id for authentication.
+    # vault_dev_token: Static dev root token (local vault -dev only; never prod).
+    # vault_mount:     KV-v2 mount path (default: "secret").
+    vault_addr: str = ""
+    vault_role_id: str = ""
+    vault_secret_id: str = ""
+    vault_dev_token: str = ""
+    vault_mount: str = "secret"
+    vault_lease_renewal_seconds: int = 3600
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

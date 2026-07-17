@@ -28,26 +28,41 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# FinCEN E-Filing Settings
-FINCEN_EFILING_URL = os.getenv("FINCEN_EFILING_URL", "https://bsaefiling.fincen.treas.gov/api/v2/sar/submit")
-FINCEN_TRANSMITTER_TIN = os.getenv("FINCEN_TRANSMITTER_TIN", "999887766")
-FINCEN_FILE_PASSWORD = os.getenv("FINCEN_FILE_PASSWORD", "SecretBsaKey2026")
-FINCEN_API_KEY = os.getenv("FINCEN_API_KEY", "fincen_api_key_sandbox_99201")
-FINCEN_SANDBOX_MODE = os.getenv("FINCEN_SANDBOX_MODE", "true").lower() == "true"
+
+def _get_fincen_secret(field: str, env_var: str, default: str = "") -> str:
+    """Resolve a FinCEN credential: Vault SecretStore -> env var -> default."""
+    try:
+        from services.vault_loader import SecretStore
+        vault_value = SecretStore.get(f"fincen.{field}")
+        if vault_value:
+            return vault_value
+    except ImportError:
+        pass
+    return os.getenv(env_var, default)
 
 
 class FinCENEfilingClient:
     """Client interface for electronically submitting SAR filings to the FinCEN BSA E-Filing gateway."""
 
     def __init__(self):
-        self.api_url = FINCEN_EFILING_URL
-        self.tin = FINCEN_TRANSMITTER_TIN
-        self.api_key = FINCEN_API_KEY
-        self.sandbox = FINCEN_SANDBOX_MODE
+        self.api_url = _get_fincen_secret(
+            "efiling_url", "FINCEN_EFILING_URL",
+            "https://bsaefiling.fincen.treas.gov/api/v2/sar/submit"
+        )
+        self.tin = _get_fincen_secret(
+            "transmitter_tin", "FINCEN_TRANSMITTER_TIN", "999887766"
+        )
+        self.api_key = _get_fincen_secret(
+            "api_key", "FINCEN_API_KEY", ""
+        )
+        self.sandbox = os.getenv("FINCEN_SANDBOX_MODE", "true").lower() == "true"
 
     def generate_signature(self, payload_bytes: bytes) -> str:
         """Computes HMAC-SHA256 signature for electronic transmission validation."""
-        secret = FINCEN_FILE_PASSWORD.encode("utf-8")
+        file_password = _get_fincen_secret(
+            "file_password", "FINCEN_FILE_PASSWORD", ""
+        )
+        secret = file_password.encode("utf-8")
         return hmac.new(secret, payload_bytes, digestmod=hashlib.sha256).hexdigest()
 
     def validate_sar_xml(self, xml_str: str) -> bool:

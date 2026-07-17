@@ -32,17 +32,38 @@ from database.elasticsearch_db import get_async_elasticsearch_client
 
 logger = logging.getLogger(__name__)
 
-# Configurable Watchlist API Endpoints & Credentials
+# Non-sensitive URL endpoints — not secrets
 OFAC_SDN_URL = os.getenv("OFAC_SDN_URL", "https://www.treasury.gov/ofac/downloads/sdn.xml")
 WORLDCHECK_API_URL = os.getenv("WORLDCHECK_API_URL", "https://api-worldcheck.refinitiv.com/v2/cases/screening")
-WORLDCHECK_API_KEY = os.getenv("WORLDCHECK_API_KEY", "worldcheck_api_key_demo_2026")
-WORLDCHECK_API_SECRET = os.getenv("WORLDCHECK_API_SECRET", "worldcheck_secret_demo_2026")
 DOWJONES_API_URL = os.getenv("DOWJONES_API_URL", "https://api.dowjones.com/risk/watchlists/v1/sync")
-DOWJONES_API_KEY = os.getenv("DOWJONES_API_KEY", "dowjones_api_key_demo_2026")
+
+
+def _get_watchlist_secret(field: str, env_var: str, default: str = "") -> str:
+    """Resolve a watchlist API credential: Vault SecretStore -> env var -> default."""
+    try:
+        from services.vault_loader import SecretStore
+        vault_value = SecretStore.get(f"watchlists.{field}")
+        if vault_value:
+            return vault_value
+    except ImportError:
+        pass
+    return os.getenv(env_var, default)
 
 
 class WatchlistSyncEngine:
     """Engine responsible for fetching, parsing, and indexing live global watchlists."""
+
+    def __init__(self):
+        # Credentials resolved at construction: Vault -> env var
+        self._worldcheck_api_key = _get_watchlist_secret(
+            "worldcheck_api_key", "WORLDCHECK_API_KEY", ""
+        )
+        self._worldcheck_api_secret = _get_watchlist_secret(
+            "worldcheck_api_secret", "WORLDCHECK_API_SECRET", ""
+        )
+        self._dowjones_api_key = _get_watchlist_secret(
+            "dowjones_api_key", "DOWJONES_API_KEY", ""
+        )
 
     async def fetch_ofac_sdn_feed(self) -> List[Dict[str, Any]]:
         """Downloads and parses the official U.S. Treasury OFAC SDN XML feed."""

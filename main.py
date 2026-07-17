@@ -75,8 +75,6 @@ def read_login():
 @app.on_event("startup")
 async def startup_db_clients():
     logger.info("Starting up database connections...")
-    from services.tls_manager import validate_mtls_configuration
-    validate_mtls_configuration(strict=settings.strict_mtls or settings.enable_tls)
     import sys
     import asyncio
     from database.postgres import init_db_pool
@@ -84,8 +82,22 @@ async def startup_db_clients():
     from database.neo4j_db import get_neo4j_driver, get_async_neo4j_driver
     from database.elasticsearch_db import get_elasticsearch_client, get_async_elasticsearch_client
     from scripts.sync_worker import main as run_sync_worker
-    
-    # ── 0. Initialise OpenTelemetry tracing ──────────────────────────────
+
+    # ── 0. Bootstrap Vault secrets (must be FIRST — all subsequent steps depend on it) ──
+    try:
+        from services.vault_loader import VaultSecretsLoader
+        await VaultSecretsLoader.bootstrap()
+        logger.info("Vault secrets loaded successfully.")
+    except RuntimeError as e:
+        logger.critical(f"CRITICAL: Vault secrets bootstrap failed: {e}")
+        raise
+
+    # ── 0b. TLS/mTLS validation ──────────────────────────────────────────
+    from services.tls_manager import validate_mtls_configuration
+    validate_mtls_configuration(strict=settings.strict_mtls or settings.enable_tls)
+
+    # ── 0c. Initialise OpenTelemetry tracing ──────────────────────────────
+
     try:
         from observability.tracing import init_tracer
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor

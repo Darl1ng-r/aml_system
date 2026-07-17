@@ -5,17 +5,23 @@ from services.fincen_efiling import FinCENEfilingClient
 
 
 def test_fincen_signature_rfc4231_vector():
-    """Verify HMAC-SHA256 signature generation against RFC 4231 Test Case 2 known vector."""
-    client = FinCENEfilingClient()
+    """Verify HMAC-SHA256 signature generation against RFC 4231 Test Case 2 known vector.
 
+    Credentials are now resolved via _get_fincen_secret (Vault -> env -> default).
+    We patch _get_fincen_secret to inject the RFC test vector key directly.
+    """
     # RFC 4231 Test Case 2 (HMAC-SHA-256)
     key_str = "Jefe"
     data = b"what do ya want for nothing?"
     expected_hex = "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("services.fincen_efiling.FINCEN_FILE_PASSWORD", key_str)
-        # Verify generate_signature returns the exact RFC 4231 HMAC-SHA256 hex string
+        # Patch the resolver so it returns our test key for the file_password field
+        mp.setattr(
+            "services.fincen_efiling._get_fincen_secret",
+            lambda field, env_var, default="": key_str if field == "file_password" else default
+        )
+        client = FinCENEfilingClient()
         calculated_hex = client.generate_signature(data)
         assert calculated_hex == expected_hex
 
