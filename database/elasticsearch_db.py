@@ -46,6 +46,7 @@ async def get_async_elasticsearch_client():
             else:
                 logger.warning("Async Elasticsearch ping failed.")
         except Exception as e:
+            _async_es_client = None
             logger.error(f"Failed to connect to Async Elasticsearch: {e}")
             raise e
     return _async_es_client

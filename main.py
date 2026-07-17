@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
-from routers import health
+from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
@@ -11,7 +11,7 @@ from observability.middleware import CorrelationIdMiddleware
 import asyncio
 import logging
 
-# ── Structured JSON logging (must be called before any logger is used) ──
+# ── Structured JSON logging (called early; re-applied after Alembic in startup) ──
 setup_json_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,26 @@ app.include_router(alerts.router)
 app.include_router(rules.router)
 app.include_router(network.router)
 
-# Mount static folder
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# ── Exception Handlers ───────────────────────────────────────────────────
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from observability.middleware import correlation_id_var
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    correlation_id = correlation_id_var.get("")
+    logger.error(
+        f"Unhandled application exception: {exc}",
+        exc_info=exc,
+        extra={"correlation_id": correlation_id}
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "An internal server error occurred.",
+            "correlation_id": correlation_id
+        }
+    )
 
 @app.get("/")
 def read_root():
@@ -123,6 +141,8 @@ async def startup_db_clients():
         from alembic import command as alembic_command
         alembic_cfg = AlembicConfig("alembic.ini")
         alembic_command.upgrade(alembic_cfg, "head")
+        # Re-apply JSON logging after Alembic's fileConfig may have overwritten handlers
+        setup_json_logging(level=logging.INFO)
         logger.info("Alembic database migrations applied successfully.")
     except Exception as e:
         logger.critical(f"CRITICAL: Alembic migration failed: {e}")
@@ -155,7 +175,16 @@ async def startup_db_clients():
         logger.critical(f"CRITICAL: Could not connect to Elasticsearch: {e}")
         raise RuntimeError("Elasticsearch database is required for startup") from e
 
-    # ── 5. Start Neo4j Graph Sync Worker ─────────────────────────────────
+    # ── 5. Pre-warm Isolation Forest model ──────────────────────────────
+    # Running before first request prevents a cold-start delay on the first transaction.
+    try:
+        from services.isolation_forest import retrain_system_iforest
+        await retrain_system_iforest()
+        logger.info("Isolation Forest model pre-warmed successfully.")
+    except Exception as e:
+        logger.warning(f"Isolation Forest pre-warm failed (non-fatal, will retry on first request): {e}")
+
+    # ── 6. Start Neo4j Graph Sync Worker ─────────────────────────────────
     logger.info("Starting background Neo4j graph synchronization worker...")
     asyncio.create_task(run_sync_worker(shutdown_event=_worker_shutdown_event))
 

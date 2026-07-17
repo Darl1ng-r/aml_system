@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import inspect
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Dict, Any, List
@@ -67,12 +68,16 @@ class WatchlistSyncEngine:
             "dowjones_api_key", "DOWJONES_API_KEY", ""
         )
 
-    async def fetch_ofac_sdn_feed(self) -> List[Dict[str, Any]]:
+    async def fetch_ofac_sdn_feed(self, client=None) -> List[Dict[str, Any]]:
         """Downloads and parses the official U.S. Treasury OFAC SDN XML feed."""
         logger.info(f"Downloading official OFAC SDN XML feed from {OFAC_SDN_URL}...")
         if httpx is not None:
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                close_client = False
+                if client is None:
+                    client = httpx.AsyncClient(timeout=30.0)
+                    close_client = True
+                try:
                     res = await client.get(OFAC_SDN_URL)
                     if res.status_code == 200:
                         root = ET.fromstring(res.content)
@@ -100,6 +105,9 @@ class WatchlistSyncEngine:
                                 entries.append(rec)
                         logger.info(f"Parsed {len(entries)} entries from OFAC SDN XML feed.")
                         return entries
+                finally:
+                    if close_client:
+                        await client.aclose()
             except Exception as e:
                 logger.warning(f"Failed to fetch live OFAC XML feed ({e}). Utilizing fallback OFAC dataset.")
 
@@ -111,12 +119,16 @@ class WatchlistSyncEngine:
             {"name": "Al-Nusra Front Syndicate", "source_list": "OFAC SDN List", "entity_type": "Group", "program": "SDGT-TERRORISM"}
         ]
 
-    async def fetch_un_sanctions_feed(self) -> List[Dict[str, Any]]:
+    async def fetch_un_sanctions_feed(self, client=None) -> List[Dict[str, Any]]:
         """Downloads and parses the official United Nations Security Council Consolidated Sanctions XML feed."""
         logger.info(f"Downloading official UN Consolidated Sanctions XML feed from {UN_SANCTIONS_URL}...")
         if httpx is not None:
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                close_client = False
+                if client is None:
+                    client = httpx.AsyncClient(timeout=30.0)
+                    close_client = True
+                try:
                     res = await client.get(UN_SANCTIONS_URL)
                     if res.status_code == 200:
                         root = ET.fromstring(res.content)
@@ -158,6 +170,9 @@ class WatchlistSyncEngine:
                                 entries.append(rec)
                         logger.info(f"Parsed {len(entries)} entries from UN Consolidated XML feed.")
                         return entries
+                finally:
+                    if close_client:
+                        await client.aclose()
             except Exception as e:
                 logger.warning(f"Failed to fetch live UN XML feed ({e}). Utilizing fallback UN dataset.")
 
@@ -168,12 +183,16 @@ class WatchlistSyncEngine:
             {"name": "General Security Bureau Committee", "source_list": "UN Consolidated Sanctions List", "entity_type": "Group", "program": "DPRK-SANCTIONS"}
         ]
 
-    async def fetch_eu_sanctions_feed(self) -> List[Dict[str, Any]]:
+    async def fetch_eu_sanctions_feed(self, client=None) -> List[Dict[str, Any]]:
         """Downloads and parses the official European Union Financial Sanctions Files (FSF) Asset Freeze XML feed."""
         logger.info(f"Downloading official EU Financial Sanctions XML feed from {EU_SANCTIONS_URL}...")
         if httpx is not None:
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                close_client = False
+                if client is None:
+                    client = httpx.AsyncClient(timeout=30.0)
+                    close_client = True
+                try:
                     res = await client.get(EU_SANCTIONS_URL)
                     if res.status_code == 200:
                         root = ET.fromstring(res.content)
@@ -197,6 +216,9 @@ class WatchlistSyncEngine:
                                 entries.append(rec)
                         logger.info(f"Parsed {len(entries)} entries from EU Financial Sanctions XML feed.")
                         return entries
+                finally:
+                    if close_client:
+                        await client.aclose()
             except Exception as e:
                 logger.warning(f"Failed to fetch live EU XML feed ({e}). Utilizing fallback EU dataset.")
 
@@ -277,13 +299,21 @@ class WatchlistSyncEngine:
     async def sync_all_watchlists(self) -> Dict[str, Any]:
         """
         Executes parallel sync across OFAC, UN, EU, World-Check, and Dow Jones data sources
-        and indexes normalized records into Elasticsearch `sanctions_list` and `pep_list`.
+        and indexes normalized records into Elasticsearch `sanctions_list` and `pep_list`
+        using efficient bulk operations.
         """
         es = await get_async_elasticsearch_client()
 
-        ofac_records = await self.fetch_ofac_sdn_feed()
-        un_records = await self.fetch_un_sanctions_feed()
-        eu_records = await self.fetch_eu_sanctions_feed()
+        if httpx is not None:
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                ofac_records = await self.fetch_ofac_sdn_feed(client=http_client)
+                un_records = await self.fetch_un_sanctions_feed(client=http_client)
+                eu_records = await self.fetch_eu_sanctions_feed(client=http_client)
+        else:
+            ofac_records = await self.fetch_ofac_sdn_feed()
+            un_records = await self.fetch_un_sanctions_feed()
+            eu_records = await self.fetch_eu_sanctions_feed()
+
         worldcheck_records = await self.fetch_worldcheck_feed()
         dowjones_records = await self.fetch_dowjones_feed()
 
@@ -291,28 +321,45 @@ class WatchlistSyncEngine:
         indexed_sanctions = 0
         indexed_pep = 0
 
+        actions = []
         for record in all_records:
+            target_index = PEP_INDEX if "pep_tier" in record or "PEP" in record.get("source_list", "") else SANCTIONS_INDEX
+            name_clean = record.get("name", "").strip().lower()
+            source_clean = record.get("source_list", "").strip().lower()
+            uid_clean = str(record.get("uid", "")).strip().lower()
+            type_clean = record.get("entity_type", "").strip().lower()
+            prog_clean = record.get("program", "").strip().lower()
+            tier_clean = record.get("pep_tier", "").strip().lower()
+            country_clean = record.get("country", "").strip().lower()
+
+            raw_identity = f"{uid_clean}:{name_clean}:{source_clean}:{type_clean}:{prog_clean}:{tier_clean}:{country_clean}"
+            doc_id = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()[:32]
+
+            if target_index == PEP_INDEX:
+                indexed_pep += 1
+            else:
+                indexed_sanctions += 1
+
+            actions.append({
+                "_op_type": "index",
+                "_index": target_index,
+                "_id": doc_id,
+                "_source": record
+            })
+
+        if actions:
             try:
-                # Route PEP entries to PEP_INDEX; Sanctions to SANCTIONS_INDEX
-                target_index = PEP_INDEX if "pep_tier" in record or "PEP" in record.get("source_list", "") else SANCTIONS_INDEX
-                
-                # Generate deterministic ID for idempotent upserting (based on entity attributes, independent of list position)
-                name_clean = record.get("name", "").strip().lower()
-                source_clean = record.get("source_list", "").strip().lower()
-                uid_clean = str(record.get("uid", "")).strip().lower()
-                type_clean = record.get("entity_type", "").strip().lower()
-                prog_clean = record.get("program", "").strip().lower()
-                tier_clean = record.get("pep_tier", "").strip().lower()
-                country_clean = record.get("country", "").strip().lower()
-
-                raw_identity = f"{uid_clean}:{name_clean}:{source_clean}:{type_clean}:{prog_clean}:{tier_clean}:{country_clean}"
-                doc_id = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()[:32]
-
-                await es.index(index=target_index, id=doc_id, document=record, op_type="index")
-                if target_index == PEP_INDEX:
-                    indexed_pep += 1
-                else:
-                    indexed_sanctions += 1
+                from elasticsearch.helpers import async_bulk
+                await async_bulk(es, actions, chunk_size=500)
+            except Exception as e:
+                logger.warning(f"Elasticsearch bulk indexing fallback: {e}")
+                for action in actions:
+                    try:
+                        res = es.index(index=action["_index"], id=action["_id"], document=action["_source"], op_type="index")
+                        if inspect.isawaitable(res):
+                            await res
+                    except Exception as ex:
+                        logger.warning(f"Elasticsearch single index fallback warning: {ex}")
             except Exception as e:
                 logger.warning(f"Elasticsearch indexing bypass: {e}")
 

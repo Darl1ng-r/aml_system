@@ -25,31 +25,31 @@ def get_rules_config() -> dict:
             _config_cache = {
                 "rules": {
                     "LARGE_TRANSACTION": {
-                        "enabled": true,
+                        "enabled": True,
                         "threshold": 10000.0
                     },
                     "STRUCTURING_SMURFING": {
-                        "enabled": true,
+                        "enabled": True,
                         "threshold": 10000.0,
                         "window_hours": 24
                     },
                     "VELOCITY_MONITORING": {
-                        "enabled": true,
+                        "enabled": True,
                         "history_days": 30,
                         "deviation_threshold": 3.0
                     },
                     "RAPID_MOVEMENT_FUNDS": {
-                        "enabled": true,
+                        "enabled": True,
                         "window_minutes": 10,
                         "amount_ratio_threshold": 0.90
                     },
                     "DORMANT_ACCOUNT": {
-                        "enabled": true,
+                        "enabled": True,
                         "dormant_period_days": 90,
                         "activation_threshold": 50000.0
                     },
                     "GEOGRAPHIC_SANCTIONS": {
-                        "enabled": true,
+                        "enabled": True,
                         "high_risk_countries": ["RU", "IR", "KP", "SY"],
                         "sanctions_similarity_threshold": 0.80
                     }

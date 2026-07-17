@@ -1,14 +1,18 @@
-from fastapi import APIRouter, HTTPException, Depends, Response
+from fastapi import APIRouter, HTTPException, Depends, Response, BackgroundTasks
+from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from database.postgres import get_async_db_conn
 from database.neo4j_db import get_async_neo4j_driver
-from services.auth import get_current_user, RoleChecker
+from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
 import xml.etree.ElementTree as ET
 # minidom import removed for XXE hardening
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 import json
+import io
+import csv
+from typing import List
 
 import logging
 logger = logging.getLogger(__name__)
@@ -40,8 +44,11 @@ async def list_alerts(
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            # Get total count of alerts (ignoring pagination)
-            total_count = await conn.fetchval("SELECT COUNT(*) FROM alerts;")
+            # Get total count of alerts scoped to caller's tenant
+            total_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM alerts WHERE tenant_id = $1;",
+                tenant_id
+            )
             
             # Compute limit and offset
             offset = (page - 1) * limit

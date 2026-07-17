@@ -54,6 +54,7 @@ async def get_async_redis_client():
             await _async_redis_client.ping()
             logger.info("Async Redis connection established.")
         except Exception as e:
+            _async_redis_client = None
             logger.error(f"Failed to connect to Async Redis: {e}")
             raise e
     return _async_redis_client

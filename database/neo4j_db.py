@@ -43,6 +43,7 @@ async def get_async_neo4j_driver():
             _async_driver = AsyncGraphDatabase.driver(NEO4J_URI, **kwargs)
             logger.info("Async Neo4j driver initialized successfully.")
         except Exception as e:
+            _async_driver = None
             logger.error(f"Failed to create Async Neo4j driver: {e}")
             raise e
     return _async_driver

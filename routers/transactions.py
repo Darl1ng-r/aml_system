@@ -8,7 +8,7 @@ from database.postgres import get_async_db_conn
 from services.rules import RulesEngine, get_rules_config
 from services.ml_model import anomaly_model
 from services.redpanda import publish_transaction
-from services.auth import get_current_user, RoleChecker
+from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
 from services.behavioral import get_customer_baseline, calculate_customer_baseline
 from services.isolation_forest import get_iforest_score

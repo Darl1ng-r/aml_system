@@ -159,8 +159,23 @@ async def get_dashboard_metrics(
 
 # ── Real-Time WebSocket Endpoint ──────────────────────────────────────────────
 @router.websocket("/ws/live-stream")
-async def websocket_live_stream(websocket: WebSocket):
-    """WebSocket connection handler pushing real-time events to connected clients."""
+async def websocket_live_stream(websocket: WebSocket, token: str | None = None):
+    """
+    WebSocket connection handler pushing real-time events to connected clients.
+    Requires token authentication via query parameter `?token=<JWT>`.
+    """
+    if not token:
+        await websocket.close(code=1008, reason="Missing authentication token")
+        return
+
+    try:
+        from services.secrets_manager import decode_jwt_with_rotation
+        from config import settings
+        decode_jwt_with_rotation(token, algorithm=settings.jwt_algorithm)
+    except Exception:
+        await websocket.close(code=1008, reason="Invalid or expired authentication token")
+        return
+
     await ws_manager.connect(websocket)
     try:
         while True:

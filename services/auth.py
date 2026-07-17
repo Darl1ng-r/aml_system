@@ -193,9 +193,19 @@ def enforce_tenant_data_scope(current_user: dict, target_tenant_id: str | None =
 
     # If target_tenant_id is explicitly requested, verify it matches user's tenant
     if target_tenant_id and str(target_tenant_id) != user_tenant_id:
-        logger.warning(
-            f"DATA-LEVEL RBAC VIOLATION: User {current_user.get('username')} (Tenant: {user_tenant_id}, Role: {user_role}) "
-            f"attempted unauthorized access to Tenant {target_tenant_id}."
+        from observability.logging import log_audit_event
+        log_audit_event(
+            event_type="RBAC_VIOLATION",
+            actor_id=str(current_user.get("id", "")),
+            actor_role=user_role,
+            action="UNAUTHORIZED_TENANT_ACCESS",
+            resource_type="TENANT",
+            resource_id=str(target_tenant_id),
+            tenant_id=user_tenant_id,
+            details={
+                "username": current_user.get("username"),
+                "attempted_tenant": target_tenant_id
+            }
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

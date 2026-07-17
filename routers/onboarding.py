@@ -4,7 +4,7 @@ from database.postgres import get_async_db_conn
 from database.neo4j_db import get_async_neo4j_driver
 from database.elasticsearch_db import get_async_elasticsearch_client
 from routers.screening import perform_sanctions_search
-from services.auth import get_current_user, RoleChecker
+from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
 
 router = APIRouter(prefix="/api/v1/onboard", tags=["Onboarding"])
 

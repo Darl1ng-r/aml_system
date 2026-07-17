@@ -19,11 +19,12 @@ class Settings(BaseSettings):
     
     elasticsearch_host: str = "http://localhost:9200"
     sanctions_index: str = "sanctions_list"
+    pep_index: str = "pep_list"
     # Set ELASTIC_USER / ELASTIC_PASSWORD in .env when xpack.security is enabled.
     # Leave empty for local dev running without security.
     elastic_user: str = "elastic"
     elastic_password: str = ""
-    
+
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     # Short-lived access token — 30 minutes.
@@ -31,27 +32,27 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     # Long-lived refresh token — 7 days.
     refresh_token_expire_days: int = 7
-    
+
     supabase_url: str = "https://xzhsdffpnrlpcitiectz.supabase.co"
     supabase_key: str = ""
-    
+
     # Comma-separated list of allowed frontend origins.
     # ⚠️  Do NOT include the API server itself (localhost:8000).
     # Override via ALLOWED_ORIGINS in .env for production.
     # Example: ALLOWED_ORIGINS=https://aml.yourdomain.com
     allowed_origins: str = "http://localhost:3000"
-    
+
     # OpenTelemetry / Distributed Tracing
     otel_service_name: str = "aml-platform"
     otel_exporter_endpoint: str = "http://localhost:4317"
-    
+
     # Mutual TLS (mTLS) & In-Transit Encryption Settings
     enable_tls: bool = False
     strict_mtls: bool = False
     tls_ca_cert: str | None = None
     tls_client_cert: str | None = None
     tls_client_key: str | None = None
-    
+
     # ── HashiCorp Vault — secrets management ──────────────────────────────────
     # Non-sensitive connection config (addresses / IDs used to *retrieve* secrets).
     # Actual credentials (passwords, keys) are never stored in settings.
@@ -101,5 +102,5 @@ TRANSACTIONS_TOPIC = settings.transactions_topic
 # Elasticsearch Config
 ELASTICSEARCH_HOST = settings.elasticsearch_host
 SANCTIONS_INDEX = settings.sanctions_index
-PEP_INDEX = getattr(settings, 'pep_index', 'pep_list')
+PEP_INDEX = settings.pep_index
 

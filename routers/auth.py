@@ -85,14 +85,44 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
                     
                 # Supabase does not issue our custom refresh token;
                 # we create our own so refresh flow is consistent.
-                from services.auth import create_refresh_token
+                data = await resp.json()
+                access_token = data.get("access_token", "")
+                user = data.get("user") or data
                 user_id = user.get("id", "")
+                user_metadata = user.get("user_metadata", {})
+                role = user_metadata.get("role", "ANALYST")
                 username = email.split("@")[0]
+                tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+
+                # Replicate Supabase user to local PostgreSQL
+                from database.postgres import get_async_db_conn
+                async with get_async_db_conn() as conn:
+                    await conn.execute(
+                        "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
+                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
+                        user_id, username, role, tenant_id
+                    )
+
+                from services.auth import create_refresh_token
                 refresh_token = create_refresh_token({
                     "sub": user_id,
                     "role": role,
                     "username": username,
                 })
+
+                # Structured audit log: successful login via Supabase
+                from observability.logging import log_audit_event
+                log_audit_event(
+                    event_type="USER_LOGIN",
+                    actor_id=str(user_id),
+                    actor_role=role,
+                    action="LOGIN",
+                    resource_type="SESSION",
+                    resource_id=str(user_id),
+                    tenant_id=tenant_id,
+                    details={"username": username, "method": "supabase"}
+                )
+
                 return {
                     "access_token": access_token,
                     "refresh_token": refresh_token,
