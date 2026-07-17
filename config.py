@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     
     # Mutual TLS (mTLS) & In-Transit Encryption Settings
     enable_tls: bool = False
+    strict_mtls: bool = False
     tls_ca_cert: str | None = None
     tls_client_cert: str | None = None
     tls_client_key: str | None = None

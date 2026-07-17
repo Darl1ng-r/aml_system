@@ -1,3 +1,4 @@
+import logging
 from services.secrets_manager import get_postgres_dsn
 from services.tls_manager import get_ssl_context
 

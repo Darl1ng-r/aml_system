@@ -76,7 +76,7 @@ def read_login():
 async def startup_db_clients():
     logger.info("Starting up database connections...")
     from services.tls_manager import validate_mtls_configuration
-    validate_mtls_configuration()
+    validate_mtls_configuration(strict=settings.strict_mtls or settings.enable_tls)
     import sys
     import asyncio
     from database.postgres import init_db_pool
