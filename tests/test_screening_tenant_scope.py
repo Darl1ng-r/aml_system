@@ -30,13 +30,13 @@ async def test_perform_pep_search_scopes_by_tenant_id():
     mock_es = AsyncMock()
     mock_es.search.side_effect = Exception("Elasticsearch unavailable")
 
-    with patch("database.postgres.get_async_db_conn", return_value=mock_ctx) as mock_get_db:
+    with patch("database.postgres.get_async_db_read_conn", return_value=mock_ctx) as mock_get_db:
         res = await perform_pep_search("Ivan Petrov", 0.80, mock_es, tenant_id=tenant_id)
 
         assert res["match_found"] is True
         assert res["matched_entry"]["name"] == "Ivan Petrov"
 
-        # Verify get_async_db_conn was called with tenant_id
+        # Verify get_async_db_read_conn was called with tenant_id
         mock_get_db.assert_called_once_with(tenant_id=tenant_id)
 
         # Verify fetch query passed t_uuid as parameter $1

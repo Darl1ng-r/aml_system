@@ -81,6 +81,14 @@ async def calculate_customer_baseline(account_id: str) -> dict:
                 daily_freq = count_30 / span_days
                 weekly_freq = daily_freq * 7.0
                 
+                # Compute Jurisdiction Risk Score based on top countries
+                high_risk_set = {"RU", "IR", "KP", "SY", "AF", "MM"}
+                j_risk = 0.1
+                for c in countries:
+                    if c and c.upper() in high_risk_set:
+                        j_risk = 0.85
+                        break
+
                 baseline = {
                     "account_id": account_id,
                     "avg_amount": float(np.mean(amounts)),
@@ -96,7 +104,9 @@ async def calculate_customer_baseline(account_id: str) -> dict:
                     "top_countries": get_mode_list(countries),
                     "top_merchants": get_mode_list(merchants),
                     "top_devices": get_mode_list(devices),
-                    "top_channels": get_mode_list(channels)
+                    "top_channels": get_mode_list(channels),
+                    "jurisdiction_risk_score": float(j_risk),
+                    "kyc_risk_tier": "HIGH" if j_risk > 0.5 else "STANDARD"
                 }
 
             # 2. Upsert baseline in PostgreSQL with tenant_id from accounts

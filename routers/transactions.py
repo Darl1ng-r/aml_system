@@ -150,13 +150,20 @@ async def ingest_transaction(
             is_geo=is_geo
         )
         
-        # Calculate dynamic risk score
+        # Calculate dynamic risk score with RBA weights
+        jurisdiction_risk = float(baseline.get("jurisdiction_risk_score", 0.1))
+        if is_geo == 1:
+            jurisdiction_risk = max(jurisdiction_risk, 0.85)
+
         dynamic_res = compute_dynamic_risk(
             rules_triggered=triggered_rules,
             ml_score=ai_score,
             amount=payload.amount,
             baseline=baseline,
-            iforest_score=iforest_score
+            iforest_score=iforest_score,
+            sender_risk=sender_risk,
+            receiver_risk=receiver_risk,
+            jurisdiction_risk=jurisdiction_risk
         )
         dynamic_score = dynamic_res["dynamic_risk_score"]
         explainability = dynamic_res["explainability"]
