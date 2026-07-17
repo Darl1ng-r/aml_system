@@ -255,21 +255,35 @@ function getAuthHeaders() {
     return token ? { 'Authorization': `Bearer ${token}` } : {};
 }
 
+function setMockMode(enabled) {
+    mockMode = enabled;
+    const banner = document.getElementById('mock-mode-banner');
+    const badge = document.getElementById('app-status-badge');
+    const statusText = document.getElementById('app-status-text');
+
+    if (enabled) {
+        if (banner) banner.style.display = 'block';
+        if (badge) badge.classList.remove('online');
+        if (statusText) statusText.innerText = 'Mock Database Mode';
+    } else {
+        if (banner) banner.style.display = 'none';
+        if (badge) badge.classList.add('online');
+        if (statusText) statusText.innerText = 'Compliance Engine Online';
+    }
+}
+
 async function checkServerStatus() {
     try {
         const response = await fetch(`${BASE_URL}/`);
         if (response.ok) {
             const data = await response.json();
-            document.getElementById('app-status-badge').classList.add('online');
-            document.getElementById('app-status-text').innerText = 'Compliance Engine Online';
+            setMockMode(false);
             log(`Connected to ingestion scoring core: ${data.service}`, 'success');
         } else {
             throw new Error();
         }
     } catch (e) {
-        document.getElementById('app-status-badge').classList.remove('online');
-        document.getElementById('app-status-text').innerText = 'Mock Database Mode';
-        mockMode = true;
+        setMockMode(true);
         log('Database Gateway offline. Simulated mock evaluation activated.', 'warn');
     }
 }
@@ -388,6 +402,7 @@ async function loadDashboardAnalytics() {
         renderLeaderboard(metrics.analyst_leaderboard);
 
     } catch (e) {
+        setMockMode(true);
         log('Failed to fetch dashboard metrics. Rendering mock analytics.', 'warn');
         renderMockCharts();
     }
@@ -557,9 +572,7 @@ async function loadAlerts() {
         log(`Synced telemetry page ${currentPage} from postgres connection pool.`, 'success');
     } catch (e) {
         log('Failed connection. Falling back to memory ledger data.', 'warn');
-        mockMode = true;
-        document.getElementById('app-status-badge').classList.remove('online');
-        document.getElementById('app-status-text').innerText = 'Mock Database Mode';
+        setMockMode(true);
         renderInbox(activeAlerts);
         updatePaginationControls(activeAlerts.length);
     }
@@ -1298,7 +1311,7 @@ async function runSandboxScreening(event) {
 
     } catch (e) {
         log('API screening error. Running offline lookup...', 'warn');
-        mockMode = true;
+        setMockMode(true);
         runSandboxScreening(event);
     }
 }
