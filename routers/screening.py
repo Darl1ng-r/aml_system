@@ -4,12 +4,13 @@ from pydantic import BaseModel
 import json
 import logging
 import rapidfuzz
+import uuid
 
 logger = logging.getLogger(__name__)
 from database.elasticsearch_db import get_async_elasticsearch_client
 from database.redis_db import get_async_redis_client
 from config import SANCTIONS_INDEX
-from services.auth import get_current_user, RoleChecker
+from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
 
 router = APIRouter(prefix="/api/v1/screening", tags=["Screening"])
@@ -85,7 +86,7 @@ async def perform_sanctions_search(name: str, threshold: float, es) -> dict:
         }
     }
 
-async def perform_pep_search(name: str, threshold: float, es) -> dict:
+async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | None = None) -> dict:
     """
     Dedicated Politically Exposed Persons (PEP) database search & tiering evaluation.
     """
@@ -128,11 +129,31 @@ async def perform_pep_search(name: str, threshold: float, es) -> dict:
     except Exception as e:
         logger.warning(f"Elasticsearch PEP search bypass/fallback: {e}")
 
-    # Database Fallback for PEP entities
+    # Database Fallback for PEP entities (tenant-scoped to prevent cross-tenant data leakage)
     try:
         from database.postgres import get_async_db_conn
-        async with get_async_db_conn() as conn:
-            rows = await conn.fetch("SELECT name, pep_tier, position, country, rca_flag, source_database FROM pep_entities LIMIT 100;")
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            if tenant_id:
+                try:
+                    t_uuid = uuid.UUID(str(tenant_id))
+                    rows = await conn.fetch(
+                        """
+                        SELECT name, pep_tier, position, country, rca_flag, source_database
+                        FROM pep_entities
+                        WHERE (tenant_id = $1 OR tenant_id IS NULL) AND is_active = true
+                        LIMIT 100;
+                        """,
+                        t_uuid
+                    )
+                except ValueError:
+                    rows = await conn.fetch(
+                        "SELECT name, pep_tier, position, country, rca_flag, source_database FROM pep_entities WHERE tenant_id IS NULL AND is_active = true LIMIT 100;"
+                    )
+            else:
+                rows = await conn.fetch(
+                    "SELECT name, pep_tier, position, country, rca_flag, source_database FROM pep_entities WHERE tenant_id IS NULL AND is_active = true LIMIT 100;"
+                )
+
             for row in rows:
                 p_name = row["name"]
                 sim = levenshtein_ratio(name, p_name)
@@ -175,7 +196,8 @@ async def search_sanctions_and_pep(
       1. Global Sanctions Blocklists (OFAC, UN, EU) -> Mandatory Immediate Freeze
       2. Politically Exposed Persons (PEP) Tiering Database -> Enhanced Due Diligence (EDD)
     """
-    cache_key = f"screening:combined:{payload.name.lower().strip()}:{payload.threshold}"
+    tenant_id = enforce_tenant_data_scope(current_user)
+    cache_key = f"screening:combined:{tenant_id}:{payload.name.lower().strip()}:{payload.threshold}"
     try:
         redis_client = await get_async_redis_client()
         cached_result = await redis_client.get(cache_key)
@@ -187,7 +209,7 @@ async def search_sanctions_and_pep(
 
     try:
         sanctions_res = await perform_sanctions_search(payload.name, payload.threshold, es)
-        pep_res = await perform_pep_search(payload.name, payload.threshold, es)
+        pep_res = await perform_pep_search(payload.name, payload.threshold, es, tenant_id=tenant_id)
 
         has_sanctions_hit = sanctions_res.get("match_found", False)
         has_pep_hit = pep_res.get("match_found", False)

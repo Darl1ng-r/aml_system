@@ -28,6 +28,7 @@ def upgrade() -> None:
         sa.Column('country', sa.String(length=3), nullable=False),
         sa.Column('rca_flag', sa.Boolean(), server_default='false', nullable=False),
         sa.Column('source_database', sa.String(length=100), server_default='FATF_PEP_REGISTER', nullable=False),
+        sa.Column('tenant_id', postgresql.UUID(as_uuid=True), sa.ForeignKey('tenants.id', ondelete='CASCADE'), nullable=True, index=True),
         sa.Column('is_active', sa.Boolean(), server_default='true', nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False)
     )
