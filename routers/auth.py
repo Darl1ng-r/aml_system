@@ -8,10 +8,13 @@ import jwt
 from pydantic import BaseModel, Field, field_validator
 from observability.sanitizer import sanitize_text
 
+from services.rate_limiter import RateLimiter
+from services.auth import hash_password, verify_password, create_access_token, create_refresh_token
+from observability.logging import log_audit_event
+
 class UserSignup(BaseModel):
     username: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
-    password: str = Field(..., min_length=6, max_length=128)
-    role: str = Field("ANALYST", max_length=20, pattern=r"^(ADMIN|ANALYST|AUDITOR)$")
+    password: str = Field(..., min_length=8, max_length=128)
 
     @field_validator("username", mode="before")
     @classmethod
@@ -21,7 +24,10 @@ class UserSignup(BaseModel):
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
 @router.post("/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    _rate_limit=Depends(RateLimiter(limit=5, window=600))
+):
     email = form_data.username
     if "@" not in email:
         email = f"{email}@aml.com"
@@ -36,119 +42,178 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         "Content-Type": "application/json"
     }
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{settings.supabase_url}/auth/v1/token?grant_type=password",
-                json=payload,
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    # Fallback to local user verification if Supabase fails (e.g. offline/rate-limit)
-                    from database.postgres import get_async_db_conn
-                    async with get_async_db_conn() as conn:
-                        local_user = await conn.fetchrow(
-                            "SELECT id, role FROM users WHERE username = $1;",
-                            form_data.username
-                        )
-                        if not local_user:
-                            # User not in local Postgres either, raise original credentials error
-                            err_data = await resp.json()
-                            raise HTTPException(
-                                status_code=status.HTTP_401_UNAUTHORIZED,
-                                detail=err_data.get("error_description", "Incorrect credentials"),
-                                headers={"WWW-Authenticate": "Bearer"},
-                            )
-                        local_user_id = str(local_user["id"])
-                        local_role = local_user["role"]
-                    
-                    from services.auth import create_access_token, create_refresh_token
-                    access_token = create_access_token({
-                        "sub": local_user_id,
-                        "role": local_role,
-                        "username": form_data.username,
-                        "email": email
-                    })
-                    refresh_token = create_refresh_token({
-                        "sub": local_user_id,
-                        "role": local_role,
-                        "username": form_data.username,
-                    })
-                    
-                    return {
-                        "access_token": access_token,
-                        "refresh_token": refresh_token,
-                        "token_type": "bearer",
-                        "role": local_role,
-                        "username": form_data.username
-                    }
-                    
-                # Supabase does not issue our custom refresh token;
-                # we create our own so refresh flow is consistent.
-                data = await resp.json()
-                access_token = data.get("access_token", "")
-                user = data.get("user") or data
-                user_id = user.get("id", "")
-                user_metadata = user.get("user_metadata", {})
-                role = user_metadata.get("role", "ANALYST")
-                username = email.split("@")[0]
-                tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+    supabase_user = None
+    if settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_"):
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
+                async with session.post(
+                    f"{settings.supabase_url}/auth/v1/token?grant_type=password",
+                    json=payload,
+                    headers=headers
+                ) as resp:
+                    if resp.status == 200:
+                        supabase_user = await resp.json()
+        except Exception as e:
+            logger.warning(f"Supabase auth unreachable: {e}. Falling back to local verification.")
+            supabase_user = None
 
-                # Replicate Supabase user to local PostgreSQL
-                from database.postgres import get_async_db_conn
-                async with get_async_db_conn() as conn:
-                    await conn.execute(
-                        "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
-                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
-                        user_id, username, role, tenant_id
-                    )
+    if supabase_user:
+        # Supabase authentication succeeded
+        data = supabase_user
+        access_token = data.get("access_token", "")
+        user = data.get("user") or data
+        user_id = user.get("id", "")
+        user_metadata = user.get("user_metadata", {})
+        role = user_metadata.get("role", "ANALYST")
+        username = email.split("@")[0]
+        tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
 
-                from services.auth import create_refresh_token
-                refresh_token = create_refresh_token({
-                    "sub": user_id,
-                    "role": role,
-                    "username": username,
-                })
+        # Replicate/update Supabase user to local PostgreSQL with password hash for offline resilience
+        hashed_pw = hash_password(form_data.password)
+        from database.postgres import get_async_db_conn
+        async with get_async_db_conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO users (id, username, role, tenant_id, password_hash)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (id) DO UPDATE SET 
+                    role = EXCLUDED.role, 
+                    username = EXCLUDED.username, 
+                    tenant_id = EXCLUDED.tenant_id,
+                    password_hash = EXCLUDED.password_hash;
+                """,
+                user_id, username, role, tenant_id, hashed_pw
+            )
 
-                # Structured audit log: successful login via Supabase
-                from observability.logging import log_audit_event
-                log_audit_event(
-                    event_type="USER_LOGIN",
-                    actor_id=str(user_id),
-                    actor_role=role,
-                    action="LOGIN",
-                    resource_type="SESSION",
-                    resource_id=str(user_id),
-                    tenant_id=tenant_id,
-                    details={"username": username, "method": "supabase"}
-                )
+        refresh_token = create_refresh_token({
+            "sub": user_id,
+            "role": role,
+            "username": username,
+            "tenant_id": tenant_id
+        })
 
-                return {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "token_type": "bearer",
-                    "role": role,
-                    "username": username
-                }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Supabase login proxy failed: {str(e)}"
+        log_audit_event(
+            event_type="USER_LOGIN",
+            actor_id=str(user_id),
+            actor_role=role,
+            action="LOGIN",
+            resource_type="SESSION",
+            resource_id=str(user_id),
+            tenant_id=tenant_id,
+            details={"username": username, "method": "supabase"}
         )
 
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "role": role,
+            "username": username
+        }
+
+    # Fallback to local secure credential verification
+    from database.postgres import get_async_db_conn
+    async with get_async_db_conn() as conn:
+        local_user = await conn.fetchrow(
+            """
+            SELECT id, role, password_hash, tenant_id 
+            FROM users 
+            WHERE username = $1 AND (is_active IS NULL OR is_active = true);
+            """,
+            form_data.username
+        )
+
+        # ZERO-BYPASS ENFORCEMENT: Never issue token without password verification
+        if not local_user or not local_user["password_hash"]:
+            log_audit_event(
+                event_type="LOGIN_FAILED",
+                actor_id=form_data.username,
+                actor_role="UNKNOWN",
+                action="FAILED_LOGIN",
+                resource_type="SESSION",
+                resource_id="",
+                details={"username": form_data.username, "reason": "User not found or no password hash"}
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        if not verify_password(form_data.password, local_user["password_hash"]):
+            log_audit_event(
+                event_type="LOGIN_FAILED",
+                actor_id=str(local_user["id"]),
+                actor_role=local_user["role"] or "ANALYST",
+                action="FAILED_LOGIN",
+                resource_type="SESSION",
+                resource_id=str(local_user["id"]),
+                tenant_id=str(local_user["tenant_id"]) if local_user["tenant_id"] else "",
+                details={"username": form_data.username, "reason": "Password hash mismatch"}
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        local_user_id = str(local_user["id"])
+        local_role = local_user["role"] or "ANALYST"
+        tenant_id = str(local_user["tenant_id"]) if local_user["tenant_id"] else "00000000-0000-0000-0000-000000000001"
+    
+    access_token = create_access_token({
+        "sub": local_user_id,
+        "role": local_role,
+        "username": form_data.username,
+        "email": email,
+        "tenant_id": tenant_id
+    })
+    refresh_token = create_refresh_token({
+        "sub": local_user_id,
+        "role": local_role,
+        "username": form_data.username,
+        "tenant_id": tenant_id
+    })
+
+    log_audit_event(
+        event_type="USER_LOGIN",
+        actor_id=local_user_id,
+        actor_role=local_role,
+        action="LOGIN",
+        resource_type="SESSION",
+        resource_id=local_user_id,
+        tenant_id=tenant_id,
+        details={"username": form_data.username, "method": "local_database"}
+    )
+    
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "role": local_role,
+        "username": form_data.username
+    }
+
 @router.post("/signup")
-async def signup(payload: UserSignup):
+async def signup(
+    payload: UserSignup,
+    _rate_limit=Depends(RateLimiter(limit=10, window=3600))
+):
     email = payload.username
     if "@" not in email:
         email = f"{email}@aml.com"
+    
+    # Enforce Least Privilege: All self-registered users are strictly ANALYST
+    assigned_role = "ANALYST"
+    default_tenant_id = "00000000-0000-0000-0000-000000000001"
+    hashed_pw = hash_password(payload.password)
         
     signup_data = {
         "email": email,
         "password": payload.password,
         "data": {
-            "role": payload.role
+            "role": assigned_role,
+            "tenant_id": default_tenant_id
         }
     }
     
@@ -165,31 +230,48 @@ async def signup(payload: UserSignup):
                 headers=headers
             ) as resp:
                 if resp.status != 200:
-                    # Fallback: create local JWT token and replicate user if Supabase rate-limited/offline
+                    # Fallback: create local user with verified password hash
                     import uuid
-                    from services.auth import create_access_token
                     local_user_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{payload.username}.aml.com"))
                     
                     from database.postgres import get_async_db_conn
                     async with get_async_db_conn() as conn:
                         await conn.execute(
-                            "INSERT INTO users (id, username, role) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING;",
+                            """
+                            INSERT INTO users (id, username, role, tenant_id, password_hash) 
+                            VALUES ($1, $2, $3, $4, $5) 
+                            ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash;
+                            """,
                             local_user_id,
                             payload.username,
-                            payload.role
+                            assigned_role,
+                            default_tenant_id,
+                            hashed_pw
                         )
                     
                     access_token = create_access_token({
                         "sub": local_user_id,
-                        "role": payload.role,
+                        "role": assigned_role,
                         "username": payload.username,
-                        "email": email
+                        "email": email,
+                        "tenant_id": default_tenant_id
                     })
                     
+                    log_audit_event(
+                        event_type="USER_SIGNUP",
+                        actor_id=local_user_id,
+                        actor_role=assigned_role,
+                        action="SIGNUP",
+                        resource_type="USER",
+                        resource_id=local_user_id,
+                        tenant_id=default_tenant_id,
+                        details={"username": payload.username, "method": "local_database"}
+                    )
+
                     return {
                         "access_token": access_token,
                         "token_type": "bearer",
-                        "role": payload.role,
+                        "role": assigned_role,
                         "username": payload.username
                     }
                     
@@ -203,16 +285,33 @@ async def signup(payload: UserSignup):
                     from database.postgres import get_async_db_conn
                     async with get_async_db_conn() as conn:
                         await conn.execute(
-                            "INSERT INTO users (id, username, role) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING;",
+                            """
+                            INSERT INTO users (id, username, role, tenant_id, password_hash) 
+                            VALUES ($1, $2, $3, $4, $5) 
+                            ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash;
+                            """,
                             supabase_user_id,
                             payload.username,
-                            payload.role
+                            assigned_role,
+                            default_tenant_id,
+                            hashed_pw
                         )
+
+                log_audit_event(
+                    event_type="USER_SIGNUP",
+                    actor_id=str(supabase_user_id or ""),
+                    actor_role=assigned_role,
+                    action="SIGNUP",
+                    resource_type="USER",
+                    resource_id=str(supabase_user_id or ""),
+                    tenant_id=default_tenant_id,
+                    details={"username": payload.username, "method": "supabase"}
+                )
                 
                 return {
                     "access_token": access_token,
                     "token_type": "bearer",
-                    "role": payload.role,
+                    "role": assigned_role,
                     "username": email.split("@")[0]
                 }
     except HTTPException:
@@ -220,7 +319,7 @@ async def signup(payload: UserSignup):
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Supabase signup proxy failed: {str(e)}"
+            detail=f"Registration failed: {str(e)}"
         )
 
 

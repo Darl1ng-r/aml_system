@@ -68,5 +68,6 @@ opentelemetry-exporter-otlp-proto-grpc>=1.20.0
 opentelemetry-instrumentation-fastapi>=0.41b0
 # Secrets Management
 hvac>=2.1.0
+httpx>=0.25.0
 # Testing — async HTTP mocking (for Vault tests)
 respx>=0.21.0

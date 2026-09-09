@@ -1,4 +1,4 @@
-﻿"""
+"""
 Secrets Manager & Key Rotation Service
 =======================================
 Resolution priority (highest to lowest):
@@ -60,7 +60,14 @@ def get_jwt_signing_key() -> str:
         if keys:
             return keys[0]
 
-    return settings.jwt_secret_key or "default_development_secret_change_in_prod"
+    if settings.jwt_secret_key:
+        return settings.jwt_secret_key
+
+    env = os.getenv("ENVIRONMENT", "development").lower()
+    if env in ["production", "prod", "staging"]:
+        raise RuntimeError("CRITICAL SECURITY VIOLATION: No JWT secret key configured for production environment.")
+
+    return "default_development_secret_change_in_prod"
 
 
 def get_jwt_verification_keys() -> List[str]:

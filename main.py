@@ -53,6 +53,9 @@ app.include_router(alerts.router)
 app.include_router(rules.router)
 app.include_router(network.router)
 
+# Mount static files directory for dashboard styling and frontend client logic
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # ── Exception Handlers ───────────────────────────────────────────────────
 from fastapi import Request
 from fastapi.responses import JSONResponse

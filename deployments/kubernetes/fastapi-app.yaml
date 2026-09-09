@@ -50,16 +50,6 @@ spec:
           limits:
             cpu: "1000m"
             memory: "1024Mi"
-        volumeMounts:
-        - name: tls-certs
-          mountPath: /var/run/secrets/tls
-          readOnly: true
-      volumes:
-      - name: tls-certs
-        secret:
-          secretName: aml-internal-services-tls-secret
-          optional: true
-
         envFrom:
         - secretRef:
             name: aml-secrets
@@ -79,6 +69,15 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 10
           failureThreshold: 5
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /var/run/secrets/tls
+          readOnly: true
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret
+          optional: true
 ---
 apiVersion: v1
 kind: Service

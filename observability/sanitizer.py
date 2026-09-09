@@ -27,13 +27,15 @@ def sanitize_text(val: Any) -> Any:
     if not isinstance(val, str):
         return val
 
-    # Remove null bytes and control chars
+    # 1. Remove null bytes and control chars
     cleaned = _CONTROL_CHAR_RE.sub("", val)
-    # Remove HTML tags
-    cleaned = _HTML_TAG_RE.sub("", cleaned)
-    # Decode unescaped HTML entities
+    # 2. Decode HTML entities first to catch obfuscated tags (e.g. &lt;script&gt;)
     cleaned = html.unescape(cleaned)
-    # Trim leading/trailing whitespace
+    # 3. Strip any resulting HTML/script tags
+    cleaned = _HTML_TAG_RE.sub("", cleaned)
+    # 4. Remove lingering raw bracket characters that could form malformed injection
+    cleaned = cleaned.replace("<", "").replace(">", "")
+    # 5. Trim leading/trailing whitespace
     return cleaned.strip()
 
 

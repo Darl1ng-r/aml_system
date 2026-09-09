@@ -20,9 +20,9 @@ def hash_password(password: str) -> str:
         'sha256',
         password.encode('utf-8'),
         salt.encode('utf-8'),
-        100000
+        600000
     )
-    return f"pbkdf2_sha256$100000${salt}${dk.hex()}"
+    return f"pbkdf2_sha256$600000${salt}${dk.hex()}"
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
@@ -38,13 +38,14 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
             salt.encode('utf-8'),
             iterations
         )
-        # hmac.compare_digest prevents timing attacks by guaranteeing
-        # constant-time comparison regardless of where strings diverge.
         return hmac.compare_digest(dk.hex(), stored_hash)
     except Exception:
         return False
 
 from services.secrets_manager import get_jwt_signing_key, decode_jwt_with_rotation
+
+# In-memory cache for replicated users to avoid hammering PostgreSQL on every request
+_synced_users: set[str] = set()
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """Issues a short-lived access token (default 30 min) signed with the active primary key."""
@@ -87,17 +88,24 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         tenant_id = payload.get("tenant_id", "00000000-0000-0000-0000-000000000001")
         
         if user_id:
-            # Replicate user to local PostgreSQL database if not present
-            from database.postgres import get_async_db_conn
             from observability.middleware import user_id_var, tenant_id_var
             user_id_var.set(str(user_id))
             tenant_id_var.set(str(tenant_id))
-            async with get_async_db_conn() as conn:
-                await conn.execute(
-                    "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
-                    "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
-                    user_id, username, role, tenant_id
-                )
+
+            # Only sync to local PostgreSQL database if not already synced during this process lifecycle
+            cache_key = f"{user_id}:{role}:{tenant_id}"
+            if cache_key not in _synced_users:
+                try:
+                    from database.postgres import get_async_db_conn
+                    async with get_async_db_conn() as conn:
+                        await conn.execute(
+                            "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
+                            "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
+                            user_id, username, role, tenant_id
+                        )
+                    _synced_users.add(cache_key)
+                except Exception:
+                    pass  # Non-fatal if DB is temporarily unreachable for user replication
             return {
                 "id": user_id,
                 "username": username,
