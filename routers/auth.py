@@ -1,5 +1,5 @@
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from config import settings
 from pydantic import BaseModel, Field
@@ -11,6 +11,33 @@ from observability.sanitizer import sanitize_text
 from services.rate_limiter import RateLimiter
 from services.auth import hash_password, verify_password, create_access_token, create_refresh_token
 from observability.logging import log_audit_event
+
+def set_auth_cookies(response: Response, access_token: str, refresh_token: str | None = None):
+    """Sets secure HttpOnly cookies for browser web sessions."""
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        max_age=900,  # 15 minutes
+        httponly=True,
+        samesite="lax",
+        secure=settings.enable_tls,
+        path="/"
+    )
+    if refresh_token:
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            max_age=30 * 86400,  # 30 days
+            httponly=True,
+            samesite="lax",
+            secure=settings.enable_tls,
+            path="/"
+        )
+
+def clear_auth_cookies(response: Response):
+    """Clears authentication cookies on logout."""
+    response.delete_cookie(key="access_token", path="/")
+    response.delete_cookie(key="refresh_token", path="/")
 
 class UserSignup(BaseModel):
     username: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
@@ -25,6 +52,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
 @router.post("/login")
 async def login(
+    response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     _rate_limit=Depends(RateLimiter(limit=5, window=600))
 ):
@@ -103,6 +131,7 @@ async def login(
             details={"username": username, "method": "supabase"}
         )
 
+        set_auth_cookies(response, access_token, refresh_token)
         return {
             "access_token": access_token,
             "refresh_token": refresh_token,
@@ -186,6 +215,7 @@ async def login(
         details={"username": form_data.username, "method": "local_database"}
     )
     
+    set_auth_cookies(response, access_token, refresh_token)
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -196,6 +226,7 @@ async def login(
 
 @router.post("/signup")
 async def signup(
+    response: Response,
     payload: UserSignup,
     _rate_limit=Depends(RateLimiter(limit=10, window=3600))
 ):
@@ -256,6 +287,12 @@ async def signup(
                         "email": email,
                         "tenant_id": default_tenant_id
                     })
+                    refresh_token = create_refresh_token({
+                        "sub": local_user_id,
+                        "role": assigned_role,
+                        "username": payload.username,
+                        "tenant_id": default_tenant_id
+                    })
                     
                     log_audit_event(
                         event_type="USER_SIGNUP",
@@ -268,8 +305,10 @@ async def signup(
                         details={"username": payload.username, "method": "local_database"}
                     )
 
+                    set_auth_cookies(response, access_token, refresh_token)
                     return {
                         "access_token": access_token,
+                        "refresh_token": refresh_token,
                         "token_type": "bearer",
                         "role": assigned_role,
                         "username": payload.username
@@ -297,6 +336,13 @@ async def signup(
                             hashed_pw
                         )
 
+                refresh_token = create_refresh_token({
+                    "sub": str(supabase_user_id),
+                    "role": assigned_role,
+                    "username": payload.username,
+                    "tenant_id": default_tenant_id
+                })
+
                 log_audit_event(
                     event_type="USER_SIGNUP",
                     actor_id=str(supabase_user_id or ""),
@@ -308,8 +354,10 @@ async def signup(
                     details={"username": payload.username, "method": "supabase"}
                 )
                 
+                set_auth_cookies(response, access_token, refresh_token)
                 return {
                     "access_token": access_token,
+                    "refresh_token": refresh_token,
                     "token_type": "bearer",
                     "role": assigned_role,
                     "username": email.split("@")[0]
@@ -324,18 +372,32 @@ async def signup(
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str | None = None
 
 
-@router.post("/refresh", summary="Exchange refresh token for a new access token")
-async def refresh_access_token(body: RefreshRequest):
+@router.post("/refresh", summary="Exchange refresh token with token rotation")
+async def refresh_access_token(
+    request: Request,
+    response: Response,
+    body: RefreshRequest | None = None,
+):
     """
-    Validates the provided refresh token and issues a new short-lived access token.
-    Refresh tokens are checked against a Redis denylist to support server-side revocation.
+    Validates the refresh token, revokes it in Redis, and issues both a new
+    short-lived access token and a new rotated refresh token (Refresh Token Rotation).
+    Supports token from request JSON body or HttpOnly cookie.
     """
     from database.redis_db import get_async_redis_client
-    from services.auth import create_access_token, ALGORITHM
+    from services.auth import create_access_token, create_refresh_token, ALGORITHM
     from services.secrets_manager import decode_jwt_with_rotation
+    from datetime import datetime, timezone
+
+    token_to_refresh = (body.refresh_token if body and body.refresh_token else None) or request.cookies.get("refresh_token")
+    if not token_to_refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No refresh token provided.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -344,28 +406,52 @@ async def refresh_access_token(body: RefreshRequest):
     )
 
     try:
-        payload = decode_jwt_with_rotation(body.refresh_token, algorithm=ALGORITHM)
+        payload = decode_jwt_with_rotation(token_to_refresh, algorithm=ALGORITHM)
         if payload.get("type") != "refresh":
             raise credentials_exception
 
-        # Check Redis denylist — token revoked on logout
+        # Check Redis denylist
         redis = await get_async_redis_client()
         if redis:
-            is_revoked = await redis.get(f"token:revoked:{body.refresh_token}")
+            is_revoked = await redis.get(f"token:revoked:{token_to_refresh}")
             if is_revoked:
                 raise credentials_exception
 
-        # Issue a fresh access token
-        new_access_token = create_access_token({
-            "sub": payload.get("sub"),
-            "role": payload.get("role", "ANALYST"),
-            "username": payload.get("username", ""),
-        })
-        return {"access_token": new_access_token, "token_type": "bearer"}
+            # Token Rotation: Revoke consumed refresh token immediately
+            exp = payload.get("exp", 0)
+            ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 1)
+            await redis.setex(f"token:revoked:{token_to_refresh}", ttl, "1")
 
-    except jwt.ExpiredSignatureError:
-        raise credentials_exception
-    except jwt.PyJWTError:
+        # Issue fresh access token AND new rotated refresh token
+        sub = payload.get("sub")
+        role = payload.get("role", "ANALYST")
+        username = payload.get("username", "")
+        tenant_id = payload.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+
+        new_access_token = create_access_token({
+            "sub": sub,
+            "role": role,
+            "username": username,
+            "tenant_id": tenant_id,
+        })
+        new_refresh_token = create_refresh_token({
+            "sub": sub,
+            "role": role,
+            "username": username,
+            "tenant_id": tenant_id,
+        })
+
+        set_auth_cookies(response, new_access_token, new_refresh_token)
+
+        return {
+            "access_token": new_access_token,
+            "refresh_token": new_refresh_token,
+            "token_type": "bearer",
+            "role": role,
+            "username": username
+        }
+
+    except (jwt.ExpiredSignatureError, jwt.PyJWTError):
         raise credentials_exception
     except HTTPException:
         raise
@@ -373,30 +459,36 @@ async def refresh_access_token(body: RefreshRequest):
         raise HTTPException(status_code=500, detail=f"Token refresh failed: {str(e)}")
 
 
-@router.post("/logout", summary="Revoke refresh token (server-side logout)")
-async def logout(body: RefreshRequest):
+@router.post("/logout", summary="Revoke refresh token and clear cookies")
+async def logout(
+    request: Request,
+    response: Response,
+    body: RefreshRequest | None = None,
+):
     """
-    Adds the refresh token to the Redis denylist (TTL = remaining token lifetime).
-    After logout, the token cannot be used to obtain new access tokens even if
-    it has not yet expired.
+    Adds the refresh token to the Redis denylist (TTL = remaining token lifetime)
+    and clears HttpOnly authentication cookies.
     """
     from database.redis_db import get_async_redis_client
     from services.auth import ALGORITHM
     from services.secrets_manager import decode_jwt_with_rotation
     from datetime import datetime, timezone
 
-    try:
-        payload = decode_jwt_with_rotation(body.refresh_token, algorithm=ALGORITHM)
-        exp = payload.get("exp", 0)
-        ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 1)
+    token_to_revoke = (body.refresh_token if body and body.refresh_token else None) or request.cookies.get("refresh_token")
 
-        redis = await get_async_redis_client()
-        if redis:
-            await redis.setex(f"token:revoked:{body.refresh_token}", ttl, "1")
+    if token_to_revoke:
+        try:
+            payload = decode_jwt_with_rotation(token_to_revoke, algorithm=ALGORITHM)
+            exp = payload.get("exp", 0)
+            ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 1)
 
-        return {"detail": "Logged out successfully. Refresh token revoked."}
-    except jwt.PyJWTError:
-        # Token is invalid/expired — it can't be used anyway, so logout is a no-op
-        return {"detail": "Logged out. Token was already invalid or expired."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
+            redis = await get_async_redis_client()
+            if redis:
+                await redis.setex(f"token:revoked:{token_to_revoke}", ttl, "1")
+        except jwt.PyJWTError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error revoking token in Redis during logout: {e}")
+
+    clear_auth_cookies(response)
+    return {"detail": "Logged out successfully. Refresh token revoked."}

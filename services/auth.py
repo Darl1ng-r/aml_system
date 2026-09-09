@@ -65,9 +65,14 @@ def create_refresh_token(data: dict) -> str:
     The client uses this to silently obtain a new access token
     without prompting for credentials again.
     """
+    import uuid
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=7)
-    to_encode.update({"exp": expire, "type": "refresh"})
+    to_encode.update({
+        "exp": expire,
+        "type": "refresh",
+        "jti": str(uuid.uuid4())
+    })
     signing_key = get_jwt_signing_key()
     return jwt.encode(to_encode, signing_key, algorithm=ALGORITHM)
 

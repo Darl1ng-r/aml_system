@@ -72,17 +72,20 @@ async def get_async_db_read_conn(tenant_id: str | None = None):
         await init_db_pool()
 
     target_pool = db_replica_pool or db_pool
+    conn = None
     try:
-        async with target_pool.acquire() as conn:
-            async with conn.transaction(readonly=True):
-                if tenant_id:
-                    await conn.execute("SELECT set_config('app.current_tenant_id', $1, true);", str(tenant_id))
-                yield conn
+        conn = await target_pool.acquire()
     except Exception as e:
-        logger.warning(f"Read replica query failed, falling back to primary pool: {e}")
-        async with db_pool.acquire() as conn:
-            async with conn.transaction(readonly=True):
-                if tenant_id:
-                    await conn.execute("SELECT set_config('app.current_tenant_id', $1, true);", str(tenant_id))
-                yield conn
+        logger.warning(f"Read replica acquire failed, falling back to primary pool: {e}")
+        target_pool = db_pool
+        conn = await target_pool.acquire()
+
+    try:
+        async with conn.transaction(readonly=True):
+            if tenant_id:
+                await conn.execute("SELECT set_config('app.current_tenant_id', $1, true);", str(tenant_id))
+            yield conn
+    finally:
+        if conn:
+            await target_pool.release(conn)
 

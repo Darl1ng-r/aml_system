@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aml-sync-worker
+  namespace: aml-system
+  labels:
+    app: aml-sync-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: aml-sync-worker
+  template:
+    metadata:
+      labels:
+        app: aml-sync-worker
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "aml-api-role"
+    spec:
+      containers:
+      - name: sync-worker
+        image: aml-fastapi-app:latest
+        imagePullPolicy: IfNotPresent
+        command: ["python", "scripts/sync_worker.py"]
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "384Mi"
+          limits:
+            cpu: "1000m"
+            memory: "768Mi"
+        env:
+        - name: RUN_EMBEDDED_WORKER
+          value: "false"
+        envFrom:
+        - secretRef:
+            name: aml-secrets
+        - configMapRef:
+            name: aml-config
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /var/run/secrets/tls
+          readOnly: true
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret
+          optional: true

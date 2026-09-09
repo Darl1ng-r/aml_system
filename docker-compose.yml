@@ -213,6 +213,68 @@ services:
       timeout: 5s
       retries: 3
 
+  # ════════════════════════════════════════════════════════════════════════
+  # Application Services: FastAPI Web Application & Standalone Sync Worker
+  # ════════════════════════════════════════════════════════════════════════
+  fastapi-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aml-fastapi-app
+    ports:
+      - "8000:8000"
+    environment:
+      - RUN_EMBEDDED_WORKER=false
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=aml_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgrespassword}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-passwordpassword}
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda-0:29092
+      - ELASTICSEARCH_HOST=http://elasticsearch:9200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  sync-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aml-sync-worker
+    command: ["python", "scripts/sync_worker.py"]
+    environment:
+      - RUN_EMBEDDED_WORKER=false
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=aml_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgrespassword}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-passwordpassword}
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda-0:29092
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   postgres_replica_data:

@@ -187,9 +187,13 @@ async def startup_db_clients():
     except Exception as e:
         logger.warning(f"Isolation Forest pre-warm failed (non-fatal, will retry on first request): {e}")
 
-    # ── 6. Start Neo4j Graph Sync Worker ─────────────────────────────────
-    logger.info("Starting background Neo4j graph synchronization worker...")
-    asyncio.create_task(run_sync_worker(shutdown_event=_worker_shutdown_event))
+    # ── 6. Start Neo4j Graph Sync Worker (Optional in-process runner) ────
+    import os
+    if os.getenv("RUN_EMBEDDED_WORKER", "false").lower() == "true":
+        logger.info("Starting embedded background Neo4j graph synchronization worker...")
+        asyncio.create_task(run_sync_worker(shutdown_event=_worker_shutdown_event))
+    else:
+        logger.info("Embedded graph sync worker disabled (running as standalone service).")
 
     # ── 7. Start Periodic Background Watchlist Sync Task ─────────────────
     from services.watchlist_sync import schedule_periodic_watchlist_sync

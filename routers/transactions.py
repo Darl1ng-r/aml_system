@@ -4,7 +4,7 @@ from datetime import datetime
 import uuid
 import logging
 import json
-from database.postgres import get_async_db_conn
+from database.postgres import get_async_db_conn, get_async_db_read_conn
 from services.rules import RulesEngine, get_rules_config
 from services.ml_model import anomaly_model
 from services.redpanda import publish_transaction
@@ -47,9 +47,9 @@ async def ingest_transaction(
     # Enforce Data-Level RBAC tenant scoping
     user_tenant_id = enforce_tenant_data_scope(current_user)
 
-    # Step 1: Look up sender, receiver, and velocity count in a single PostgreSQL query (1 round trip)
+    # Step 1: Look up sender, receiver, and velocity count using read replica pool
     try:
-        async with get_async_db_conn(tenant_id=user_tenant_id) as conn:
+        async with get_async_db_read_conn(tenant_id=user_tenant_id) as conn:
             row = await conn.fetchrow(
                 """
                 WITH sender_info AS (
@@ -95,6 +95,11 @@ async def ingest_transaction(
                 
             sender_id = row["sender_id"]
             tenant_id = row["sender_tenant"]
+            
+            # Cross-tenant boundary check: enforce caller is authorized for sender account tenant
+            if tenant_id:
+                enforce_tenant_data_scope(current_user, target_tenant_id=str(tenant_id))
+
             sender_risk = float(row["sender_risk"])
             sender_name = row["sender_name"]
             sender_bic = row["sender_bic"]
