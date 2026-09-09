@@ -14,25 +14,65 @@ SIEM / ELK ingestion.  Every log line includes:
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Any, Dict
 
 from observability.middleware import correlation_id_var, tenant_id_var, user_id_var
 
+# Sensitive keys and regex patterns for compliance PII/credential scrubbing
+SENSITIVE_KEY_PATTERNS = {"password", "secret", "token", "access_token", "refresh_token", "api_key", "apikey", "authorization", "ssn", "cvv"}
+BEARER_TOKEN_REGEX = re.compile(r"(Bearer\s+)[A-Za-z0-9\-_.]+", re.IGNORECASE)
+PASSWORD_URI_REGEX = re.compile(r"(password=)[^&\s]+", re.IGNORECASE)
+ACCOUNT_NUM_REGEX = re.compile(r"\b(ACC_[A-Za-z0-9]{2,4})[A-Za-z0-9]+([A-Za-z0-9]{4})\b")
+CREDIT_CARD_REGEX = re.compile(r"\b(?:\d{4}[-\s]?){3}(\d{4})\b")
+
+
+def mask_sensitive_text(text: str) -> str:
+    """Masks secrets, tokens, credentials, and bank account numbers from text."""
+    if not isinstance(text, str):
+        return text
+    text = BEARER_TOKEN_REGEX.sub(r"\1[REDACTED]", text)
+    text = PASSWORD_URI_REGEX.sub(r"\1[REDACTED]", text)
+    text = ACCOUNT_NUM_REGEX.sub(r"\1****\2", text)
+    text = CREDIT_CARD_REGEX.sub(r"****-****-****-\1", text)
+    return text
+
+
+def mask_dict_data(data: Any) -> Any:
+    """Recursively masks dictionary keys with sensitive names and redacts string values."""
+    if isinstance(data, dict):
+        masked = {}
+        for k, v in data.items():
+            k_lower = str(k).lower()
+            if any(s in k_lower for s in SENSITIVE_KEY_PATTERNS):
+                masked[k] = "[REDACTED]"
+            else:
+                masked[k] = mask_dict_data(v)
+        return masked
+    elif isinstance(data, list):
+        return [mask_dict_data(item) for item in data]
+    elif isinstance(data, str):
+        return mask_sensitive_text(data)
+    return data
+
 
 class JsonFormatter(logging.Formatter):
     """
     Structured JSON log formatter for compliance SIEM / ELK ingestion.
-    Converts log records into standardized, audit-grade single-line JSON objects.
+    Converts log records into standardized, audit-grade single-line JSON objects with PII masking.
     """
 
     def format(self, record: logging.LogRecord) -> str:
+        raw_message = record.getMessage()
+        masked_message = mask_sensitive_text(raw_message)
+
         log_payload: Dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": masked_message,
             "correlation_id": getattr(record, "correlation_id", correlation_id_var.get("")),
             "trace_id": getattr(record, "trace_id", ""),
             "span_id": getattr(record, "span_id", ""),
@@ -81,7 +121,7 @@ class JsonFormatter(logging.Formatter):
             custom_extras["details"] = details
 
         if custom_extras:
-            log_payload["extra"] = custom_extras
+            log_payload["extra"] = mask_dict_data(custom_extras)
 
         return json.dumps(log_payload)
 

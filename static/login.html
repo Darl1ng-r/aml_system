@@ -3,15 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AML Portal - Authenticate</title>
+    <title>AML Portal - Enterprise Authentication</title>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
     <style>
         body {
+            display: flex;
             align-items: center;
             justify-content: center;
             padding: 1.5rem;
             min-height: 100vh;
+            background-color: var(--bg-primary);
         }
         .auth-container {
             width: 100%;
@@ -34,8 +36,8 @@
             background-color: rgba(44, 37, 32, 0.01);
         }
         .auth-logo {
-            width: 42px;
-            height: 42px;
+            width: 44px;
+            height: 44px;
             background: linear-gradient(135deg, var(--accent-blue), var(--accent-green));
             border-radius: 12px;
             display: flex;
@@ -45,6 +47,7 @@
             font-weight: 800;
             font-size: 1.5rem;
             margin: 0 auto 1rem auto;
+            box-shadow: 0 4px 12px rgba(29, 100, 245, 0.2);
         }
         .auth-header h1 {
             font-size: 1.35rem;
@@ -95,9 +98,76 @@
         .auth-form.active {
             display: flex;
         }
+        .password-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+        .password-wrapper input {
+            width: 100%;
+            padding-right: 2.5rem;
+        }
+        .password-toggle-btn {
+            position: absolute;
+            right: 0.75rem;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            font-weight: 600;
+            padding: 0.25rem;
+        }
+        .password-toggle-btn:hover {
+            color: var(--text-primary);
+        }
+        /* Password Strength Meter */
+        .strength-meter {
+            margin-top: 0.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        .strength-bar-bg {
+            height: 4px;
+            background-color: var(--border-color);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .strength-bar-fill {
+            height: 100%;
+            width: 0%;
+            transition: all 0.3s ease;
+            border-radius: 2px;
+        }
+        .strength-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+        /* MFA Challenge Screen */
+        .mfa-screen {
+            display: none;
+            flex-direction: column;
+            gap: 1.25rem;
+            text-align: center;
+        }
+        .mfa-screen.active {
+            display: flex;
+        }
+        .mfa-icon {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .otp-input {
+            letter-spacing: 0.4em;
+            font-size: 1.5rem;
+            text-align: center;
+            font-weight: 700;
+        }
         .error-banner {
-            background-color: rgba(204, 63, 53, 0.06);
-            border: 1px solid rgba(204, 63, 53, 0.15);
+            background-color: rgba(204, 63, 53, 0.08);
+            border: 1px solid rgba(204, 63, 53, 0.2);
             color: var(--accent-red);
             border-radius: 8px;
             padding: 0.75rem 1rem;
@@ -107,8 +177,8 @@
             display: none;
         }
         .success-banner {
-            background-color: rgba(29, 130, 83, 0.06);
-            border: 1px solid rgba(29, 130, 83, 0.15);
+            background-color: rgba(29, 130, 83, 0.08);
+            border: 1px solid rgba(29, 130, 83, 0.2);
             color: var(--accent-green);
             border-radius: 8px;
             padding: 0.75rem 1rem;
@@ -118,9 +188,7 @@
             display: none;
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script>
-        // Immediately redirect if already logged in
         if (localStorage.getItem('jwt_token')) {
             window.location.href = '/dashboard';
         }
@@ -131,76 +199,87 @@
     <div class="auth-container">
         <div class="auth-card">
             <div class="auth-header">
-                <div class="auth-logo">C</div>
+                <div class="auth-logo" aria-hidden="true">🛡️</div>
                 <h1>AML Control Center</h1>
-                <p>Anti-Money Laundering & Case Management Gateway</p>
+                <p>Enterprise Compliance & Multi-Tenant Gateway</p>
             </div>
             
-            <div class="auth-tabs">
+            <div id="auth-tab-bar" class="auth-tabs">
                 <button id="tab-login" class="auth-tab-btn active" onclick="switchAuthTab('login')">Sign In</button>
                 <button id="tab-signup" class="auth-tab-btn" onclick="switchAuthTab('signup')">Create Account</button>
             </div>
 
             <div class="auth-body">
-                <div id="auth-error" class="error-banner" style="margin-bottom: 1.25rem;"></div>
-                <div id="auth-success" class="success-banner" style="margin-bottom: 1.25rem;"></div>
+                <div id="auth-error" class="error-banner" style="margin-bottom: 1.25rem;" role="alert"></div>
+                <div id="auth-success" class="success-banner" style="margin-bottom: 1.25rem;" role="status"></div>
 
-                <!-- LOGIN FORM -->
-                <form id="form-login" class="auth-form active" onsubmit="handleLoginSubmit(event)">
+                <!-- 1. LOGIN FORM -->
+                <form id="form-login" class="auth-form active" onsubmit="handleLoginSubmit(event)" novalidate>
                     <div class="form-group">
-                        <label for="login-username">Username</label>
-                        <input type="text" id="login-username" placeholder="e.g. sarah_jenkins" required>
+                        <label for="login-username">Username or Email</label>
+                        <input type="text" id="login-username" placeholder="e.g. sarah_jenkins" autocomplete="username" required>
                     </div>
                     <div class="form-group">
                         <label for="login-password">Password</label>
-                        <input type="password" id="login-password" placeholder="••••••••" required>
+                        <div class="password-wrapper">
+                            <input type="password" id="login-password" placeholder="••••••••••••" autocomplete="current-password" required>
+                            <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('login-password', this)">Show</button>
+                        </div>
                     </div>
-                    <button type="submit" class="btn" style="width: 100%; margin-top: 0.5rem;">Access Console</button>
+                    <button type="submit" id="btn-login-submit" class="btn" style="width: 100%; margin-top: 0.5rem;">Access Console</button>
                 </form>
 
-                <!-- SIGNUP FORM -->
-                <form id="form-signup" class="auth-form" onsubmit="handleSignupSubmit(event)">
+                <!-- 2. MFA CHALLENGE FORM -->
+                <form id="form-mfa" class="mfa-screen" onsubmit="handleMfaVerify(event)">
+                    <div class="mfa-icon">🔐</div>
+                    <h2 style="font-size: 1.15rem; font-weight: 700;">Two-Factor Verification</h2>
+                    <p style="font-size: 0.8rem; color: var(--text-secondary);">Enter the 6-digit verification code from your authenticator app or an emergency recovery code.</p>
+                    
+                    <div class="form-group">
+                        <input type="text" id="mfa-code" class="otp-input" placeholder="000000" maxlength="15" autocomplete="one-time-code" required autofocus>
+                    </div>
+                    
+                    <button type="submit" id="btn-mfa-submit" class="btn" style="width: 100%;">Verify & Proceed</button>
+                    <button type="button" class="btn btn-secondary" style="width: 100%;" onclick="cancelMfa()">Cancel</button>
+                </form>
+
+                <!-- 3. SIGNUP FORM -->
+                <form id="form-signup" class="auth-form" onsubmit="handleSignupSubmit(event)" novalidate>
                     <div class="form-group">
                         <label for="signup-username">Username</label>
-                        <input type="text" id="signup-username" placeholder="e.g. alex_compliance" required>
+                        <input type="text" id="signup-username" placeholder="e.g. alex_compliance" autocomplete="username" required>
                     </div>
                     <div class="form-group">
                         <label for="signup-password">Password</label>
-                        <input type="password" id="signup-password" placeholder="Minimum 6 characters" required>
+                        <div class="password-wrapper">
+                            <input type="password" id="signup-password" placeholder="Minimum 8 characters" autocomplete="new-password" oninput="evaluatePasswordStrength(this.value)" required>
+                            <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('signup-password', this)">Show</button>
+                        </div>
+                        <div class="strength-meter" aria-live="polite">
+                            <div class="strength-bar-bg">
+                                <div id="strength-bar" class="strength-bar-fill"></div>
+                            </div>
+                            <span id="strength-text" class="strength-label">Password Strength: Minimum 8 chars</span>
+                        </div>
                     </div>
                     <div class="form-group">
-                        <label for="signup-role">Analyst Role</label>
-                        <select id="signup-role">
-                            <option value="ANALYST">Junior Analyst (Level 1)</option>
-                            <option value="AUDITOR">Compliance Auditor (Level 2)</option>
-                            <option value="ADMIN">Compliance Officer / Admin</option>
-                        </select>
+                        <label for="signup-confirm">Confirm Password</label>
+                        <input type="password" id="signup-confirm" placeholder="Re-enter password" autocomplete="new-password" required>
                     </div>
-                    <div class="form-group">
-                        <label for="signup-code">Agency Registry Code</label>
-                        <input type="text" id="signup-code" placeholder="Optional simulator activation code">
-                    </div>
-                    <button type="submit" class="btn btn-success" style="width: 100%; margin-top: 0.5rem;">Register Profile</button>
+                    <button type="submit" id="btn-signup-submit" class="btn btn-success" style="width: 100%; margin-top: 0.5rem;">Register Analyst Profile</button>
                 </form>
             </div>
         </div>
     </div>
 
     <script>
-        const supabaseUrl = 'https://xzhsdffpnrlpcitiectz.supabase.co';
-        const supabaseKey = 'sb_publishable_wnGvRWC4UBh0aQgROrflow_6XN36H0z';
-        
-        // Initialize Supabase Client
-        const supabaseClient = supabase.createClient(supabaseUrl, supabaseKey);
-
-        function getEmailFromUsername(val) {
-            if (val.includes('@')) return val;
-            return `${val.trim()}@aml.com`;
-        }
+        let currentMfaTicket = null;
 
         function switchAuthTab(type) {
             document.getElementById('auth-error').style.display = 'none';
             document.getElementById('auth-success').style.display = 'none';
+            document.getElementById('form-mfa').classList.remove('active');
+            document.getElementById('auth-tab-bar').style.display = 'flex';
 
             if (type === 'login') {
                 document.getElementById('tab-login').classList.add('active');
@@ -215,88 +294,211 @@
             }
         }
 
+        function togglePasswordVisibility(inputId, btn) {
+            const input = document.getElementById(inputId);
+            if (input.type === 'password') {
+                input.type = 'text';
+                btn.innerText = 'Hide';
+            } else {
+                input.type = 'password';
+                btn.innerText = 'Show';
+            }
+        }
+
+        function evaluatePasswordStrength(password) {
+            const bar = document.getElementById('strength-bar');
+            const text = document.getElementById('strength-text');
+            if (!password) {
+                bar.style.width = '0%';
+                text.innerText = 'Password Strength: Minimum 8 chars';
+                text.style.color = 'var(--text-secondary)';
+                return;
+            }
+
+            let score = 0;
+            if (password.length >= 8) score += 1;
+            if (password.length >= 12) score += 1;
+            if (/[A-Z]/.test(password)) score += 1;
+            if (/[0-9]/.test(password)) score += 1;
+            if (/[^A-Za-z0-9]/.test(password)) score += 1;
+
+            if (score <= 2) {
+                bar.style.width = '25%';
+                bar.style.backgroundColor = '#cc3f35'; // Red
+                text.innerText = 'Weak (add length, numbers & symbols)';
+                text.style.color = '#cc3f35';
+            } else if (score === 3) {
+                bar.style.width = '50%';
+                bar.style.backgroundColor = '#e07a1f'; // Orange
+                text.innerText = 'Medium (good, but could be stronger)';
+                text.style.color = '#e07a1f';
+            } else if (score === 4) {
+                bar.style.width = '75%';
+                bar.style.backgroundColor = '#1d64f5'; // Blue
+                text.innerText = 'Strong';
+                text.style.color = '#1d64f5';
+            } else {
+                bar.style.width = '100%';
+                bar.style.backgroundColor = '#1d8253'; // Green
+                text.innerText = 'Very Strong';
+                text.style.color = '#1d8253';
+            }
+        }
+
         async function handleLoginSubmit(event) {
             event.preventDefault();
-            const usernameInput = document.getElementById('login-username').value.trim();
-            const email = getEmailFromUsername(usernameInput);
+            const username = document.getElementById('login-username').value.trim();
             const password = document.getElementById('login-password').value;
             const errorEl = document.getElementById('auth-error');
+            const btn = document.getElementById('btn-login-submit');
 
             errorEl.style.display = 'none';
+            btn.disabled = true;
+            btn.innerText = 'Authenticating...';
 
             try {
-                const { data, error } = await supabaseClient.auth.signInWithPassword({
-                    email: email,
-                    password: password
+                const formData = new URLSearchParams();
+                formData.append('username', username);
+                formData.append('password', password);
+
+                const response = await fetch('/api/v1/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: formData,
+                    credentials: 'include'
                 });
 
-                if (error) throw new Error(error.message);
+                const data = await response.json();
 
-                if (data && data.session) {
-                    localStorage.setItem('jwt_token', data.session.access_token);
-                    localStorage.setItem('username', data.user.email.split('@')[0]);
-                    
-                    const role = data.user.user_metadata?.role || 'ANALYST';
-                    localStorage.setItem('role', role);
-                    
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Authentication failed.');
+                }
+
+                // Check for Two-Factor Authentication Challenge
+                if (data.mfa_required) {
+                    currentMfaTicket = data.mfa_ticket;
+                    document.getElementById('form-login').classList.remove('active');
+                    document.getElementById('auth-tab-bar').style.display = 'none';
+                    document.getElementById('form-mfa').classList.add('active');
+                    document.getElementById('mfa-code').focus();
+                    return;
+                }
+
+                // Standard login success
+                if (data.access_token) {
+                    localStorage.setItem('jwt_token', data.access_token);
+                    localStorage.setItem('username', data.username);
+                    localStorage.setItem('role', data.role);
                     window.location.href = '/dashboard';
                 }
-            } catch (e) {
-                errorEl.innerText = e.message;
+            } catch (err) {
+                errorEl.innerText = err.message;
                 errorEl.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Access Console';
             }
+        }
+
+        async function handleMfaVerify(event) {
+            event.preventDefault();
+            const code = document.getElementById('mfa-code').value.trim();
+            const errorEl = document.getElementById('auth-error');
+            const btn = document.getElementById('btn-mfa-submit');
+
+            errorEl.style.display = 'none';
+            btn.disabled = true;
+            btn.innerText = 'Verifying Code...';
+
+            try {
+                const response = await fetch('/api/v1/auth/mfa/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mfa_ticket: currentMfaTicket, code: code }),
+                    credentials: 'include'
+                });
+
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Verification code invalid.');
+                }
+
+                localStorage.setItem('jwt_token', data.access_token);
+                localStorage.setItem('username', data.username);
+                localStorage.setItem('role', data.role);
+                window.location.href = '/dashboard';
+            } catch (err) {
+                errorEl.innerText = err.message;
+                errorEl.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Verify & Proceed';
+            }
+        }
+
+        function cancelMfa() {
+            currentMfaTicket = null;
+            document.getElementById('form-mfa').classList.remove('active');
+            document.getElementById('auth-tab-bar').style.display = 'flex';
+            document.getElementById('form-login').classList.add('active');
         }
 
         async function handleSignupSubmit(event) {
             event.preventDefault();
-            const usernameInput = document.getElementById('signup-username').value.trim();
-            const email = getEmailFromUsername(usernameInput);
+            const username = document.getElementById('signup-username').value.trim();
             const password = document.getElementById('signup-password').value;
-            const role = document.getElementById('signup-role').value;
+            const confirm = document.getElementById('signup-confirm').value;
             const errorEl = document.getElementById('auth-error');
             const successEl = document.getElementById('auth-success');
+            const btn = document.getElementById('btn-signup-submit');
 
             errorEl.style.display = 'none';
             successEl.style.display = 'none';
 
-            if (password.length < 6) {
-                errorEl.innerText = 'Password must be at least 6 characters long.';
+            if (password !== confirm) {
+                errorEl.innerText = 'Passwords do not match.';
                 errorEl.style.display = 'block';
                 return;
             }
 
+            if (password.length < 8) {
+                errorEl.innerText = 'Password must be at least 8 characters long.';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.innerText = 'Creating Profile...';
+
             try {
-                const { data, error } = await supabaseClient.auth.signUp({
-                    email: email,
-                    password: password,
-                    options: {
-                        data: {
-                            role: role
-                        }
-                    }
+                const response = await fetch('/api/v1/auth/signup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: username, password: password }),
+                    credentials: 'include'
                 });
 
-                if (error) throw new Error(error.message);
-
-                if (data) {
-                    successEl.innerText = 'Account registered successfully!';
-                    successEl.style.display = 'block';
-
-                    if (data.session) {
-                        localStorage.setItem('jwt_token', data.session.access_token);
-                        localStorage.setItem('username', data.user.email.split('@')[0]);
-                        localStorage.setItem('role', role);
-                        
-                        setTimeout(() => {
-                            window.location.href = '/dashboard';
-                        }, 1200);
-                    } else {
-                        successEl.innerText = 'Verification email sent. Please verify to log in.';
-                    }
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Registration failed.');
                 }
-            } catch (e) {
-                errorEl.innerText = e.message;
+
+                successEl.innerText = 'Account registered successfully! Redirecting...';
+                successEl.style.display = 'block';
+
+                localStorage.setItem('jwt_token', data.access_token);
+                localStorage.setItem('username', data.username);
+                localStorage.setItem('role', data.role);
+
+                setTimeout(() => {
+                    window.location.href = '/dashboard';
+                }, 1000);
+            } catch (err) {
+                errorEl.innerText = err.message;
                 errorEl.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Register Analyst Profile';
             }
         }
     </script>

@@ -1,0 +1,70 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: aml-system-alerts
+  namespace: aml-system
+  labels:
+    role: alert-rules
+    app: aml-system
+spec:
+  groups:
+  - name: aml.compliance.slo.rules
+    rules:
+    - alert: AMLHighErrorRate
+      expr: |
+        (
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total[5m]))
+        ) * 100 > 1.0
+      for: 2m
+      labels:
+        severity: critical
+        tier: api
+      annotations:
+        summary: "AML API error rate exceeds 1% SLO threshold"
+        description: "High rate of 5xx HTTP responses detected: {{ $value | printf \"%.2f\" }}% over last 5 minutes."
+
+    - alert: AMLLatencySLOBreach
+      expr: |
+        histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{endpoint="/api/v1/transactions"}[5m])) by (le)) > 0.500
+      for: 3m
+      labels:
+        severity: warning
+        tier: ingestion
+      annotations:
+        summary: "AML Transaction Ingestion P99 latency > 500ms"
+        description: "P99 transaction ingestion latency is {{ $value | printf \"%.3f\" }}s, exceeding the 500ms compliance SLO."
+
+    - alert: AMLKafkaConsumerLag
+      expr: |
+        sum(kafka_consumergroup_lag{consumergroup="aml-graph-sync-group"}) by (topic) > 1000
+      for: 2m
+      labels:
+        severity: warning
+        tier: worker
+      annotations:
+        summary: "AML Graph Sync Worker consumer lag exceeds 1000 messages"
+        description: "Topic {{ $labels.topic }} has accumulated {{ $value }} unconsumed transaction messages."
+
+    - alert: AMLBruteForceDetected
+      expr: |
+        sum(rate(audit_events_total{event_type="LOGIN_FAILED"}[5m])) * 60 > 10
+      for: 1m
+      labels:
+        severity: high
+        tier: security
+      annotations:
+        summary: "Potential credential stuffing or brute-force attack detected"
+        description: "Over 10 failed login events per minute observed (current rate: {{ $value }} / min)."
+
+    - alert: AMLUnauthorizedTenantAccessSpike
+      expr: |
+        sum(rate(audit_events_total{event_type="RBAC_VIOLATION"}[1m])) * 60 > 3
+      for: 1m
+      labels:
+        severity: critical
+        tier: security
+      annotations:
+        summary: "Spike in unauthorized cross-tenant data access attempts"
+        description: "Detected {{ $value }} RBAC cross-tenant boundary violations in the past minute."

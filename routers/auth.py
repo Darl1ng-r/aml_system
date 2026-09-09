@@ -9,7 +9,13 @@ from pydantic import BaseModel, Field, field_validator
 from observability.sanitizer import sanitize_text
 
 from services.rate_limiter import RateLimiter
-from services.auth import hash_password, verify_password, create_access_token, create_refresh_token
+from services.auth import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
+)
 from observability.logging import log_audit_event
 
 def set_auth_cookies(response: Response, access_token: str, refresh_token: str | None = None):
@@ -145,7 +151,7 @@ async def login(
     async with get_async_db_conn() as conn:
         local_user = await conn.fetchrow(
             """
-            SELECT id, role, password_hash, tenant_id 
+            SELECT id, role, password_hash, tenant_id, mfa_enabled 
             FROM users 
             WHERE username = $1 AND (is_active IS NULL OR is_active = true);
             """,
@@ -189,6 +195,30 @@ async def login(
         local_user_id = str(local_user["id"])
         local_role = local_user["role"] or "ANALYST"
         tenant_id = str(local_user["tenant_id"]) if local_user["tenant_id"] else "00000000-0000-0000-0000-000000000001"
+        is_mfa_enabled = bool(local_user["mfa_enabled"]) if "mfa_enabled" in local_user.keys() else False
+
+    # Multi-Factor Authentication Challenge
+    if is_mfa_enabled:
+        import uuid
+        import json
+        mfa_ticket = f"mfa_{uuid.uuid4().hex}"
+        from database.redis_db import get_async_redis_client
+        redis = await get_async_redis_client()
+        if redis:
+            ticket_data = {
+                "user_id": local_user_id,
+                "role": local_role,
+                "username": form_data.username,
+                "email": email,
+                "tenant_id": tenant_id
+            }
+            await redis.setex(f"mfa:ticket:{mfa_ticket}", 300, json.dumps(ticket_data))
+
+        return {
+            "mfa_required": True,
+            "mfa_ticket": mfa_ticket,
+            "message": "Two-factor authentication required. Please verify with your 6-digit TOTP code or backup recovery code."
+        }
     
     access_token = create_access_token({
         "sub": local_user_id,
@@ -492,3 +522,227 @@ async def logout(
 
     clear_auth_cookies(response)
     return {"detail": "Logged out successfully. Refresh token revoked."}
+
+
+# ── Multi-Factor Authentication (MFA / TOTP) Endpoints ─────────────────────────
+
+class MFAEnableRequest(BaseModel):
+    code: str
+
+class MFAVerifyRequest(BaseModel):
+    mfa_ticket: str
+    code: str
+
+class MFADisableRequest(BaseModel):
+    password: str
+
+
+@router.post("/mfa/setup", summary="Initiate MFA setup and receive secret & recovery codes")
+async def mfa_setup(current_user: dict = Depends(get_current_user)):
+    """
+    Generates a secure Base32 TOTP secret, otpauth QR URI, and 8 single-use recovery codes.
+    Stores setup state temporarily in Redis until confirmed via /mfa/enable.
+    """
+    from services.mfa import generate_totp_secret, get_totp_uri, generate_recovery_codes
+    from database.redis_db import get_async_redis_client
+    import json
+
+    user_id = str(current_user["id"])
+    username = current_user.get("username", "user")
+    secret = generate_totp_secret()
+    otpauth_uri = get_totp_uri(secret, username=username)
+    plain_codes, hashed_codes = generate_recovery_codes()
+
+    redis = await get_async_redis_client()
+    if redis:
+        setup_data = {
+            "secret": secret,
+            "hashed_codes": hashed_codes
+        }
+        await redis.setex(f"mfa:pending:{user_id}", 600, json.dumps(setup_data))
+
+    return {
+        "secret": secret,
+        "otpauth_uri": otpauth_uri,
+        "recovery_codes": plain_codes,
+        "message": "Scan the QR code with your authenticator app and call /mfa/enable with the 6-digit verification code."
+    }
+
+
+@router.post("/mfa/enable", summary="Confirm TOTP code and enable MFA on account")
+async def mfa_enable(body: MFAEnableRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Verifies the first 6-digit TOTP code against the pending setup secret and commits
+    MFA activation and recovery codes to the database.
+    """
+    from services.mfa import verify_totp_code
+    from database.redis_db import get_async_redis_client
+    from database.postgres import get_async_db_conn
+    import json
+
+    user_id = str(current_user["id"])
+    redis = await get_async_redis_client()
+    if not redis:
+        raise HTTPException(status_code=500, detail="Cache unavailable for MFA confirmation.")
+
+    pending_raw = await redis.get(f"mfa:pending:{user_id}")
+    if not pending_raw:
+        raise HTTPException(status_code=400, detail="MFA setup has expired or was not initiated. Call /mfa/setup first.")
+
+    pending_data = json.loads(pending_raw)
+    secret = pending_data["secret"]
+    hashed_codes = pending_data["hashed_codes"]
+
+    if not verify_totp_code(secret, body.code):
+        raise HTTPException(status_code=400, detail="Invalid 6-digit verification code. Please check your authenticator app.")
+
+    async with get_async_db_conn() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET mfa_enabled = TRUE, mfa_secret = $1, recovery_codes = $2::jsonb
+            WHERE id = $3;
+            """,
+            secret, json.dumps(hashed_codes), user_id
+        )
+
+    await redis.delete(f"mfa:pending:{user_id}")
+    log_audit_event(
+        event_type="MFA_ENABLED",
+        actor_id=user_id,
+        actor_role=current_user.get("role", "ANALYST"),
+        action="ENABLE_MFA",
+        resource_type="USER_SECURITY",
+        resource_id=user_id,
+        tenant_id=current_user.get("tenant_id", ""),
+        details={"username": current_user.get("username")}
+    )
+
+    return {"detail": "Two-factor authentication successfully enabled on your account."}
+
+
+@router.post("/mfa/verify", summary="Verify MFA ticket and issue authentication tokens")
+async def mfa_verify(response: Response, body: MFAVerifyRequest):
+    """
+    Completes the two-factor authentication challenge using an mfa_ticket and either
+    a 6-digit TOTP code or a single-use backup recovery code.
+    """
+    from services.mfa import verify_totp_code, verify_and_consume_recovery_code
+    from database.redis_db import get_async_redis_client
+    from database.postgres import get_async_db_conn
+    import json
+
+    redis = await get_async_redis_client()
+    if not redis:
+        raise HTTPException(status_code=500, detail="Cache service unavailable.")
+
+    ticket_raw = await redis.get(f"mfa:ticket:{body.mfa_ticket}")
+    if not ticket_raw:
+        raise HTTPException(status_code=401, detail="MFA session expired or invalid. Please log in again.")
+
+    ticket_data = json.loads(ticket_raw)
+    user_id = ticket_data["user_id"]
+    role = ticket_data["role"]
+    username = ticket_data["username"]
+    email = ticket_data.get("email", "")
+    tenant_id = ticket_data.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+
+    async with get_async_db_conn() as conn:
+        user_row = await conn.fetchrow(
+            "SELECT mfa_secret, recovery_codes FROM users WHERE id = $1;",
+            user_id
+        )
+        if not user_row or not user_row["mfa_secret"]:
+            raise HTTPException(status_code=400, detail="MFA not configured for user.")
+
+        secret = user_row["mfa_secret"]
+        raw_recovery = user_row["recovery_codes"]
+        recovery_hashes = json.loads(raw_recovery) if isinstance(raw_recovery, str) else (raw_recovery or [])
+
+        code = body.code.strip()
+        verified = False
+
+        if len(code) == 6 and code.isdigit():
+            verified = verify_totp_code(secret, code)
+        elif "-" in code:
+            consumed, remaining_hashes = verify_and_consume_recovery_code(code, recovery_hashes)
+            if consumed:
+                verified = True
+                await conn.execute(
+                    "UPDATE users SET recovery_codes = $1::jsonb WHERE id = $2;",
+                    json.dumps(remaining_hashes), user_id
+                )
+
+        if not verified:
+            raise HTTPException(status_code=401, detail="Invalid verification code or recovery code.")
+
+    # Invalidate ticket
+    await redis.delete(f"mfa:ticket:{body.mfa_ticket}")
+
+    access_token = create_access_token({
+        "sub": user_id,
+        "role": role,
+        "username": username,
+        "email": email,
+        "tenant_id": tenant_id
+    })
+    refresh_token = create_refresh_token({
+        "sub": user_id,
+        "role": role,
+        "username": username,
+        "tenant_id": tenant_id
+    })
+
+    set_auth_cookies(response, access_token, refresh_token)
+    log_audit_event(
+        event_type="USER_LOGIN",
+        actor_id=user_id,
+        actor_role=role,
+        action="LOGIN_MFA_SUCCESS",
+        resource_type="SESSION",
+        resource_id=user_id,
+        tenant_id=tenant_id,
+        details={"username": username, "mfa_verified": True}
+    )
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "role": role,
+        "username": username
+    }
+
+
+@router.post("/mfa/disable", summary="Disable MFA with password verification")
+async def mfa_disable(body: MFADisableRequest, current_user: dict = Depends(get_current_user)):
+    """Disables two-factor authentication after verifying account password."""
+    from database.postgres import get_async_db_conn
+    user_id = str(current_user["id"])
+
+    async with get_async_db_conn() as conn:
+        row = await conn.fetchrow("SELECT password_hash FROM users WHERE id = $1;", user_id)
+        if not row or not row["password_hash"] or not verify_password(body.password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Incorrect password. Cannot disable two-factor authentication.")
+
+        await conn.execute(
+            """
+            UPDATE users
+            SET mfa_enabled = FALSE, mfa_secret = NULL, recovery_codes = '[]'::jsonb
+            WHERE id = $1;
+            """,
+            user_id
+        )
+
+    log_audit_event(
+        event_type="MFA_DISABLED",
+        actor_id=user_id,
+        actor_role=current_user.get("role", "ANALYST"),
+        action="DISABLE_MFA",
+        resource_type="USER_SECURITY",
+        resource_id=user_id,
+        tenant_id=current_user.get("tenant_id", ""),
+        details={"username": current_user.get("username")}
+    )
+
+    return {"detail": "Two-factor authentication disabled successfully."}
