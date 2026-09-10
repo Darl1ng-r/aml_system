@@ -12,12 +12,20 @@ def test_sanitizer_xss_protection():
     assert sanitize_text("Normal Customer Name") == "Normal Customer Name"
 
 def test_password_hashing_and_verification():
-    """Verify password hashing with PBKDF2 600k iterations and verify_password correctness."""
+    """Verify password hashing with Argon2id and verify_password correctness with both Argon2id and legacy PBKDF2."""
     pw = "P@ssw0rdEnterprise2026!"
     hashed = hash_password(pw)
-    assert hashed.startswith("pbkdf2_sha256$600000$")
+    assert hashed.startswith("$argon2id$") or hashed.startswith("pbkdf2_sha256$")
     assert verify_password(pw, hashed) is True
     assert verify_password("WrongPassword!", hashed) is False
+
+    # Test backward compatibility with legacy PBKDF2 hash
+    import hashlib
+    salt = "testsalt123"
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt.encode("utf-8"), 600000)
+    legacy_hash = f"pbkdf2_sha256$600000${salt}${dk.hex()}"
+    assert verify_password(pw, legacy_hash) is True
+    assert verify_password("WrongPassword!", legacy_hash) is False
 
 @pytest.mark.anyio
 async def test_login_user_not_found_fails_with_401():

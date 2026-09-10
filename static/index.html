@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Compliance Case Management Console</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
     <!-- Enterprise UI Visualization Libraries: Chart.js & Vis.js Network -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
@@ -13,18 +15,20 @@
     <script>
         const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
         document.documentElement.setAttribute('data-theme', savedTheme);
-        if (!localStorage.getItem('jwt_token')) {
+        if (!localStorage.getItem('auth_session_active') && !localStorage.getItem('jwt_token')) {
             window.location.href = '/login';
         }
     </script>
 </head>
+
 <body>
 
     <div id="mock-mode-banner" class="mock-mode-banner" style="display: none;">
         <div class="mock-banner-content">
             <span class="mock-banner-icon">⚠️</span>
             <span class="mock-banner-title">MOCK DEMO MODE ACTIVE</span>
-            <span class="mock-banner-text">— API gateway is unreachable. Displayed alert queues, transactions, and metrics are SIMULATED mock data.</span>
+            <span class="mock-banner-text">— API gateway is unreachable. Displayed alert queues, transactions, and
+                metrics are SIMULATED mock data.</span>
         </div>
     </div>
 
@@ -37,9 +41,14 @@
             </div>
         </div>
         <div style="display: flex; align-items: center; gap: 1rem;">
-            <button id="shortcuts-btn" class="btn btn-outline" onclick="toggleShortcutsModal()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;" title="View Keyboard Shortcuts (?)">⌨️ Shortcuts</button>
-            <button id="theme-toggle-btn" class="btn btn-outline" onclick="toggleTheme()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;">🌙 Dark Mode</button>
-            <span id="user-welcome-text" style="font-size: 0.85rem; font-weight: 600; display: none; color: var(--text-secondary);">Welcome, Analyst</span>
+            <button id="shortcuts-btn" class="btn btn-outline" onclick="toggleShortcutsModal()"
+                style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;" title="View Keyboard Shortcuts (?)">⌨️
+                Shortcuts</button>
+            <button id="theme-toggle-btn" class="btn btn-outline" onclick="toggleTheme()"
+                style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;">🌙 Dark Mode</button>
+            <span id="user-welcome-text"
+                style="font-size: 0.85rem; font-weight: 600; display: none; color: var(--text-secondary);">Welcome,
+                Analyst</span>
             <button id="logout-button" class="logout-btn" onclick="logout()" style="display: none;">Logout</button>
             <div class="status-badge" id="app-status-badge">
                 <span class="status-indicator"></span>
@@ -54,7 +63,8 @@
             <button class="tab-btn active" onclick="switchTab('executive-tab', this)">Executive Dashboard</button>
             <button class="tab-btn" onclick="switchTab('inbox-tab', this)">Alert Inbox & Triage</button>
             <button class="tab-btn" onclick="switchTab('sandbox-tab', this)">Phonetic Sandbox</button>
-            <button class="tab-btn" onclick="switchTab('str-batch-tab', this); loadSTRBatches();">📦 STR Batch Filings</button>
+            <button class="tab-btn" onclick="switchTab('str-batch-tab', this); loadSTRBatches();">📦 STR Batch
+                Filings</button>
         </div>
 
         <!-- TAB 1: EXECUTIVE DASHBOARD -->
@@ -126,8 +136,11 @@
                         </table>
                     </div>
                     <div class="card-body">
-                        <div class="empty-state" style="margin: 0; padding: 1.5rem; border-style: solid; background-color: rgba(61,107,153,0.04);">
-                            <p style="font-size: 0.8rem; line-height: 1.4;">Compliance workloads are distributed dynamically from PostgreSQL metrics. Click the <strong>Alert Inbox & Triage</strong> tab to assign and escalate incoming alerts.</p>
+                        <div class="empty-state"
+                            style="margin: 0; padding: 1.5rem; border-style: solid; background-color: rgba(61,107,153,0.04);">
+                            <p style="font-size: 0.8rem; line-height: 1.4;">Compliance workloads are distributed
+                                dynamically from PostgreSQL metrics. Click the <strong>Alert Inbox & Triage</strong> tab
+                                to assign and escalate incoming alerts.</p>
                         </div>
                     </div>
                 </div>
@@ -141,26 +154,38 @@
                 <div class="card-header" style="flex-wrap: wrap; gap: 1rem;">
                     <h2 class="card-title">Alerts Triage Inbox</h2>
                     <div style="display: flex; gap: 0.75rem; align-items: center;">
-                        <input type="text" id="inbox-search" placeholder="Search account..." oninput="filterInboxTable()" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
-                        <select id="inbox-filter-severity" onchange="filterInboxTable()" style="padding: 0.4rem 0.8rem; font-size: 0.85rem; height: 34px;">
+                        <input type="text" id="inbox-search" placeholder="Search account..."
+                            oninput="filterInboxTable()" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
+                        <select id="inbox-filter-severity" onchange="filterInboxTable()"
+                            style="padding: 0.4rem 0.8rem; font-size: 0.85rem; height: 34px;">
                             <option value="ALL">All Severities</option>
                             <option value="CRITICAL">Critical</option>
                             <option value="HIGH">High</option>
                         </select>
-                        <button class="btn btn-outline" onclick="loadAlerts()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;">Refresh</button>
-                        <button class="btn btn-secondary" onclick="exportAlertsCSV()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;" title="Export Full CSV Ledger">📥 CSV</button>
-                        <button class="btn btn-secondary" onclick="exportAlertsPDF()" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;" title="Print Regulatory Audit Report">📄 Report</button>
+                        <button class="btn btn-outline" onclick="loadAlerts()"
+                            style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;">Refresh</button>
+                        <button class="btn btn-secondary" onclick="exportAlertsCSV()"
+                            style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;"
+                            title="Export Full CSV Ledger">📥 CSV</button>
+                        <button class="btn btn-secondary" onclick="exportAlertsPDF()"
+                            style="padding: 0.4rem 0.8rem; font-size: 0.8rem; height: 34px;"
+                            title="Print Regulatory Audit Report">📄 Report</button>
                     </div>
                 </div>
 
                 <!-- Sticky Bulk Operation Bar -->
-                <div id="bulk-action-bar" style="display: none; background: #3d6b99; color: #ffffff; padding: 0.5rem 1rem; border-radius: 6px; align-items: center; justify-content: space-between; margin: 0 1.25rem 0.75rem 1.25rem;">
+                <div id="bulk-action-bar"
+                    style="display: none; background: #3d6b99; color: #ffffff; padding: 0.5rem 1rem; border-radius: 6px; align-items: center; justify-content: space-between; margin: 0 1.25rem 0.75rem 1.25rem;">
                     <div style="font-size: 0.85rem;">
                         <strong id="bulk-selected-count">0</strong> alerts selected for batch operation
                     </div>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        <button onclick="executeBulkResolve('CLOSE_FALSE_POSITIVE')" class="btn" style="background-color: #d97706; color: #fff; padding: 0.25rem 0.6rem; font-size: 0.75rem;">⚡ Batch Dismiss False Positive</button>
-                        <button onclick="executeBulkResolve('CLOSE_SAR')" class="btn" style="background-color: #dc2626; color: #fff; padding: 0.25rem 0.6rem; font-size: 0.75rem;">📑 Batch File SAR</button>
+                        <button onclick="executeBulkResolve('CLOSE_FALSE_POSITIVE')" class="btn"
+                            style="background-color: #d97706; color: #fff; padding: 0.25rem 0.6rem; font-size: 0.75rem;">⚡
+                            Batch Dismiss False Positive</button>
+                        <button onclick="executeBulkResolve('CLOSE_SAR')" class="btn"
+                            style="background-color: #dc2626; color: #fff; padding: 0.25rem 0.6rem; font-size: 0.75rem;">📑
+                            Batch File SAR</button>
                     </div>
                 </div>
 
@@ -168,7 +193,8 @@
                     <table>
                         <thead>
                             <tr>
-                                <th style="width: 32px; text-align: center;"><input type="checkbox" id="select-all-alerts" onclick="toggleSelectAllAlerts(this)"></th>
+                                <th style="width: 32px; text-align: center;"><input type="checkbox"
+                                        id="select-all-alerts" onclick="toggleSelectAllAlerts(this)"></th>
                                 <th>Alert ID</th>
                                 <th>Severity</th>
                                 <th>Risk Score</th>
@@ -184,14 +210,21 @@
                     </table>
                 </div>
                 <!-- Pagination Controls -->
-                <div class="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1.25rem; border-top: 1px solid var(--border-color); font-size: 0.85rem; background-color: var(--card-bg);">
+                <div class="pagination-controls"
+                    style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1.25rem; border-top: 1px solid var(--border-color); font-size: 0.85rem; background-color: var(--card-bg);">
                     <div style="color: var(--text-secondary);">
-                        Showing <span id="pagination-start" style="font-weight: 600; color: var(--text-primary);">0</span> to <span id="pagination-end" style="font-weight: 600; color: var(--text-primary);">0</span> of <span id="pagination-total" style="font-weight: 600; color: var(--text-primary);">0</span> alerts
+                        Showing <span id="pagination-start"
+                            style="font-weight: 600; color: var(--text-primary);">0</span> to <span id="pagination-end"
+                            style="font-weight: 600; color: var(--text-primary);">0</span> of <span
+                            id="pagination-total" style="font-weight: 600; color: var(--text-primary);">0</span> alerts
                     </div>
                     <div style="display: flex; gap: 0.75rem; align-items: center;">
-                        <button class="btn btn-outline" id="prev-page-btn" onclick="prevPage()" style="padding: 0.25rem 0.6rem; font-size: 0.8rem; height: auto;">Previous</button>
-                        <span id="current-page-display" style="font-weight: 600; color: var(--text-primary);">Page 1 of 1</span>
-                        <button class="btn btn-outline" id="next-page-btn" onclick="nextPage()" style="padding: 0.25rem 0.6rem; font-size: 0.8rem; height: auto;">Next</button>
+                        <button class="btn btn-outline" id="prev-page-btn" onclick="prevPage()"
+                            style="padding: 0.25rem 0.6rem; font-size: 0.8rem; height: auto;">Previous</button>
+                        <span id="current-page-display" style="font-weight: 600; color: var(--text-primary);">Page 1 of
+                            1</span>
+                        <button class="btn btn-outline" id="next-page-btn" onclick="nextPage()"
+                            style="padding: 0.25rem 0.6rem; font-size: 0.8rem; height: auto;">Next</button>
                     </div>
                 </div>
                 <div id="inbox-empty" class="empty-state" style="display: none;">
@@ -201,7 +234,8 @@
             </div>
 
             <!-- Case 360-Degree Split Investigation View -->
-            <div id="investigation-split-portal" class="panel-split" style="display: none; border-top: 2px solid var(--border-color); padding-top: 2rem;">
+            <div id="investigation-split-portal" class="panel-split"
+                style="display: none; border-top: 2px solid var(--border-color); padding-top: 2rem;">
                 <!-- Left Column: Entity Profile, XAI, Ledger -->
                 <div style="display: flex; flex-direction: column; gap: 1.5rem;">
                     <!-- Entity Profile Card -->
@@ -222,7 +256,8 @@
                                 </div>
                                 <div class="detail-group">
                                     <span class="detail-label">Risk Tier</span>
-                                    <span class="detail-value" id="profile-tier" style="color: var(--accent-orange); font-weight: bold;">High Risk</span>
+                                    <span class="detail-value" id="profile-tier"
+                                        style="color: var(--accent-orange); font-weight: bold;">High Risk</span>
                                 </div>
                                 <div class="detail-group">
                                     <span class="detail-label">Connected Corporate Entity</span>
@@ -238,7 +273,9 @@
                             <h3 class="card-title">Explainable AI (XAI) Attribution</h3>
                         </div>
                         <div class="card-body">
-                            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;">This model attribution chart shows the risk weight contributions computed for the transaction:</p>
+                            <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;">This
+                                model attribution chart shows the risk weight contributions computed for the
+                                transaction:</p>
                             <div class="shap-list" id="inbox-shap-list">
                                 <!-- SHAP bars will render here -->
                             </div>
@@ -280,17 +317,27 @@
                             </div>
                             <!-- Graph Interaction Toolbar -->
                             <div style="display: flex; gap: 0.35rem; align-items: center;">
-                                <button onclick="zoomVisGraph(1.2)" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Zoom In">+</button>
-                                <button onclick="zoomVisGraph(0.8)" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Zoom Out">-</button>
-                                <button onclick="fitVisGraph()" class="btn btn-secondary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Fit Graph">Fit View</button>
-                                <button onclick="expandSelectedGraphNode()" class="btn btn-primary" style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Expand 2-Hop Network">🔍 Expand</button>
+                                <button onclick="zoomVisGraph(1.2)" class="btn btn-secondary"
+                                    style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Zoom In">+</button>
+                                <button onclick="zoomVisGraph(0.8)" class="btn btn-secondary"
+                                    style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Zoom Out">-</button>
+                                <button onclick="fitVisGraph()" class="btn btn-secondary"
+                                    style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Fit Graph">Fit
+                                    View</button>
+                                <button onclick="expandSelectedGraphNode()" class="btn btn-primary"
+                                    style="padding: 0.25rem 0.5rem; font-size: 0.75rem;" title="Expand 2-Hop Network">🔍
+                                    Expand</button>
                             </div>
                         </div>
-                        <div class="card-body" style="align-items: center; justify-content: center; min-height: 280px; position: relative; padding: 0.75rem;">
+                        <div class="card-body"
+                            style="align-items: center; justify-content: center; min-height: 280px; position: relative; padding: 0.75rem;">
                             <!-- Node Topology Graph via Vis.js Network -->
-                            <div id="vis-graph-container" style="height: 260px; width: 100%; border-radius: 8px; border: 1px solid var(--border-color); background-color: var(--bg-primary);"></div>
+                            <div id="vis-graph-container"
+                                style="height: 260px; width: 100%; border-radius: 8px; border: 1px solid var(--border-color); background-color: var(--bg-primary);">
+                            </div>
                             <!-- Click details box -->
-                            <div id="graph-node-details" style="display: none; background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.8rem; position: absolute; bottom: 1.5rem; left: 1.5rem; right: 1.5rem; box-shadow: var(--shadow-md);">
+                            <div id="graph-node-details"
+                                style="display: none; background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.8rem; position: absolute; bottom: 1.5rem; left: 1.5rem; right: 1.5rem; box-shadow: var(--shadow-md);">
                                 <strong>Node Selected:</strong> <span id="selected-node-label">-</span>
                             </div>
                         </div>
@@ -304,23 +351,34 @@
                         <div class="card-body" style="gap: 1rem;">
                             <div class="form-group">
                                 <label for="inbox-justification">Investigation Justification Note</label>
-                                <textarea id="inbox-justification" rows="3" placeholder="Provide details on source of wealth, transaction rationale, or false positive reason..."></textarea>
+                                <textarea id="inbox-justification" rows="3"
+                                    placeholder="Provide details on source of wealth, transaction rationale, or false positive reason..."></textarea>
                             </div>
                             <div class="btn-group">
-                                <button class="btn btn-danger" onclick="resolveInboxCase('CLOSE_SAR')" style="flex-grow: 1;">File & Escalate SAR (XML)</button>
-                                <button class="btn btn-outline" onclick="resolveInboxCase('CLOSE_FALSE_POSITIVE')">Dismiss False Positive</button>
+                                <button class="btn btn-danger" onclick="resolveInboxCase('CLOSE_SAR')"
+                                    style="flex-grow: 1;">File & Escalate SAR (XML)</button>
+                                <button class="btn btn-outline"
+                                    onclick="resolveInboxCase('CLOSE_FALSE_POSITIVE')">Dismiss False Positive</button>
                             </div>
 
                             <!-- Regulatory FinCEN XML & Electronic E-Filing output details -->
-                            <div id="inbox-sar-display" style="display: none; border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 0.5rem;">
-                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+                            <div id="inbox-sar-display"
+                                style="display: none; border-top: 1px solid var(--border-color); padding-top: 1rem; margin-top: 0.5rem;">
+                                <div
+                                    style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
                                     <span class="detail-label">Regulatory FinCEN SAR Payload</span>
-                                    <button onclick="submitSARToFinCEN()" class="btn btn-primary" style="padding: 0.25rem 0.6rem; font-size: 0.75rem; background-color: var(--accent-red); border: none;">⚡ Transmit to FinCEN Gateway</button>
+                                    <button onclick="submitSARToFinCEN()" class="btn btn-primary"
+                                        style="padding: 0.25rem 0.6rem; font-size: 0.75rem; background-color: var(--accent-red); border: none;">⚡
+                                        Transmit to FinCEN Gateway</button>
                                 </div>
-                                <pre id="inbox-sar-xml" style="margin-top: 0.5rem; font-size: 0.75rem; max-height: 140px;"></pre>
-                                <div id="fincen-receipt-box" style="display: none; margin-top: 0.75rem; padding: 0.75rem; background: rgba(16,185,129,0.1); border: 1px solid var(--accent-green); border-radius: 6px; font-size: 0.8rem;">
+                                <pre id="inbox-sar-xml"
+                                    style="margin-top: 0.5rem; font-size: 0.75rem; max-height: 140px;"></pre>
+                                <div id="fincen-receipt-box"
+                                    style="display: none; margin-top: 0.75rem; padding: 0.75rem; background: rgba(16,185,129,0.1); border: 1px solid var(--accent-green); border-radius: 6px; font-size: 0.8rem;">
                                     <strong style="color: var(--accent-green);">FinCEN Electronic Receipt:</strong><br>
-                                    Tracking ID: <code id="fincen-tracking-id-display" style="font-weight: bold;">-</code> | Status: <span class="badge badge-green" id="fincen-status-display">ACKNOWLEDGED</span>
+                                    Tracking ID: <code id="fincen-tracking-id-display"
+                                        style="font-weight: bold;">-</code> | Status: <span class="badge badge-green"
+                                        id="fincen-status-display">ACKNOWLEDGED</span>
                                 </div>
                             </div>
                         </div>
@@ -332,7 +390,8 @@
             <div id="investigation-empty-state" class="empty-state" style="padding: 4rem 2rem;">
                 <div class="empty-icon">🕵️‍♂️</div>
                 <h3>Triage Investigation Workbench</h3>
-                <p>Select any flagged alert from the inbox list above to open the visual graph, KYC profile, and attributions.</p>
+                <p>Select any flagged alert from the inbox list above to open the visual graph, KYC profile, and
+                    attributions.</p>
             </div>
         </div>
 
@@ -348,23 +407,29 @@
                             <span class="badge badge-orange">Dow Jones Watchlist API</span>
                         </div>
                     </div>
-                    <button onclick="syncGlobalWatchlists()" class="btn btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;">🔄 Sync Watchlists</button>
+                    <button onclick="syncGlobalWatchlists()" class="btn btn-secondary"
+                        style="padding: 0.4rem 0.8rem; font-size: 0.8rem;">🔄 Sync Watchlists</button>
                 </div>
                 <div class="card-body" style="padding: 2.5rem;">
                     <form id="sandbox-screening-form" onsubmit="runSandboxScreening(event)">
-                        <div style="display: grid; grid-template-columns: 2fr 1fr auto; gap: 1.5rem; align-items: flex-end;">
+                        <div
+                            style="display: grid; grid-template-columns: 2fr 1fr auto; gap: 1.5rem; align-items: flex-end;">
                             <div class="form-group">
                                 <label for="sandbox-screen-name">Full Identity Name</label>
-                                <input type="text" id="sandbox-screen-name" placeholder="e.g. Wladimir Smirnow" required>
+                                <input type="text" id="sandbox-screen-name" placeholder="e.g. Wladimir Smirnow"
+                                    required>
                             </div>
                             <div class="form-group">
                                 <label for="sandbox-screen-threshold">Match Similarity Limit</label>
                                 <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                    <input type="range" id="sandbox-screen-threshold" min="70" max="95" value="80" oninput="document.getElementById('threshold-val').innerText = this.value + '%'">
-                                    <span id="threshold-val" style="font-size: 0.9rem; font-weight: 600; min-width: 35px;">80%</span>
+                                    <input type="range" id="sandbox-screen-threshold" min="70" max="95" value="80"
+                                        oninput="document.getElementById('threshold-val').innerText = this.value + '%'">
+                                    <span id="threshold-val"
+                                        style="font-size: 0.9rem; font-weight: 600; min-width: 35px;">80%</span>
                                 </div>
                             </div>
-                            <button type="submit" class="btn" style="height: 43px; padding: 0 2rem;">Query Lists</button>
+                            <button type="submit" class="btn" style="height: 43px; padding: 0 2rem;">Query
+                                Lists</button>
                         </div>
                     </form>
                 </div>
@@ -392,16 +457,21 @@
                                 </tbody>
                             </table>
                         </div>
-                        <div style="display: flex; flex-direction: column; gap: 1rem; background-color: var(--bg-primary); padding: 1.25rem; border-radius: 8px; border: 1px solid var(--border-color);">
+                        <div
+                            style="display: flex; flex-direction: column; gap: 1rem; background-color: var(--bg-primary); padding: 1.25rem; border-radius: 8px; border: 1px solid var(--border-color);">
                             <span class="detail-label">Compliance Verdict Summary</span>
-                            <h3 id="sandbox-verdict-verdict" style="font-weight: bold; font-size: 1.1rem; color: var(--accent-red);">BLOCKED</h3>
-                            <p style="font-size: 0.85rem; line-height: 1.4; color: var(--text-secondary);">The phonetically evaluated lookup matched profiles in active sanctions lists. If matching an active transaction partner, compliance holds must be established immediately.</p>
+                            <h3 id="sandbox-verdict-verdict"
+                                style="font-weight: bold; font-size: 1.1rem; color: var(--accent-red);">BLOCKED</h3>
+                            <p style="font-size: 0.85rem; line-height: 1.4; color: var(--text-secondary);">The
+                                phonetically evaluated lookup matched profiles in active sanctions lists. If matching an
+                                active transaction partner, compliance holds must be established immediately.</p>
                         </div>
                     </div>
                 </div>
                 <div id="sandbox-unselected" class="empty-state" style="margin: 0; border: none; padding: 4rem 2rem;">
                     <div class="empty-icon">🔎</div>
-                    <p>Enter an individual or entity name above to perform phonetic searches across global sanctions database.</p>
+                    <p>Enter an individual or entity name above to perform phonetic searches across global sanctions
+                        database.</p>
                 </div>
             </div>
         </div>
@@ -412,9 +482,12 @@
                 <div class="card-header">
                     <div>
                         <h2 class="card-title">Regulatory STR Batch Filings Console</h2>
-                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.2rem;">Automated compilation and FinCEN/FIU batch submission management</p>
+                        <p style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.2rem;">Automated
+                            compilation and FinCEN/FIU batch submission management</p>
                     </div>
-                    <button onclick="generateSTRBatchPackage()" class="btn btn-primary" style="background-color: var(--accent-blue); padding: 0.5rem 1.25rem;">📦 Compile New STR Batch Package</button>
+                    <button onclick="generateSTRBatchPackage()" class="btn btn-primary"
+                        style="background-color: var(--accent-blue); padding: 0.5rem 1.25rem;">📦 Compile New STR Batch
+                        Package</button>
                 </div>
                 <div class="table-container">
                     <table>
@@ -436,7 +509,8 @@
                 </div>
                 <div id="str-batch-empty" class="empty-state" style="display: none;">
                     <div class="empty-icon">📦</div>
-                    <p>No regulatory STR batch packages compiled yet. Click above to aggregate pending closed SAR reports.</p>
+                    <p>No regulatory STR batch packages compiled yet. Click above to aggregate pending closed SAR
+                        reports.</p>
                 </div>
             </div>
         </div>
@@ -444,7 +518,9 @@
         <!-- System Audit Log Console -->
         <div class="card">
             <div class="card-header" style="padding: 0.75rem 1.25rem;">
-                <h3 class="card-title" style="font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-secondary);">Audit System Log Stream</h3>
+                <h3 class="card-title"
+                    style="font-size: 0.85rem; font-weight: 600; text-transform: uppercase; color: var(--text-secondary);">
+                    Audit System Log Stream</h3>
             </div>
             <div class="live-log-feed" id="log-feed">
                 <!-- Log entries populate here -->
@@ -453,44 +529,68 @@
     </div>
 
     <!-- Keyboard Shortcuts Cheat Sheet Modal -->
-    <div id="shortcuts-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
-        <div style="background-color: var(--card-bg); color: var(--text-primary); width: 100%; max-width: 500px; border-radius: 12px; border: 1px solid var(--border-color); padding: 1.5rem; box-shadow: var(--shadow-md);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.75rem;">
+    <div id="shortcuts-modal"
+        style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+        <div
+            style="background-color: var(--card-bg); color: var(--text-primary); width: 100%; max-width: 500px; border-radius: 12px; border: 1px solid var(--border-color); padding: 1.5rem; box-shadow: var(--shadow-md);">
+            <div
+                style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.75rem;">
                 <h3 style="font-size: 1.1rem; font-weight: 700;">⌨️ Power Analyst Keyboard Shortcuts</h3>
-                <button onclick="toggleShortcutsModal()" class="btn btn-outline" style="padding: 0.2rem 0.5rem; font-size: 0.8rem;">Esc</button>
+                <button onclick="toggleShortcutsModal()" class="btn btn-outline"
+                    style="padding: 0.2rem 0.5rem; font-size: 0.8rem;">Esc</button>
             </div>
             <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.85rem;">
-                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
                     <span>Navigate Cases Queue Down / Up</span>
-                    <div><kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">J</kbd> / <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">K</kbd> or <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">↓</kbd> / <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">↑</kbd></div>
+                    <div><kbd
+                            style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">J</kbd>
+                        / <kbd
+                            style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">K</kbd>
+                        or <kbd
+                            style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">↓</kbd>
+                        / <kbd
+                            style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">↑</kbd>
+                    </div>
                 </div>
-                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
                     <span>Quick Dismiss False Positive</span>
-                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">F</kbd>
+                    <kbd
+                        style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">F</kbd>
                 </div>
-                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
                     <span>Quick File Regulatory SAR</span>
-                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">S</kbd>
+                    <kbd
+                        style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">S</kbd>
                 </div>
-                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
                     <span>Focus Justification Notes Box</span>
-                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">Enter</kbd>
+                    <kbd
+                        style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">Enter</kbd>
                 </div>
-                <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
+                <div
+                    style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0.5rem; border-bottom: 1px dashed var(--border-color);">
                     <span>Close Investigation Portal / Deselect</span>
-                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">Esc</kbd>
+                    <kbd
+                        style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">Esc</kbd>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span>Toggle Keyboard Shortcuts Help</span>
-                    <kbd style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">?</kbd>
+                    <kbd
+                        style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px; font-weight: bold;">?</kbd>
                 </div>
             </div>
             <div style="margin-top: 1.25rem; text-align: right;">
-                <button onclick="toggleShortcutsModal()" class="btn btn-primary" style="padding: 0.4rem 1rem; font-size: 0.85rem;">Close</button>
+                <button onclick="toggleShortcutsModal()" class="btn btn-primary"
+                    style="padding: 0.4rem 1rem; font-size: 0.85rem;">Close</button>
             </div>
         </div>
     </div>
 
     <script src="/static/app.js"></script>
 </body>
+
 </html>

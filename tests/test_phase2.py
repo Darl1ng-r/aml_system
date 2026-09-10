@@ -36,7 +36,7 @@ async def test_refresh_token_rotation():
 
     with patch("database.redis_db.get_async_redis_client", return_value=mock_redis):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-CSRF-Protection": "1"}) as ac:
             # Step 1: First refresh exchange
             resp1 = await ac.post("/api/v1/auth/refresh", json={"refresh_token": initial_refresh_token})
             assert resp1.status_code == 200, f"Refresh failed: {resp1.text}"
@@ -79,7 +79,7 @@ async def test_auth_cookie_lifecycle():
     with patch("database.postgres.get_async_db_conn", return_value=mock_ctx), \
          patch("database.redis_db.get_async_redis_client", return_value=mock_redis):
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-CSRF-Protection": "1"}) as ac:
             # Login
             login_resp = await ac.post(
                 "/api/v1/auth/login",

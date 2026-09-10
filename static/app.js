@@ -1,3 +1,17 @@
+// Ensure all API calls seamlessly include HttpOnly session cookies and Anti-CSRF protection
+const _nativeFetch = window.fetch;
+window.fetch = function (url, options = {}) {
+    options = options || {};
+    options.credentials = options.credentials || 'include';
+    options.headers = options.headers || {};
+    if (options.headers instanceof Headers) {
+        options.headers.set('X-CSRF-Protection', '1');
+    } else {
+        options.headers['X-CSRF-Protection'] = '1';
+    }
+    return _nativeFetch(url, options);
+};
+
 const BASE_URL = window.location.origin;
 let mockMode = false;
 let activeAlertId = null;
@@ -228,10 +242,36 @@ function closeInvestigationPortal() {
     document.getElementById('investigation-split-portal').style.display = 'none';
 }
 
-function initAuth() {
-    const token = localStorage.getItem('jwt_token');
+async function initAuth() {
+    const sessionActive = localStorage.getItem('auth_session_active') === 'true' || localStorage.getItem('jwt_token');
+    if (!sessionActive) {
+        window.location.href = '/login';
+        return;
+    }
+
+    // Attempt to verify session via /api/v1/auth/me using HttpOnly cookie or bearer token
+    try {
+        const res = await fetch(`${BASE_URL}/api/v1/auth/me`, {
+            headers: getAuthHeaders()
+        });
+        if (res.ok) {
+            const user = await res.json();
+            localStorage.setItem('auth_session_active', 'true');
+            localStorage.setItem('username', user.username);
+            localStorage.setItem('role', user.role);
+            document.getElementById('user-welcome-text').innerText = `Welcome, ${user.username.replace('_', ' ')}`;
+            document.getElementById('user-welcome-text').style.display = 'inline';
+            document.getElementById('logout-button').style.display = 'inline';
+            checkServerStatus();
+            loadAlerts();
+            return;
+        }
+    } catch (e) {
+        console.warn("Could not fetch session profile:", e);
+    }
+
     const username = localStorage.getItem('username');
-    if (token && username) {
+    if (username) {
         document.getElementById('user-welcome-text').innerText = `Welcome, ${username.replace('_', ' ')}`;
         document.getElementById('user-welcome-text').style.display = 'inline';
         document.getElementById('logout-button').style.display = 'inline';
@@ -242,7 +282,16 @@ function initAuth() {
     }
 }
 
-function logout() {
+async function logout() {
+    try {
+        await fetch(`${BASE_URL}/api/v1/auth/logout`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }
+        });
+    } catch (e) {
+        console.warn("Logout request failed:", e);
+    }
+    localStorage.removeItem('auth_session_active');
     localStorage.removeItem('jwt_token');
     localStorage.removeItem('username');
     localStorage.removeItem('role');
@@ -351,14 +400,14 @@ function log(msg, type = 'info') {
     if (!feed) return;
     const entry = document.createElement('div');
     entry.className = `log-entry ${type}`;
-    
+
     const timeSpan = document.createElement('span');
     timeSpan.className = 'log-time';
     timeSpan.innerText = new Date().toLocaleTimeString();
-    
+
     const textSpan = document.createElement('span');
     textSpan.innerText = msg;
-    
+
     entry.appendChild(timeSpan);
     entry.appendChild(textSpan);
     feed.appendChild(entry);
@@ -368,7 +417,7 @@ function log(msg, type = 'info') {
 function switchTab(tabId, btn) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-    
+
     document.getElementById(tabId).classList.add('active');
     btn.classList.add('active');
     log(`Switched to tab views: ${tabId.replace('-tab', '')}`, 'info');
@@ -541,18 +590,18 @@ async function loadAlerts() {
         const response = await fetch(`${BASE_URL}/api/v1/alerts?page=${currentPage}&limit=${pageSize}`, {
             headers: getAuthHeaders()
         });
-        
+
         if (response.status === 401) {
             logout();
             return;
         }
-        
+
         if (!response.ok) throw new Error();
         const data = await response.json();
-        
+
         const xTotalCount = response.headers.get('X-Total-Count');
         totalAlertsCount = xTotalCount ? parseInt(xTotalCount, 10) : data.length;
-        
+
         activeAlerts = data.map((alert, idx) => {
             const seed = mockAlerts[idx % mockAlerts.length];
             return {
@@ -566,7 +615,7 @@ async function loadAlerts() {
                 explainability: alert.explainability
             };
         });
-        
+
         renderInbox(activeAlerts);
         updatePaginationControls(totalAlertsCount);
         log(`Synced telemetry page ${currentPage} from postgres connection pool.`, 'success');
@@ -583,15 +632,15 @@ function updatePaginationControls(totalCount) {
     if (currentPage > totalPages) {
         currentPage = totalPages;
     }
-    
+
     const start = totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
     const end = Math.min(currentPage * pageSize, totalCount);
-    
+
     document.getElementById('pagination-start').innerText = start;
     document.getElementById('pagination-end').innerText = end;
     document.getElementById('pagination-total').innerText = totalCount;
     document.getElementById('current-page-display').innerText = `Page ${currentPage} of ${totalPages}`;
-    
+
     document.getElementById('prev-page-btn').disabled = (currentPage === 1);
     document.getElementById('next-page-btn').disabled = (currentPage === totalPages);
 }
@@ -639,7 +688,7 @@ function renderInbox(alertsList) {
         const ruleBadge = `<strong>${alert.rule_name.replace(/_/g, ' ')}</strong>`;
         const senderBrief = alert.transaction.sender.substring(0, 10) + "...";
         const receiverBrief = alert.transaction.receiver.substring(0, 10) + "...";
-        
+
         tr.innerHTML = `
             <td style="text-align: center;"><input type="checkbox" class="alert-row-checkbox" value="${alert.alert_id}" onclick="event.stopPropagation(); updateBulkActionBar();"></td>
             <td>${idStr}</td>
@@ -779,15 +828,15 @@ async function exportAlertsPDF() {
 function filterInboxTable() {
     const searchVal = document.getElementById('inbox-search').value.toLowerCase();
     const severityVal = document.getElementById('inbox-filter-severity').value;
-    
+
     const filtered = activeAlerts.filter(alert => {
-        const matchesSearch = alert.transaction.sender.toLowerCase().includes(searchVal) || 
-                              alert.transaction.receiver.toLowerCase().includes(searchVal) ||
-                              alert.alert_id.toLowerCase().includes(searchVal);
+        const matchesSearch = alert.transaction.sender.toLowerCase().includes(searchVal) ||
+            alert.transaction.receiver.toLowerCase().includes(searchVal) ||
+            alert.alert_id.toLowerCase().includes(searchVal);
         const matchesSeverity = severityVal === 'ALL' || alert.threat_level === severityVal;
         return matchesSearch && matchesSeverity;
     });
-    
+
     renderInbox(filtered);
 }
 
@@ -807,7 +856,7 @@ function selectCase(id) {
     document.getElementById('profile-nationality').innerText = alert.entity.nationality;
     document.getElementById('profile-tier').innerText = alert.entity.tier;
     document.getElementById('profile-connected').innerText = alert.entity.connected;
-    
+
     const kycStatus = document.getElementById('profile-kyc-status');
     kycStatus.innerText = alert.entity.kyc;
     kycStatus.className = alert.entity.kyc.includes('Verified') ? 'badge badge-green' : 'badge badge-orange';
@@ -823,10 +872,10 @@ function selectCase(id) {
             const percentage = Math.round(absoluteScore * 100);
             const shapItem = document.createElement('div');
             shapItem.className = 'shap-item';
-            
+
             const barColor = isPositive ? 'var(--accent-orange)' : '#10b981';
             const signText = isPositive ? '+' : '-';
-            
+
             shapItem.innerHTML = `
                 <div class="shap-header">
                     <span style="text-transform: capitalize;">${key.replace(/_/g, ' ')} Risk</span>
@@ -1051,7 +1100,7 @@ function showNodeDetails(node) {
     const detailsDiv = document.getElementById('graph-node-details');
     const labelSpan = document.getElementById('selected-node-label');
     detailsDiv.style.display = 'block';
-    
+
     let detailText = `<strong>${node.type} Node:</strong> ${node.label}`;
     if (node.type === 'Account') {
         const risk = node.properties.risk_score ? `${Math.round(node.properties.risk_score * 100)}%` : '0%';
@@ -1061,7 +1110,7 @@ function showNodeDetails(node) {
     } else if (node.type === 'Person') {
         detailText += ` (Tax ID: ${node.properties.tax_id || 'N/A'})`;
     }
-    
+
     labelSpan.innerHTML = detailText;
     log(`Inspected graph node: ${node.label}`, 'info');
 }
@@ -1122,7 +1171,7 @@ async function resolveInboxCase(action) {
         const alertIndex = activeAlerts.findIndex(a => a.alert_id === activeAlertId);
         if (alertIndex !== -1) {
             activeAlerts[alertIndex].status = action === 'CLOSE_SAR' ? 'CLOSED_SAR' : 'CLOSED_FALSE_POSITIVE';
-            
+
             if (action === 'CLOSE_SAR') {
                 const xml = generateSARXML(activeAlerts[alertIndex], justification);
                 document.getElementById('inbox-sar-display').style.display = 'block';
@@ -1146,7 +1195,7 @@ async function resolveInboxCase(action) {
     try {
         const response = await fetch(`${BASE_URL}/api/v1/alerts/${activeAlertId}/action`, {
             method: 'POST',
-            headers: { 
+            headers: {
                 'Content-Type': 'application/json',
                 ...getAuthHeaders()
             },
@@ -1293,7 +1342,7 @@ async function runSandboxScreening(event) {
     try {
         const response = await fetch(`${BASE_URL}/api/v1/screening/search`, {
             method: 'POST',
-            headers: { 
+            headers: {
                 'Content-Type': 'application/json',
                 ...getAuthHeaders()
             },
@@ -1409,7 +1458,7 @@ function renderSTRBatches(batches) {
         tr.innerHTML = `
             <td><code>${b.batch_id}</code></td>
             <td><strong>${b.record_count} Records</strong></td>
-            <td><strong>$${b.total_amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</strong></td>
+            <td><strong>$${b.total_amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong></td>
             <td><code>${shortChecksum}</code></td>
             <td><span class="badge ${statusBadge}">${b.status}</span></td>
             <td>${new Date(b.created_at).toLocaleString()}</td>

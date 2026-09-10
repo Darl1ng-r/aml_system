@@ -1,9 +1,12 @@
+import logging
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from config import settings
 from pydantic import BaseModel, Field
 import jwt
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field, field_validator
 from observability.sanitizer import sanitize_text
@@ -12,9 +15,14 @@ from services.rate_limiter import RateLimiter
 from services.auth import (
     hash_password,
     verify_password,
+    verify_password_and_needs_rehash,
     create_access_token,
     create_refresh_token,
     get_current_user,
+    check_account_lockout,
+    record_failed_login,
+    reset_failed_logins,
+    LOCKOUT_THRESHOLD,
 )
 from observability.logging import log_audit_event
 
@@ -62,6 +70,8 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     _rate_limit=Depends(RateLimiter(limit=5, window=600))
 ):
+    await check_account_lockout(form_data.username)
+
     email = form_data.username
     if "@" not in email:
         email = f"{email}@aml.com"
@@ -92,6 +102,7 @@ async def login(
             supabase_user = None
 
     if supabase_user:
+        await reset_failed_logins(form_data.username)
         # Supabase authentication succeeded
         data = supabase_user
         access_token = data.get("access_token", "")
@@ -151,7 +162,7 @@ async def login(
     async with get_async_db_conn() as conn:
         local_user = await conn.fetchrow(
             """
-            SELECT id, role, password_hash, tenant_id, mfa_enabled 
+            SELECT id, role, password_hash, tenant_id, mfa_enabled, token_version 
             FROM users 
             WHERE username = $1 AND (is_active IS NULL OR is_active = true);
             """,
@@ -169,13 +180,20 @@ async def login(
                 resource_id="",
                 details={"username": form_data.username, "reason": "User not found or no password hash"}
             )
+            attempts = await record_failed_login(form_data.username)
+            if attempts >= LOCKOUT_THRESHOLD:
+                raise HTTPException(
+                    status_code=status.HTTP_423_LOCKED,
+                    detail="Account temporarily locked due to excessive failed attempts. Try again in 1800 seconds."
+                )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect username or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        if not verify_password(form_data.password, local_user["password_hash"]):
+        pw_valid, needs_rehash = verify_password_and_needs_rehash(form_data.password, local_user["password_hash"])
+        if not pw_valid:
             log_audit_event(
                 event_type="LOGIN_FAILED",
                 actor_id=str(local_user["id"]),
@@ -186,16 +204,35 @@ async def login(
                 tenant_id=str(local_user["tenant_id"]) if local_user["tenant_id"] else "",
                 details={"username": form_data.username, "reason": "Password hash mismatch"}
             )
+            attempts = await record_failed_login(form_data.username, tenant_id=str(local_user["tenant_id"]) if local_user["tenant_id"] else None)
+            if attempts >= LOCKOUT_THRESHOLD:
+                raise HTTPException(
+                    status_code=status.HTTP_423_LOCKED,
+                    detail="Account temporarily locked due to excessive failed attempts. Try again in 1800 seconds."
+                )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect username or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        # Automatic transparent re-hashing from legacy PBKDF2 to modern Argon2id
+        if needs_rehash:
+            try:
+                new_argon2_hash = hash_password(form_data.password)
+                await conn.execute(
+                    "UPDATE users SET password_hash = $1 WHERE id = $2;",
+                    new_argon2_hash, local_user["id"]
+                )
+                logger.info(f"Transparently upgraded password hash to Argon2id for user {form_data.username}")
+            except Exception as rehash_err:
+                logger.warning(f"Failed to in-place upgrade password hash: {rehash_err}")
+
         local_user_id = str(local_user["id"])
         local_role = local_user["role"] or "ANALYST"
         tenant_id = str(local_user["tenant_id"]) if local_user["tenant_id"] else "00000000-0000-0000-0000-000000000001"
         is_mfa_enabled = bool(local_user["mfa_enabled"]) if "mfa_enabled" in local_user.keys() else False
+        token_version = local_user["token_version"] if "token_version" in local_user.keys() and local_user["token_version"] else 1
 
     # Multi-Factor Authentication Challenge
     if is_mfa_enabled:
@@ -225,14 +262,18 @@ async def login(
         "role": local_role,
         "username": form_data.username,
         "email": email,
-        "tenant_id": tenant_id
+        "tenant_id": tenant_id,
+        "token_version": token_version
     })
     refresh_token = create_refresh_token({
         "sub": local_user_id,
         "role": local_role,
         "username": form_data.username,
-        "tenant_id": tenant_id
+        "tenant_id": tenant_id,
+        "token_version": token_version
     })
+
+    await reset_failed_logins(form_data.username)
 
     log_audit_event(
         event_type="USER_LOGIN",
@@ -395,9 +436,10 @@ async def signup(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"User registration error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
-            detail=f"Registration failed: {str(e)}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already registered or invalid registration data"
         )
 
 
@@ -486,7 +528,8 @@ async def refresh_access_token(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Token refresh failed: {str(e)}")
+        logger.error(f"Token refresh failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Token refresh failed due to an internal error.")
 
 
 @router.post("/logout", summary="Revoke refresh token and clear cookies")
@@ -522,6 +565,36 @@ async def logout(
 
     clear_auth_cookies(response)
     return {"detail": "Logged out successfully. Refresh token revoked."}
+
+
+@router.get("/me", summary="Get current authenticated user identity")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """
+    Returns the currently authenticated user session identity.
+    Resolves seamlessly via Authorization Bearer header or HttpOnly access_token cookie.
+    """
+    return {
+        "id": current_user.get("id"),
+        "username": current_user.get("username"),
+        "role": current_user.get("role"),
+        "email": current_user.get("email"),
+        "tenant_id": current_user.get("tenant_id")
+    }
+
+
+@router.post("/revoke-sessions", summary="Revoke all active sessions for current user")
+async def revoke_sessions(current_user: dict = Depends(get_current_user)):
+    """
+    Increments token_version for the authenticated user, immediately
+    invalidating all active access tokens and refresh tokens across all devices.
+    """
+    from services.auth import revoke_user_sessions
+    user_id = current_user.get("id")
+    new_ver = await revoke_user_sessions(user_id)
+    return {
+        "detail": "All active sessions revoked successfully. Please log in again.",
+        "token_version": new_ver
+    }
 
 
 # ── Multi-Factor Authentication (MFA / TOTP) Endpoints ─────────────────────────
@@ -663,7 +736,12 @@ async def mfa_verify(response: Response, body: MFAVerifyRequest):
         verified = False
 
         if len(code) == 6 and code.isdigit():
+            replay_key = f"mfa:totp_consumed:{user_id}:{code}"
+            if await redis.get(replay_key):
+                raise HTTPException(status_code=401, detail="Invalid or already used authenticator code.")
             verified = verify_totp_code(secret, code)
+            if verified:
+                await redis.setex(replay_key, 90, "1")
         elif "-" in code:
             consumed, remaining_hashes = verify_and_consume_recovery_code(code, recovery_hashes)
             if consumed:

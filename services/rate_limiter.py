@@ -17,7 +17,9 @@ class RateLimiter:
             if redis is None:
                 return
 
-            client_ip = request.client.host if request.client else "unknown"
+            from services.trusted_proxy import get_trusted_client_ip
+            client_ip = getattr(request.state, "client_ip", None) or get_trusted_client_ip(request)
+
             key = f"rate_limit:{request.url.path}:{client_ip}"
             
             now_ms = time.time() * 1000

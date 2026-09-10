@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from database.postgres import get_async_db_conn
@@ -5,6 +6,8 @@ from database.neo4j_db import get_async_neo4j_driver
 from database.elasticsearch_db import get_async_elasticsearch_client
 from routers.screening import perform_sanctions_search
 from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/onboard", tags=["Onboarding"])
 
@@ -84,10 +87,13 @@ async def onboard_individual(payload: IndividualOnboard, current_user: dict = De
                 "status": "APPROVED" if risk_score < 0.8 else "HELD_FOR_REVIEW",
                 "risk_score": risk_score
             }
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Onboarding failed: {e}", exc_info=True)
         if "unique constraint" in str(e).lower():
             raise HTTPException(status_code=400, detail="Account number already exists")
-        raise HTTPException(status_code=500, detail=f"Onboarding failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Onboarding failed due to an internal error.")
 
 @router.post("/corporate")
 async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_async_neo4j_driver), current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))):
@@ -110,10 +116,13 @@ async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_
                 """,
                 authorized_tenant_id, payload.account_number, payload.swift_bic, payload.company_name, 0.15
             )
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"PostgreSQL corporate onboarding failed: {e}", exc_info=True)
         if "unique constraint" in str(e).lower():
             raise HTTPException(status_code=400, detail="Account number already exists")
-        raise HTTPException(status_code=500, detail=f"PostgreSQL corporate onboarding failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Corporate onboarding database error.")
 
     # Step 2: Save corporate structures & UBO tracing to Neo4j
     try:
@@ -165,6 +174,8 @@ async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_
             "status": "APPROVED",
             "ubo_count": len(payload.ubos)
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        # Rollback or log error
-        raise HTTPException(status_code=500, detail=f"Neo4j corporate onboarding failed: {str(e)}")
+        logger.error(f"Neo4j corporate onboarding failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Corporate graph registration failed due to an internal error.")

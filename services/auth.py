@@ -2,45 +2,142 @@ import hashlib
 import hmac
 import secrets
 import jwt
+import logging
 from datetime import datetime, timedelta, timezone
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from config import settings
 from database.postgres import get_async_db_conn
+
+logger = logging.getLogger(__name__)
 
 SECRET_KEY = settings.jwt_secret_key
 ALGORITHM = settings.jwt_algorithm
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login", auto_error=False)
+
+# ── Account Lockout & Brute-Force Shield Configuration ────────────────────────
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_WINDOW_SECONDS = 1800       # 30 minutes rolling window
+LOCKOUT_DURATION_SECONDS = 1800     # 30 minutes lockout duration
+
+async def check_account_lockout(username: str) -> None:
+    """Checks if a user account is temporarily locked out due to excessive failed logins."""
+    try:
+        from database.redis_db import get_async_redis_client
+        redis = await get_async_redis_client()
+        if redis is None:
+            return
+        is_locked = await redis.get(f"failed_logins:lockout:{username}")
+        if is_locked:
+            ttl = await redis.ttl(f"failed_logins:lockout:{username}")
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=f"Account temporarily locked due to excessive failed attempts. Try again in {max(1, ttl)} seconds."
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to check account lockout in Redis: {e}")
+
+async def record_failed_login(username: str, tenant_id: str | None = None) -> int:
+    """Records a failed login attempt; locks account if threshold is reached."""
+    try:
+        from database.redis_db import get_async_redis_client
+        from observability.logging import log_audit_event
+        redis = await get_async_redis_client()
+        if redis is None:
+            return 1
+        attempts_key = f"failed_logins:{username}"
+        attempts = await redis.incr(attempts_key)
+        if attempts == 1:
+            await redis.expire(attempts_key, LOCKOUT_WINDOW_SECONDS)
+
+        if attempts >= LOCKOUT_THRESHOLD:
+            lockout_key = f"failed_logins:lockout:{username}"
+            await redis.setex(lockout_key, LOCKOUT_DURATION_SECONDS, "locked")
+            log_audit_event(
+                event_type="SECURITY_ALERT",
+                actor_id=username,
+                actor_role="UNKNOWN",
+                action="ACCOUNT_LOCKED",
+                resource_type="USER",
+                resource_id=username,
+                tenant_id=tenant_id or "00000000-0000-0000-0000-000000000001",
+                details={
+                    "username": username,
+                    "failed_attempts": attempts,
+                    "lockout_duration_seconds": LOCKOUT_DURATION_SECONDS
+                }
+            )
+        return attempts
+    except Exception as e:
+        logger.warning(f"Failed to record failed login in Redis: {e}")
+        return 1
+
+async def reset_failed_logins(username: str) -> None:
+    """Resets failed attempt counters on successful login."""
+    try:
+        from database.redis_db import get_async_redis_client
+        redis = await get_async_redis_client()
+        if redis is None:
+            return
+        await redis.delete(f"failed_logins:{username}", f"failed_logins:lockout:{username}")
+    except Exception as e:
+        logger.warning(f"Failed to reset failed login counters in Redis: {e}")
+
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
+
+_argon2_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
 
 def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    dk = hashlib.pbkdf2_hmac(
-        'sha256',
-        password.encode('utf-8'),
-        salt.encode('utf-8'),
-        600000
-    )
-    return f"pbkdf2_sha256$600000${salt}${dk.hex()}"
+    """Hashes a password using modern Argon2id with RFC 9106 recommended parameters."""
+    return _argon2_hasher.hash(password)
+
+def verify_password_and_needs_rehash(plain_password: str, hashed_password: str) -> tuple[bool, bool]:
+    """
+    Verifies plain password against stored hash.
+    Supports both Argon2id ($argon2id$) and legacy PBKDF2 (pbkdf2_sha256$).
+    Returns (is_valid, needs_rehash).
+    """
+    if not hashed_password:
+        return False, False
+        
+    if hashed_password.startswith("$argon2"):
+        try:
+            is_valid = _argon2_hasher.verify(hashed_password, plain_password)
+            needs_rehash = _argon2_hasher.check_needs_rehash(hashed_password)
+            return True, needs_rehash
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False, False
+        except Exception:
+            return False, False
+    elif hashed_password.startswith("pbkdf2_sha256$"):
+        try:
+            parts = hashed_password.split("$")
+            if len(parts) != 4:
+                return False, False
+            iterations = int(parts[1])
+            salt = parts[2]
+            stored_hash = parts[3]
+            dk = hashlib.pbkdf2_hmac(
+                'sha256',
+                plain_password.encode('utf-8'),
+                salt.encode('utf-8'),
+                iterations
+            )
+            is_valid = hmac.compare_digest(dk.hex(), stored_hash)
+            # Legacy PBKDF2 matched; trigger automatic upgrade to Argon2id!
+            return is_valid, is_valid
+        except Exception:
+            return False, False
+    return False, False
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    try:
-        parts = hashed_password.split("$")
-        if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
-            return False
-        iterations = int(parts[1])
-        salt = parts[2]
-        stored_hash = parts[3]
-        dk = hashlib.pbkdf2_hmac(
-            'sha256',
-            plain_password.encode('utf-8'),
-            salt.encode('utf-8'),
-            iterations
-        )
-        return hmac.compare_digest(dk.hex(), stored_hash)
-    except Exception:
-        return False
+    is_valid, _ = verify_password_and_needs_rehash(plain_password, hashed_password)
+    return is_valid
 
 from services.secrets_manager import get_jwt_signing_key, decode_jwt_with_rotation
 
@@ -48,12 +145,16 @@ from services.secrets_manager import get_jwt_signing_key, decode_jwt_with_rotati
 _synced_users: set[str] = set()
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
-    """Issues a short-lived access token (default 30 min) signed with the active primary key."""
+    """Issues a short-lived access token (default 15 min) signed with the active primary key."""
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
         expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    to_encode.update({"exp": expire, "type": "access"})
+    to_encode.update({
+        "exp": expire,
+        "type": "access",
+        "token_version": data.get("token_version", 1)
+    })
     signing_key = get_jwt_signing_key()
     return jwt.encode(to_encode, signing_key, algorithm=ALGORITHM)
 
@@ -71,28 +172,60 @@ def create_refresh_token(data: dict) -> str:
     to_encode.update({
         "exp": expire,
         "type": "refresh",
-        "jti": str(uuid.uuid4())
+        "jti": str(uuid.uuid4()),
+        "token_version": data.get("token_version", 1)
     })
     signing_key = get_jwt_signing_key()
     return jwt.encode(to_encode, signing_key, algorithm=ALGORITHM)
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+async def get_current_user(
+    request: Request = None,
+    bearer_token: str | None = Depends(oauth2_scheme),
+    token: str | None = None
+) -> dict:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     
+    if isinstance(request, str):
+        resolved_token = request
+        request = None
+    else:
+        cookie_token = None
+        if request is not None and hasattr(request, "cookies"):
+            cookie_token = request.cookies.get("access_token")
+        resolved_token = token or bearer_token or cookie_token
+
+    if not resolved_token:
+        raise credentials_exception
+    
     # 1. Attempt Local JWT Verification with key rotation fallback support
     try:
-        payload = decode_jwt_with_rotation(token, algorithm=ALGORITHM)
+        payload = decode_jwt_with_rotation(resolved_token, algorithm=ALGORITHM)
         user_id = payload.get("sub")
         role = payload.get("role", "ANALYST")
         username = payload.get("username", "anonymous")
         email = payload.get("email", f"{username}@aml.com")
         tenant_id = payload.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+        token_version = payload.get("token_version")
         
         if user_id:
+            # Check active token_version to immediately invalidate revoked sessions
+            if token_version is not None:
+                try:
+                    from database.redis_db import get_async_redis_client
+                    redis = await get_async_redis_client()
+                    if redis:
+                        cached_ver = await redis.get(f"user:token_version:{user_id}")
+                        if cached_ver is not None and int(cached_ver) > int(token_version):
+                            raise credentials_exception
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
+
             from observability.middleware import user_id_var, tenant_id_var
             user_id_var.set(str(user_id))
             tenant_id_var.set(str(tenant_id))
@@ -122,56 +255,92 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
         pass  # Fall back to Supabase check if local decode fails
 
     # 2. Fallback to Supabase verification
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "apikey": settings.supabase_key
-    }
+    if settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_"):
+        headers = {
+            "Authorization": f"Bearer {resolved_token}",
+            "apikey": settings.supabase_key
+        }
+        
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
+                async with session.get(f"{settings.supabase_url}/auth/v1/user", headers=headers) as resp:
+                    if resp.status != 200:
+                        raise credentials_exception
+                    user_data = await resp.json()
+                    
+                    user_metadata = user_data.get("user_metadata", {})
+                    role = user_metadata.get("role", "ANALYST")
+                    email = user_data.get("email", "")
+                    username = email.split("@")[0] if email else "anonymous"
+                    tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+                    
+                    user_id = user_data.get("id")
+                    from observability.middleware import user_id_var, tenant_id_var
+                    user_id_var.set(str(user_id))
+                    tenant_id_var.set(str(tenant_id))
+                    
+                    # Replicate user to local PostgreSQL database if not present
+                    from database.postgres import get_async_db_conn
+                    async with get_async_db_conn() as conn:
+                        await conn.execute(
+                            "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
+                            "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
+                            user_id,
+                            username,
+                            role,
+                            tenant_id
+                        )
+                    
+                    return {
+                        "id": user_id,
+                        "username": username,
+                        "role": role,
+                        "email": email,
+                        "tenant_id": tenant_id
+                    }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"Supabase auth verification failed: {e}")
+            raise credentials_exception
+
+    raise credentials_exception
+
+
+async def revoke_user_sessions(user_id: str) -> int:
+    """
+    Increments token_version in PostgreSQL and updates Redis cache,
+    immediately revoking all outstanding sessions/JWTs for this user across clusters.
+    """
+    from database.postgres import get_async_db_conn
+    from database.redis_db import get_async_redis_client
     
-    import aiohttp
+    new_version = 1
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{settings.supabase_url}/auth/v1/user", headers=headers) as resp:
-                if resp.status != 200:
-                    raise credentials_exception
-                user_data = await resp.json()
-                
-                user_metadata = user_data.get("user_metadata", {})
-                role = user_metadata.get("role", "ANALYST")
-                email = user_data.get("email", "")
-                username = email.split("@")[0] if email else "anonymous"
-                tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
-                
-                user_id = user_data.get("id")
-                from observability.middleware import user_id_var, tenant_id_var
-                user_id_var.set(str(user_id))
-                tenant_id_var.set(str(tenant_id))
-                
-                # Replicate user to local PostgreSQL database if not present
-                from database.postgres import get_async_db_conn
-                async with get_async_db_conn() as conn:
-                    await conn.execute(
-                        "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
-                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
-                        user_id,
-                        username,
-                        role,
-                        tenant_id
-                    )
-                
-                return {
-                    "id": user_id,
-                    "username": username,
-                    "role": role,
-                    "email": email,
-                    "tenant_id": tenant_id
-                }
-    except HTTPException:
-        raise
+        async with get_async_db_conn() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE users 
+                SET token_version = COALESCE(token_version, 1) + 1 
+                WHERE id = $1 
+                RETURNING token_version;
+                """,
+                user_id
+            )
+            if row and "token_version" in row.keys():
+                new_version = row["token_version"]
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Auth verification offline or failed: {str(e)}"
-        )
+        logger.warning(f"Failed to update token_version in PostgreSQL: {e}")
+            
+    try:
+        redis = await get_async_redis_client()
+        if redis:
+            await redis.set(f"user:token_version:{user_id}", new_version)
+    except Exception as e:
+        logger.warning(f"Failed to update token_version in Redis: {e}")
+        
+    return new_version
 
 
 class RoleChecker:

@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AML Portal - Enterprise Authentication</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
     <style>
         body {
@@ -15,11 +17,13 @@
             min-height: 100vh;
             background-color: var(--bg-primary);
         }
+
         .auth-container {
             width: 100%;
             max-width: 440px;
             margin: auto;
         }
+
         .auth-card {
             background-color: var(--bg-secondary);
             border: 1px solid var(--border-color);
@@ -29,12 +33,14 @@
             display: flex;
             flex-direction: column;
         }
+
         .auth-header {
             padding: 2.25rem 2.25rem 1.5rem 2.25rem;
             text-align: center;
             border-bottom: 1px solid var(--border-color);
             background-color: rgba(44, 37, 32, 0.01);
         }
+
         .auth-logo {
             width: 44px;
             height: 44px;
@@ -49,22 +55,26 @@
             margin: 0 auto 1rem auto;
             box-shadow: 0 4px 12px rgba(29, 100, 245, 0.2);
         }
+
         .auth-header h1 {
             font-size: 1.35rem;
             font-weight: 800;
             color: var(--text-primary);
             letter-spacing: -0.02em;
         }
+
         .auth-header p {
             font-size: 0.8rem;
             color: var(--text-secondary);
             margin-top: 0.25rem;
             font-weight: 500;
         }
+
         .auth-tabs {
             display: flex;
             border-bottom: 1px solid var(--border-color);
         }
+
         .auth-tab-btn {
             flex: 1;
             background: none;
@@ -78,35 +88,43 @@
             text-align: center;
             transition: all var(--transition-speed);
         }
+
         .auth-tab-btn:hover {
             color: var(--text-primary);
             background-color: rgba(44, 37, 32, 0.01);
         }
+
         .auth-tab-btn.active {
             color: var(--accent-blue);
             border-bottom: 2px solid var(--accent-blue);
             background-color: #ffffff;
         }
+
         .auth-body {
             padding: 2.25rem;
         }
+
         .auth-form {
             display: none;
             flex-direction: column;
             gap: 1.25rem;
         }
+
         .auth-form.active {
             display: flex;
         }
+
         .password-wrapper {
             position: relative;
             display: flex;
             align-items: center;
         }
+
         .password-wrapper input {
             width: 100%;
             padding-right: 2.5rem;
         }
+
         .password-toggle-btn {
             position: absolute;
             right: 0.75rem;
@@ -118,9 +136,11 @@
             font-weight: 600;
             padding: 0.25rem;
         }
+
         .password-toggle-btn:hover {
             color: var(--text-primary);
         }
+
         /* Password Strength Meter */
         .strength-meter {
             margin-top: 0.5rem;
@@ -128,23 +148,27 @@
             flex-direction: column;
             gap: 0.25rem;
         }
+
         .strength-bar-bg {
             height: 4px;
             background-color: var(--border-color);
             border-radius: 2px;
             overflow: hidden;
         }
+
         .strength-bar-fill {
             height: 100%;
             width: 0%;
             transition: all 0.3s ease;
             border-radius: 2px;
         }
+
         .strength-label {
             font-size: 0.75rem;
             font-weight: 600;
             color: var(--text-secondary);
         }
+
         /* MFA Challenge Screen */
         .mfa-screen {
             display: none;
@@ -152,19 +176,23 @@
             gap: 1.25rem;
             text-align: center;
         }
+
         .mfa-screen.active {
             display: flex;
         }
+
         .mfa-icon {
             font-size: 2.5rem;
             margin-bottom: 0.5rem;
         }
+
         .otp-input {
             letter-spacing: 0.4em;
             font-size: 1.5rem;
             text-align: center;
             font-weight: 700;
         }
+
         .error-banner {
             background-color: rgba(204, 63, 53, 0.08);
             border: 1px solid rgba(204, 63, 53, 0.2);
@@ -176,6 +204,7 @@
             text-align: center;
             display: none;
         }
+
         .success-banner {
             background-color: rgba(29, 130, 83, 0.08);
             border: 1px solid rgba(29, 130, 83, 0.2);
@@ -189,11 +218,12 @@
         }
     </style>
     <script>
-        if (localStorage.getItem('jwt_token')) {
+        if (localStorage.getItem('auth_session_active') === 'true') {
             window.location.href = '/dashboard';
         }
     </script>
 </head>
+
 <body>
 
     <div class="auth-container">
@@ -203,7 +233,7 @@
                 <h1>AML Control Center</h1>
                 <p>Enterprise Compliance & Multi-Tenant Gateway</p>
             </div>
-            
+
             <div id="auth-tab-bar" class="auth-tabs">
                 <button id="tab-login" class="auth-tab-btn active" onclick="switchAuthTab('login')">Sign In</button>
                 <button id="tab-signup" class="auth-tab-btn" onclick="switchAuthTab('signup')">Create Account</button>
@@ -217,43 +247,56 @@
                 <form id="form-login" class="auth-form active" onsubmit="handleLoginSubmit(event)" novalidate>
                     <div class="form-group">
                         <label for="login-username">Username or Email</label>
-                        <input type="text" id="login-username" placeholder="e.g. sarah_jenkins" autocomplete="username" required>
+                        <input type="text" id="login-username" placeholder="e.g. sarah_jenkins" autocomplete="username"
+                            required>
                     </div>
                     <div class="form-group">
                         <label for="login-password">Password</label>
                         <div class="password-wrapper">
-                            <input type="password" id="login-password" placeholder="••••••••••••" autocomplete="current-password" required>
-                            <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('login-password', this)">Show</button>
+                            <input type="password" id="login-password" placeholder="••••••••••••"
+                                autocomplete="current-password" required>
+                            <button type="button" class="password-toggle-btn"
+                                onclick="togglePasswordVisibility('login-password', this)">Show</button>
                         </div>
                     </div>
-                    <button type="submit" id="btn-login-submit" class="btn" style="width: 100%; margin-top: 0.5rem;">Access Console</button>
+                    <button type="submit" id="btn-login-submit" class="btn"
+                        style="width: 100%; margin-top: 0.5rem;">Access Console</button>
+                    <button type="button" class="btn btn-secondary"
+                        style="width: 100%; margin-top: 0.6rem; border: 1px dashed var(--accent-blue); color: var(--accent-blue); background: transparent; font-weight: 600;"
+                        onclick="loginDemoMode()">⚡ Quick Demo / Guest Preview</button>
                 </form>
 
                 <!-- 2. MFA CHALLENGE FORM -->
                 <form id="form-mfa" class="mfa-screen" onsubmit="handleMfaVerify(event)">
                     <div class="mfa-icon">🔐</div>
                     <h2 style="font-size: 1.15rem; font-weight: 700;">Two-Factor Verification</h2>
-                    <p style="font-size: 0.8rem; color: var(--text-secondary);">Enter the 6-digit verification code from your authenticator app or an emergency recovery code.</p>
-                    
+                    <p style="font-size: 0.8rem; color: var(--text-secondary);">Enter the 6-digit verification code from
+                        your authenticator app or an emergency recovery code.</p>
+
                     <div class="form-group">
-                        <input type="text" id="mfa-code" class="otp-input" placeholder="000000" maxlength="15" autocomplete="one-time-code" required autofocus>
+                        <input type="text" id="mfa-code" class="otp-input" placeholder="000000" maxlength="15"
+                            autocomplete="one-time-code" required autofocus>
                     </div>
-                    
+
                     <button type="submit" id="btn-mfa-submit" class="btn" style="width: 100%;">Verify & Proceed</button>
-                    <button type="button" class="btn btn-secondary" style="width: 100%;" onclick="cancelMfa()">Cancel</button>
+                    <button type="button" class="btn btn-secondary" style="width: 100%;"
+                        onclick="cancelMfa()">Cancel</button>
                 </form>
 
                 <!-- 3. SIGNUP FORM -->
                 <form id="form-signup" class="auth-form" onsubmit="handleSignupSubmit(event)" novalidate>
                     <div class="form-group">
                         <label for="signup-username">Username</label>
-                        <input type="text" id="signup-username" placeholder="e.g. alex_compliance" autocomplete="username" required>
+                        <input type="text" id="signup-username" placeholder="e.g. alex_compliance"
+                            autocomplete="username" required>
                     </div>
                     <div class="form-group">
                         <label for="signup-password">Password</label>
                         <div class="password-wrapper">
-                            <input type="password" id="signup-password" placeholder="Minimum 8 characters" autocomplete="new-password" oninput="evaluatePasswordStrength(this.value)" required>
-                            <button type="button" class="password-toggle-btn" onclick="togglePasswordVisibility('signup-password', this)">Show</button>
+                            <input type="password" id="signup-password" placeholder="Minimum 8 characters"
+                                autocomplete="new-password" oninput="evaluatePasswordStrength(this.value)" required>
+                            <button type="button" class="password-toggle-btn"
+                                onclick="togglePasswordVisibility('signup-password', this)">Show</button>
                         </div>
                         <div class="strength-meter" aria-live="polite">
                             <div class="strength-bar-bg">
@@ -264,9 +307,11 @@
                     </div>
                     <div class="form-group">
                         <label for="signup-confirm">Confirm Password</label>
-                        <input type="password" id="signup-confirm" placeholder="Re-enter password" autocomplete="new-password" required>
+                        <input type="password" id="signup-confirm" placeholder="Re-enter password"
+                            autocomplete="new-password" required>
                     </div>
-                    <button type="submit" id="btn-signup-submit" class="btn btn-success" style="width: 100%; margin-top: 0.5rem;">Register Analyst Profile</button>
+                    <button type="submit" id="btn-signup-submit" class="btn btn-success"
+                        style="width: 100%; margin-top: 0.5rem;">Register Analyst Profile</button>
                 </form>
             </div>
         </div>
@@ -292,6 +337,13 @@
                 document.getElementById('form-login').classList.remove('active');
                 document.getElementById('form-signup').classList.add('active');
             }
+        }
+
+        function loginDemoMode() {
+            localStorage.setItem('auth_session_active', 'true');
+            localStorage.setItem('username', 'sarah.jenkins@aml-compliance.org');
+            localStorage.setItem('role', 'COMPLIANCE_ANALYST');
+            window.location.href = '/dashboard';
         }
 
         function togglePasswordVisibility(inputId, btn) {
@@ -385,8 +437,8 @@
                 }
 
                 // Standard login success
-                if (data.access_token) {
-                    localStorage.setItem('jwt_token', data.access_token);
+                if (data.access_token || data.username) {
+                    localStorage.setItem('auth_session_active', 'true');
                     localStorage.setItem('username', data.username);
                     localStorage.setItem('role', data.role);
                     window.location.href = '/dashboard';
@@ -423,7 +475,7 @@
                     throw new Error(data.detail || 'Verification code invalid.');
                 }
 
-                localStorage.setItem('jwt_token', data.access_token);
+                localStorage.setItem('auth_session_active', 'true');
                 localStorage.setItem('username', data.username);
                 localStorage.setItem('role', data.role);
                 window.location.href = '/dashboard';
@@ -486,7 +538,7 @@
                 successEl.innerText = 'Account registered successfully! Redirecting...';
                 successEl.style.display = 'block';
 
-                localStorage.setItem('jwt_token', data.access_token);
+                localStorage.setItem('auth_session_active', 'true');
                 localStorage.setItem('username', data.username);
                 localStorage.setItem('role', data.role);
 
@@ -503,4 +555,5 @@
         }
     </script>
 </body>
+
 </html>

@@ -82,6 +82,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: aml-redis
+    command: redis-server --maxmemory-policy noeviction --appendonly yes
     ports:
       - "6379:6379"
     volumes:
@@ -228,8 +229,8 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=aml_db
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgrespassword}
+      - POSTGRES_USER=${POSTGRES_APP_USER:-aml_app}
+      - POSTGRES_PASSWORD=${AML_APP_PASSWORD:-aml_app_secure_pass_2026}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - NEO4J_URI=bolt://neo4j:7687
@@ -261,8 +262,8 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=aml_db
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgrespassword}
+      - POSTGRES_USER=${POSTGRES_APP_USER:-aml_app}
+      - POSTGRES_PASSWORD=${AML_APP_PASSWORD:-aml_app_secure_pass_2026}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - NEO4J_URI=bolt://neo4j:7687

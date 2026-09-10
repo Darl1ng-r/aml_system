@@ -6,8 +6,9 @@ class Settings(BaseSettings):
     postgres_replica_host: str = "localhost"
     postgres_replica_port: int = 5434
     postgres_db: str = "aml_db"
-    postgres_user: str = "postgres"
+    postgres_user: str = "aml_app"
     postgres_password: str = ""
+    aml_app_password: str = "aml_app_secure_pass_2026"
     
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
@@ -28,10 +29,10 @@ class Settings(BaseSettings):
     elastic_password: str = ""
 
     jwt_secret_key: str = ""
-    jwt_algorithm: str = "HS256"
-    # Short-lived access token — 30 minutes.
+    jwt_algorithm: str = "RS256"
+    # Short-lived access token — 15 minutes.
     # Clients should use the refresh token to silently renew.
-    access_token_expire_minutes: int = 30
+    access_token_expire_minutes: int = 15
     # Long-lived refresh token — 7 days.
     refresh_token_expire_days: int = 7
 

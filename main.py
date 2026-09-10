@@ -3,11 +3,13 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
-from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist
+from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist, jwks
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
 from observability.middleware import CorrelationIdMiddleware
+from services.trusted_proxy import TrustedProxyMiddleware
+from services.csrf import CSRFProtectionMiddleware
 import asyncio
 import logging
 
@@ -25,8 +27,14 @@ app = FastAPI(
 )
 
 # ── Middleware ────────────────────────────────────────────────────────────
-# Correlation-ID middleware (must be added BEFORE CORS so it wraps requests)
+# Trusted proxy resolution (must be first to ensure accurate peer/forwarded IP)
+app.add_middleware(TrustedProxyMiddleware)
+
+# Correlation-ID middleware (must wrap requests early)
 app.add_middleware(CorrelationIdMiddleware)
+
+# Anti-CSRF protection middleware
+app.add_middleware(CSRFProtectionMiddleware)
 
 # Enable CORS for frontend dashboard console
 allowed_origins_list = [origin.strip() for origin in settings.allowed_origins.split(",") if origin.strip()]
@@ -40,6 +48,7 @@ app.add_middleware(
 
 # Include Routers
 app.include_router(health.router)  # /health and /health/live — must be before static mount
+app.include_router(jwks.router)    # /.well-known/jwks.json public key publishing
 app.include_router(auth.router)
 app.include_router(metrics.router)
 app.include_router(fincen.router)
@@ -97,6 +106,7 @@ def read_login():
 async def startup_db_clients():
     logger.info("Starting up database connections...")
     import sys
+    import os
     import asyncio
     from database.postgres import init_db_pool
     from database.redis_db import get_redis_client, get_async_redis_client
@@ -131,25 +141,36 @@ async def startup_db_clients():
     except Exception as e:
         logger.warning(f"OpenTelemetry init skipped (non-fatal): {e}")
     
+    allow_offline = os.getenv("ALLOW_OFFLINE_DEV", "false").lower() == "true"
+    pg_connected = False
+
     # ── 1. Initialize & Fail-Fast PostgreSQL ─────────────────────────────
     try:
         await init_db_pool()
+        pg_connected = True
     except Exception as e:
         logger.critical(f"CRITICAL: Could not initialize PostgreSQL: {e}")
-        raise RuntimeError("PostgreSQL database initialization failed") from e
+        if not allow_offline:
+            raise RuntimeError("PostgreSQL database initialization failed") from e
+        logger.warning("ALLOW_OFFLINE_DEV active: Continuing without PostgreSQL connection.")
     
     # ── 1b. Run Alembic migrations ───────────────────────────────────────
-    try:
-        from alembic.config import Config as AlembicConfig
-        from alembic import command as alembic_command
-        alembic_cfg = AlembicConfig("alembic.ini")
-        alembic_command.upgrade(alembic_cfg, "head")
-        # Re-apply JSON logging after Alembic's fileConfig may have overwritten handlers
-        setup_json_logging(level=logging.INFO)
-        logger.info("Alembic database migrations applied successfully.")
-    except Exception as e:
-        logger.critical(f"CRITICAL: Alembic migration failed: {e}")
-        raise RuntimeError("Database migration failed") from e
+    if pg_connected:
+        try:
+            from alembic.config import Config as AlembicConfig
+            from alembic import command as alembic_command
+            alembic_cfg = AlembicConfig("alembic.ini")
+            alembic_command.upgrade(alembic_cfg, "head")
+            # Re-apply JSON logging after Alembic's fileConfig may have overwritten handlers
+            setup_json_logging(level=logging.INFO)
+            logger.info("Alembic database migrations applied successfully.")
+        except Exception as e:
+            logger.critical(f"CRITICAL: Alembic migration failed: {e}")
+            if not allow_offline:
+                raise RuntimeError("Database migration failed") from e
+            logger.warning("ALLOW_OFFLINE_DEV active: Continuing without running Alembic migrations.")
+    elif allow_offline:
+        logger.warning("ALLOW_OFFLINE_DEV active: Skipping Alembic migrations because PostgreSQL is offline.")
         
     # ── 2. Initialize & Fail-Fast Redis ──────────────────────────────────
     try:
@@ -157,7 +178,9 @@ async def startup_db_clients():
         await get_async_redis_client()
     except Exception as e:
         logger.critical(f"CRITICAL: Could not connect to Redis: {e}")
-        raise RuntimeError("Redis cache is required for startup") from e
+        if not allow_offline:
+            raise RuntimeError("Redis cache is required for startup") from e
+        logger.warning("ALLOW_OFFLINE_DEV active: Continuing without Redis connection.")
         
     # ── 3. Initialize & Fail-Fast Neo4j ──────────────────────────────────
     try:
@@ -165,7 +188,9 @@ async def startup_db_clients():
         await get_async_neo4j_driver()
     except Exception as e:
         logger.critical(f"CRITICAL: Could not connect to Neo4j: {e}")
-        raise RuntimeError("Neo4j database is required for startup") from e
+        if not allow_offline:
+            raise RuntimeError("Neo4j database is required for startup") from e
+        logger.warning("ALLOW_OFFLINE_DEV active: Continuing without Neo4j connection.")
         
     # ── 4. Initialize & Fail-Fast Elasticsearch ──────────────────────────
     try:
@@ -176,7 +201,9 @@ async def startup_db_clients():
         logger.info("Elasticsearch sanctions and PEP indices verified and seeded.")
     except Exception as e:
         logger.critical(f"CRITICAL: Could not connect to Elasticsearch: {e}")
-        raise RuntimeError("Elasticsearch database is required for startup") from e
+        if not allow_offline:
+            raise RuntimeError("Elasticsearch database is required for startup") from e
+        logger.warning("ALLOW_OFFLINE_DEV active: Continuing without Elasticsearch connection.")
 
     # ── 5. Pre-warm Isolation Forest model ──────────────────────────────
     # Running before first request prevents a cold-start delay on the first transaction.
@@ -196,9 +223,10 @@ async def startup_db_clients():
         logger.info("Embedded graph sync worker disabled (running as standalone service).")
 
     # ── 7. Start Periodic Background Watchlist Sync Task ─────────────────
-    from services.watchlist_sync import schedule_periodic_watchlist_sync
-    logger.info("Starting background periodic watchlist sync task...")
-    asyncio.create_task(schedule_periodic_watchlist_sync(interval_seconds=86400, shutdown_event=_worker_shutdown_event))
+    if not allow_offline:
+        from services.watchlist_sync import schedule_periodic_watchlist_sync
+        logger.info("Starting background periodic watchlist sync task...")
+        asyncio.create_task(schedule_periodic_watchlist_sync(interval_seconds=86400, shutdown_event=_worker_shutdown_event))
 
 @app.on_event("shutdown")
 async def shutdown_db_clients():
