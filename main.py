@@ -67,8 +67,23 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ── Exception Handlers ───────────────────────────────────────────────────
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from observability.middleware import correlation_id_var
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    messages = []
+    for err in errors:
+        loc = ".".join(str(l) for l in err.get("loc", []) if l != "body")
+        msg = err.get("msg", "Invalid value")
+        messages.append(f"{loc}: {msg}" if loc else msg)
+    friendly_msg = "; ".join(messages) if messages else "Invalid request data."
+    return JSONResponse(
+        status_code=422,
+        content={"detail": friendly_msg, "errors": errors}
+    )
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

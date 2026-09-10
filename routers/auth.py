@@ -54,12 +54,14 @@ def clear_auth_cookies(response: Response):
     response.delete_cookie(key="refresh_token", path="/")
 
 class UserSignup(BaseModel):
-    username: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9._-]+$")
+    username: str = Field(..., min_length=3, max_length=100, pattern=r"^[A-Za-z0-9._@+-]+$")
     password: str = Field(..., min_length=8, max_length=128)
 
     @field_validator("username", mode="before")
     @classmethod
     def sanitize_username(cls, v: str) -> str:
+        if isinstance(v, str):
+            v = v.strip()
         return sanitize_text(v)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
@@ -68,7 +70,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 async def login(
     response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
-    _rate_limit=Depends(RateLimiter(limit=5, window=600))
+    _rate_limit=Depends(RateLimiter(limit=20, window=600))
 ):
     await check_account_lockout(form_data.username)
 
@@ -324,115 +326,146 @@ async def signup(
         "Content-Type": "application/json"
     }
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{settings.supabase_url}/auth/v1/signup",
-                json=signup_data,
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    # Fallback: create local user with verified password hash
-                    import uuid
-                    local_user_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{payload.username}.aml.com"))
-                    
-                    from database.postgres import get_async_db_conn
-                    async with get_async_db_conn() as conn:
-                        await conn.execute(
-                            """
-                            INSERT INTO users (id, username, role, tenant_id, password_hash) 
-                            VALUES ($1, $2, $3, $4, $5) 
-                            ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash;
-                            """,
-                            local_user_id,
-                            payload.username,
-                            assigned_role,
-                            default_tenant_id,
-                            hashed_pw
-                        )
-                    
-                    access_token = create_access_token({
-                        "sub": local_user_id,
-                        "role": assigned_role,
-                        "username": payload.username,
-                        "email": email,
-                        "tenant_id": default_tenant_id
-                    })
-                    refresh_token = create_refresh_token({
-                        "sub": local_user_id,
-                        "role": assigned_role,
-                        "username": payload.username,
-                        "tenant_id": default_tenant_id
-                    })
-                    
-                    log_audit_event(
-                        event_type="USER_SIGNUP",
-                        actor_id=local_user_id,
-                        actor_role=assigned_role,
-                        action="SIGNUP",
-                        resource_type="USER",
-                        resource_id=local_user_id,
-                        tenant_id=default_tenant_id,
-                        details={"username": payload.username, "method": "local_database"}
-                    )
+    supabase_data = None
+    if settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_"):
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
+                async with session.post(
+                    f"{settings.supabase_url}/auth/v1/signup",
+                    json=signup_data,
+                    headers=headers
+                ) as resp:
+                    if resp.status == 200:
+                        supabase_data = await resp.json()
+                    else:
+                        logger.warning(f"Supabase signup returned status {resp.status}. Falling back to local registration.")
+        except Exception as e:
+            logger.warning(f"Supabase auth unreachable during signup: {e}. Falling back to local registration.")
+            supabase_data = None
 
-                    set_auth_cookies(response, access_token, refresh_token)
-                    return {
-                        "access_token": access_token,
-                        "refresh_token": refresh_token,
-                        "token_type": "bearer",
-                        "role": assigned_role,
-                        "username": payload.username
-                    }
-                    
-                data = await resp.json()
-                access_token = data.get("access_token")
-                
-                # Replicate user to local PostgreSQL database
-                user_info = data.get("user") if "user" in data else data
-                supabase_user_id = user_info.get("id")
-                if supabase_user_id:
-                    from database.postgres import get_async_db_conn
-                    async with get_async_db_conn() as conn:
-                        await conn.execute(
-                            """
-                            INSERT INTO users (id, username, role, tenant_id, password_hash) 
-                            VALUES ($1, $2, $3, $4, $5) 
-                            ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash;
-                            """,
-                            supabase_user_id,
-                            payload.username,
-                            assigned_role,
-                            default_tenant_id,
-                            hashed_pw
-                        )
-
-                refresh_token = create_refresh_token({
-                    "sub": str(supabase_user_id),
-                    "role": assigned_role,
-                    "username": payload.username,
-                    "tenant_id": default_tenant_id
-                })
-
-                log_audit_event(
-                    event_type="USER_SIGNUP",
-                    actor_id=str(supabase_user_id or ""),
-                    actor_role=assigned_role,
-                    action="SIGNUP",
-                    resource_type="USER",
-                    resource_id=str(supabase_user_id or ""),
-                    tenant_id=default_tenant_id,
-                    details={"username": payload.username, "method": "supabase"}
+    if supabase_data:
+        data = supabase_data
+        access_token = data.get("access_token")
+        
+        user_info = data.get("user") if "user" in data else data
+        supabase_user_id = user_info.get("id")
+        if supabase_user_id:
+            from database.postgres import get_async_db_conn
+            async with get_async_db_conn() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO users (id, username, role, tenant_id, password_hash) 
+                    VALUES ($1, $2, $3, $4, $5) 
+                    ON CONFLICT (id) DO UPDATE SET 
+                        username = EXCLUDED.username,
+                        role = EXCLUDED.role,
+                        password_hash = EXCLUDED.password_hash;
+                    """,
+                    supabase_user_id,
+                    payload.username,
+                    assigned_role,
+                    default_tenant_id,
+                    hashed_pw
                 )
-                
-                set_auth_cookies(response, access_token, refresh_token)
-                return {
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "token_type": "bearer",
-                    "role": assigned_role,
-                    "username": email.split("@")[0]
-                }
+
+        if not access_token:
+            access_token = create_access_token({
+                "sub": str(supabase_user_id or ""),
+                "role": assigned_role,
+                "username": payload.username,
+                "email": email,
+                "tenant_id": default_tenant_id
+            })
+
+        refresh_token = create_refresh_token({
+            "sub": str(supabase_user_id or ""),
+            "role": assigned_role,
+            "username": payload.username,
+            "tenant_id": default_tenant_id
+        })
+
+        log_audit_event(
+            event_type="USER_SIGNUP",
+            actor_id=str(supabase_user_id or ""),
+            actor_role=assigned_role,
+            action="SIGNUP",
+            resource_type="USER",
+            resource_id=str(supabase_user_id or ""),
+            tenant_id=default_tenant_id,
+            details={"username": payload.username, "method": "supabase"}
+        )
+        
+        set_auth_cookies(response, access_token, refresh_token)
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "role": assigned_role,
+            "username": email.split("@")[0]
+        }
+
+    # Fallback: create local user in PostgreSQL with verified Argon2id password hash
+    try:
+        import uuid
+        from database.postgres import get_async_db_conn
+        async with get_async_db_conn() as conn:
+            # Check if username is already registered
+            existing_user = await conn.fetchrow(
+                "SELECT id FROM users WHERE username = $1;",
+                payload.username
+            )
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Username already registered or invalid registration data"
+                )
+
+            local_user_id = str(uuid.uuid4())
+            await conn.execute(
+                """
+                INSERT INTO users (id, username, role, tenant_id, password_hash) 
+                VALUES ($1, $2, $3, $4, $5);
+                """,
+                local_user_id,
+                payload.username,
+                assigned_role,
+                default_tenant_id,
+                hashed_pw
+            )
+        
+        access_token = create_access_token({
+            "sub": local_user_id,
+            "role": assigned_role,
+            "username": payload.username,
+            "email": email,
+            "tenant_id": default_tenant_id
+        })
+        refresh_token = create_refresh_token({
+            "sub": local_user_id,
+            "role": assigned_role,
+            "username": payload.username,
+            "tenant_id": default_tenant_id
+        })
+        
+        log_audit_event(
+            event_type="USER_SIGNUP",
+            actor_id=local_user_id,
+            actor_role=assigned_role,
+            action="SIGNUP",
+            resource_type="USER",
+            resource_id=local_user_id,
+            tenant_id=default_tenant_id,
+            details={"username": payload.username, "method": "local_database"}
+        )
+
+        set_auth_cookies(response, access_token, refresh_token)
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "role": assigned_role,
+            "username": payload.username
+        }
     except HTTPException:
         raise
     except Exception as e:

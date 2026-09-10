@@ -286,8 +286,8 @@
                 <!-- 3. SIGNUP FORM -->
                 <form id="form-signup" class="auth-form" onsubmit="handleSignupSubmit(event)" novalidate>
                     <div class="form-group">
-                        <label for="signup-username">Username</label>
-                        <input type="text" id="signup-username" placeholder="e.g. alex_compliance"
+                        <label for="signup-username">Username or Email</label>
+                        <input type="text" id="signup-username" placeholder="e.g. alex_compliance or alex@aml.com"
                             autocomplete="username" required>
                     </div>
                     <div class="form-group">
@@ -397,6 +397,25 @@
             }
         }
 
+        function formatError(detail, fallback = 'Operation failed.') {
+            if (!detail) return fallback;
+            if (typeof detail === 'string') return detail;
+            if (Array.isArray(detail)) {
+                return detail.map(item => {
+                    if (typeof item === 'string') return item;
+                    if (item && item.msg) {
+                        const field = Array.isArray(item.loc) ? item.loc.filter(l => l !== 'body').join('.') : '';
+                        return field ? `${field}: ${item.msg}` : item.msg;
+                    }
+                    return JSON.stringify(item);
+                }).join(' | ');
+            }
+            if (typeof detail === 'object') {
+                return detail.msg || detail.message || JSON.stringify(detail);
+            }
+            return String(detail);
+        }
+
         async function handleLoginSubmit(event) {
             event.preventDefault();
             const username = document.getElementById('login-username').value.trim();
@@ -423,7 +442,7 @@
                 const data = await response.json();
 
                 if (!response.ok) {
-                    throw new Error(data.detail || 'Authentication failed.');
+                    throw new Error(formatError(data.detail, 'Authentication failed.'));
                 }
 
                 // Check for Two-Factor Authentication Challenge
@@ -444,7 +463,7 @@
                     window.location.href = '/dashboard';
                 }
             } catch (err) {
-                errorEl.innerText = err.message;
+                errorEl.innerText = formatError(err.message || err, 'Authentication failed.');
                 errorEl.style.display = 'block';
             } finally {
                 btn.disabled = false;
@@ -472,7 +491,7 @@
 
                 const data = await response.json();
                 if (!response.ok) {
-                    throw new Error(data.detail || 'Verification code invalid.');
+                    throw new Error(formatError(data.detail, 'Verification code invalid.'));
                 }
 
                 localStorage.setItem('auth_session_active', 'true');
@@ -480,7 +499,7 @@
                 localStorage.setItem('role', data.role);
                 window.location.href = '/dashboard';
             } catch (err) {
-                errorEl.innerText = err.message;
+                errorEl.innerText = formatError(err.message || err, 'Verification failed.');
                 errorEl.style.display = 'block';
             } finally {
                 btn.disabled = false;
@@ -532,7 +551,7 @@
 
                 const data = await response.json();
                 if (!response.ok) {
-                    throw new Error(data.detail || 'Registration failed.');
+                    throw new Error(formatError(data.detail, 'Registration failed.'));
                 }
 
                 successEl.innerText = 'Account registered successfully! Redirecting...';
@@ -546,7 +565,7 @@
                     window.location.href = '/dashboard';
                 }, 1000);
             } catch (err) {
-                errorEl.innerText = err.message;
+                errorEl.innerText = formatError(err.message || err, 'Registration failed.');
                 errorEl.style.display = 'block';
             } finally {
                 btn.disabled = false;
