@@ -217,6 +217,9 @@
             display: none;
         }
     </style>
+    <!-- Lucide Icon Library -->
+    <script src="/static/lucide.min.js"></script>
+
     <script>
         if (localStorage.getItem('auth_session_active') === 'true') {
             window.location.href = '/dashboard';
@@ -229,7 +232,7 @@
     <div class="auth-container">
         <div class="auth-card">
             <div class="auth-header">
-                <div class="auth-logo" aria-hidden="true">🛡️</div>
+                <div class="auth-logo" aria-hidden="true"><i data-lucide="shield-check" style="width:40px;height:40px;stroke:#f4a261;stroke-width:1.8;"></i></div>
                 <h1>AML Control Center</h1>
                 <p>Enterprise Compliance & Multi-Tenant Gateway</p>
             </div>
@@ -262,13 +265,13 @@
                     <button type="submit" id="btn-login-submit" class="btn"
                         style="width: 100%; margin-top: 0.5rem;">Access Console</button>
                     <button type="button" class="btn btn-secondary"
-                        style="width: 100%; margin-top: 0.6rem; border: 1px dashed var(--accent-blue); color: var(--accent-blue); background: transparent; font-weight: 600;"
-                        onclick="loginDemoMode()">⚡ Quick Demo / Guest Preview</button>
+                        style="width: 100%; margin-top: 0.6rem; border: 1px dashed var(--accent-blue); color: var(--accent-blue); background: transparent; font-weight: 600; display:inline-flex; align-items:center; justify-content:center;"
+                        onclick="loginDemoMode()"><i data-lucide="zap" style="width:14px;height:14px;stroke-width:2;margin-right:6px;"></i> Quick Demo / Guest Preview</button>
                 </form>
 
                 <!-- 2. MFA CHALLENGE FORM -->
                 <form id="form-mfa" class="mfa-screen" onsubmit="handleMfaVerify(event)">
-                    <div class="mfa-icon">🔐</div>
+                    <div class="mfa-icon"><i data-lucide="key-round" style="width:36px;height:36px;stroke:#f4a261;stroke-width:1.8;"></i></div>
                     <h2 style="font-size: 1.15rem; font-weight: 700;">Two-Factor Verification</h2>
                     <p style="font-size: 0.8rem; color: var(--text-secondary);">Enter the 6-digit verification code from
                         your authenticator app or an emergency recovery code.</p>
@@ -572,6 +575,10 @@
                 btn.innerText = 'Register Analyst Profile';
             }
         }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            if (window.lucide) lucide.createIcons();
+        });
     </script>
 </body>
 
