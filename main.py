@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,7 +47,19 @@ app.add_middleware(
 )
 
 # Include Routers
-app.include_router(health.router)  # /health and /health/live — must be before static mount
+app.include_router(health.router)  # /health, /health/live, /health/ready — must be before static mount
+
+
+@app.get("/metrics", tags=["Observability"], summary="Prometheus Metrics Scrape Endpoint")
+def prometheus_metrics():
+    """Exposes internal compliance, SLO, and performance metrics in Prometheus exposition format."""
+    from observability.prometheus import generate_metrics_text
+    return Response(
+        content=generate_metrics_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8"
+    )
+
+
 app.include_router(jwks.router)    # /.well-known/jwks.json public key publishing
 app.include_router(auth.router)
 app.include_router(metrics.router)
@@ -250,6 +262,12 @@ async def startup_db_clients():
         from services.watchlist_sync import schedule_periodic_watchlist_sync
         logger.info("Starting background periodic watchlist sync task...")
         asyncio.create_task(schedule_periodic_watchlist_sync(interval_seconds=86400, shutdown_event=_worker_shutdown_event))
+
+    # ── 8. Start Distributed Redis WebSocket PubSub Listener ───────────
+    if not allow_offline:
+        from routers.metrics import ws_manager, start_redis_ws_listener
+        logger.info("Starting distributed Redis WebSocket pubsub listener task...")
+        asyncio.create_task(start_redis_ws_listener(ws_manager, shutdown_event=_worker_shutdown_event))
 
 @app.on_event("shutdown")
 async def shutdown_db_clients():

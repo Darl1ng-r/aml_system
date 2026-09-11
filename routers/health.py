@@ -62,6 +62,26 @@ async def liveness():
     return {"status": "alive"}
 
 
+@router.get("/health/ready")
+async def readiness_probe():
+    """
+    Decoupled readiness probe for Kubernetes.
+    Verifies that the web process is running and can acquire a database connection,
+    preventing cascading failure when secondary/asynchronous datastores (Neo4j, ES)
+    are temporarily restarting or syncing.
+    """
+    try:
+        from database.postgres import db_pool
+        if db_pool is None:
+            return JSONResponse(content={"status": "not_ready", "reason": "db_pool_uninitialized"}, status_code=503)
+        async with db_pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return {"status": "ready"}
+    except Exception as e:
+        logger.warning(f"Readiness probe failed: {e}")
+        return JSONResponse(content={"status": "not_ready"}, status_code=503)
+
+
 @router.get("/health")
 async def readiness(
     request: Request,

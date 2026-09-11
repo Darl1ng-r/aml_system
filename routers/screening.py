@@ -133,6 +133,7 @@ async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | N
     try:
         from database.postgres import get_async_db_read_conn
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+            search_pattern = f"%{name.strip()}%"
             if tenant_id:
                 try:
                     t_uuid = uuid.UUID(str(tenant_id))
@@ -140,18 +141,36 @@ async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | N
                         """
                         SELECT name, pep_tier, position, country, rca_flag, source_database
                         FROM pep_entities
-                        WHERE (tenant_id = $1 OR tenant_id IS NULL) AND is_active = true
+                        WHERE (tenant_id = $1 OR tenant_id IS NULL)
+                          AND is_active = true
+                          AND (name ILIKE $2 OR $3 ILIKE '%' || name || '%')
                         LIMIT 100;
                         """,
-                        t_uuid
+                        t_uuid, search_pattern, name.strip()
                     )
                 except ValueError:
                     rows = await conn.fetch(
-                        "SELECT name, pep_tier, position, country, rca_flag, source_database FROM pep_entities WHERE tenant_id IS NULL AND is_active = true LIMIT 100;"
+                        """
+                        SELECT name, pep_tier, position, country, rca_flag, source_database
+                        FROM pep_entities
+                        WHERE tenant_id IS NULL
+                          AND is_active = true
+                          AND (name ILIKE $1 OR $2 ILIKE '%' || name || '%')
+                        LIMIT 100;
+                        """,
+                        search_pattern, name.strip()
                     )
             else:
                 rows = await conn.fetch(
-                    "SELECT name, pep_tier, position, country, rca_flag, source_database FROM pep_entities WHERE tenant_id IS NULL AND is_active = true LIMIT 100;"
+                    """
+                    SELECT name, pep_tier, position, country, rca_flag, source_database
+                    FROM pep_entities
+                    WHERE tenant_id IS NULL
+                      AND is_active = true
+                      AND (name ILIKE $1 OR $2 ILIKE '%' || name || '%')
+                    LIMIT 100;
+                    """,
+                    search_pattern, name.strip()
                 )
 
             for row in rows:

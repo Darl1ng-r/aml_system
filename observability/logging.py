@@ -213,4 +213,9 @@ def log_audit_event(
         "details": details or {}
     }
     audit_logger.info(msg, extra=extra)
+    try:
+        from observability.prometheus import record_audit_event
+        record_audit_event(event_type)
+    except Exception:
+        pass
 

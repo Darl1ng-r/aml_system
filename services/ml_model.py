@@ -174,6 +174,7 @@ class AMLAnomalyModel:
         currency_paid: str = "US Dollar",
         currency_recv: str = "US Dollar",
         pay_format: str = "Wire",
+        explain: bool = False,
     ) -> dict:
         """
         Computes the AI risk score and returns SHAP feature attributions.
@@ -191,14 +192,14 @@ class AMLAnomalyModel:
         if self._mode == "xgboost":
             return self._predict_xgboost(
                 amount, sender_risk, receiver_risk, velocity_count,
-                hour, currency_paid, currency_recv, pay_format
+                hour, currency_paid, currency_recv, pay_format, explain=explain
             )
         else:
             return self._predict_fallback(amount, sender_risk, receiver_risk, velocity_count)
 
     def _predict_xgboost(
         self, amount, sender_risk, receiver_risk, velocity_count,
-        hour, currency_paid, currency_recv, pay_format
+        hour, currency_paid, currency_recv, pay_format, explain: bool = False
     ) -> dict:
         try:
             X = self._build_feature_vector(
@@ -208,15 +209,19 @@ class AMLAnomalyModel:
             # Pipeline applies StandardScaler then XGBoost
             risk_score = float(self._pipeline.predict_proba(X)[0][1])
 
-            # True SHAP values — apply scaler transform before explainer
-            scaler = self._pipeline.named_steps["scaler"]
-            X_scaled = scaler.transform(X)
-            shap_vals = self._explainer.shap_values(X_scaled)[0]
-
-            attributions = {
-                name: round(float(val), 6)
-                for name, val in zip(FEATURE_NAMES, shap_vals)
-            }
+            # Performance optimization: only execute CPU-intensive SHAP tree traversal
+            # for anomalous/borderline transactions or when explicitly requested
+            should_compute_shap = explain or (risk_score >= self._recommended_threshold * 0.85)
+            if should_compute_shap and self._explainer:
+                scaler = self._pipeline.named_steps["scaler"]
+                X_scaled = scaler.transform(X)
+                shap_vals = self._explainer.shap_values(X_scaled)[0]
+                attributions = {
+                    name: round(float(val), 6)
+                    for name, val in zip(FEATURE_NAMES, shap_vals)
+                }
+            else:
+                attributions = {name: 0.0 for name in FEATURE_NAMES}
 
             return {
                 "risk_score": round(risk_score, 4),

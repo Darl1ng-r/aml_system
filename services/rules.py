@@ -73,7 +73,8 @@ class RulesEngine:
         sender_bic: str = None,
         receiver_name: str = None,
         receiver_bic: str = None,
-        timestamp: datetime = None
+        timestamp: datetime = None,
+        tenant_id: str = None
     ) -> list[str]:
         triggered_rules = []
         config = get_rules_config()
@@ -94,7 +95,7 @@ class RulesEngine:
                 r = await get_async_redis_client()
                 now = time.time()
                 window_ago = now - (window_hours * 3600)
-                redis_key = f"acc:velocity:{sender_id}"
+                redis_key = f"acc:velocity:{tenant_id}:{sender_id}" if tenant_id else f"acc:velocity:{sender_id}"
                 
                 async with r.pipeline(transaction=True) as pipe:
                     pipe.zremrangebyscore(redis_key, "-inf", window_ago)
@@ -127,7 +128,7 @@ class RulesEngine:
             dev_threshold = velocity_config.get("deviation_threshold", 3.0)
             try:
                 tx_time = timestamp or datetime.now(timezone.utc)
-                async with get_async_db_conn() as conn:
+                async with get_async_db_conn(tenant_id=tenant_id) as conn:
                     # Fetch past average & standard deviation
                     hist_row = await conn.fetchrow(
                         """
@@ -192,7 +193,7 @@ class RulesEngine:
             window_minutes = rapid_config.get("window_minutes", 10)
             amount_ratio_threshold = rapid_config.get("amount_ratio_threshold", 0.90)
             try:
-                async with get_async_db_conn() as conn:
+                async with get_async_db_conn(tenant_id=tenant_id) as conn:
                     # Find most recent incoming transaction received in window
                     incoming_row = await conn.fetchrow(
                         """
@@ -229,7 +230,7 @@ class RulesEngine:
             dormant_period_days = dormant_config.get("dormant_period_days", 90)
             activation_threshold = dormant_config.get("activation_threshold", 50000.0)
             try:
-                async with get_async_db_conn() as conn:
+                async with get_async_db_conn(tenant_id=tenant_id) as conn:
                     # Get last transaction or fallback to account creation
                     active_row = await conn.fetchrow(
                         """

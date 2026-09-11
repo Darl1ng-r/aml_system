@@ -23,12 +23,10 @@
   <!-- Lucide Icon Library -->
   <script src="/static/lucide.min.js"></script>
 
-  <!-- Session Init & Auth Guard -->
+  <!-- Auth Guard: Redirect unauthenticated sessions to login -->
   <script>
-    if (!localStorage.getItem('auth_session_active') && !localStorage.getItem('jwt_token')) {
-      localStorage.setItem('auth_session_active', 'true');
-      localStorage.setItem('username', 'rama.tubeh');
-      localStorage.setItem('role', 'lead_investigator');
+    if (!localStorage.getItem('auth_session_active') && !localStorage.getItem('jwt_token') && !document.cookie.includes('access_token')) {
+      window.location.replace('/login');
     }
   </script>
 </head>

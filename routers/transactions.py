@@ -123,7 +123,8 @@ async def ingest_transaction(
         sender_bic=sender_bic,
         receiver_name=receiver_name,
         receiver_bic=receiver_bic,
-        timestamp=payload.timestamp
+        timestamp=payload.timestamp,
+        tenant_id=str(tenant_id) if tenant_id else None
     )
 
     # Step 3: Run AI Anomaly Model (using pre-initialized singleton instance)
@@ -133,7 +134,7 @@ async def ingest_transaction(
 
     # Step 3.5: Run Dynamic Behavioral Risk Scoring
     try:
-        baseline = await get_customer_baseline(str(sender_id))
+        baseline = await get_customer_baseline(str(sender_id), tenant_id=str(tenant_id) if tenant_id else None)
         
         # Determine if geographic risk is present
         is_geo = 0

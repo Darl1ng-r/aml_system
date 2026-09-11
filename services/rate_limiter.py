@@ -25,7 +25,7 @@ class RateLimiter:
             import os
             if os.environ.get("PYTEST_CURRENT_TEST") and getattr(request, "headers", {}).get("host") == "test":
                 test_ctx = os.environ.get("PYTEST_CURRENT_TEST", "").split(" ")[0].split("::")[-1]
-                client_ip = f"test_{test_ctx}_{client_ip}"
+                client_ip = f"test_{os.getpid()}_{test_ctx}_{client_ip}"
 
             key = f"rate_limit:{request.url.path}:{client_ip}"
             

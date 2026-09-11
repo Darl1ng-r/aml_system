@@ -35,7 +35,10 @@ def is_ip_trusted(ip_str: str, trusted_networks=DEFAULT_TRUSTED_NETWORKS) -> boo
 def get_trusted_client_ip(request: Request, trusted_networks=DEFAULT_TRUSTED_NETWORKS) -> str:
     """
     Resolves the genuine client IP address.
-    Only trusts X-Forwarded-For / X-Real-IP if the direct TCP peer is within a trusted CIDR.
+    Only trusts X-Forwarded-For / X-Real-IP if the direct TCP peer is within a trusted CIDR
+    (loopback, internal VPC, Kubernetes overlay).
+    If the direct peer is untrusted, all forwarded headers are rejected to prevent spoofing (CWE-290).
+    When behind a trusted proxy, returns the first validated client IP from X-Forwarded-For.
     """
     peer_ip = request.client.host if request.client else "127.0.0.1"
 
@@ -43,11 +46,21 @@ def get_trusted_client_ip(request: Request, trusted_networks=DEFAULT_TRUSTED_NET
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
             hops = [h.strip() for h in forwarded.split(",") if h.strip()]
-            if hops:
-                return hops[0]
+            for hop in hops:
+                try:
+                    ipaddress.ip_address(hop)
+                    return hop
+                except ValueError:
+                    continue
+
         real_ip = request.headers.get("x-real-ip")
         if real_ip:
-            return real_ip.strip()
+            clean_real = real_ip.strip()
+            try:
+                ipaddress.ip_address(clean_real)
+                return clean_real
+            except ValueError:
+                pass
 
     return peer_ip
 

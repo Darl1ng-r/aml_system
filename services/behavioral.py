@@ -14,7 +14,7 @@ def get_mode_list(items: list, limit: int = 3) -> list[str]:
     counts = Counter(valid_items)
     return [item for item, _ in counts.most_common(limit)]
 
-async def calculate_customer_baseline(account_id: str) -> dict:
+async def calculate_customer_baseline(account_id: str, tenant_id: str | None = None) -> dict:
     """
     Computes a customer's transaction baseline behavior using historical data
     and updates/inserts the baseline cache in the database.
@@ -32,7 +32,7 @@ async def calculate_customer_baseline(account_id: str) -> dict:
     """
     
     try:
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             rows = await conn.fetch(query, account_id)
             
             if not rows:
@@ -180,15 +180,15 @@ async def calculate_customer_baseline(account_id: str) -> dict:
             "top_channels": []
         }
 
-async def get_customer_baseline(account_id: str) -> dict:
+async def get_customer_baseline(account_id: str, tenant_id: str | None = None) -> dict:
     """Retrieves baseline cache from database, or generates it if missing."""
     query = "SELECT * FROM customer_profiles WHERE account_id = $1::uuid;"
     try:
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             row = await conn.fetchrow(query, account_id)
             if row:
                 return dict(row)
     except Exception as e:
         logger.warning(f"Baseline query failed: {e}. Calculating dynamically...")
         
-    return await calculate_customer_baseline(account_id)
+    return await calculate_customer_baseline(account_id, tenant_id=tenant_id)

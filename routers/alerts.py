@@ -441,64 +441,92 @@ async def bulk_resolve_alerts(
         raise HTTPException(status_code=500, detail=f"Bulk action failed: {str(e)}")
 
 
+def sanitize_csv_cell(value: object) -> object:
+    """Neutralizes CSV formula injection (CWE-1236) by escaping formula trigger characters."""
+    if isinstance(value, str) and value:
+        if value[0] in ("=", "+", "-", "@", "\t", "\r"):
+            return f"'{value}"
+    return value
+
+
 @router.get("/export/csv")
 async def export_alerts_csv(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
     """
-    Exports full PostgreSQL compliance alerts audit ledger as downloadable CSV file.
+    Exports PostgreSQL compliance alerts audit ledger as downloadable CSV file.
+    Streams records in chunked batches to eliminate memory spikes and OOM risks,
+    while escaping formula characters against CWE-1236 CSV injection.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
-    try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            rows = await conn.fetch(
-                """
-                SELECT a.id, a.threat_level, a.ai_risk_score, a.rule_name, a.status, a.created_at,
-                       t.amount, t.currency, s.account_number AS sender, r.account_number AS receiver,
-                       COALESCE(u.username, 'Unassigned') AS assignee
-                FROM alerts a
-                JOIN transactions t ON a.transaction_id = t.id
-                JOIN accounts s ON t.sender_account_id = s.id
-                JOIN accounts r ON t.receiver_account_id = r.id
-                LEFT JOIN users u ON a.assigned_officer_id = u.id
-                ORDER BY a.created_at DESC;
-                """
-            )
 
-            output = io.StringIO()
-            writer = csv.writer(output)
-            writer.writerow([
-                "Alert ID", "Threat Level", "AI Risk Score", "Rule Trigger",
-                "Status", "Triggered At", "Amount", "Currency", "Sender Account",
-                "Receiver Account", "Assigned Officer"
-            ])
-
-            for row in rows:
+    async def stream_csv_rows():
+        try:
+            async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+                output = io.StringIO()
+                writer = csv.writer(output)
                 writer.writerow([
-                    str(row["id"]),
-                    row["threat_level"],
-                    f"{round(float(row['ai_risk_score'] or 0) * 100, 1)}%",
-                    row["rule_name"],
-                    row["status"],
-                    row["created_at"].isoformat(),
-                    float(row["amount"]),
-                    row["currency"],
-                    row["sender"],
-                    row["receiver"],
-                    row["assignee"]
+                    "Alert ID", "Threat Level", "AI Risk Score", "Rule Trigger",
+                    "Status", "Triggered At", "Amount", "Currency", "Sender Account",
+                    "Receiver Account", "Assigned Officer"
                 ])
+                yield output.getvalue()
+                output.seek(0)
+                output.truncate(0)
 
-            output.seek(0)
-            filename = f"aml_alerts_audit_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
-            return StreamingResponse(
-                iter([output.getvalue()]),
-                media_type="text/csv",
-                headers={"Content-Disposition": f"attachment; filename={filename}"}
-            )
-    except Exception as e:
-        logger.error(f"CSV export failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+                offset = 0
+                chunk_size = 1000
+                while True:
+                    rows = await conn.fetch(
+                        """
+                        SELECT a.id, a.threat_level, a.ai_risk_score, a.rule_name, a.status, a.created_at,
+                               t.amount, t.currency, s.account_number AS sender, r.account_number AS receiver,
+                               COALESCE(u.username, 'Unassigned') AS assignee
+                        FROM alerts a
+                        JOIN transactions t ON a.transaction_id = t.id
+                        JOIN accounts s ON t.sender_account_id = s.id
+                        JOIN accounts r ON t.receiver_account_id = r.id
+                        LEFT JOIN users u ON a.assigned_officer_id = u.id
+                        ORDER BY a.created_at DESC
+                        LIMIT $1 OFFSET $2;
+                        """,
+                        chunk_size, offset
+                    )
+                    if not rows:
+                        break
+
+                    for row in rows:
+                        writer.writerow([
+                            sanitize_csv_cell(str(row["id"])),
+                            sanitize_csv_cell(row["threat_level"]),
+                            f"{round(float(row['ai_risk_score'] or 0) * 100, 1)}%",
+                            sanitize_csv_cell(row["rule_name"]),
+                            sanitize_csv_cell(row["status"]),
+                            row["created_at"].isoformat(),
+                            float(row["amount"]),
+                            sanitize_csv_cell(row["currency"]),
+                            sanitize_csv_cell(row["sender"]),
+                            sanitize_csv_cell(row["receiver"]),
+                            sanitize_csv_cell(row["assignee"])
+                        ])
+
+                    yield output.getvalue()
+                    output.seek(0)
+                    output.truncate(0)
+                    offset += len(rows)
+                    if len(rows) < chunk_size:
+                        break
+        except Exception as e:
+            logger.error(f"CSV streaming failed: {e}")
+            raise
+
+    filename = f"aml_alerts_audit_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        stream_csv_rows(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 @router.get("/export/pdf")

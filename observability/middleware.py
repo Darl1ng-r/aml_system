@@ -28,12 +28,16 @@ user_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 
+import time
+
+
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
     """
     FastAPI / Starlette middleware that:
     1. Reads ``X-Correlation-ID`` from the request (or generates a UUID4).
     2. Stores ``correlation_id_var``, ``tenant_id_var``, and ``user_id_var`` in contextvars.
     3. Echoes ``X-Correlation-ID`` back in the response headers.
+    4. Records Prometheus HTTP request counts and latency metrics.
     """
 
     async def dispatch(
@@ -47,6 +51,22 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             tenant_id_var.set(tenant_id)
         user_id_var.set("")
 
-        response = await call_next(request)
-        response.headers["X-Correlation-ID"] = cid
-        return response
+        t0 = time.monotonic()
+        try:
+            response = await call_next(request)
+            duration = time.monotonic() - t0
+            response.headers["X-Correlation-ID"] = cid
+            try:
+                from observability.prometheus import record_http_request
+                record_http_request(request.method, request.url.path, response.status_code, duration)
+            except Exception:
+                pass
+            return response
+        except Exception as exc:
+            duration = time.monotonic() - t0
+            try:
+                from observability.prometheus import record_http_request
+                record_http_request(request.method, request.url.path, 500, duration)
+            except Exception:
+                pass
+            raise exc

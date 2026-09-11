@@ -15,6 +15,7 @@ Provides live PostgreSQL analytics endpoints and WebSocket streaming feeds:
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone, timedelta
 from typing import List
 
@@ -29,27 +30,50 @@ router = APIRouter(tags=["Analytics & Real-Time Streaming"])
 
 # ── WebSocket Manager ──────────────────────────────────────────────────────────
 class ConnectionManager:
-    """Manages active WebSocket dashboard connections and broadcasts real-time events."""
+    """
+    Manages active WebSocket dashboard connections with tenant partitioning
+    and a distributed Redis Pub/Sub backplane for horizontal multi-pod replicas.
+    """
 
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        # Maps WebSocket instance -> {"tenant_id": str, "role": str}
+        self.active_connections: dict[WebSocket, dict] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(
+        self,
+        websocket: WebSocket,
+        tenant_id: str = "00000000-0000-0000-0000-000000000001",
+        role: str = "ANALYST"
+    ):
         await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"WebSocket client connected. Active connections: {len(self.active_connections)}")
+        self.active_connections[websocket] = {
+            "tenant_id": str(tenant_id),
+            "role": role
+        }
+        logger.info(
+            f"WebSocket client connected (tenant={tenant_id}, role={role}). "
+            f"Active connections on this pod: {len(self.active_connections)}"
+        )
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            logger.info(f"WebSocket client disconnected. Remaining: {len(self.active_connections)}")
+            del self.active_connections[websocket]
+            logger.info(f"WebSocket client disconnected. Remaining on this pod: {len(self.active_connections)}")
 
-    async def broadcast(self, message: dict):
+    async def _send_local(self, message: dict, target_tenant_id: str | None = None):
+        """Dispatches message only to authorized local connections (tenant-scoped or global roles)."""
         if not self.active_connections:
             return
         payload = json.dumps(message)
+        target = target_tenant_id or message.get("tenant_id")
         disconnected = []
-        for connection in self.active_connections:
+
+        for connection, info in list(self.active_connections.items()):
+            # Enforce Tenant Isolation:
+            # If target tenant is set, only broadcast to connections from that tenant
+            # or global compliance overseers (SUPER_ADMIN, GLOBAL_AUDITOR).
+            if target and info["tenant_id"] != str(target) and info["role"] not in ["SUPER_ADMIN", "GLOBAL_AUDITOR"]:
+                continue
             try:
                 await connection.send_text(payload)
             except Exception:
@@ -58,8 +82,60 @@ class ConnectionManager:
         for conn in disconnected:
             self.disconnect(conn)
 
+    async def broadcast(self, message: dict, target_tenant_id: str | None = None):
+        """
+        Broadcasts message to authorized local sockets and publishes to Redis Pub/Sub
+        for distribution across other horizontal worker processes and pods.
+        """
+        # 1. Deliver to local clients connected to this pod
+        await self._send_local(message, target_tenant_id)
+
+        # 2. Publish to Redis Pub/Sub channel for inter-pod distribution
+        try:
+            from database.redis_db import get_async_redis_client
+            redis = await get_async_redis_client()
+            if redis:
+                envelope = {
+                    "message": message,
+                    "target_tenant_id": target_tenant_id or message.get("tenant_id"),
+                    "sender_pid": os.getpid()
+                }
+                await redis.publish("aml:events:broadcast", json.dumps(envelope))
+        except Exception as e:
+            logger.debug(f"Redis Pub/Sub broadcast skipped/non-fatal: {e}")
+
 
 ws_manager = ConnectionManager()
+
+
+async def start_redis_ws_listener(ws_mgr: ConnectionManager, shutdown_event: asyncio.Event | None = None):
+    """Background listener consuming Redis Pub/Sub events published by other pods/workers."""
+    from database.redis_db import get_async_redis_client
+    try:
+        redis = await get_async_redis_client()
+        if not redis:
+            return
+        pubsub = redis.pubsub()
+        await pubsub.subscribe("aml:events:broadcast")
+        logger.info("Subscribed to distributed Redis WebSocket channel 'aml:events:broadcast'")
+
+        while shutdown_event is None or not shutdown_event.is_set():
+            try:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg.get("type") == "message":
+                    data = json.loads(msg["data"])
+                    # Discard if this process was the original sender
+                    if data.get("sender_pid") == os.getpid():
+                        continue
+                    await ws_mgr._send_local(data.get("message", {}), data.get("target_tenant_id"))
+                await asyncio.sleep(0.05)
+            except asyncio.CancelledError:
+                break
+            except Exception as loop_err:
+                logger.debug(f"Redis WS listener error: {loop_err}")
+                await asyncio.sleep(1.0)
+    except Exception as e:
+        logger.warning(f"Failed to start Redis WebSocket listener (standalone fallback active): {e}")
 
 
 # ── Analytics API Endpoint ────────────────────────────────────────────────────
@@ -171,12 +247,14 @@ async def websocket_live_stream(websocket: WebSocket, token: str | None = None):
     try:
         from services.secrets_manager import decode_jwt_with_rotation
         from config import settings
-        decode_jwt_with_rotation(token, algorithm=settings.jwt_algorithm)
+        payload = decode_jwt_with_rotation(token, algorithm=settings.jwt_algorithm)
+        tenant_id = str(payload.get("tenant_id", "00000000-0000-0000-0000-000000000001"))
+        role = payload.get("role", "ANALYST")
     except Exception:
         await websocket.close(code=1008, reason="Invalid or expired authentication token")
         return
 
-    await ws_manager.connect(websocket)
+    await ws_manager.connect(websocket, tenant_id=tenant_id, role=role)
     try:
         while True:
             # Keep-alive loop reading client heartbeats

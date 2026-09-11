@@ -142,6 +142,7 @@ async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
             from routers.metrics import ws_manager
             await ws_manager.broadcast({
                 "event": "GRAPH_SYNCED",
+                "tenant_id": str(tx_payload.get("tenant_id", "")),
                 "transaction_id": tx_id,
                 "sender_account": sender_acc,
                 "receiver_account": receiver_acc,

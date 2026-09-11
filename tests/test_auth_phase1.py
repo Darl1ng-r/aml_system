@@ -36,7 +36,13 @@ async def test_login_user_not_found_fails_with_401():
     mock_ctx.__aenter__.return_value = mock_conn
     mock_ctx.__aexit__.return_value = None
 
-    with patch("database.postgres.get_async_db_conn", return_value=mock_ctx):
+    mock_redis = AsyncMock()
+    mock_redis.get.return_value = None
+    mock_redis.incr.return_value = 1
+    mock_redis.expire.return_value = True
+
+    with patch("database.postgres.get_async_db_conn", return_value=mock_ctx), \
+         patch("database.redis_db.get_async_redis_client", AsyncMock(return_value=mock_redis)):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             response = await ac.post(
@@ -62,7 +68,13 @@ async def test_login_invalid_password_fails_with_401():
     mock_ctx.__aenter__.return_value = mock_conn
     mock_ctx.__aexit__.return_value = None
 
-    with patch("database.postgres.get_async_db_conn", return_value=mock_ctx):
+    mock_redis = AsyncMock()
+    mock_redis.get.return_value = None
+    mock_redis.incr.return_value = 1
+    mock_redis.expire.return_value = True
+
+    with patch("database.postgres.get_async_db_conn", return_value=mock_ctx), \
+         patch("database.redis_db.get_async_redis_client", AsyncMock(return_value=mock_redis)):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             response = await ac.post(

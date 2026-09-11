@@ -26,11 +26,11 @@ jobs:
 
       - name: Lint Codebase (Ruff)
         run: |
-          ruff check . --exit-zero
+          ruff check .
 
       - name: Dependency Vulnerability Audit (pip-audit)
         run: |
-          pip-audit -r requirements.txt --ignore-vuln CVE-2023-45803 || true
+          pip-audit -r requirements.txt --ignore-vuln CVE-2023-45803
 
   test:
     name: Run Unit, Integration & Compliance Test Suite
@@ -114,7 +114,7 @@ jobs:
         with:
           image-ref: aml-system:latest
           format: "table"
-          exit-code: "0"
+          exit-code: "1"
           ignore-unfixed: true
           vuln-type: "os,library"
-          severity: "CRITICAL,HIGH"
+          severity: "CRITICAL"

@@ -22,6 +22,7 @@ from services.auth import (
     check_account_lockout,
     record_failed_login,
     reset_failed_logins,
+    RoleChecker,
     LOCKOUT_THRESHOLD,
 )
 from observability.logging import log_audit_event
@@ -56,6 +57,19 @@ def clear_auth_cookies(response: Response):
 class UserSignup(BaseModel):
     username: str = Field(..., min_length=3, max_length=100, pattern=r"^[A-Za-z0-9._@+-]+$")
     password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def sanitize_username(cls, v: str) -> str:
+        if isinstance(v, str):
+            v = v.strip()
+        return sanitize_text(v)
+
+class UserProvision(BaseModel):
+    username: str = Field(..., min_length=3, max_length=100, pattern=r"^[A-Za-z0-9._@+-]+$")
+    password: str = Field(..., min_length=8, max_length=128)
+    role: str = Field("ANALYST", pattern=r"^(ANALYST|AUDITOR|ADMIN)$")
+    tenant_id: Optional[str] = None
 
     @field_validator("username", mode="before")
     @classmethod
@@ -297,7 +311,7 @@ async def login(
         "username": form_data.username
     }
 
-@router.post("/signup")
+@router.post("/signup", summary="Register compliance officer (Defaults strictly to ANALYST)")
 async def signup(
     response: Response,
     payload: UserSignup,
@@ -469,11 +483,76 @@ async def signup(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"User registration error: {e}", exc_info=True)
+        logger.error(f"Local signup failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered or invalid registration data"
         )
+
+@router.post("/provision", summary="Provision institutional compliance user with explicit role/tenant (Admin only)")
+async def provision(
+    response: Response,
+    payload: UserProvision,
+    current_user: dict = Depends(RoleChecker(["SUPER_ADMIN", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=10, window=3600))
+):
+    email = payload.username
+    if "@" not in email:
+        email = f"{email}@aml.com"
+    
+    caller_role = current_user.get("role", "ADMIN")
+    if caller_role == "SUPER_ADMIN" and payload.tenant_id:
+        target_tenant_id = payload.tenant_id
+    else:
+        target_tenant_id = str(current_user.get("tenant_id") or "00000000-0000-0000-0000-000000000001")
+
+    assigned_role = payload.role if caller_role == "SUPER_ADMIN" else "ANALYST"
+    hashed_pw = hash_password(payload.password)
+
+    import uuid
+    from database.postgres import get_async_db_conn
+    async with get_async_db_conn() as conn:
+        existing_user = await conn.fetchrow(
+            "SELECT id FROM users WHERE username = $1;",
+            payload.username
+        )
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username already registered or invalid registration data"
+            )
+
+        local_user_id = str(uuid.uuid4())
+        await conn.execute(
+            """
+            INSERT INTO users (id, username, role, tenant_id, password_hash) 
+            VALUES ($1, $2, $3, $4, $5);
+            """,
+            local_user_id,
+            payload.username,
+            assigned_role,
+            target_tenant_id,
+            hashed_pw
+        )
+    
+    log_audit_event(
+        event_type="USER_PROVISION",
+        actor_id=str(current_user.get("sub", "")),
+        actor_role=caller_role,
+        action="PROVISION",
+        resource_type="USER",
+        resource_id=local_user_id,
+        tenant_id=target_tenant_id,
+        details={"username": payload.username, "assigned_role": assigned_role, "provisioned_by": current_user.get("username")}
+    )
+
+    return {
+        "status": "provisioned",
+        "user_id": local_user_id,
+        "username": payload.username,
+        "role": assigned_role,
+        "tenant_id": target_tenant_id
+    }
 
 
 class RefreshRequest(BaseModel):
