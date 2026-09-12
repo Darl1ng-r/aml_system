@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, status
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, status, Query
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
@@ -345,8 +345,8 @@ async def get_transaction_by_id(
 @router.get("")
 async def list_transactions(
     response: Response,
-    page: int = 1,
-    limit: int = 50,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):

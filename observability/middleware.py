@@ -29,6 +29,21 @@ user_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
 
 
 import time
+import re
+
+_UUID_REGEX = re.compile(r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_NUMERIC_ID_REGEX = re.compile(r"/\d+")
+
+
+def normalize_metric_path(request: Request) -> str:
+    """Normalizes URL paths to prevent Prometheus metric label cardinality explosion."""
+    route = request.scope.get("route")
+    if route and hasattr(route, "path"):
+        return getattr(route, "path")
+    path = request.scope.get("path") or (request.url.path if hasattr(request, "url") else "")
+    path = _UUID_REGEX.sub("/{id}", path)
+    path = _NUMERIC_ID_REGEX.sub("/{id}", path)
+    return path
 
 
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
@@ -51,6 +66,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             tenant_id_var.set(tenant_id)
         user_id_var.set("")
 
+        endpoint = normalize_metric_path(request)
         t0 = time.monotonic()
         try:
             response = await call_next(request)
@@ -58,7 +74,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             response.headers["X-Correlation-ID"] = cid
             try:
                 from observability.prometheus import record_http_request
-                record_http_request(request.method, request.url.path, response.status_code, duration)
+                record_http_request(request.method, endpoint, response.status_code, duration)
             except Exception:
                 pass
             return response
@@ -66,7 +82,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             duration = time.monotonic() - t0
             try:
                 from observability.prometheus import record_http_request
-                record_http_request(request.method, request.url.path, 500, duration)
+                record_http_request(request.method, endpoint, 500, duration)
             except Exception:
                 pass
             raise exc

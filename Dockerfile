@@ -48,4 +48,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/health/live || exit 1
 
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-4}"]

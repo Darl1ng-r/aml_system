@@ -1,7 +1,9 @@
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Header, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional
+import os
 from contextlib import asynccontextmanager
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
 from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist, jwks
@@ -222,11 +224,16 @@ async def lifespan(app_instance: FastAPI):
     await shutdown_db_clients()
 
 
+is_prod = str(settings.environment).lower() == "production"
+
 app = FastAPI(
     title="AML Compliance & Transaction Monitoring API",
     description="Synchronous transaction scoring and asynchronous graph auditing platform.",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=None if is_prod else "/docs",
+    redoc_url=None if is_prod else "/redoc",
+    openapi_url=None if is_prod else "/openapi.json"
 )
 
 # ── Middleware ────────────────────────────────────────────────────────────
@@ -254,8 +261,22 @@ app.include_router(health.router)  # /health, /health/live, /health/ready — mu
 
 
 @app.get("/metrics", tags=["Observability"], summary="Prometheus Metrics Scrape Endpoint")
-def prometheus_metrics():
+def prometheus_metrics(
+    authorization: Optional[str] = Header(None),
+    x_metrics_token: Optional[str] = Header(None)
+):
     """Exposes internal compliance, SLO, and performance metrics in Prometheus exposition format."""
+    is_production = str(settings.environment).lower() == "production"
+    metrics_secret = getattr(settings, "metrics_secret", "") or os.getenv("METRICS_SECRET", "")
+    if is_production and metrics_secret:
+        token = None
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization.split(" ")[1]
+        elif x_metrics_token:
+            token = x_metrics_token
+        if token != metrics_secret:
+            raise HTTPException(status_code=401, detail="Unauthorized metrics scrape access.")
+
     from observability.prometheus import generate_metrics_text
     return Response(
         content=generate_metrics_text(),

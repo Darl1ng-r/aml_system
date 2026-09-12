@@ -13,7 +13,7 @@ def get_elasticsearch_client():
     if _es_client is None:
         try:
             ssl_ctx = get_ssl_context()
-            kwargs = {"hosts": [ELASTICSEARCH_HOST], "connections_per_node": 10}
+            kwargs = {"hosts": [ELASTICSEARCH_HOST], "connections_per_node": 10, "request_timeout": 10.0}
             if settings.elastic_password:
                 kwargs["basic_auth"] = (settings.elastic_user, settings.elastic_password)
             if ssl_ctx:
@@ -34,7 +34,7 @@ async def get_async_elasticsearch_client():
     if _async_es_client is None:
         try:
             ssl_ctx = get_ssl_context()
-            kwargs = {"hosts": [ELASTICSEARCH_HOST], "connections_per_node": 10}
+            kwargs = {"hosts": [ELASTICSEARCH_HOST], "connections_per_node": 10, "request_timeout": 10.0}
             if settings.elastic_password:
                 kwargs["basic_auth"] = (settings.elastic_user, settings.elastic_password)
             if ssl_ctx:

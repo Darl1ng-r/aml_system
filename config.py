@@ -1,6 +1,8 @@
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict  #fix
 
 class Settings(BaseSettings):
+    environment: str = "development"
     postgres_host: str = "localhost"
     postgres_port: int = 5433
     postgres_replica_host: str = "localhost"
@@ -16,6 +18,8 @@ class Settings(BaseSettings):
     
     redis_host: str = "localhost"
     redis_port: int = 6379
+    redis_password: str = ""
+    metrics_secret: str = ""
     
     kafka_bootstrap_servers: str = "localhost:9092"
     transactions_topic: str = "aml.transactions.scored"
@@ -79,6 +83,23 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
+    @model_validator(mode="after")
+    def validate_production_settings(self):
+        if str(self.environment).lower() == "production":
+            insecure_defaults = {
+                "postgrespassword",
+                "passwordpassword",
+                "changeme_in_production",
+                "change_me_in_production_jwt_secret_key_256bit",
+            }
+            if self.postgres_password in insecure_defaults:
+                raise ValueError("CRITICAL: Default postgres_password is forbidden in production environment!")
+            if self.neo4j_password in insecure_defaults:
+                raise ValueError("CRITICAL: Default neo4j_password is forbidden in production environment!")
+            if self.elastic_password in insecure_defaults:
+                raise ValueError("CRITICAL: Default elastic_password is forbidden in production environment!")
+        return self
+
 settings = Settings()
 
 # PostgreSQL Config
@@ -100,6 +121,7 @@ NEO4J_PASSWORD = settings.neo4j_password
 # Redis Config
 REDIS_HOST = settings.redis_host
 REDIS_PORT = settings.redis_port
+REDIS_PASSWORD = settings.redis_password
 
 # Redpanda/Kafka Config
 KAFKA_BOOTSTRAP_SERVERS = settings.kafka_bootstrap_servers

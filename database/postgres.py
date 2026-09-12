@@ -20,7 +20,8 @@ async def init_db_pool():
             dsn=dsn,
             ssl=ssl_ctx,
             min_size=5,
-            max_size=20
+            max_size=20,
+            command_timeout=15.0
         )
         logger.info("Primary asyncpg connection pool initialized.")
 
@@ -32,7 +33,8 @@ async def init_db_pool():
                 dsn=POSTGRES_REPLICA_URL,
                 ssl=ssl_ctx,
                 min_size=2,
-                max_size=15
+                max_size=15,
+                command_timeout=15.0
             )
             logger.info("Read replica asyncpg connection pool initialized.")
         except Exception as e:
@@ -57,7 +59,7 @@ async def get_async_db_conn(tenant_id: str | None = None):
     global db_pool
     if db_pool is None:
         await init_db_pool()
-    async with db_pool.acquire() as conn:
+    async with db_pool.acquire(timeout=5.0) as conn:
         async with conn.transaction():
             if tenant_id:
                 # Set transaction-scoped configuration variable for PostgreSQL Row Level Security (RLS)
@@ -74,11 +76,11 @@ async def get_async_db_read_conn(tenant_id: str | None = None):
     target_pool = db_replica_pool or db_pool
     conn = None
     try:
-        conn = await target_pool.acquire()
+        conn = await target_pool.acquire(timeout=5.0)
     except Exception as e:
         logger.warning(f"Read replica acquire failed, falling back to primary pool: {e}")
         target_pool = db_pool
-        conn = await target_pool.acquire()
+        conn = await target_pool.acquire(timeout=5.0)
 
     try:
         async with conn.transaction(readonly=True):

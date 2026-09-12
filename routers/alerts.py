@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Response, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, Response, BackgroundTasks, Query
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from database.postgres import get_async_db_conn, get_async_db_read_conn
@@ -36,8 +36,8 @@ class AlertAction(BaseModel):
 @router.get("")
 async def list_alerts(
     response: Response,
-    page: int = 1,
-    limit: int = 100,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=100),
     search: str | None = None,
     severity: str | None = None,
     status_filter: str | None = None,

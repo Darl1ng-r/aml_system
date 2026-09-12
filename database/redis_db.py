@@ -1,7 +1,8 @@
 import redis
 import redis.asyncio as async_redis
 import logging
-from config import REDIS_HOST, REDIS_PORT
+import os
+from config import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
 from services.tls_manager import get_ssl_context
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ def get_redis_client():
     if _redis_client is None:
         try:
             ssl_ctx = get_ssl_context()
+            pwd = REDIS_PASSWORD or os.getenv("REDIS_PASSWORD", None)
             kwargs = {
                 "host": REDIS_HOST,
                 "port": REDIS_PORT,
@@ -21,6 +23,8 @@ def get_redis_client():
                 "socket_connect_timeout": 1.0,
                 "socket_timeout": 1.0
             }
+            if pwd:
+                kwargs["password"] = pwd
             if ssl_ctx:
                 kwargs["ssl"] = True
                 kwargs["ssl_context"] = ssl_ctx
@@ -39,6 +43,7 @@ async def get_async_redis_client():
     if _async_redis_client is None:
         try:
             ssl_ctx = get_ssl_context()
+            pwd = REDIS_PASSWORD or os.getenv("REDIS_PASSWORD", None)
             kwargs = {
                 "host": REDIS_HOST,
                 "port": REDIS_PORT,
@@ -46,6 +51,8 @@ async def get_async_redis_client():
                 "socket_connect_timeout": 1.0,
                 "socket_timeout": 1.0
             }
+            if pwd:
+                kwargs["password"] = pwd
             if ssl_ctx:
                 kwargs["ssl"] = True
                 kwargs["ssl_context"] = ssl_ctx

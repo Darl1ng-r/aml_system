@@ -116,7 +116,16 @@ def get_or_create_rsa_keypair() -> tuple[str, str]:
         except Exception as e:
             logger.warning(f"Failed to parse JWT_PRIVATE_KEY_PEM: {e}")
 
-    # 4. Generate persistent keypair in memory for development / runtime
+    # 4. Check environment: ephemeral in-memory keys are strictly forbidden in production
+    env = os.getenv("ENVIRONMENT", getattr(settings, "environment", "development")).lower()
+    if env == "production":
+        raise RuntimeError(
+            "CRITICAL SECURITY FAILURE: Ephemeral in-memory RSA key generation is strictly forbidden in production! "
+            "Mount an RSA private key file at /var/run/secrets/jwt/private.pem, provide JWT_PRIVATE_KEY_PEM in the "
+            "environment, or configure HashiCorp Vault. Ephemeral keys cause multi-pod token signature desynchronization."
+        )
+
+    # 5. Generate persistent keypair in memory for local development / testing only
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pub = key.public_key()
     _cached_rsa_private_pem = key.private_bytes(

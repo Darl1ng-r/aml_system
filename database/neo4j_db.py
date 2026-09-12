@@ -13,7 +13,11 @@ def get_neo4j_driver():
     if _driver is None:
         try:
             ssl_ctx = get_ssl_context()
-            kwargs = {"auth": (NEO4J_USER, NEO4J_PASSWORD)}
+            kwargs = {
+                "auth": (NEO4J_USER, NEO4J_PASSWORD),
+                "connection_timeout": 5.0,
+                "max_connection_lifetime": 3600
+            }
             if ssl_ctx:
                 kwargs["encrypted"] = True
                 kwargs["ssl_context"] = ssl_ctx
@@ -36,7 +40,11 @@ async def get_async_neo4j_driver():
     if _async_driver is None:
         try:
             ssl_ctx = get_ssl_context()
-            kwargs = {"auth": (NEO4J_USER, NEO4J_PASSWORD)}
+            kwargs = {
+                "auth": (NEO4J_USER, NEO4J_PASSWORD),
+                "connection_timeout": 5.0,
+                "max_connection_lifetime": 3600
+            }
             if ssl_ctx:
                 kwargs["encrypted"] = True
                 kwargs["ssl_context"] = ssl_ctx

@@ -18,7 +18,7 @@ Provides API endpoints for scheduled and batch regulatory compliance filings:
 
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import Response, StreamingResponse
 from database.postgres import get_async_db_conn
 from services.auth import RoleChecker, enforce_tenant_data_scope
@@ -67,6 +67,8 @@ async def generate_str_batch(
 @router.get("/batches")
 @router.get("/list")
 async def list_str_batches(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
@@ -80,8 +82,10 @@ async def list_str_batches(
                 """
                 SELECT id, record_count, total_amount, checksum, status, created_at
                 FROM str_batches
-                ORDER BY created_at DESC;
-                """
+                ORDER BY created_at DESC
+                LIMIT $1 OFFSET $2;
+                """,
+                limit, offset
             )
             batches = []
             for r in rows:
