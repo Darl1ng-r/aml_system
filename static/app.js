@@ -666,7 +666,17 @@ async function checkServerStatus() {
     }
 }
 
-// ── Real-Time WebSocket Connection ────────────────────────────────────────────
+// ── Real-Time WebSocket Connection & Debounced Live Reload ───────────────────
+let _liveReloadDebounceTimer = null;
+
+function scheduleLiveRefresh() {
+    if (_liveReloadDebounceTimer) clearTimeout(_liveReloadDebounceTimer);
+    _liveReloadDebounceTimer = setTimeout(() => {
+        loadAlerts();
+        loadDashboardAnalytics();
+    }, 2500);
+}
+
 function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const token = localStorage.getItem('jwt_token');
@@ -686,22 +696,18 @@ function initWebSocket() {
                 const data = JSON.parse(event.data);
                 if (data.event === 'NEW_ALERT') {
                     log(`⚡ REAL-TIME EVENT: New Alert Triggered! Rule: ${data.rule_name}, Threat: ${data.threat_level}`, 'err');
-                    loadAlerts();
-                    loadDashboardAnalytics();
+                    scheduleLiveRefresh();
                 } else if (data.event === 'NEW_TRANSACTION') {
                     log(`📥 LIVE TRANSACTION: Ingested $${data.amount} ${data.currency} (Score: ${Math.round(data.risk_score * 100)}%)`, 'info');
                 } else if (data.event === 'ALERT_RESOLVED') {
                     log(`✅ REAL-TIME EVENT: Case Resolved. Status: ${data.status}`, 'success');
-                    loadAlerts();
-                    loadDashboardAnalytics();
+                    scheduleLiveRefresh();
                 } else if (data.event === 'ALERT_ESCALATED') {
                     log(`⚠️ REAL-TIME EVENT: Case Escalated by ${data.escalated_by}. Status: ${data.status}`, 'warn');
-                    loadAlerts();
-                    loadDashboardAnalytics();
+                    scheduleLiveRefresh();
                 } else if (data.event === 'ALERT_ASSIGNED') {
                     log(`👤 REAL-TIME EVENT: Case assigned to ${data.assigned_officer}`, 'info');
-                    loadAlerts();
-                    loadDashboardAnalytics();
+                    scheduleLiveRefresh();
                 } else if (data.event === 'GRAPH_SYNCED') {
                     log(`🕸️ REAL-TIME GRAPH: Synced edge $${data.amount} (${data.sender_account} → ${data.receiver_account})`, 'info');
                     if (activeAlertId) {
@@ -747,6 +753,11 @@ function log(msg, type = 'info') {
     entry.appendChild(timeSpan);
     entry.appendChild(textSpan);
     feed.appendChild(entry);
+
+    // Prevent memory leaks: cap feed at 200 elements
+    while (feed.children.length > 200) {
+        feed.removeChild(feed.firstChild);
+    }
     feed.scrollTop = feed.scrollHeight;
 }
 

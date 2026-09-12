@@ -12,27 +12,34 @@ import html
 from typing import Any
 
 
-_HTML_TAG_RE = re.compile(r"<[^>]*?>")
-_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_HTML_TAG_RE = re.compile(r"<[^<>]*?>")
+# Control characters, ASCII unprintable, and Trojan Source bidirectional override / zero-width characters
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 
 def sanitize_text(val: Any) -> Any:
     """
     Sanitizes string inputs by:
-    1. Stripping null bytes and invisible control characters.
-    2. Stripping HTML/script tags.
-    3. Decoding HTML entities.
-    4. Trimming leading/trailing whitespace.
+    1. Stripping null bytes, control characters, zero-width, and Trojan Source bidi overrides.
+    2. Decoding HTML entities to catch obfuscated tags (e.g. &lt;script&gt;).
+    3. Iteratively stripping HTML/script tags (preventing nested bypasses like <<script>script>).
+    4. Removing lingering angle brackets.
+    5. Trimming leading/trailing whitespace.
     """
     if not isinstance(val, str):
         return val
 
-    # 1. Remove null bytes and control chars
+    # 1. Remove null bytes, control chars, and bidi override characters
     cleaned = _CONTROL_CHAR_RE.sub("", val)
-    # 2. Decode HTML entities first to catch obfuscated tags (e.g. &lt;script&gt;)
+    # 2. Decode HTML entities to catch obfuscated tags (e.g. &lt;script&gt;)
     cleaned = html.unescape(cleaned)
-    # 3. Strip any resulting HTML/script tags
-    cleaned = _HTML_TAG_RE.sub("", cleaned)
+    # 3. Iteratively strip HTML/script tags to prevent nested tag injection
+    prev = None
+    iteration = 0
+    while prev != cleaned and iteration < 5:
+        prev = cleaned
+        cleaned = _HTML_TAG_RE.sub("", cleaned)
+        iteration += 1
     # 4. Remove lingering raw bracket characters that could form malformed injection
     cleaned = cleaned.replace("<", "").replace(">", "")
     # 5. Trim leading/trailing whitespace

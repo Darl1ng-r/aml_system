@@ -1,0 +1,13 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aml-fastapi-pdb
+  namespace: aml-system
+  labels:
+    app.kubernetes.io/name: aml-fastapi-pdb
+    app.kubernetes.io/part-of: aml-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: aml-fastapi-app

@@ -1,14 +1,14 @@
 import logging
+from typing import Optional
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 from config import settings
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import jwt
 
 logger = logging.getLogger(__name__)
 
-from pydantic import BaseModel, Field, field_validator
 from observability.sanitizer import sanitize_text
 
 from services.rate_limiter import RateLimiter

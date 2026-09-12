@@ -27,7 +27,8 @@ class RateLimiter:
                 test_ctx = os.environ.get("PYTEST_CURRENT_TEST", "").split(" ")[0].split("::")[-1]
                 client_ip = f"test_{os.getpid()}_{test_ctx}_{client_ip}"
 
-            key = f"rate_limit:{request.url.path}:{client_ip}"
+            normalized_path = request.url.path.rstrip("/") or "/"
+            key = f"rate_limit:{normalized_path}:{client_ip}"
             
             now_ms = time.time() * 1000
             window_start_ms = now_ms - (self.window * 1000)

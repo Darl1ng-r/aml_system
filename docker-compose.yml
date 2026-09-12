@@ -114,8 +114,8 @@ services:
       - --set redpanda.default_topic_replications=3
       - --set redpanda.auto_create_topics_enabled=true
     ports:
-      - "9092:9092"   # Kafka API external
-      - "8082:28082"  # REST Proxy external
+      - "127.0.0.1:9092:9092"   # Kafka API external (loopback only)
+      - "127.0.0.1:8082:28082"  # REST Proxy external (loopback only)
     volumes:
       - redpanda_0_data:/var/lib/redpanda/data
     healthcheck:
@@ -143,7 +143,7 @@ services:
       - --set redpanda.default_topic_replications=3
       - --set redpanda.auto_create_topics_enabled=true
     ports:
-      - "9192:9192"
+      - "127.0.0.1:9192:9192"
     volumes:
       - redpanda_1_data:/var/lib/redpanda/data
     depends_on:
@@ -169,7 +169,7 @@ services:
       - --set redpanda.default_topic_replications=3
       - --set redpanda.auto_create_topics_enabled=true
     ports:
-      - "9292:9292"
+      - "127.0.0.1:9292:9292"
     volumes:
       - redpanda_2_data:/var/lib/redpanda/data
     depends_on:
@@ -205,9 +205,9 @@ services:
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
-      - "16686:16686"   # Jaeger UI
-      - "4317:4317"     # OTLP gRPC collector (used by OTel SDK)
-      - "4318:4318"     # OTLP HTTP collector
+      - "127.0.0.1:16686:16686"   # Jaeger UI
+      - "127.0.0.1:4317:4317"     # OTLP gRPC collector (used by OTel SDK)
+      - "127.0.0.1:4318:4318"     # OTLP HTTP collector
     healthcheck:
       test: ["CMD-SHELL", "wget --spider -q http://localhost:16686/ || exit 1"]
       interval: 10s
@@ -223,7 +223,7 @@ services:
       dockerfile: Dockerfile
     container_name: aml-fastapi-app
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - RUN_EMBEDDED_WORKER=false
       - POSTGRES_HOST=postgres

@@ -16,7 +16,7 @@
   --panel:                #FFFFFF;
   --panel-edge:           #DAD3C3;
   --ink:                  #22262E;
-  --ink-soft:             #6B6F7A;
+  --ink-soft:             #4B4F5A; /* Darkened for WCAG AA 4.5:1 compliance on canvas */
   
   --risk-high:            #C1443B;
   --risk-high-bg:         #FBEAE8;
@@ -49,6 +49,11 @@
   --r-lg:                 10px;
   --r-pill:               9999px;
   --dur-f:                140ms;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
 }
 
 *, *::before, *::after {

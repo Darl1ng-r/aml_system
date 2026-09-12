@@ -347,35 +347,57 @@ async def list_transactions(
     response: Response,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=100),
+    cursor_timestamp: datetime | None = Query(default=None),
+    cursor_id: uuid.UUID | None = Query(default=None),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
     """
     Retrieves a paginated list of transactions within the caller's tenant boundary.
+    Supports both traditional offset pagination (page/limit) and high-throughput keyset cursor pagination.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
     offset = (page - 1) * limit
     try:
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            total_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM transactions WHERE tenant_id = $1;",
-                tenant_id
-            )
-            rows = await conn.fetch(
-                """
-                SELECT t.id, t.amount, t.currency, t.status, t.timestamp,
-                       t.country, t.channel,
-                       s.account_number as sender_account, s.owner_name as sender_name,
-                       r.account_number as receiver_account, r.owner_name as receiver_name
-                FROM transactions t
-                JOIN accounts s ON t.sender_account_id = s.id
-                JOIN accounts r ON t.receiver_account_id = r.id
-                WHERE t.tenant_id = $1
-                ORDER BY t.timestamp DESC
-                LIMIT $2 OFFSET $3;
-                """,
-                tenant_id, limit, offset
-            )
+            if cursor_timestamp:
+                cid = cursor_id or uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
+                rows = await conn.fetch(
+                    """
+                    SELECT t.id, t.amount, t.currency, t.status, t.timestamp,
+                           t.country, t.channel,
+                           s.account_number as sender_account, s.owner_name as sender_name,
+                           r.account_number as receiver_account, r.owner_name as receiver_name
+                    FROM transactions t
+                    JOIN accounts s ON t.sender_account_id = s.id
+                    JOIN accounts r ON t.receiver_account_id = r.id
+                    WHERE t.tenant_id = $1 AND (t.timestamp < $2 OR (t.timestamp = $2 AND t.id < $3))
+                    ORDER BY t.timestamp DESC, t.id DESC
+                    LIMIT $4;
+                    """,
+                    tenant_id, cursor_timestamp, cid, limit
+                )
+                total_count = None
+            else:
+                total_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM transactions WHERE tenant_id = $1;",
+                    tenant_id
+                )
+                rows = await conn.fetch(
+                    """
+                    SELECT t.id, t.amount, t.currency, t.status, t.timestamp,
+                           t.country, t.channel,
+                           s.account_number as sender_account, s.owner_name as sender_name,
+                           r.account_number as receiver_account, r.owner_name as receiver_name
+                    FROM transactions t
+                    JOIN accounts s ON t.sender_account_id = s.id
+                    JOIN accounts r ON t.receiver_account_id = r.id
+                    WHERE t.tenant_id = $1
+                    ORDER BY t.timestamp DESC, t.id DESC
+                    LIMIT $2 OFFSET $3;
+                    """,
+                    tenant_id, limit, offset
+                )
 
             transactions = []
             for r in rows:
@@ -394,8 +416,15 @@ async def list_transactions(
                     "receiver_name": r["receiver_name"]
                 })
 
-            response.headers["X-Total-Count"] = str(total_count or 0)
-            response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+            if rows:
+                last_r = rows[-1]
+                ts_val = last_r["timestamp"]
+                response.headers["X-Next-Cursor-Timestamp"] = ts_val.isoformat() if hasattr(ts_val, "isoformat") else str(ts_val)
+                response.headers["X-Next-Cursor-ID"] = str(last_r["id"])
+
+            if total_count is not None:
+                response.headers["X-Total-Count"] = str(total_count)
+            response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Next-Cursor-Timestamp, X-Next-Cursor-ID"
             return transactions
     except Exception as e:
         logger.error(f"Failed to list transactions: {e}")

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     otel_service_name: str = "aml-platform"
     otel_exporter_endpoint: str = "http://localhost:4317"
 
+    # Sentry APM & Real-Time Error Tracking
+    sentry_dsn: str | None = None
+    sentry_traces_sample_rate: float = 0.1
+
     # Mutual TLS (mTLS) & In-Transit Encryption Settings
     enable_tls: bool = False
     strict_mtls: bool = False

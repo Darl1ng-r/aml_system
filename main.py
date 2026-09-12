@@ -60,6 +60,19 @@ async def startup_db_clients(app_instance: FastAPI):
         logger.info("OpenTelemetry FastAPI instrumentation enabled.")
     except Exception as e:
         logger.warning(f"OpenTelemetry init skipped (non-fatal): {e}")
+
+    # ── 0d. Initialise Sentry error tracking (if configured) ─────────────
+    if getattr(settings, "sentry_dsn", None):
+        try:
+            import sentry_sdk
+            sentry_sdk.init(
+                dsn=settings.sentry_dsn,
+                environment=settings.environment,
+                traces_sample_rate=settings.sentry_traces_sample_rate,
+            )
+            logger.info("Sentry APM & error tracking initialized.")
+        except Exception as e:
+            logger.warning(f"Sentry init skipped (non-fatal): {e}")
     
     allow_offline = os.getenv("ALLOW_OFFLINE_DEV", "false").lower() == "true"
     pg_connected = False

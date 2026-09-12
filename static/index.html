@@ -15,13 +15,13 @@
   <!-- Core Stylesheet -->
   <link rel="stylesheet" href="/static/style.css">
 
-  <!-- Visualization Libraries -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
-  <link href="https://unpkg.com/vis-network/styles/vis-network.min.css" rel="stylesheet">
+  <!-- Visualization Libraries (Pinned with Subresource Integrity) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4" crossorigin="anonymous" defer></script>
+  <script src="https://unpkg.com/vis-network@10.1.2/standalone/umd/vis-network.min.js" integrity="sha384-RDdG1CLOxjNlTHh4JYx/rnAueaMHbkBHmeHwrEyljMQw3LF0it4SkuNotIY/FPxD" crossorigin="anonymous" defer></script>
+  <link href="https://unpkg.com/vis-network@10.1.2/styles/vis-network.min.css" rel="stylesheet" integrity="sha384-dyJxWiQJAf9QvdWzvgaFgxG2+qGBlxRcGINxMWNJBYZ7731QjuquKfhX2OUkb22J" crossorigin="anonymous">
 
   <!-- Lucide Icon Library -->
-  <script src="/static/lucide.min.js"></script>
+  <script src="/static/lucide.min.js" defer></script>
 
   <!-- Auth Guard: Redirect unauthenticated sessions to login -->
   <script>
@@ -436,7 +436,7 @@
 
         <div class="panel" style="margin:0;">
           <div class="panel-title">System Audit Log Feed</div>
-          <div class="live-log-feed" id="log-feed"></div>
+          <div class="live-log-feed" id="log-feed" role="log" aria-live="polite" aria-label="Live Compliance Events"></div>
         </div>
       </div>
     </div>
