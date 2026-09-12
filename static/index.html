@@ -36,6 +36,11 @@
   <!-- ═══════════════════════════════════════════════════════════
        3-PANE CASE INVESTIGATION COCKPIT SHELL
   ══════════════════════════════════════════════════════════════ -->
+  <div id="mock-mode-banner" style="display:none; background:#fff3cd; color:#856404; padding:8px 16px; font-size:12px; font-weight:600; text-align:center; border-bottom:1px solid #ffeeba;">
+    <i data-lucide="alert-triangle" style="width:14px; height:14px; display:inline-block; vertical-align:middle; margin-right:6px;"></i>
+    SIMULATED EVALUATION MODE: Database connection offline. Actions are evaluating on local mock fixtures.
+  </div>
+
   <div class="shell">
 
     <!-- ── TOP BAR ─────────────────────────────────────────── -->
@@ -46,6 +51,10 @@
       </div>
 
       <div class="topbar-right">
+        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:var(--panel-edge); margin-right:8px;">
+          <span class="pulse-dot" style="width:7px; height:7px; border-radius:50%; background:#10b981;"></span>
+          <span id="app-status-text">Compliance Engine Online</span>
+        </div>
         <span class="queue-pos" id="queue-position-display">Case 1 of 1 in queue</span>
         <span class="kbd-hint"><kbd>A</kbd> approve <kbd>B</kbd> block <kbd>→</kbd> next</span>
 
@@ -575,9 +584,6 @@
        COMPATIBILITY BRIDGES FOR APP.JS
   ══════════════════════════════════════════════════════════════ -->
   <div style="display:none;" aria-hidden="true">
-    <div id="mock-mode-banner"></div>
-    <div id="app-status-badge"></div>
-    <div id="app-status-text"></div>
     <input type="text" id="inbox-search">
     <select id="inbox-filter-severity"><option value="ALL">ALL</option></select>
     <div id="pagination-start"></div>

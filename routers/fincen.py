@@ -14,7 +14,7 @@ Provides HTTP API endpoints for electronic FinCEN SAR transmission:
 import logging
 import uuid
 from pydantic import BaseModel, Field, field_validator
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from database.postgres import get_async_db_conn
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.fincen_efiling import fincen_client
@@ -36,9 +36,11 @@ class FinCENSubmissionRequest(BaseModel):
         return sanitize_text(v)
 
 
-@router.post("/sar/submit")
+@router.post("/sars", status_code=status.HTTP_201_CREATED)
+@router.post("/sar/submit", status_code=status.HTTP_201_CREATED)
 async def submit_sar_to_fincen(
     payload: FinCENSubmissionRequest,
+    response: Response = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
@@ -85,6 +87,9 @@ async def submit_sar_to_fincen(
             "submitted_by": current_user["username"]
         })
 
+        if response is not None:
+            response.headers["Location"] = f"/api/v1/fincen/sars/{payload.alert_id}"
+
         return {
             "alert_id": payload.alert_id,
             "fincen_tracking_id": receipt["fincen_tracking_id"],
@@ -101,6 +106,8 @@ async def submit_sar_to_fincen(
         raise HTTPException(status_code=500, detail=f"FinCEN filing failed: {str(e)}")
 
 
+@router.get("/sars/{id}")
+@router.get("/sars/{id}/status")
 @router.get("/sar/status/{id}")
 async def get_fincen_status(
     id: str,

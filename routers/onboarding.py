@@ -1,11 +1,13 @@
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Response, status
 from pydantic import BaseModel
+import uuid
 from database.postgres import get_async_db_conn
 from database.neo4j_db import get_async_neo4j_driver
 from database.elasticsearch_db import get_async_elasticsearch_client
 from routers.screening import perform_sanctions_search
 from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
+from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +52,13 @@ class CorporateOnboard(BaseModel):
     def sanitize_corporate_fields(cls, v: str) -> str:
         return sanitize_text(v)
 
-@router.post("/individual")
-async def onboard_individual(payload: IndividualOnboard, current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))):
+@router.post("/accounts/individual", status_code=status.HTTP_201_CREATED)
+@router.post("/individual", status_code=status.HTTP_201_CREATED)
+async def onboard_individual(
+    payload: IndividualOnboard,
+    response: Response = None,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))
+):
     # Enforce Data-Level RBAC tenant scoping
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
 
@@ -82,6 +89,9 @@ async def onboard_individual(payload: IndividualOnboard, current_user: dict = De
                 authorized_tenant_id, payload.account_number, payload.swift_bic, payload.name, risk_score
             )
             
+            if response is not None:
+                response.headers["Location"] = f"/api/v1/onboard/accounts/{account_id}"
+
             return {
                 "account_id": str(account_id),
                 "status": "APPROVED" if risk_score < 0.8 else "HELD_FOR_REVIEW",
@@ -92,11 +102,17 @@ async def onboard_individual(payload: IndividualOnboard, current_user: dict = De
     except Exception as e:
         logger.error(f"Onboarding failed: {e}", exc_info=True)
         if "unique constraint" in str(e).lower():
-            raise HTTPException(status_code=400, detail="Account number already exists")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account number already exists")
         raise HTTPException(status_code=500, detail="Onboarding failed due to an internal error.")
 
-@router.post("/corporate")
-async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_async_neo4j_driver), current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))):
+@router.post("/accounts/corporate", status_code=status.HTTP_201_CREATED)
+@router.post("/corporate", status_code=status.HTTP_201_CREATED)
+async def onboard_corporate(
+    payload: CorporateOnboard,
+    response: Response = None,
+    neo4j_driver=Depends(get_async_neo4j_driver),
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))
+):
     # Enforce Data-Level RBAC tenant scoping
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
 
@@ -116,12 +132,15 @@ async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_
                 """,
                 authorized_tenant_id, payload.account_number, payload.swift_bic, payload.company_name, 0.15
             )
+
+            if response is not None:
+                response.headers["Location"] = f"/api/v1/onboard/accounts/{account_id}"
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"PostgreSQL corporate onboarding failed: {e}", exc_info=True)
         if "unique constraint" in str(e).lower():
-            raise HTTPException(status_code=400, detail="Account number already exists")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account number already exists")
         raise HTTPException(status_code=500, detail="Corporate onboarding database error.")
 
     # Step 2: Save corporate structures & UBO tracing to Neo4j
@@ -179,3 +198,97 @@ async def onboard_corporate(payload: CorporateOnboard, neo4j_driver=Depends(get_
     except Exception as e:
         logger.error(f"Neo4j corporate onboarding failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Corporate graph registration failed due to an internal error.")
+
+
+@router.get("/accounts/{id}")
+async def get_account_by_id(
+    id: str,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    """
+    Retrieves an onboarded account KYC and risk profile by its UUID.
+    """
+    try:
+        acc_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid account ID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, account_number, swift_bic, owner_name, risk_score, risk_category, created_at
+                FROM accounts
+                WHERE id = $1 AND tenant_id = $2;
+                """,
+                acc_uuid, tenant_id
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Account not found")
+
+            return {
+                "account_id": str(row["id"]),
+                "account_number": row["account_number"],
+                "swift_bic": row["swift_bic"],
+                "owner_name": row["owner_name"],
+                "risk_score": float(row["risk_score"]) if row["risk_score"] else 0.0,
+                "risk_tier": row["risk_category"] or "STANDARD",
+                "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"])
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch account {id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+
+
+@router.get("/accounts")
+async def list_accounts(
+    response: Response,
+    page: int = 1,
+    limit: int = 50,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    """
+    Retrieves a paginated list of accounts within the caller's tenant boundary.
+    """
+    tenant_id = enforce_tenant_data_scope(current_user)
+    offset = (page - 1) * limit
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            total_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM accounts WHERE tenant_id = $1;",
+                tenant_id
+            )
+            rows = await conn.fetch(
+                """
+                SELECT id, account_number, swift_bic, owner_name, risk_score, risk_category, created_at
+                FROM accounts
+                WHERE tenant_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3;
+                """,
+                tenant_id, limit, offset
+            )
+
+            accounts = []
+            for r in rows:
+                accounts.append({
+                    "account_id": str(r["id"]),
+                    "account_number": r["account_number"],
+                    "swift_bic": r["swift_bic"],
+                    "owner_name": r["owner_name"],
+                    "risk_score": float(r["risk_score"]) if r["risk_score"] else 0.0,
+                    "risk_tier": r["risk_category"] or "STANDARD",
+                    "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"])
+                })
+
+            response.headers["X-Total-Count"] = str(total_count or 0)
+            response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+            return accounts
+    except Exception as e:
+        logger.error(f"Failed to list accounts: {e}")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")

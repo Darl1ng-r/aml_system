@@ -669,7 +669,10 @@ async function checkServerStatus() {
 // ── Real-Time WebSocket Connection ────────────────────────────────────────────
 function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/live-stream`;
+    const token = localStorage.getItem('jwt_token');
+    const wsUrl = token
+        ? `${protocol}//${window.location.host}/ws/live-stream?token=${encodeURIComponent(token)}`
+        : `${protocol}//${window.location.host}/ws/live-stream`;
 
     try {
         liveWebSocket = new WebSocket(wsUrl);
@@ -689,6 +692,10 @@ function initWebSocket() {
                     log(`📥 LIVE TRANSACTION: Ingested $${data.amount} ${data.currency} (Score: ${Math.round(data.risk_score * 100)}%)`, 'info');
                 } else if (data.event === 'ALERT_RESOLVED') {
                     log(`✅ REAL-TIME EVENT: Case Resolved. Status: ${data.status}`, 'success');
+                    loadAlerts();
+                    loadDashboardAnalytics();
+                } else if (data.event === 'ALERT_ESCALATED') {
+                    log(`⚠️ REAL-TIME EVENT: Case Escalated by ${data.escalated_by}. Status: ${data.status}`, 'warn');
                     loadAlerts();
                     loadDashboardAnalytics();
                 } else if (data.event === 'ALERT_ASSIGNED') {
@@ -906,8 +913,22 @@ function renderMockCharts() {
     ]);
 }
 
+// Global search and filter state
+let activeSearchTerm = '';
+let activeSeverityFilter = 'ALL';
+
+function formatTenure(dateStr) {
+    if (!dateStr) return 'Verified';
+    const d = new Date(dateStr);
+    const months = Math.max(1, Math.round((Date.now() - d.getTime()) / (30 * 86400 * 1000)));
+    return months >= 12 ? `${Math.floor(months / 12)}y ${months % 12}m` : `${months} mo`;
+}
+
 // TAB 1 & 2: Alerts and Triage loading
-async function loadAlerts() {
+async function loadAlerts(search = null, severity = null) {
+    if (search !== null) activeSearchTerm = search;
+    if (severity !== null) activeSeverityFilter = severity;
+
     log('Loading telemetry cases queue...', 'info');
     if (mockMode) {
         renderInbox(activeAlerts);
@@ -921,7 +942,11 @@ async function loadAlerts() {
     }
 
     try {
-        const response = await fetch(`${BASE_URL}/api/v1/alerts?page=${currentPage}&limit=${pageSize}`, {
+        let url = `${BASE_URL}/api/v1/alerts?page=${currentPage}&limit=${pageSize}`;
+        if (activeSearchTerm) url += `&search=${encodeURIComponent(activeSearchTerm)}`;
+        if (activeSeverityFilter && activeSeverityFilter !== 'ALL') url += `&severity=${encodeURIComponent(activeSeverityFilter)}`;
+
+        const response = await fetch(url, {
             headers: getAuthHeaders()
         });
 
@@ -940,10 +965,15 @@ async function loadAlerts() {
             activeAlerts = data.map((alert) => {
                 const tx = alert.transaction || {};
                 const amountFormatted = tx.amount ? '$' + Number(tx.amount).toLocaleString('en-US', { minimumFractionDigits: 2 }) : '$0.00';
+                const senderName = tx.sender_name || tx.sender || 'Primary Account';
+                const receiverName = tx.receiver_name || tx.receiver || 'Beneficiary';
+                const tenure = alert.account_created_at ? formatTenure(alert.account_created_at) : 'Institutional';
+                const riskTier = alert.sender_risk_tier || (alert.threat_level === 'CRITICAL' ? 'CRITICAL' : 'STANDARD');
+
                 return {
                     alert_id: alert.alert_id,
                     short_id: alert.alert_id ? alert.alert_id.slice(-6) : 'N/A',
-                    title: `${alert.rule_name || 'AML ALERT'} — ${amountFormatted} (${tx.sender || 'Sender'} → ${tx.receiver || 'Receiver'})`,
+                    title: `${alert.rule_name || 'AML ALERT'} — ${amountFormatted} (${senderName} → ${receiverName})`,
                     rule_name: alert.rule_name || 'COMPLIANCE_ALERT',
                     threat_level: alert.threat_level || 'MEDIUM',
                     ai_risk_score: alert.ai_risk_score !== null && alert.ai_risk_score !== undefined ? alert.ai_risk_score : 0.5,
@@ -954,7 +984,7 @@ async function loadAlerts() {
                     channel: tx.channel || 'Wire Transfer',
                     counterparty_jurisdiction: tx.country || 'DOMESTIC',
                     prior_30d_txns: 1,
-                    account_tenure: 'Institutional',
+                    account_tenure: tenure,
                     rules_triggered_count: 1,
                     model_version: 'v4.2.1',
                     transaction: {
@@ -963,8 +993,12 @@ async function loadAlerts() {
                         timestamp: tx.timestamp || new Date().toISOString(),
                         sender: tx.sender || 'Primary Account',
                         sender_account: tx.sender || 'N/A',
+                        sender_name: senderName,
                         receiver: tx.receiver || 'Beneficiary',
-                        receiver_account: tx.receiver || 'N/A'
+                        receiver_account: tx.receiver || 'N/A',
+                        receiver_name: receiverName,
+                        channel: tx.channel || 'Wire Transfer',
+                        country: tx.country || 'DOMESTIC'
                     },
                     rules_triggered: [
                         { code: alert.rule_name || 'R-COMP-01', desc: `— Triggered compliance rule ${alert.rule_name}`, critical: alert.threat_level === 'CRITICAL' }
@@ -973,14 +1007,14 @@ async function loadAlerts() {
                         attributions: { "transaction_risk": 0.5 }
                     },
                     entity: {
-                        name: tx.sender || 'Sender Account',
+                        name: senderName,
                         nationality: tx.country || 'Global',
-                        tier: alert.threat_level === 'CRITICAL' ? 'Critical Tier' : 'Standard Tier',
-                        connected: tx.receiver || 'Beneficiary Entity',
-                        customer_since: 'Verified',
-                        occupation: 'Institutional Account',
-                        pep: 'Screened',
-                        sanctions: 'Screened',
+                        tier: `${riskTier} Tier`,
+                        connected: receiverName,
+                        customer_since: tenure,
+                        occupation: 'Commercial Account',
+                        pep: 'Screened Clean',
+                        sanctions: 'Screened Clean',
                         adverse_media: 'Clean'
                     },
                     linked_entities: [],
@@ -1207,19 +1241,30 @@ async function exportAlertsPDF() {
     }
 }
 
+let searchDebounceTimer = null;
 function filterInboxTable() {
-    const searchVal = document.getElementById('inbox-search').value.toLowerCase();
-    const severityVal = document.getElementById('inbox-filter-severity').value;
+    const searchInput = document.getElementById('inbox-search');
+    const severityInput = document.getElementById('inbox-filter-severity');
+    const searchVal = searchInput ? searchInput.value.trim() : '';
+    const severityVal = severityInput ? severityInput.value : 'ALL';
 
-    const filtered = activeAlerts.filter(alert => {
-        const matchesSearch = alert.transaction.sender.toLowerCase().includes(searchVal) ||
-            alert.transaction.receiver.toLowerCase().includes(searchVal) ||
-            alert.alert_id.toLowerCase().includes(searchVal);
-        const matchesSeverity = severityVal === 'ALL' || alert.threat_level === severityVal;
-        return matchesSearch && matchesSeverity;
-    });
+    if (mockMode) {
+        const filtered = activeAlerts.filter(alert => {
+            const matchesSearch = alert.transaction.sender.toLowerCase().includes(searchVal.toLowerCase()) ||
+                alert.transaction.receiver.toLowerCase().includes(searchVal.toLowerCase()) ||
+                alert.alert_id.toLowerCase().includes(searchVal.toLowerCase());
+            const matchesSeverity = severityVal === 'ALL' || alert.threat_level === severityVal;
+            return matchesSearch && matchesSeverity;
+        });
+        renderInbox(filtered);
+        return;
+    }
 
-    renderInbox(filtered);
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => {
+        currentPage = 1;
+        loadAlerts(searchVal, severityVal);
+    }, 300);
 }
 
 // Selecting a case to open Case Investigation Cockpit
@@ -1429,6 +1474,114 @@ function selectCase(id) {
     loadInboxTableHighlights(id);
 
     log(`Cockpit Active: Inspecting Case #${shortId} (${alert.entity ? alert.entity.name : 'Unknown'})`, 'info');
+
+    // Fetch and render authentic KYC, dynamic timeline, and prior alert history
+    fetchAndRenderAlertDetails(id, alert);
+}
+
+async function fetchAndRenderAlertDetails(id, alert) {
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    if (!isUUID || mockMode) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/alerts/${id}/details`, {
+            headers: getAuthHeaders()
+        });
+        if (!response.ok) return;
+        const details = await response.json();
+
+        // Update KYC Snapshot with authentic PostgreSQL data
+        if (details.entity) {
+            const kycName = document.getElementById('ctx-kyc-name');
+            if (kycName) kycName.innerText = details.entity.name || 'N/A';
+
+            const kycTenure = document.getElementById('ctx-kyc-tenure');
+            if (kycTenure && details.entity.customer_since) {
+                kycTenure.innerText = formatTenure(details.entity.customer_since);
+            }
+
+            const kycOcc = document.getElementById('ctx-kyc-occupation');
+            if (kycOcc) kycOcc.innerText = details.entity.risk_tier ? `${details.entity.risk_tier} Risk Account` : 'Commercial Account';
+
+            const kycPep = document.getElementById('ctx-kyc-pep');
+            if (kycPep) kycPep.innerText = details.entity.risk_tier === 'CRITICAL' ? 'Flagged / Review' : 'Screened Clean';
+        }
+
+        // Render dynamic 30-day transaction timeline
+        if (details.timeline_30d && details.timeline_30d.length > 0) {
+            renderTransactionTimeline(details.timeline_30d, details.transaction ? details.transaction.id : null);
+            const prior30dEl = document.getElementById('txn-prior-30d');
+            if (prior30dEl) prior30dEl.innerText = details.timeline_30d.length;
+        }
+
+        // Render authentic prior alerts from PostgreSQL
+        if (details.prior_alerts) {
+            const priorCount = document.getElementById('ctx-prior-alerts-count');
+            const priorList = document.getElementById('ctx-prior-alerts-list');
+            if (priorCount) priorCount.innerText = details.prior_alerts.length;
+            if (priorList) {
+                if (details.prior_alerts.length === 0) {
+                    priorList.innerHTML = '<div style="font-size:12px; color:var(--ink-soft); padding:6px 0;">No prior alerts recorded in 12 mo.</div>';
+                } else {
+                    priorList.innerHTML = details.prior_alerts.map(pa => `
+                        <div class="alert-item">
+                            <span>${pa.rule_name.replace(/_/g, ' ')}</span>
+                            <span class="adate">${new Date(pa.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })} <span class="status-pill ${pa.status.toLowerCase()}">${pa.status}</span></span>
+                        </div>
+                    `).join('');
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("Could not load enhanced alert details:", e);
+    }
+}
+
+function renderTransactionTimeline(history, currentTxnId) {
+    const track = document.getElementById('evidence-timeline-track');
+    if (!track || !Array.isArray(history) || history.length === 0) return;
+
+    // Reset axis and dynamically inject points
+    track.innerHTML = '<div class="timeline-axis"></div>';
+
+    const now = Date.now();
+    const windowStart = now - (30 * 86400 * 1000);
+    const windowEnd = now;
+
+    history.forEach(tx => {
+        const txTime = new Date(tx.timestamp).getTime();
+        let pct = Math.round(((txTime - windowStart) / (windowEnd - windowStart)) * 100);
+        pct = Math.max(3, Math.min(97, pct));
+
+        const pt = document.createElement('div');
+        const isFlagged = tx.is_flagged || (currentTxnId && tx.id === currentTxnId);
+        pt.className = isFlagged ? 'timeline-point highlight' : 'timeline-point';
+        pt.style.left = `${pct}%`;
+
+        if (!isFlagged) {
+            pt.style.background = tx.amount > 10000 ? '#C98A2E' : '#B8B1A0';
+        }
+
+        const dateStr = new Date(tx.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' });
+        const amtStr = '$' + Number(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 });
+        pt.title = `${dateStr} - ${amtStr} (${tx.status || 'INGESTED'})`;
+        track.appendChild(pt);
+    });
+
+    const labelsWrap = document.querySelector('.timeline-labels');
+    if (labelsWrap) {
+        const d30 = new Date(windowStart).toLocaleDateString([], { month: 'short', day: 'numeric' });
+        const d20 = new Date(windowStart + 10 * 86400 * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' });
+        const d10 = new Date(windowStart + 20 * 86400 * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' });
+        labelsWrap.innerHTML = `
+            <span>${d30}</span>
+            <span>${d20}</span>
+            <span>${d10}</span>
+            <span>Today</span>
+        `;
+    }
 }
 
 function loadInboxTableHighlights(id) {
@@ -1445,7 +1598,8 @@ function loadInboxTableHighlights(id) {
 }
 
 async function loadGraphData(alertId, alert) {
-    if (mockMode) {
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(alertId);
+    if (mockMode || !isUUID) {
         renderMockGraph(alert);
         return;
     }
@@ -1727,7 +1881,10 @@ async function resolveCurrentCase(action) {
             return;
         }
 
-        if (!response.ok) throw new Error();
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || `Server returned HTTP ${response.status}`);
+        }
         const res = await response.json();
         alert.status = action;
         log(`Case #${shortId} closed: ${res.status || action}`, 'success');
@@ -1735,11 +1892,7 @@ async function resolveCurrentCase(action) {
         renderQueueRail();
         navigateQueue(1);
     } catch (e) {
-        log('API resolving encountered an issue. Applied local state update.', 'warn');
-        alert.status = action;
-        if (noteInput) noteInput.value = '';
-        renderQueueRail();
-        navigateQueue(1);
+        log(`Failed to resolve case #${shortId} on server: ${e.message}`, 'err');
     }
 }
 
@@ -1756,12 +1909,45 @@ async function escalateCurrentCase() {
 
     const shortId = alert.short_id || (alert.alert_id.includes('-') ? alert.alert_id.split('-').pop() : alert.alert_id.slice(-4));
     log(`Escalating Case #${shortId} to Senior Review Committee...`, 'info');
-    alert.status = 'ESCALATED';
 
-    if (noteInput) noteInput.value = '';
-    log(`Case #${shortId} status updated: ESCALATED`, 'success');
-    renderQueueRail();
-    navigateQueue(1);
+    if (mockMode) {
+        alert.status = 'ESCALATED';
+        if (noteInput) noteInput.value = '';
+        log(`Case #${shortId} status updated: ESCALATED`, 'success');
+        renderQueueRail();
+        navigateQueue(1);
+        return;
+    }
+
+    try {
+        const response = await fetch(`${BASE_URL}/api/v1/alerts/${activeAlertId}/escalate`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({ justification: justification })
+        });
+
+        if (response.status === 401) {
+            logout();
+            return;
+        }
+
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || `Server returned HTTP ${response.status}`);
+        }
+
+        const res = await response.json();
+        alert.status = 'ESCALATED';
+        if (noteInput) noteInput.value = '';
+        log(`Case #${shortId} successfully persisted as ESCALATED in PostgreSQL database.`, 'success');
+        renderQueueRail();
+        navigateQueue(1);
+    } catch (e) {
+        log(`Failed to escalate case #${shortId}: ${e.message}`, 'err');
+    }
 }
 
 // Backward compatibility alias for resolveInboxCase

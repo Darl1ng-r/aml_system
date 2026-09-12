@@ -23,6 +23,8 @@ async def get_network_analysis(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Graph network analysis failed: {str(e)}")
 
+@router.get("/entities/{entity_id}/network")
+@router.get("/nodes/{entity_id}/neighbors")
 @router.get("/expand/{entity_id}")
 async def expand_graph_node(
     entity_id: str,

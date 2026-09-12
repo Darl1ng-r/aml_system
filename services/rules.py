@@ -302,3 +302,26 @@ class RulesEngine:
                 logger.error(f"Sanctions check within rules engine error: {e}")
 
         return triggered_rules
+
+
+async def start_redis_rules_listener(shutdown_event=None):
+    """Listens for distributed rules cache invalidation events across horizontal pods."""
+    from database.redis_db import get_async_redis_client
+    import asyncio
+    while shutdown_event is None or not shutdown_event.is_set():
+        try:
+            redis = await get_async_redis_client()
+            if redis is None:
+                await asyncio.sleep(5)
+                continue
+            pubsub = redis.pubsub()
+            await pubsub.subscribe("aml:rules:cache_invalidate")
+            logger.info("Subscribed to Redis channel 'aml:rules:cache_invalidate'")
+            while shutdown_event is None or not shutdown_event.is_set():
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if msg and msg.get("type") == "message":
+                    RulesEngine.reload_config()
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.debug(f"Redis rules invalidation listener error: {e}")
+            await asyncio.sleep(5)

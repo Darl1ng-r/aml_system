@@ -238,16 +238,17 @@ async def get_dashboard_metrics(
 async def websocket_live_stream(websocket: WebSocket, token: str | None = None):
     """
     WebSocket connection handler pushing real-time events to connected clients.
-    Requires token authentication via query parameter `?token=<JWT>`.
+    Authenticates via query parameter `?token=<JWT>` or HttpOnly cookie `access_token`.
     """
-    if not token:
+    auth_token = token or websocket.cookies.get("access_token")
+    if not auth_token:
         await websocket.close(code=1008, reason="Missing authentication token")
         return
 
     try:
         from services.secrets_manager import decode_jwt_with_rotation
         from config import settings
-        payload = decode_jwt_with_rotation(token, algorithm=settings.jwt_algorithm)
+        payload = decode_jwt_with_rotation(auth_token, algorithm=settings.jwt_algorithm)
         tenant_id = str(payload.get("tenant_id", "00000000-0000-0000-0000-000000000001"))
         role = payload.get("role", "ANALYST")
     except Exception:

@@ -13,7 +13,7 @@ Provides HTTP API endpoints for syncing global regulatory watchlists:
 
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from services.auth import RoleChecker
 from services.watchlist_sync import watchlist_sync_engine
 from services.rate_limiter import RateLimiter
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/watchlist", tags=["Global Watchlist Management"])
 
 
+@router.post("/sync-jobs", status_code=status.HTTP_202_ACCEPTED)
 @router.post("/sync")
 async def sync_watchlists(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),

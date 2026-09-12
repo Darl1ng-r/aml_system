@@ -38,40 +38,79 @@ async def list_alerts(
     response: Response,
     page: int = 1,
     limit: int = 100,
+    search: str | None = None,
+    severity: str | None = None,
+    status_filter: str | None = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            # Get total count of alerts scoped to caller's tenant
-            total_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM alerts WHERE tenant_id = $1;",
-                tenant_id
-            )
+            where_clauses = ["a.tenant_id = $1"]
+            params = [tenant_id]
+            param_idx = 2
+
+            if severity and severity.upper() != "ALL":
+                where_clauses.append(f"a.threat_level = ${param_idx}")
+                params.append(severity.upper())
+                param_idx += 1
+
+            if status_filter and status_filter.upper() != "ALL":
+                where_clauses.append(f"a.status = ${param_idx}")
+                params.append(status_filter.upper())
+                param_idx += 1
+
+            if search and search.strip():
+                term = f"%{search.strip()}%"
+                where_clauses.append(
+                    f"(s.account_number ILIKE ${param_idx} OR s.owner_name ILIKE ${param_idx} "
+                    f"OR r.account_number ILIKE ${param_idx} OR r.owner_name ILIKE ${param_idx} "
+                    f"OR a.rule_name ILIKE ${param_idx})"
+                )
+                params.append(term)
+                param_idx += 1
+
+            where_sql = " AND ".join(where_clauses)
+
+            count_query = f"""
+                SELECT COUNT(*)
+                FROM alerts a
+                JOIN transactions t ON a.transaction_id = t.id
+                JOIN accounts s ON t.sender_account_id = s.id
+                JOIN accounts r ON t.receiver_account_id = r.id
+                WHERE {where_sql};
+            """
+            total_count = await conn.fetchval(count_query, *params)
             
-            # Compute limit and offset
             offset = (page - 1) * limit
             
-            rows = await conn.fetch(
-                """
+            query = f"""
                 SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.explainability_payload, a.status, a.created_at,
                        t.amount, t.currency, t.timestamp,
                        s.account_number as sender, r.account_number as receiver,
-                       COALESCE(u.username, 'Unassigned') as assignee
+                       COALESCE(u.username, 'Unassigned') as assignee,
+                       s.owner_name as sender_name, r.owner_name as receiver_name,
+                       s.risk_category as sender_risk_tier, s.created_at as account_created_at,
+                       t.channel, t.country
                 FROM alerts a
                 JOIN transactions t ON a.transaction_id = t.id
                 JOIN accounts s ON t.sender_account_id = s.id
                 JOIN accounts r ON t.receiver_account_id = r.id
                 LEFT JOIN users u ON a.assigned_officer_id = u.id
+                WHERE {where_sql}
                 ORDER BY a.created_at DESC
-                LIMIT $1 OFFSET $2;
-                """,
-                limit, offset
-            )
+                LIMIT ${param_idx} OFFSET ${param_idx + 1};
+            """
+            rows = await conn.fetch(query, *params, limit, offset)
             
             alerts = []
             for row in rows:
+                def _to_iso(val):
+                    if val is None:
+                        return None
+                    return val.isoformat() if hasattr(val, "isoformat") else str(val)
+
                 alerts.append({
                     "alert_id": str(row[0]),
                     "rule_name": row[1],
@@ -79,19 +118,25 @@ async def list_alerts(
                     "ai_risk_score": float(row[3]) if row[3] else None,
                     "explainability": json.loads(row[4]) if isinstance(row[4], str) else row[4],
                     "status": row[5],
-                    "created_at": row[6].isoformat(),
+                    "created_at": _to_iso(row[6]),
                     "assignee": row[12],
+                    "sender_risk_tier": row[15] if len(row) > 15 and row[15] else "STANDARD",
+                    "account_created_at": _to_iso(row[16]) if len(row) > 16 else None,
                     "transaction": {
                         "amount": float(row[7]),
                         "currency": row[8],
-                        "timestamp": row[9].isoformat(),
+                        "timestamp": _to_iso(row[9]),
                         "sender": row[10],
-                        "receiver": row[11]
+                        "receiver": row[11],
+                        "sender_name": row[13] if len(row) > 13 and row[13] else row[10],
+                        "receiver_name": row[14] if len(row) > 14 and row[14] else row[11],
+                        "channel": row[17] if len(row) > 17 and row[17] else "Wire Transfer",
+                        "country": row[18] if len(row) > 18 and row[18] else "DOMESTIC"
                     }
                 })
             
             # Expose and set custom total count header for frontend
-            response.headers["X-Total-Count"] = str(total_count)
+            response.headers["X-Total-Count"] = str(total_count or 0)
             response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
             return alerts
     except Exception as e:
@@ -363,6 +408,306 @@ async def assign_alert(
         raise HTTPException(status_code=500, detail=f"Failed to assign alert: {str(e)}")
 
 
+class AlertEscalate(BaseModel):
+    justification: str | None = Field(None, max_length=2000)
+
+    @field_validator("justification", mode="before")
+    @classmethod
+    def sanitize_just(cls, v: str | None) -> str | None:
+        return sanitize_text(v) if v else None
+
+
+@router.post("/{id}/escalate")
+async def escalate_alert(
+    id: str,
+    payload: AlertEscalate | None = None,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
+    """
+    Escalates an alert to Senior Compliance Review Committee with persistence in PostgreSQL.
+    """
+    try:
+        alert_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    justification = payload.justification if payload and payload.justification else "Escalated to Senior Review Committee."
+
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            user_uuid = uuid.UUID(str(current_user["id"]))
+            updated = await conn.execute(
+                """
+                UPDATE alerts
+                SET status = 'ESCALATED', assigned_officer_id = $1
+                WHERE id = $2;
+                """,
+                user_uuid, alert_uuid
+            )
+            if updated == "UPDATE 0":
+                raise HTTPException(status_code=404, detail="Alert not found")
+
+            # Audit log
+            from observability.logging import log_audit_event
+            log_audit_event(
+                event_type="ALERT_ESCALATION",
+                actor_id=str(current_user["id"]),
+                actor_role=current_user["role"],
+                action="ESCALATE",
+                resource_type="ALERT",
+                resource_id=id,
+                tenant_id=tenant_id,
+                details={
+                    "username": current_user["username"],
+                    "justification": justification
+                }
+            )
+
+            # Broadcast WebSocket notification
+            from routers.metrics import ws_manager
+            await ws_manager.broadcast({
+                "event": "ALERT_ESCALATED",
+                "alert_id": id,
+                "status": "ESCALATED",
+                "escalated_by": current_user["username"],
+                "justification": justification
+            })
+
+            return {
+                "alert_id": id,
+                "status": "ESCALATED",
+                "message": f"Alert {id} successfully escalated to Senior Review Committee."
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to escalate alert: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to escalate alert: {str(e)}")
+
+
+class AlertPatch(BaseModel):
+    status: str | None = Field(None, pattern=r"^(CLOSE_SAR|CLOSE_FALSE_POSITIVE|ESCALATED|OPEN)$")
+    officer_username: str | None = Field(None, max_length=100)
+    justification: str | None = Field(None, max_length=2000)
+    sar_xml_generate: bool | None = False
+
+    @field_validator("officer_username", "justification", mode="before")
+    @classmethod
+    def sanitize_patch_fields(cls, v: str | None) -> str | None:
+        return sanitize_text(v) if v else None
+
+
+@router.patch("/{id}")
+async def patch_alert(
+    id: str,
+    payload: AlertPatch,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
+    """
+    Canonical RESTful partial update for an alert resource.
+    Supports status transitions (CLOSE_SAR, CLOSE_FALSE_POSITIVE, ESCALATED) and officer assignment.
+    """
+    try:
+        alert_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+
+    # 1. Handle officer assignment if requested
+    if payload.officer_username:
+        await assign_alert(
+            id=id,
+            payload=AlertAssignment(officer_username=payload.officer_username),
+            current_user=current_user
+        )
+
+    # 2. Handle status change if requested
+    if payload.status in ["CLOSE_SAR", "CLOSE_FALSE_POSITIVE"]:
+        res = await resolve_alert(
+            id=id,
+            payload=AlertAction(
+                action=payload.status,
+                justification=payload.justification or "Resolved via REST PATCH",
+                sar_xml_generate=payload.sar_xml_generate or False
+            ),
+            background_tasks=background_tasks,
+            current_user=current_user
+        )
+        return {"alert_id": id, "status": payload.status, "detail": res}
+    elif payload.status == "ESCALATED":
+        res = await escalate_alert(
+            id=id,
+            payload=AlertEscalate(justification=payload.justification or "Escalated via REST PATCH"),
+            current_user=current_user
+        )
+        return {"alert_id": id, "status": "ESCALATED", "detail": res}
+
+    resp = {"alert_id": id, "status": "UPDATED", "message": "Alert updated successfully."}
+    if payload.officer_username:
+        resp["assigned_officer"] = payload.officer_username
+    return resp
+
+
+@router.get("/{id}")
+@router.get("/{id}/details")
+async def get_alert_details(
+    id: str,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    """
+    Returns authentic, complete case details for the 3-Pane Cockpit:
+      - Core alert data & explainability SHAP attributes
+      - Complete transaction telemetry (channel, country, device)
+      - Sender account KYC snapshot & tenure from PostgreSQL
+      - Trailing 30-day transaction timeline for dynamic graph/timeline rendering
+      - Trailing 12-month prior alerts for the same account
+    """
+    try:
+        alert_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+            # 1. Fetch Alert + Transaction + Sender + Receiver + Assignee
+            row = await conn.fetchrow(
+                """
+                SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.explainability_payload,
+                       a.status, a.created_at, COALESCE(u.username, 'Unassigned') as assignee,
+                       t.id as txn_id, t.amount, t.currency, t.timestamp as txn_time,
+                       t.country, t.channel, t.merchant, t.device,
+                       s.id as sender_id, s.account_number as sender_account, s.owner_name as sender_name,
+                       s.swift_bic as sender_bic, s.risk_score as sender_risk_score,
+                       s.risk_category as sender_risk_tier, s.created_at as sender_created_at,
+                       r.id as receiver_id, r.account_number as receiver_account, r.owner_name as receiver_name,
+                       r.swift_bic as receiver_bic
+                FROM alerts a
+                JOIN transactions t ON a.transaction_id = t.id
+                JOIN accounts s ON t.sender_account_id = s.id
+                JOIN accounts r ON t.receiver_account_id = r.id
+                LEFT JOIN users u ON a.assigned_officer_id = u.id
+                WHERE a.id = $1;
+                """,
+                alert_uuid
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Alert not found")
+
+            sender_id = row["sender_id"]
+
+            # 2. Fetch Customer Profile if present
+            profile = await conn.fetchrow(
+                """
+                SELECT kyc_risk_tier, jurisdiction_risk_score, avg_amount, monthly_frequency
+                FROM customer_profiles
+                WHERE account_id = $1;
+                """,
+                sender_id
+            )
+
+            # 3. Trailing 30-day transactions for dynamic timeline
+            tx_rows = await conn.fetch(
+                """
+                SELECT id, amount, currency, timestamp, country, channel, status
+                FROM transactions
+                WHERE sender_account_id = $1
+                  AND timestamp >= $2::timestamptz - INTERVAL '30 days'
+                ORDER BY timestamp ASC;
+                """,
+                sender_id, row["txn_time"]
+            )
+
+            history = []
+            for tx in tx_rows:
+                history.append({
+                    "id": str(tx["id"]),
+                    "amount": float(tx["amount"]),
+                    "currency": tx["currency"],
+                    "timestamp": tx["timestamp"].isoformat(),
+                    "country": tx["country"] or "DOMESTIC",
+                    "channel": tx["channel"] or "Wire",
+                    "status": tx["status"],
+                    "is_flagged": str(tx["id"]) == str(row["txn_id"])
+                })
+
+            # 4. Trailing 12-month prior alerts
+            prior_rows = await conn.fetch(
+                """
+                SELECT a.id, a.rule_name, a.threat_level, a.status, a.created_at
+                FROM alerts a
+                JOIN transactions t ON a.transaction_id = t.id
+                WHERE t.sender_account_id = $1
+                  AND a.id != $2
+                  AND a.created_at >= $3::timestamptz - INTERVAL '365 days'
+                ORDER BY a.created_at DESC
+                LIMIT 10;
+                """,
+                sender_id, alert_uuid, row["created_at"]
+            )
+
+            prior_alerts = []
+            for pa in prior_rows:
+                prior_alerts.append({
+                    "alert_id": str(pa["id"]),
+                    "rule_name": pa["rule_name"],
+                    "threat_level": pa["threat_level"],
+                    "status": pa["status"],
+                    "created_at": pa["created_at"].isoformat()
+                })
+
+            explain = json.loads(row["explainability_payload"]) if row["explainability_payload"] else {}
+
+            return {
+                "id": str(row["id"]),
+                "alert_id": str(row["id"]),
+                "rule_name": row["rule_name"],
+                "threat_level": row["threat_level"],
+                "ai_risk_score": float(row["ai_risk_score"]) if row["ai_risk_score"] else 0.5,
+                "explainability": explain,
+                "status": row["status"],
+                "created_at": row["created_at"].isoformat(),
+                "assignee": row["assignee"],
+                "transaction": {
+                    "id": str(row["txn_id"]),
+                    "amount": float(row["amount"]),
+                    "currency": row["currency"],
+                    "timestamp": row["txn_time"].isoformat(),
+                    "sender_account": row["sender_account"],
+                    "sender_name": row["sender_name"],
+                    "receiver_account": row["receiver_account"],
+                    "receiver_name": row["receiver_name"],
+                    "channel": row["channel"] or "Wire Transfer",
+                    "country": row["country"] or "DOMESTIC",
+                    "merchant": row["merchant"],
+                    "device": row["device"]
+                },
+                "entity": {
+                    "account_id": str(row["sender_id"]),
+                    "name": row["sender_name"],
+                    "account_number": row["sender_account"],
+                    "swift_bic": row["sender_bic"],
+                    "risk_tier": row["sender_risk_tier"] or (profile["kyc_risk_tier"] if profile else "STANDARD"),
+                    "risk_score": float(row["sender_risk_score"]) if row["sender_risk_score"] else 0.0,
+                    "customer_since": row["sender_created_at"].isoformat() if row["sender_created_at"] else None,
+                    "jurisdiction_risk": float(profile["jurisdiction_risk_score"]) if profile and profile["jurisdiction_risk_score"] else 0.1
+                },
+                "timeline_30d": history,
+                "prior_alerts": prior_alerts
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load alert details: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load alert details: {str(e)}")
+
+
 class BulkAlertAction(BaseModel):
     alert_ids: List[str] = Field(..., min_length=1, max_length=100)
     action: str = Field(..., pattern=r"^(CLOSE_SAR|CLOSE_FALSE_POSITIVE)$")
@@ -374,6 +719,7 @@ class BulkAlertAction(BaseModel):
         return sanitize_text(v)
 
 
+@router.patch("")
 @router.post("/bulk-action")
 async def bulk_resolve_alerts(
     payload: BulkAlertAction,

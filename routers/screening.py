@@ -203,6 +203,25 @@ async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | N
     }
 
 
+from fastapi import Query
+
+@router.get("")
+@router.get("/search")
+async def get_screening(
+    name: str = Query(..., min_length=1, max_length=200),
+    threshold: float = Query(0.80, ge=0.50, le=1.00),
+    date_of_birth: str | None = Query(None, max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    es=Depends(get_async_elasticsearch_client),
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
+    """
+    RESTful idempotent identity screening query via GET.
+    """
+    req = ScreeningRequest(name=name, threshold=threshold, date_of_birth=date_of_birth)
+    return await search_sanctions_and_pep(payload=req, es=es, current_user=current_user, _rate_limit=_rate_limit)
+
+
 @router.post("/search")
 async def search_sanctions_and_pep(
     payload: ScreeningRequest, 

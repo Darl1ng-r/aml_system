@@ -472,6 +472,8 @@ async def signup(
             details={"username": payload.username, "method": "local_database"}
         )
 
+        response.status_code = status.HTTP_201_CREATED
+        response.headers["Location"] = "/api/v1/auth/me"
         set_auth_cookies(response, access_token, refresh_token)
         return {
             "access_token": access_token,
@@ -489,7 +491,8 @@ async def signup(
             detail="Username already registered or invalid registration data"
         )
 
-@router.post("/provision", summary="Provision institutional compliance user with explicit role/tenant (Admin only)")
+@router.post("/users", status_code=status.HTTP_201_CREATED, summary="Provision institutional user (RESTful /users)")
+@router.post("/provision", status_code=status.HTTP_201_CREATED, summary="Provision institutional compliance user with explicit role/tenant (Admin only)")
 async def provision(
     response: Response,
     payload: UserProvision,
@@ -518,8 +521,8 @@ async def provision(
         )
         if existing_user:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already registered or invalid registration data"
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Username already registered"
             )
 
         local_user_id = str(uuid.uuid4())
@@ -644,6 +647,8 @@ async def refresh_access_token(
         raise HTTPException(status_code=500, detail="Token refresh failed due to an internal error.")
 
 
+@router.delete("/sessions/current", summary="Revoke current session and clear cookies (RESTful DELETE)")
+@router.delete("/session", summary="Revoke current session (RESTful DELETE)")
 @router.post("/logout", summary="Revoke refresh token and clear cookies")
 async def logout(
     request: Request,
@@ -676,6 +681,9 @@ async def logout(
             logger.warning(f"Error revoking token in Redis during logout: {e}")
 
     clear_auth_cookies(response)
+    if request.method == "DELETE":
+        response.status_code = status.HTTP_204_NO_CONTENT
+        return response
     return {"detail": "Logged out successfully. Refresh token revoked."}
 
 
@@ -694,6 +702,8 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     }
 
 
+@router.delete("/sessions", summary="Revoke all active sessions for current user (RESTful DELETE)")
+@router.delete("/users/me/sessions", summary="Revoke all active sessions (RESTful DELETE)")
 @router.post("/revoke-sessions", summary="Revoke all active sessions for current user")
 async def revoke_sessions(current_user: dict = Depends(get_current_user)):
     """
@@ -904,6 +914,8 @@ async def mfa_verify(response: Response, body: MFAVerifyRequest):
     }
 
 
+@router.delete("/mfa", summary="Disable MFA (RESTful DELETE)")
+@router.delete("/users/me/mfa", summary="Disable MFA (RESTful DELETE)")
 @router.post("/mfa/disable", summary="Disable MFA with password verification")
 async def mfa_disable(body: MFADisableRequest, current_user: dict = Depends(get_current_user)):
     """Disables two-factor authentication after verifying account password."""

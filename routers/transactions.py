@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, status
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
@@ -37,10 +37,11 @@ class TransactionRequest(BaseModel):
     def sanitize_input_strings(cls, v: str | None) -> str | None:
         return sanitize_text(v) if v is not None else None
 
-@router.post("")
+@router.post("", status_code=status.HTTP_201_CREATED)
 async def ingest_transaction(
     payload: TransactionRequest, 
     background_tasks: BackgroundTasks, 
+    response: Response = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=100, window=60))
 ):
@@ -265,6 +266,9 @@ async def ingest_transaction(
     }
     background_tasks.add_task(ws_manager.broadcast, event_payload)
 
+    if response is not None:
+        response.headers["Location"] = f"/api/v1/transactions/{tx_id}"
+
     return {
         "transaction_id": tx_id,
         "decision": decision,
@@ -276,3 +280,123 @@ async def ingest_transaction(
             "dynamic_risk": explainability
         }
     }
+
+
+@router.get("/{id}")
+async def get_transaction_by_id(
+    id: str,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    """
+    Retrieves a single transaction by its UUID with sender/receiver details and tenant isolation.
+    """
+    try:
+        tx_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid transaction ID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT t.id, t.amount, t.currency, t.status, t.timestamp,
+                       t.country, t.merchant, t.device, t.channel,
+                       s.account_number as sender_account, s.owner_name as sender_name,
+                       r.account_number as receiver_account, r.owner_name as receiver_name
+                FROM transactions t
+                JOIN accounts s ON t.sender_account_id = s.id
+                JOIN accounts r ON t.receiver_account_id = r.id
+                WHERE t.id = $1;
+                """,
+                tx_uuid
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail="Transaction not found")
+
+            return {
+                "id": str(row["id"]),
+                "transaction_id": str(row["id"]),
+                "amount": float(row["amount"]),
+                "currency": row["currency"],
+                "status": row["status"],
+                "timestamp": row["timestamp"].isoformat() if hasattr(row["timestamp"], "isoformat") else str(row["timestamp"]),
+                "country": row["country"] or "DOMESTIC",
+                "channel": row["channel"] or "Wire Transfer",
+                "merchant": row["merchant"],
+                "device": row["device"],
+                "sender": {
+                    "account_number": row["sender_account"],
+                    "owner_name": row["sender_name"]
+                },
+                "receiver": {
+                    "account_number": row["receiver_account"],
+                    "owner_name": row["receiver_name"]
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch transaction {id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+
+
+@router.get("")
+async def list_transactions(
+    response: Response,
+    page: int = 1,
+    limit: int = 50,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    """
+    Retrieves a paginated list of transactions within the caller's tenant boundary.
+    """
+    tenant_id = enforce_tenant_data_scope(current_user)
+    offset = (page - 1) * limit
+    try:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+            total_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM transactions WHERE tenant_id = $1;",
+                tenant_id
+            )
+            rows = await conn.fetch(
+                """
+                SELECT t.id, t.amount, t.currency, t.status, t.timestamp,
+                       t.country, t.channel,
+                       s.account_number as sender_account, s.owner_name as sender_name,
+                       r.account_number as receiver_account, r.owner_name as receiver_name
+                FROM transactions t
+                JOIN accounts s ON t.sender_account_id = s.id
+                JOIN accounts r ON t.receiver_account_id = r.id
+                WHERE t.tenant_id = $1
+                ORDER BY t.timestamp DESC
+                LIMIT $2 OFFSET $3;
+                """,
+                tenant_id, limit, offset
+            )
+
+            transactions = []
+            for r in rows:
+                transactions.append({
+                    "id": str(r["id"]),
+                    "transaction_id": str(r["id"]),
+                    "amount": float(r["amount"]),
+                    "currency": r["currency"],
+                    "status": r["status"],
+                    "timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else str(r["timestamp"]),
+                    "country": r["country"] or "DOMESTIC",
+                    "channel": r["channel"] or "Wire",
+                    "sender_account": r["sender_account"],
+                    "sender_name": r["sender_name"],
+                    "receiver_account": r["receiver_account"],
+                    "receiver_name": r["receiver_name"]
+                })
+
+            response.headers["X-Total-Count"] = str(total_count or 0)
+            response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+            return transactions
+    except Exception as e:
+        logger.error(f"Failed to list transactions: {e}")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")

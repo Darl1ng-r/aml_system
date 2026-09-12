@@ -18,7 +18,7 @@ Provides API endpoints for scheduled and batch regulatory compliance filings:
 
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response, StreamingResponse
 from database.postgres import get_async_db_conn
 from services.auth import RoleChecker, enforce_tenant_data_scope
@@ -31,8 +31,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/str/batch", tags=["STR Regulatory Batching"])
 
 
-@router.post("/generate")
+@router.post("/batches", status_code=status.HTTP_201_CREATED)
+@router.post("/generate", status_code=status.HTTP_201_CREATED)
 async def generate_str_batch(
+    response: Response = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=5, window=60))
 ):
@@ -44,6 +46,8 @@ async def generate_str_batch(
         result = await str_batch_engine.generate_batch(str(tenant_id))
 
         if result.get("batch_id"):
+            if response is not None:
+                response.headers["Location"] = f"/api/v1/str/batch/batches/{result['batch_id']}"
             # Broadcast real-time WebSocket update
             from routers.metrics import ws_manager
             await ws_manager.broadcast({
@@ -60,6 +64,7 @@ async def generate_str_batch(
         raise HTTPException(status_code=500, detail=f"STR batch compilation failed: {str(e)}")
 
 
+@router.get("/batches")
 @router.get("/list")
 async def list_str_batches(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
@@ -94,6 +99,8 @@ async def list_str_batches(
         raise HTTPException(status_code=500, detail=f"Failed to fetch batches: {str(e)}")
 
 
+@router.get("/batches/{batch_id}/file")
+@router.get("/batches/{batch_id}")
 @router.get("/{batch_id}/download")
 async def download_str_batch(
     batch_id: str,
@@ -127,6 +134,8 @@ async def download_str_batch(
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 
+@router.post("/batches/{batch_id}/transmissions")
+@router.patch("/batches/{batch_id}")
 @router.post("/{batch_id}/transmit")
 async def transmit_str_batch(
     batch_id: str,

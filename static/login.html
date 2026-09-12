@@ -460,6 +460,9 @@
 
                 // Standard login success
                 if (data.access_token || data.username) {
+                    if (data.access_token) {
+                        localStorage.setItem('jwt_token', data.access_token);
+                    }
                     localStorage.setItem('auth_session_active', 'true');
                     localStorage.setItem('username', data.username);
                     localStorage.setItem('role', data.role);
@@ -497,6 +500,9 @@
                     throw new Error(formatError(data.detail, 'Verification code invalid.'));
                 }
 
+                if (data.access_token) {
+                    localStorage.setItem('jwt_token', data.access_token);
+                }
                 localStorage.setItem('auth_session_active', 'true');
                 localStorage.setItem('username', data.username);
                 localStorage.setItem('role', data.role);
@@ -560,6 +566,9 @@
                 successEl.innerText = 'Account registered successfully! Redirecting...';
                 successEl.style.display = 'block';
 
+                if (data.access_token) {
+                    localStorage.setItem('jwt_token', data.access_token);
+                }
                 localStorage.setItem('auth_session_active', 'true');
                 localStorage.setItem('username', data.username);
                 localStorage.setItem('role', data.role);
