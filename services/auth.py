@@ -141,9 +141,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 from services.secrets_manager import get_jwt_signing_key, decode_jwt_with_rotation
 
-# In-memory cache for replicated users to avoid hammering PostgreSQL on every request
-_synced_users: set[str] = set()
-
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """Issues a short-lived access token (default 15 min) signed with the active primary key."""
     to_encode = data.copy()
@@ -230,20 +227,17 @@ async def get_current_user(
             user_id_var.set(str(user_id))
             tenant_id_var.set(str(tenant_id))
 
-            # Only sync to local PostgreSQL database if not already synced during this process lifecycle
-            cache_key = f"{user_id}:{role}:{tenant_id}"
-            if cache_key not in _synced_users:
-                try:
-                    from database.postgres import get_async_db_conn
-                    async with get_async_db_conn() as conn:
-                        await conn.execute(
-                            "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
-                            "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
-                            user_id, username, role, tenant_id
-                        )
-                    _synced_users.add(cache_key)
-                except Exception:
-                    pass  # Non-fatal if DB is temporarily unreachable for user replication
+            # Idempotent sync to PostgreSQL database (cluster-safe, no local in-memory cache)
+            try:
+                from database.postgres import get_async_db_conn
+                async with get_async_db_conn() as conn:
+                    await conn.execute(
+                        "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
+                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
+                        user_id, username, role, tenant_id
+                    )
+            except Exception:
+                pass  # Non-fatal if DB is temporarily unreachable for user replication
             return {
                 "id": user_id,
                 "username": username,

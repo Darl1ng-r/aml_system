@@ -23,12 +23,13 @@
   <!-- Lucide Icon Library -->
   <script src="/static/lucide.min.js" defer></script>
 
-  <!-- Auth Guard: Redirect unauthenticated sessions to login -->
+  <!-- Auth Guard: Client-side navigation check (Finding #24: no localStorage tokens) -->
   <script>
-    if (!localStorage.getItem('auth_session_active') && !localStorage.getItem('jwt_token') && !document.cookie.includes('access_token')) {
+    if (!document.cookie.includes('access_token') && !sessionStorage.getItem('auth_active')) {
       window.location.replace('/login');
     }
   </script>
+
 </head>
 
 <body>

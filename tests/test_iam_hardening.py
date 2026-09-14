@@ -229,7 +229,7 @@ async def test_rate_limiter_forwarded_for_resolution():
         "method": "GET",
         "path": "/api/v1/alerts",
         "headers": [
-            (b"x-forwarded-for", b"203.0.113.195, 70.41.3.18, 150.172.238.178"),
+            (b"x-forwarded-for", b"203.0.113.195, 10.0.1.18, 10.0.2.178"),
             (b"host", b"test")
         ],
         "client": ("127.0.0.1", 5000)

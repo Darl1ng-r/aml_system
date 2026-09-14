@@ -1,82 +1,82 @@
 """
-Prometheus Metrics Registry and Exposition
-==========================================
-Provides standard Prometheus metrics tracking for compliance, SLOs, and alerting:
+Prometheus Metrics Registry and Exposition (Official prometheus-client)
+======================================================================
+Provides standard Prometheus metrics tracking for compliance, SLOs, and alerting (Finding #7):
 - http_requests_total{method, endpoint, status}
 - http_request_duration_seconds_bucket{endpoint, le}
 - audit_events_total{event_type}
+
+Supports shared-memory multi-process mode via PROMETHEUS_MULTIPROC_DIR.
 """
 
-import threading
-import time
-from collections import defaultdict
+import os
+from prometheus_client import (
+    Counter,
+    Histogram,
+    CollectorRegistry,
+    generate_latest,
+    multiprocess,
+    REGISTRY
+)
 
-_lock = threading.Lock()
-
-# Counters: (method, endpoint, status) -> count
-_http_requests = defaultdict(int)
-
-# Histogram buckets for latency in seconds
 DURATION_BUCKETS = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
-# (endpoint, le) -> count
-_duration_buckets = defaultdict(int)
-# endpoint -> sum of durations
-_duration_sum = defaultdict(float)
-# endpoint -> total count
-_duration_count = defaultdict(int)
 
-# Audit event counters: event_type -> count
-_audit_events = defaultdict(int)
+_is_multiproc = "PROMETHEUS_MULTIPROC_DIR" in os.environ
+
+if _is_multiproc:
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry)
+else:
+    registry = REGISTRY
+
+# Use custom registry or default REGISTRY
+try:
+    http_requests_total = Counter(
+        "http_requests_total",
+        "Total number of HTTP requests processed.",
+        ["method", "endpoint", "status"]
+    )
+except ValueError:
+    http_requests_total = REGISTRY._names_to_collectors.get("http_requests_total")
+
+try:
+    http_request_duration_seconds = Histogram(
+        "http_request_duration_seconds",
+        "HTTP request latency histogram in seconds.",
+        ["endpoint"],
+        buckets=DURATION_BUCKETS
+    )
+except ValueError:
+    http_request_duration_seconds = REGISTRY._names_to_collectors.get("http_request_duration_seconds")
+
+try:
+    audit_events_total = Counter(
+        "audit_events_total",
+        "Total security and compliance audit events emitted.",
+        ["event_type"]
+    )
+except ValueError:
+    audit_events_total = REGISTRY._names_to_collectors.get("audit_events_total")
 
 
 def record_http_request(method: str, endpoint: str, status_code: int, duration_seconds: float):
     """Records an incoming HTTP request execution."""
-    status_str = str(status_code)
-    with _lock:
-        _http_requests[(method, endpoint, status_str)] += 1
-        _duration_sum[endpoint] += duration_seconds
-        _duration_count[endpoint] += 1
-        for b in DURATION_BUCKETS:
-            if duration_seconds <= b:
-                _duration_buckets[(endpoint, str(b))] += 1
-        _duration_buckets[(endpoint, "+Inf")] += 1
+    if http_requests_total:
+        http_requests_total.labels(method=method, endpoint=endpoint, status=str(status_code)).inc()
+    if http_request_duration_seconds:
+        http_request_duration_seconds.labels(endpoint=endpoint).observe(duration_seconds)
 
 
 def record_audit_event(event_type: str):
     """Records an emitted security / compliance audit event."""
-    with _lock:
-        _audit_events[event_type] += 1
+    if audit_events_total:
+        audit_events_total.labels(event_type=event_type).inc()
 
 
 def generate_metrics_text() -> str:
     """Renders all registered metrics into Prometheus text exposition format."""
-    lines = []
-
-    # 1. http_requests_total
-    lines.append("# HELP http_requests_total Total number of HTTP requests processed.")
-    lines.append("# TYPE http_requests_total counter")
-    with _lock:
-        for (method, endpoint, status), count in sorted(_http_requests.items()):
-            lines.append(f'http_requests_total{{method="{method}",endpoint="{endpoint}",status="{status}"}} {count}')
-
-        # 2. http_request_duration_seconds
-        lines.append("# HELP http_request_duration_seconds HTTP request latency histogram in seconds.")
-        lines.append("# TYPE http_request_duration_seconds histogram")
-        endpoints = sorted(list(_duration_count.keys()))
-        for ep in endpoints:
-            for b in DURATION_BUCKETS:
-                cnt = _duration_buckets.get((ep, str(b)), 0)
-                lines.append(f'http_request_duration_seconds_bucket{{endpoint="{ep}",le="{b}"}} {cnt}')
-            inf_cnt = _duration_buckets.get((ep, "+Inf"), 0)
-            lines.append(f'http_request_duration_seconds_bucket{{endpoint="{ep}",le="+Inf"}} {inf_cnt}')
-            lines.append(f'http_request_duration_seconds_sum{{endpoint="{ep}"}} {_duration_sum[ep]:.6f}')
-            lines.append(f'http_request_duration_seconds_count{{endpoint="{ep}"}} {_duration_count[ep]}')
-
-        # 3. audit_events_total
-        lines.append("# HELP audit_events_total Total security and compliance audit events emitted.")
-        lines.append("# TYPE audit_events_total counter")
-        for event_type, count in sorted(_audit_events.items()):
-            lines.append(f'audit_events_total{{event_type="{event_type}"}} {count}')
-
-    lines.append("")
-    return "\n".join(lines)
+    if "PROMETHEUS_MULTIPROC_DIR" in os.environ:
+        reg = CollectorRegistry()
+        multiprocess.MultiProcessCollector(reg)
+        return generate_latest(reg).decode("utf-8")
+    return generate_latest(REGISTRY).decode("utf-8")

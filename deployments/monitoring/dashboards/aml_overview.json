@@ -1,0 +1,152 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Transaction Ingestion Rate (TPS)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(transactions_ingested_total[1m]))",
+          "legendFormat": "Transactions Ingested / sec",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(transactions_scored_total[1m]))",
+          "legendFormat": "Transactions Scored / sec",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth"
+          },
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "title": "Ingestion & Scoring Latency Percentiles (P50, P95, P99)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{endpoint=~\"/api/v1/transactions.*\"}[5m])) by (le))",
+          "legendFormat": "P50 Latency (s)",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{endpoint=~\"/api/v1/transactions.*\"}[5m])) by (le))",
+          "legendFormat": "P95 Latency (s)",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{endpoint=~\"/api/v1/transactions.*\"}[5m])) by (le))",
+          "legendFormat": "P99 Latency (s)",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "red", "value": 0.5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "id": 3,
+      "title": "API Error Rate & SLO Budget",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "(sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m]))) * 100",
+          "legendFormat": "5xx Error Rate (%)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1.0 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "id": 4,
+      "title": "AML Rule Trigger Breakdown",
+      "type": "piechart",
+      "targets": [
+        {
+          "expr": "sum(increase(rules_triggered_total[1h])) by (rule_id)",
+          "legendFormat": "{{rule_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "id": 5,
+      "title": "Redpanda Messaging Lag",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(kafka_consumergroup_lag) by (consumergroup)",
+          "legendFormat": "Consumer Lag - {{consumergroup}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["aml", "compliance", "production"],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "30s", "1m", "5m"]
+  },
+  "timezone": "browser",
+  "title": "AML Platform Overview & SLO Executive Dashboard",
+  "uid": "aml-platform-overview",
+  "version": 1
+}

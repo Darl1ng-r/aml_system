@@ -1,0 +1,73 @@
+global:
+  resolve_timeout: 5m
+  slack_api_url: "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+
+route:
+  group_by: ['alertname', 'tier', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: "slack-aml-alerts"
+  routes:
+    # Critical security alerts -> PagerDuty Sev1 + Security Ops Slack
+    - match:
+        tier: security
+        severity: critical
+      receiver: "pagerduty-compliance-sev1"
+      continue: true
+
+    - match:
+        tier: security
+      receiver: "slack-security-ops"
+
+    # API SLO & High Latency Breaches -> API Oncall PagerDuty
+    - match:
+        tier: api
+        severity: critical
+      receiver: "pagerduty-compliance-sev1"
+
+    # Worker / Kafka Lag -> Platform Engineering Slack
+    - match:
+        tier: worker
+      receiver: "slack-platform-eng"
+
+inhibit_rules:
+  # Inhibit warning alerts if a critical alert is already active for the same tier
+  - source_match:
+      severity: "critical"
+    target_match:
+      severity: "warning"
+    equal: ['tier']
+
+receivers:
+  - name: "slack-aml-alerts"
+    slack_configs:
+      - channel: "#aml-alerts"
+        send_resolved: true
+        title: "AML Platform Alert: {{ .CommonAnnotations.summary }}"
+        text: >-
+          *Description:* {{ .CommonAnnotations.description }}
+          *Severity:* `{{ .CommonLabels.severity }}`
+          *Tier:* `{{ .CommonLabels.tier }}`
+
+  - name: "slack-security-ops"
+    slack_configs:
+      - channel: "#secops-aml-incidents"
+        send_resolved: true
+        title: "🚨 AML SECURITY INCIDENT: {{ .CommonAnnotations.summary }}"
+        text: >-
+          *Incident Details:* {{ .CommonAnnotations.description }}
+          *Severity:* `{{ .CommonLabels.severity }}`
+
+  - name: "slack-platform-eng"
+    slack_configs:
+      - channel: "#platform-aml-pipeline"
+        send_resolved: true
+        title: "AML Ingestion Pipeline Alert: {{ .CommonAnnotations.summary }}"
+        text: "{{ .CommonAnnotations.description }}"
+
+  - name: "pagerduty-compliance-sev1"
+    pagerduty_configs:
+      - service_key: "aml-pagerduty-service-key-placeholder"
+        severity: "{{ .CommonLabels.severity }}"
+        description: "{{ .CommonAnnotations.summary }}: {{ .CommonAnnotations.description }}"

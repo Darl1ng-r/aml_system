@@ -177,6 +177,7 @@ def test_sentry_settings_configuration():
     s = Settings(
         environment="production",
         postgres_password="secure_prod_password_123",
+        aml_app_password="secure_prod_password_999",
         neo4j_password="secure_prod_password_456",
         elastic_password="secure_prod_password_789",
         sentry_dsn="https://public@sentry.io/12345"

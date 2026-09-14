@@ -56,8 +56,12 @@ def get_trusted_client_ip(request: Request, trusted_networks=DEFAULT_TRUSTED_NET
                 except ValueError:
                     continue
 
-            for hop in valid_hops:
-                return hop
+            for hop in reversed(valid_hops):
+                if not is_ip_trusted(hop, trusted_networks):
+                    return hop
+
+            if valid_hops:
+                return valid_hops[0]
 
         real_ip = request.headers.get("x-real-ip")
         if real_ip:

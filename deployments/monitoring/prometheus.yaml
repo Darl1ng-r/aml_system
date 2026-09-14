@@ -1,0 +1,68 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+rule_files:
+  - "prometheus-rules.yaml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+
+scrape_configs:
+  - job_name: "aml-fastapi-app"
+    metrics_path: "/metrics"
+    scheme: "http"
+    bearer_token_file: "/var/run/secrets/monitoring/metrics_secret"
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - aml-system
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: aml-fastapi-app
+      - source_labels: [__meta_kubernetes_pod_ip]
+        action: replace
+        target_label: __address__
+        replacement: $1:8000
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: instance
+    static_configs:
+      - targets: ["localhost:8000"]
+        labels:
+          tier: "api"
+          environment: "production"
+
+  - job_name: "postgres-exporter"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels:
+          tier: "database"
+          service: "postgres"
+
+  - job_name: "redis-exporter"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          tier: "cache"
+          service: "redis"
+
+  - job_name: "redpanda-metrics"
+    scrape_interval: 10s
+    metrics_path: "/public_metrics"
+    static_configs:
+      - targets:
+          - "redpanda-0:9644"
+          - "redpanda-1:9644"
+          - "redpanda-2:9644"
+        labels:
+          tier: "messaging"
+          service: "redpanda"

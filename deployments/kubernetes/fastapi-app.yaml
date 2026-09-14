@@ -39,8 +39,9 @@ spec:
     spec:
       containers:
       - name: fastapi-app
-        image: aml-fastapi-app:latest
-        imagePullPolicy: IfNotPresent
+        # Immutable image tag placeholder (Finding #26: Replaced by CI/CD with sha-${COMMIT_SHA})
+        image: aml-fastapi-app:${IMAGE_TAG}
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         resources:

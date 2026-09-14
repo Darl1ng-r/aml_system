@@ -57,9 +57,12 @@ spec:
             --set redpanda.transaction_coordinator_replication=3 \
             --set redpanda.id_allocator_replication=3 \
             --set redpanda.enable_idempotence=true \
-            --set redpanda.enable_transactions=true \
             --set redpanda.empty_seed_starts_cluster=false \
-            --set redpanda.seed_servers='[{"host":{"address":"aml-redpanda-0.aml-redpanda-headless.aml-system.svc.cluster.local","port":33145}}]'
+            --set redpanda.seed_servers='[{"host":{"address":"aml-redpanda-0.aml-redpanda-headless.aml-system.svc.cluster.local","port":33145}}]' \
+            --set redpanda.kafka_enable_authorization=true \
+            --set redpanda.authentication_method=sasl \
+            --set redpanda.sasl_mechanisms='["SCRAM-SHA-512"]' \
+            --set redpanda.kafka_api_tls='[{"name":"external","enabled":true,"cert_file":"/etc/redpanda/certs/tls.crt","key_file":"/etc/redpanda/certs/tls.key","truststore_file":"/etc/redpanda/certs/ca.crt"}]'
         env:
         - name: POD_NAME
           valueFrom:
@@ -100,6 +103,14 @@ spec:
         volumeMounts:
         - name: redpanda-data
           mountPath: /var/lib/redpanda/data
+        - name: tls-certs
+          mountPath: /etc/redpanda/certs
+          readOnly: true
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret
+          optional: true
   volumeClaimTemplates:
   - metadata:
       name: redpanda-data

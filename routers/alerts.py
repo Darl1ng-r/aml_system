@@ -38,7 +38,7 @@ async def list_alerts(
     response: Response,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=100),
-    search: str | None = None,
+    search: str | None = Query(default=None, max_length=200),
     severity: str | None = None,
     status_filter: str | None = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),

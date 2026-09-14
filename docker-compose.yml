@@ -228,9 +228,12 @@ services:
       - RUN_EMBEDDED_WORKER=false
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
+      - POSTGRES_REPLICA_HOST=postgres-replica
+      - POSTGRES_REPLICA_PORT=5432
       - POSTGRES_DB=aml_db
       - POSTGRES_USER=${POSTGRES_APP_USER:-aml_app}
-      - POSTGRES_PASSWORD=${AML_APP_PASSWORD:-aml_app_secure_pass_2026}
+      - POSTGRES_PASSWORD=${AML_APP_PASSWORD}
+      - AML_APP_PASSWORD=${AML_APP_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-redispassword}
@@ -241,6 +244,8 @@ services:
       - ELASTICSEARCH_HOST=http://elasticsearch:9200
     depends_on:
       postgres:
+        condition: service_healthy
+      postgres-replica:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -262,9 +267,12 @@ services:
       - RUN_EMBEDDED_WORKER=false
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
+      - POSTGRES_REPLICA_HOST=postgres-replica
+      - POSTGRES_REPLICA_PORT=5432
       - POSTGRES_DB=aml_db
       - POSTGRES_USER=${POSTGRES_APP_USER:-aml_app}
-      - POSTGRES_PASSWORD=${AML_APP_PASSWORD:-aml_app_secure_pass_2026}
+      - POSTGRES_PASSWORD=${AML_APP_PASSWORD}
+      - AML_APP_PASSWORD=${AML_APP_PASSWORD}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-redispassword}

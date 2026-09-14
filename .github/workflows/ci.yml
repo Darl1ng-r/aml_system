@@ -89,6 +89,7 @@ jobs:
           POSTGRES_PASSWORD: aml_password
           REDIS_HOST: localhost
           REDIS_PORT: 6379
+          AML_APP_PASSWORD: aml_app_password_test_2026
         run: |
           pytest --cov=routers --cov=services tests/ -v
 
@@ -118,3 +119,40 @@ jobs:
           ignore-unfixed: true
           vuln-type: "os,library"
           severity: "CRITICAL"
+
+  deploy:
+    name: Continuous Deployment (Kubernetes Rollout)
+    runs-on: ubuntu-latest
+    needs: [container-security]
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Tag Immutable Image
+        run: |
+          IMAGE_TAG="sha-${{ github.sha }}"
+          echo "Building image tagged with ${IMAGE_TAG} and latest"
+          docker build -t aml-fastapi-app:${IMAGE_TAG} -t aml-fastapi-app:latest .
+
+      - name: Set up Kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Deploy to Kubernetes Cluster
+        run: |
+          IMAGE_TAG="sha-${{ github.sha }}"
+          echo "Updating Kubernetes deployment with image tag ${IMAGE_TAG}..."
+          # In production, credentials and cluster context are injected via KUBECONFIG secret
+          if [ -n "${KUBECONFIG_DATA:-}" ]; then
+            mkdir -p $HOME/.kube
+            echo "${KUBECONFIG_DATA}" | base64 -d > $HOME/.kube/config
+            kubectl set image deployment/aml-fastapi-app fastapi-app=aml-fastapi-app:${IMAGE_TAG} -n aml-system
+            kubectl rollout status deployment/aml-fastapi-app -n aml-system --timeout=180s
+          else
+            echo "Dry-run validation: kubectl set image deployment/aml-fastapi-app fastapi-app=aml-fastapi-app:${IMAGE_TAG} -n aml-system"
+          fi
+

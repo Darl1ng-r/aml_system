@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     postgres_db: str = "aml_db"
     postgres_user: str = "aml_app"
     postgres_password: str = ""
-    aml_app_password: str = "aml_app_secure_pass_2026"
+    aml_app_password: str = ""
+    run_migrations_on_startup: bool = False
     
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
@@ -99,6 +100,7 @@ class Settings(BaseSettings):
                 "passwordpassword",
                 "changeme_in_production",
                 "change_me_in_production_jwt_secret_key_256bit",
+                "aml_app_secure_pass_2026",
             }
             if self.postgres_password in insecure_defaults:
                 raise ValueError("CRITICAL: Default postgres_password is forbidden in production environment!")
@@ -106,9 +108,13 @@ class Settings(BaseSettings):
                 raise ValueError("CRITICAL: Default neo4j_password is forbidden in production environment!")
             if self.elastic_password in insecure_defaults:
                 raise ValueError("CRITICAL: Default elastic_password is forbidden in production environment!")
+            if self.aml_app_password in insecure_defaults:
+                raise ValueError("CRITICAL: Default aml_app_password is forbidden in production environment!")
         return self
 
 settings = Settings()
+
+RUN_MIGRATIONS_ON_STARTUP = settings.run_migrations_on_startup
 
 # PostgreSQL Config
 POSTGRES_HOST = settings.postgres_host
