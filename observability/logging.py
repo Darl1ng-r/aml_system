@@ -219,3 +219,17 @@ def log_audit_event(
     except Exception:
         pass
 
+    try:
+        from services.audit import queue_audit_event
+        queue_audit_event(
+            action=action or event_type,
+            actor_id=actor_id,
+            actor_role=actor_role,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            tenant_id=tenant_id,
+            details=details
+        )
+    except Exception:
+        pass
+

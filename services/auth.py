@@ -337,18 +337,73 @@ async def revoke_user_sessions(user_id: str) -> int:
     return new_version
 
 
+ROLE_HIERARCHY = {
+    "SUPER_ADMIN": ["*"],
+    "TENANT_ADMIN": ["users:*", "rules:*", "cases:*", "alerts:*", "transactions:*", "sar:*", "reports:*", "kyc:*", "ctr:*"],
+    "ADMIN": ["users:*", "rules:*", "cases:*", "alerts:*", "transactions:*", "sar:*", "reports:*", "kyc:*", "ctr:*"],
+    "MLRO": ["sar:approve", "sar:submit", "cases:*", "alerts:*", "transactions:read", "edd:review", "accounts:freeze", "kyc:*", "ctr:approve", "ctr:submit", "reports:*"],
+    "L2_INVESTIGATOR": ["cases:*", "alerts:*", "transactions:read", "sar:draft", "edd:request", "kyc:review"],
+    "L1_ANALYST": ["alerts:read", "alerts:triage", "transactions:read", "cases:read", "cases:triage"],
+    "ANALYST": ["alerts:read", "alerts:triage", "alerts:action", "cases:*", "transactions:*", "sar:draft", "edd:request", "kyc:review"],
+    "AUDITOR": ["audit_log:read", "reports:read", "cases:read", "alerts:read", "transactions:read", "pii:masked"],
+    "GLOBAL_AUDITOR": ["audit_log:read", "reports:read", "cases:read", "alerts:read", "transactions:read", "cross_tenant:read"],
+    "API_CONSUMER": ["transactions:ingest", "screening:query", "alerts:read"],
+    "SYSTEM": ["*"]
+}
+
+ROLE_ALIASES = {
+    "ADMIN": ["ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
+    "ANALYST": ["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
+    "AUDITOR": ["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "SUPER_ADMIN"],
+    "L1_ANALYST": ["L1_ANALYST", "ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
+    "L2_INVESTIGATOR": ["L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
+    "MLRO": ["MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"]
+}
+
+
 class RoleChecker:
     def __init__(self, allowed_roles: list[str]):
-        self.allowed_roles = allowed_roles
+        expanded = set(allowed_roles)
+        for r in allowed_roles:
+            if r in ROLE_ALIASES:
+                expanded.update(ROLE_ALIASES[r])
+            if r == "L1_ANALYST":
+                expanded.update(["L2_INVESTIGATOR", "MLRO", "TENANT_ADMIN", "ADMIN", "SUPER_ADMIN"])
+            elif r == "L2_INVESTIGATOR":
+                expanded.update(["MLRO", "TENANT_ADMIN", "ADMIN", "SUPER_ADMIN"])
+            elif r == "MLRO":
+                expanded.update(["TENANT_ADMIN", "ADMIN", "SUPER_ADMIN"])
+        self.allowed_roles = list(expanded)
 
     def __call__(self, current_user: dict = Depends(get_current_user)):
-        if current_user.get("role") not in self.allowed_roles:
+        user_role = current_user.get("role", "ANALYST")
+        if user_role not in self.allowed_roles and "SUPER_ADMIN" not in self.allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Operation not permitted for this user role.",
+                detail=f"Operation not permitted for user role '{user_role}'.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         return current_user
+
+
+class PermissionChecker:
+    def __init__(self, required_permission: str):
+        self.required_permission = required_permission
+
+    def __call__(self, current_user: dict = Depends(get_current_user)):
+        user_role = current_user.get("role", "ANALYST")
+        permissions = ROLE_HIERARCHY.get(user_role, [])
+        if "*" in permissions or self.required_permission in permissions:
+            return current_user
+        scope = self.required_permission.split(":")[0] + ":*"
+        if scope in permissions:
+            return current_user
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"User role '{user_role}' lacks required permission '{self.required_permission}'.",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
 
 
 def enforce_tenant_data_scope(current_user: dict, target_tenant_id: str | None = None) -> str:

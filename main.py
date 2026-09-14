@@ -7,6 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
 from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist, jwks
+from routers import cases, accounts, ctr, compliance_reporting, privacy
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
@@ -315,6 +316,12 @@ app.include_router(transactions.router)
 app.include_router(alerts.router)
 app.include_router(rules.router)
 app.include_router(network.router)
+app.include_router(cases.router)
+app.include_router(accounts.router)
+app.include_router(accounts.edd_router)
+app.include_router(ctr.router)
+app.include_router(compliance_reporting.router)
+app.include_router(privacy.router)
 
 # Mount static files directory for dashboard styling and frontend client logic
 app.mount("/static", StaticFiles(directory="static"), name="static")

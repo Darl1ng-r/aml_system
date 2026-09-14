@@ -369,6 +369,23 @@ class WatchlistSyncEngine:
         except Exception as e:
             logger.warning(f"Elasticsearch refresh warning: {e}")
 
+        # Invalidate screening cache to prevent stale screening decisions post-sync
+        try:
+            from database.redis_db import get_async_redis_client
+            redis_client = await get_async_redis_client()
+            cursor = 0
+            deleted_keys = 0
+            while True:
+                cursor, keys = await redis_client.scan(cursor=cursor, match="screening:combined:*", count=100)
+                if keys:
+                    await redis_client.delete(*keys)
+                    deleted_keys += len(keys)
+                if cursor == 0 or cursor == "0" or cursor == b"0":
+                    break
+            logger.info(f"[Watchlist Sync Engine] Invalidated {deleted_keys} screening cache entries in Redis.")
+        except Exception as e:
+            logger.warning(f"Redis cache invalidation after watchlist sync bypassed: {e}")
+
         logger.info(
             f"[Watchlist Sync Engine] Completed full sync across OFAC, UN, EU, World-Check, and Dow Jones. "
             f"Indexed {indexed_sanctions} Sanctions entries & {indexed_pep} PEP entries."

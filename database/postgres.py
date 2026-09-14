@@ -13,7 +13,7 @@ db_replica_pool = None
 
 async def init_db_pool():
     global db_pool, db_replica_pool
-    if db_pool is None:
+    if db_pool is None or getattr(db_pool, "_loop", None) is None or db_pool._loop.is_closed():
         dsn = get_postgres_dsn()
         ssl_ctx = get_ssl_context()
         db_pool = await asyncpg.create_pool(
@@ -25,7 +25,7 @@ async def init_db_pool():
         )
         logger.info("Primary asyncpg connection pool initialized.")
 
-    if db_replica_pool is None:
+    if db_replica_pool is None or getattr(db_replica_pool, "_loop", None) is None or db_replica_pool._loop.is_closed():
         try:
             from config import POSTGRES_REPLICA_URL
             ssl_ctx = get_ssl_context()
@@ -57,20 +57,29 @@ async def close_db_pool():
 @asynccontextmanager
 async def get_async_db_conn(tenant_id: str | None = None):
     global db_pool
-    if db_pool is None:
+    if db_pool is None or getattr(db_pool, "_loop", None) is None or db_pool._loop.is_closed():
         await init_db_pool()
     async with db_pool.acquire(timeout=5.0) as conn:
         async with conn.transaction():
             if tenant_id:
                 # Set transaction-scoped configuration variable for PostgreSQL Row Level Security (RLS)
-                await conn.execute("SELECT set_config('app.current_tenant_id', $1, true);", str(tenant_id))
+                # Fail closed: reject invalid tenant_id to prevent data leakage
+                try:
+                    import uuid
+                    uuid.UUID(str(tenant_id))
+                    await conn.execute("SELECT set_config('app.current_tenant_id', $1, true);", str(tenant_id))
+                except (ValueError, TypeError):
+                    raise ValueError(f"Invalid tenant_id format: '{tenant_id}'")
+            else:
+                # When no tenant_id is provided, set a dummy non-matching UUID to fail closed
+                await conn.execute("SELECT set_config('app.current_tenant_id', '00000000-0000-0000-0000-000000000000', true);")
             yield conn
 
 @asynccontextmanager
 async def get_async_db_read_conn(tenant_id: str | None = None):
     """Acquires a read-only database connection from the read-replica pool with fallback to primary."""
     global db_pool, db_replica_pool
-    if db_pool is None or db_replica_pool is None:
+    if db_replica_pool is None or getattr(db_replica_pool, "_loop", None) is None or db_replica_pool._loop.is_closed() or db_pool is None or getattr(db_pool, "_loop", None) is None or db_pool._loop.is_closed():
         await init_db_pool()
 
     target_pool = db_replica_pool or db_pool

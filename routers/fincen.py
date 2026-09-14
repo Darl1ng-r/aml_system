@@ -29,11 +29,34 @@ router = APIRouter(prefix="/api/v1/fincen", tags=["FinCEN E-Filing"])
 class FinCENSubmissionRequest(BaseModel):
     alert_id: str
     sar_xml: str = Field(..., min_length=10, max_length=100000)
+    draft_id: str | None = None
 
     @field_validator("sar_xml", mode="before")
     @classmethod
     def sanitize_xml(cls, v: str) -> str:
         return sanitize_text(v)
+
+
+class SARDraftCreate(BaseModel):
+    alert_id: str
+    narrative: str = Field(..., min_length=10, max_length=10000)
+    xml_payload: str | None = None
+    case_id: str | None = None
+
+    @field_validator("narrative", mode="before")
+    @classmethod
+    def sanitize_narrative(cls, v: str) -> str:
+        return sanitize_text(v)
+
+
+class SARDraftReview(BaseModel):
+    action: str = Field(..., pattern=r"^(APPROVE|REJECT)$")
+    rejection_reason: str | None = Field(None, max_length=1000)
+
+    @field_validator("rejection_reason", mode="before")
+    @classmethod
+    def sanitize_reason(cls, v: str | None) -> str | None:
+        return sanitize_text(v) if v else None
 
 
 @router.post("/sars", status_code=status.HTTP_201_CREATED)
@@ -148,3 +171,147 @@ async def get_fincen_status(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to query FinCEN status: {str(e)}")
+
+
+@router.post("/sar/drafts", status_code=status.HTTP_201_CREATED)
+async def create_sar_draft(
+    payload: SARDraftCreate,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
+    """
+    Creates a new SAR draft for an alert or case, awaiting MLRO 4-eyes review.
+    """
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        alert_uuid = uuid.UUID(payload.alert_id)
+        case_uuid = uuid.UUID(payload.case_id) if payload.case_id else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert_id or case_id format.")
+
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        user_uuid = None
+        if current_user.get("id"):
+            try:
+                user_uuid = uuid.UUID(str(current_user["id"]))
+            except ValueError:
+                user_uuid = None
+
+        draft_id = await conn.fetchval(
+            """
+            INSERT INTO sar_drafts (
+                tenant_id, alert_id, case_id, drafted_by, drafted_by_username,
+                status, narrative, xml_payload
+            ) VALUES ($1, $2, $3, $4, $5, 'PENDING_MLRO_REVIEW', $6, $7)
+            RETURNING id;
+            """,
+            uuid.UUID(str(tenant_id)), alert_uuid, case_uuid,
+            user_uuid,
+            current_user.get("username", "analyst"),
+            payload.narrative, payload.xml_payload
+        )
+
+        return {
+            "draft_id": str(draft_id),
+            "alert_id": payload.alert_id,
+            "status": "PENDING_MLRO_REVIEW",
+            "message": "SAR draft created successfully. Awaiting compliance officer / MLRO review."
+        }
+
+
+@router.get("/sar/drafts")
+async def list_sar_drafts(
+    current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),
+    status_filter: str | None = None,
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        if status_filter:
+            rows = await conn.fetch(
+                "SELECT * FROM sar_drafts WHERE tenant_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 100;",
+                uuid.UUID(str(tenant_id)), status_filter.upper()
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM sar_drafts WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 100;",
+                uuid.UUID(str(tenant_id))
+            )
+        return [
+            {
+                "draft_id": str(r["id"]),
+                "alert_id": str(r["alert_id"]) if r["alert_id"] else None,
+                "case_id": str(r["case_id"]) if r["case_id"] else None,
+                "status": r["status"],
+                "drafted_by_username": r["drafted_by_username"],
+                "narrative": r["narrative"],
+                "reviewed_by_username": r["reviewed_by_username"],
+                "rejection_reason": r["rejection_reason"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None
+            }
+            for r in rows
+        ]
+
+
+@router.post("/sar/drafts/{id}/review")
+async def review_sar_draft(
+    id: str,
+    payload: SARDraftReview,
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
+    """
+    MLRO Four-Eyes Review on a SAR draft. Enforces Segregation of Duties (SOD):
+    The reviewer cannot approve or reject a draft they authored themselves.
+    """
+    try:
+        draft_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid draft ID.")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        draft = await conn.fetchrow("SELECT * FROM sar_drafts WHERE id = $1;", draft_uuid)
+        if not draft:
+            raise HTTPException(status_code=404, detail="SAR draft not found.")
+
+        caller_id = str(current_user.get("id", ""))
+        caller_role = current_user.get("role", "")
+        if draft["drafted_by"] and str(draft["drafted_by"]) == caller_id and caller_role != "SUPER_ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Segregation of Duties Violation: Reviewer cannot approve a SAR draft they authored."
+            )
+
+        new_status = "APPROVED" if payload.action == "APPROVE" else "REJECTED"
+        user_uuid = None
+        if caller_id:
+            try:
+                user_uuid = uuid.UUID(caller_id)
+            except ValueError:
+                user_uuid = None
+
+        await conn.execute(
+            """
+            UPDATE sar_drafts
+            SET status = $1,
+                reviewed_by = $2,
+                reviewed_by_username = $3,
+                rejection_reason = $4,
+                reviewed_at = NOW(),
+                updated_at = NOW()
+            WHERE id = $5;
+            """,
+            new_status,
+            user_uuid,
+            current_user.get("username", "mlro"),
+            payload.rejection_reason,
+            draft_uuid
+        )
+
+        return {
+            "draft_id": str(draft_uuid),
+            "status": new_status,
+            "reviewed_by": current_user.get("username", "mlro"),
+            "message": f"SAR draft successfully {new_status.lower()}."
+        }

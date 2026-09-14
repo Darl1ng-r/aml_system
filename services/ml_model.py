@@ -197,6 +197,21 @@ class AMLAnomalyModel:
         else:
             return self._predict_fallback(amount, sender_risk, receiver_risk, velocity_count)
 
+    def predict(self, features: dict) -> tuple[float, dict]:
+        """Convenience method accepting a feature dict, returning (risk_score, attributions)."""
+        res = self.predict_risk(
+            amount=float(features.get("amount", 0.0)),
+            sender_risk=float(features.get("sender_risk", 0.2)),
+            receiver_risk=float(features.get("receiver_risk", 0.2)),
+            velocity_count=int(features.get("velocity_24h", features.get("velocity_count", 1))),
+            hour=int(features.get("hour_of_day", features.get("hour", 12))),
+            currency_paid=features.get("currency", "US Dollar"),
+            currency_recv=features.get("currency", "US Dollar"),
+            pay_format=features.get("channel", "Wire"),
+            explain=True
+        )
+        return res["risk_score"], res["attributions"]
+
     def _predict_xgboost(
         self, amount, sender_risk, receiver_risk, velocity_count,
         hour, currency_paid, currency_recv, pay_format, explain: bool = False

@@ -54,12 +54,12 @@ async def ingest_transaction(
             row = await conn.fetchrow(
                 """
                 WITH sender_info AS (
-                    SELECT id, tenant_id, risk_score, owner_name, swift_bic
+                    SELECT id, tenant_id, risk_score, owner_name, swift_bic, status
                     FROM accounts 
                     WHERE account_number = $1
                 ),
                 receiver_info AS (
-                    SELECT id, risk_score, owner_name, swift_bic
+                    SELECT id, risk_score, owner_name, swift_bic, status
                     FROM accounts 
                     WHERE account_number = $2
                 ),
@@ -75,10 +75,12 @@ async def ingest_transaction(
                     s.risk_score AS sender_risk,
                     s.owner_name AS sender_name,
                     s.swift_bic AS sender_bic,
+                    s.status AS sender_status,
                     r.id AS receiver_id, 
                     r.risk_score AS receiver_risk,
                     r.owner_name AS receiver_name,
                     r.swift_bic AS receiver_bic,
+                    r.status AS receiver_status,
                     COALESCE(v.velocity_count, 0) AS velocity_count
                 FROM (SELECT 1) dummy
                 LEFT JOIN sender_info s ON TRUE
@@ -100,6 +102,25 @@ async def ingest_transaction(
             # Cross-tenant boundary check: enforce caller is authorized for sender account tenant
             if tenant_id:
                 enforce_tenant_data_scope(current_user, target_tenant_id=str(tenant_id))
+
+            sender_status = (row.get("sender_status") if hasattr(row, "get") else (row["sender_status"] if "sender_status" in row else None)) or "ACTIVE"
+            receiver_status = (row.get("receiver_status") if hasattr(row, "get") else (row["receiver_status"] if "receiver_status" in row else None)) or "ACTIVE"
+
+            if sender_status == "FROZEN":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Transaction rejected: Sender account {payload.sender_account} is FROZEN under regulatory/court order."
+                )
+            if receiver_status == "FROZEN":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Transaction rejected: Receiver account {payload.receiver_account} is FROZEN under regulatory/court order."
+                )
+            if sender_status == "CIP_PENDING":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Transaction rejected: Sender account {payload.sender_account} has pending Customer Identification (CIP) verification."
+                )
 
             sender_risk = float(row["sender_risk"])
             sender_name = row["sender_name"]
@@ -226,6 +247,17 @@ async def ingest_transaction(
                     """,
                     tenant_id, tx_id, rule_name, threat_level, dynamic_score, json.dumps(explainability_payload)
                 )
+
+            # Automatic Currency Transaction Report (CTR) trigger for cash transactions >= $10,000 (BSA 31 CFR 1010.311)
+            is_cash_channel = (payload.channel and payload.channel.upper() == "CASH") or (payload.merchant and payload.merchant.upper() == "CASH")
+            if is_cash_channel and payload.amount >= 10000.0:
+                await conn.execute(
+                    """
+                    INSERT INTO ctr_filings (tenant_id, transaction_id, account_id, amount, currency, cash_in_out, status)
+                    VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'PENDING');
+                    """,
+                    tenant_id, uuid.UUID(tx_id), sender_id, payload.amount, payload.currency
+                )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to record transaction: {str(e)}")
 
@@ -244,7 +276,11 @@ async def ingest_transaction(
         "country": payload.country,
         "merchant": payload.merchant,
         "device": payload.device,
-        "channel": payload.channel
+        "channel": payload.channel,
+        "sender_risk": sender_risk,
+        "receiver_risk": receiver_risk,
+        "velocity_count": velocity_count,
+        "is_geo_risk": is_geo
     }
     background_tasks.add_task(publish_transaction, redpanda_payload)
     
