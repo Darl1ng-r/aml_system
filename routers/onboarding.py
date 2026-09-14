@@ -62,14 +62,17 @@ async def onboard_individual(
     # Enforce Data-Level RBAC tenant scoping
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
 
+    screening_failed = False
     try:
         es = await get_async_elasticsearch_client()
         screen_res = await perform_sanctions_search(payload.name, 0.80, es)
         # If high risk sanctions hit, default to a high risk score
         risk_score = 0.95 if screen_res["match_found"] else 0.10
-    except Exception:
-        # Fallback if ES is offline during onboarding
-        risk_score = 0.20
+    except Exception as ex_es:
+        # CHAOS-01 Fail-Closed: Never fail open (risk 0.20) if sanctions screening dependency is offline!
+        logger.error(f"Sanctions screening offline/timed out during onboarding: {ex_es}")
+        risk_score = 1.0
+        screening_failed = True
 
     # Step 2: Save to PostgreSQL
     try:
@@ -94,7 +97,7 @@ async def onboard_individual(
 
             return {
                 "account_id": str(account_id),
-                "status": "APPROVED" if risk_score < 0.8 else "HELD_FOR_REVIEW",
+                "status": "APPROVED" if (risk_score < 0.8 and not screening_failed) else "HELD_FOR_REVIEW",
                 "risk_score": risk_score
             }
     except HTTPException:
@@ -116,6 +119,24 @@ async def onboard_corporate(
     # Enforce Data-Level RBAC tenant scoping
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
 
+    # Step 0: Sanctions screening for corporate entity and beneficial owners
+    corp_risk_score = 0.15
+    corp_screening_failed = False
+    try:
+        es = await get_async_elasticsearch_client()
+        comp_screen = await perform_sanctions_search(payload.company_name, 0.80, es)
+        if comp_screen.get("match_found"):
+            corp_risk_score = 0.95
+        for ubo in payload.ubos:
+            ubo_screen = await perform_sanctions_search(ubo.name, 0.80, es)
+            if ubo_screen.get("match_found"):
+                corp_risk_score = 0.95
+                break
+    except Exception as ex_es:
+        logger.warning(f"Sanctions screening failed during corporate onboarding: {ex_es}")
+        corp_risk_score = 1.0
+        corp_screening_failed = True
+
     # Step 1: Save to PostgreSQL (relational profile)
     try:
         async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
@@ -130,7 +151,7 @@ async def onboard_corporate(
                 VALUES ($1, $2, $3, $4, $5)
                 RETURNING id;
                 """,
-                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.company_name, 0.15
+                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.company_name, corp_risk_score
             )
 
             if response is not None:
@@ -188,15 +209,23 @@ async def onboard_corporate(
                     percentage=ubo.ownership_percentage
                 )
                 
+        corp_status = "APPROVED" if (corp_risk_score < 0.8 and not corp_screening_failed) else "HELD_FOR_REVIEW"
         return {
             "account_id": str(account_id),
-            "status": "APPROVED",
+            "status": corp_status,
+            "risk_score": corp_risk_score,
             "ubo_count": len(payload.ubos)
         }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Neo4j corporate onboarding failed: {e}", exc_info=True)
+        # STATE-03 Compensating rollback: delete incomplete Postgres account on Neo4j failure
+        try:
+            async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
+                await conn.execute("DELETE FROM accounts WHERE id = $1;", account_id)
+        except Exception as roll_err:
+            logger.error(f"Compensating Postgres rollback failed: {roll_err}")
         raise HTTPException(status_code=500, detail="Corporate graph registration failed due to an internal error.")
 
 

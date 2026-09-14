@@ -276,12 +276,19 @@ async def add_case_note(
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        case_exists = await conn.fetchval(
-            "SELECT 1 FROM cases WHERE id = $1 AND tenant_id = $2;",
+        case_row = await conn.fetchrow(
+            "SELECT id, status FROM cases WHERE id = $1 AND tenant_id = $2;",
             case_uuid, uuid.UUID(str(tenant_id))
         )
-        if not case_exists:
+        if not case_row:
             raise HTTPException(status_code=404, detail="Case not found.")
+
+        # State transition check (STATE-01): cannot add notes to closed case without elevated privileges
+        if case_row["status"] == "CLOSED" and current_user.get("role") not in ("ADMIN", "MLRO"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid workflow state: Cannot append notes to a CLOSED case without MLRO or Admin authorization."
+            )
 
         note_id = await conn.fetchval(
             """
@@ -322,6 +329,13 @@ async def close_case(
         if not case_row:
             raise HTTPException(status_code=404, detail="Case not found.")
 
+        # State machine validation (STATE-01): Cannot close an already closed case
+        if case_row["status"] == "CLOSED":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid state transition: Case is already CLOSED."
+            )
+
         await conn.execute(
             """
             UPDATE cases
@@ -329,7 +343,7 @@ async def close_case(
                 closure_reason = $1,
                 closed_at = NOW(),
                 updated_at = NOW()
-            WHERE id = $2;
+            WHERE id = $2 AND status != 'CLOSED';
             """,
             payload.closure_reason, case_uuid
         )

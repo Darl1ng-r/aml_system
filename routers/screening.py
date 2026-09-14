@@ -28,31 +28,98 @@ class ScreeningRequest(BaseModel):
     def sanitize_name(cls, v: str) -> str:
         return sanitize_text(v)
 
+import unicodedata
+import re
+
+# Mapping of common Cyrillic and Greek lookalike homoglyphs to ASCII Latin
+HOMOGLYPH_MAP = {
+    '\u0430': 'a', '\u0410': 'A',
+    '\u0435': 'e', '\u0415': 'E',
+    '\u043E': 'o', '\u041E': 'O',
+    '\u0440': 'p', '\u0420': 'P',
+    '\u0441': 'c', '\u0421': 'C',
+    '\u0442': 't', '\u0422': 'T',
+    '\u0443': 'y', '\u0423': 'Y',
+    '\u0445': 'x', '\u0425': 'X',
+    '\u0456': 'i', '\u0406': 'I',
+    '\u0458': 'j', '\u0408': 'J',
+    '\u0455': 's', '\u0405': 'S',
+    '\u0432': 'b', '\u0412': 'B',
+    '\u043C': 'm', '\u041C': 'M',
+    '\u043D': 'h', '\u041D': 'H',
+    '\u043A': 'k', '\u041A': 'K',
+    '\u0391': 'A', '\u03B1': 'a',
+    '\u0392': 'B', '\u03B2': 'b',
+    '\u0395': 'E', '\u03B5': 'e',
+    '\u0397': 'H', '\u03B7': 'h',
+    '\u0399': 'I', '\u03B9': 'i',
+    '\u039A': 'K', '\u03BA': 'k',
+    '\u039C': 'M',
+    '\u039D': 'N',
+    '\u039F': 'O', '\u03BF': 'o',
+    '\u03A1': 'P', '\u03C1': 'p',
+    '\u03A4': 'T', '\u03C4': 't',
+    '\u03A5': 'Y', '\u03C5': 'y',
+    '\u03A7': 'X', '\u03C7': 'x',
+}
+HOMOGLYPH_TRANS = str.maketrans(HOMOGLYPH_MAP)
+ZERO_WIDTH_RE = re.compile(r'[\u200B-\u200D\uFEFF\u00A0\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]')
+
+def normalize_screening_name(text: str) -> str:
+    """
+    Strips zero-width characters, maps Cyrillic/Greek homoglyphs to Latin,
+    decomposes Unicode diacritics via NFKD, and returns clean lowercase string.
+    """
+    if not text:
+        return ""
+    cleaned = ZERO_WIDTH_RE.sub('', text)
+    cleaned = cleaned.translate(HOMOGLYPH_TRANS)
+    nfkd = unicodedata.normalize('NFKD', cleaned)
+    stripped = ''.join(c for c in nfkd if unicodedata.category(c) != 'Mn')
+    return ' '.join(stripped.split()).lower()
+
 def levenshtein_ratio(s1: str, s2: str) -> float:
     """
     Computes Levenshtein similarity ratio between s1 and s2 in range [0.0, 1.0]
-    using the high-performance C-optimized rapidfuzz library.
+    using the high-performance C-optimized rapidfuzz library with adversarial homoglyph normalization.
     """
-    s1, s2 = s1.lower().strip(), s2.lower().strip()
-    max_len = len(s1) + len(s2)
+    norm_s1 = normalize_screening_name(s1)
+    norm_s2 = normalize_screening_name(s2)
+    max_len = len(norm_s1) + len(norm_s2)
     if max_len == 0:
         return 1.0
-    dist = rapidfuzz.distance.Levenshtein.distance(s1, s2, weights=(1, 1, 2))
+    dist = rapidfuzz.distance.Levenshtein.distance(norm_s1, norm_s2, weights=(1, 1, 2))
     return (max_len - dist) / max_len
 
 async def perform_sanctions_search(name: str, threshold: float, es) -> dict:
     """
-    Core fuzzy sanctions search logic against Elasticsearch.
+    Core fuzzy sanctions search logic against Elasticsearch with normalized query expansion.
     """
-    # Search Elasticsearch sanctions index using fuzzy match
+    norm_name = normalize_screening_name(name)
+    # Search Elasticsearch sanctions index using fuzzy match on both raw and normalized queries
     query = {
         "query": {
-            "match": {
-                "name": {
-                    "query": name,
-                    "fuzziness": "AUTO",
-                    "prefix_length": 2
-                }
+            "bool": {
+                "should": [
+                    {
+                        "match": {
+                            "name": {
+                                "query": name,
+                                "fuzziness": "AUTO",
+                                "prefix_length": 1
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "name": {
+                                "query": norm_name,
+                                "fuzziness": "AUTO",
+                                "prefix_length": 1
+                            }
+                        }
+                    }
+                ]
             }
         }
     }

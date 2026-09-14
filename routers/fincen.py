@@ -275,6 +275,12 @@ async def review_sar_draft(
         if not draft:
             raise HTTPException(status_code=404, detail="SAR draft not found.")
 
+        if draft["status"] != "PENDING_MLRO_REVIEW":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid state transition: SAR draft is already {draft['status']} and cannot be re-reviewed."
+            )
+
         caller_id = str(current_user.get("id", ""))
         caller_role = current_user.get("role", "")
         if draft["drafted_by"] and str(draft["drafted_by"]) == caller_id and caller_role != "SUPER_ADMIN":
@@ -291,7 +297,8 @@ async def review_sar_draft(
             except ValueError:
                 user_uuid = None
 
-        await conn.execute(
+        # Optimistic concurrency locking (RACE-03): update only if still PENDING_MLRO_REVIEW
+        updated_id = await conn.fetchval(
             """
             UPDATE sar_drafts
             SET status = $1,
@@ -300,7 +307,8 @@ async def review_sar_draft(
                 rejection_reason = $4,
                 reviewed_at = NOW(),
                 updated_at = NOW()
-            WHERE id = $5;
+            WHERE id = $5 AND status = 'PENDING_MLRO_REVIEW'
+            RETURNING id;
             """,
             new_status,
             user_uuid,
@@ -308,6 +316,12 @@ async def review_sar_draft(
             payload.rejection_reason,
             draft_uuid
         )
+
+        if not updated_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Concurrent modification conflict: SAR draft was already reviewed or modified by another officer."
+            )
 
         return {
             "draft_id": str(draft_uuid),

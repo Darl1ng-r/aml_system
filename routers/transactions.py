@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, status, Query
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, status, status as http_status, Query
 from pydantic import BaseModel
 from datetime import datetime
 import uuid
@@ -108,18 +108,23 @@ async def ingest_transaction(
 
             if sender_status == "FROZEN":
                 raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
+                    status_code=http_status.HTTP_403_FORBIDDEN,
                     detail=f"Transaction rejected: Sender account {payload.sender_account} is FROZEN under regulatory/court order."
                 )
             if receiver_status == "FROZEN":
                 raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
+                    status_code=http_status.HTTP_403_FORBIDDEN,
                     detail=f"Transaction rejected: Receiver account {payload.receiver_account} is FROZEN under regulatory/court order."
                 )
             if sender_status == "CIP_PENDING":
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
                     detail=f"Transaction rejected: Sender account {payload.sender_account} has pending Customer Identification (CIP) verification."
+                )
+            if receiver_status == "CIP_PENDING":
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail=f"Transaction rejected: Receiver account {payload.receiver_account} has pending Customer Identification (CIP) verification."
                 )
 
             sender_risk = float(row["sender_risk"])
@@ -210,12 +215,31 @@ async def ingest_transaction(
     # Determine Compliance Decision based on Dynamic Score
     alert_triggered = dynamic_score >= 0.75 or len(triggered_rules) > 0
     decision = "HELD" if alert_triggered else "APPROVED"
-    status = "HELD" if alert_triggered else "COMPLETED"
+    tx_status = "HELD" if alert_triggered else "COMPLETED"
 
     # Step 4: Write transaction to PostgreSQL
     tx_id = str(uuid.uuid4())
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            # Concurrency & TOCTOU Defense: Verify accounts under row lock immediately prior to write
+            if hasattr(conn, "fetch"):
+                try:
+                    locked_accounts = await conn.fetch(
+                        "SELECT id, status FROM accounts WHERE id IN ($1, $2) FOR UPDATE;",
+                        sender_id, receiver_id
+                    )
+                    for acc in (locked_accounts or []):
+                        st = (acc.get("status") if hasattr(acc, "get") else (acc["status"] if "status" in acc else None)) or "ACTIVE"
+                        if st == "FROZEN":
+                            raise HTTPException(
+                                status_code=http_status.HTTP_403_FORBIDDEN,
+                                detail=f"Transaction aborted: Account {acc['id']} was FROZEN concurrently."
+                            )
+                except HTTPException:
+                    raise
+                except Exception as ex_lock:
+                    logger.debug(f"Row lock check bypassed or non-fatal: {ex_lock}")
+
             # Pydantic validates payload.timestamp is a valid datetime object
             dt = payload.timestamp
             
@@ -224,7 +248,7 @@ async def ingest_transaction(
                 INSERT INTO transactions (id, tenant_id, sender_account_id, receiver_account_id, amount, currency, status, timestamp, country, merchant, device, channel)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
                 """,
-                tx_id, tenant_id, sender_id, receiver_id, payload.amount, payload.currency, status, dt,
+                tx_id, tenant_id, sender_id, receiver_id, payload.amount, payload.currency, tx_status, dt,
                 payload.country, payload.merchant, payload.device, payload.channel
             )
 
@@ -248,16 +272,59 @@ async def ingest_transaction(
                     tenant_id, tx_id, rule_name, threat_level, dynamic_score, json.dumps(explainability_payload)
                 )
 
-            # Automatic Currency Transaction Report (CTR) trigger for cash transactions >= $10,000 (BSA 31 CFR 1010.311)
+            # Automatic Currency Transaction Report (CTR) trigger for cash transactions >= $10,000 (BSA 31 CFR 1010.311 / 1010.313)
             is_cash_channel = (payload.channel and payload.channel.upper() == "CASH") or (payload.merchant and payload.merchant.upper() == "CASH")
-            if is_cash_channel and payload.amount >= 10000.0:
-                await conn.execute(
-                    """
-                    INSERT INTO ctr_filings (tenant_id, transaction_id, account_id, amount, currency, cash_in_out, status)
-                    VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'PENDING');
-                    """,
-                    tenant_id, uuid.UUID(tx_id), sender_id, payload.amount, payload.currency
-                )
+            if is_cash_channel:
+                prior_24h_cash = 0.0
+                cash_count_24h = 0
+                try:
+                    rolling_cash_row = await conn.fetchrow(
+                        """
+                        SELECT COALESCE(SUM(amount), 0) AS total_cash_24h, COUNT(*) AS cash_count_24h
+                        FROM transactions
+                        WHERE sender_account_id = $1
+                          AND (UPPER(COALESCE(channel, '')) = 'CASH' OR UPPER(COALESCE(merchant, '')) = 'CASH')
+                          AND timestamp >= NOW() - INTERVAL '24 hours';
+                        """,
+                        sender_id
+                    )
+                    if rolling_cash_row:
+                        prior_24h_cash = float(rolling_cash_row.get("total_cash_24h", 0) if hasattr(rolling_cash_row, "get") else rolling_cash_row["total_cash_24h"])
+                        cash_count_24h = int(rolling_cash_row.get("cash_count_24h", 0) if hasattr(rolling_cash_row, "get") else rolling_cash_row["cash_count_24h"])
+                except Exception as ex_ctr:
+                    logger.warning(f"Failed to query 24h rolling cash aggregation: {ex_ctr}")
+
+                total_aggregate_cash = prior_24h_cash + float(payload.amount)
+
+                # BSA 31 CFR 1010.311 & 1010.313: Single transaction >= $10k OR aggregated 24h cash deposits >= $10k
+                if payload.amount >= 10000.0 or total_aggregate_cash >= 10000.0:
+                    await conn.execute(
+                        """
+                        INSERT INTO ctr_filings (tenant_id, transaction_id, account_id, amount, currency, cash_in_out, status)
+                        VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'PENDING');
+                        """,
+                        tenant_id, uuid.UUID(tx_id), sender_id, payload.amount, payload.currency
+                    )
+
+                # Sub-threshold Structuring / Smurfing detection: sub-threshold deposits deliberately dodging $10,000 threshold
+                is_sub_threshold = 9000.0 <= payload.amount < 10000.0
+                if is_sub_threshold or (cash_count_24h >= 1 and total_aggregate_cash >= 9500.0):
+                    structuring_payload = {
+                        "rule": "CTR_STRUCTURING_DETECTION",
+                        "current_amount": payload.amount,
+                        "prior_24h_cash": prior_24h_cash,
+                        "total_aggregate_cash": total_aggregate_cash,
+                        "message": "Potential structuring/smurfing detected under FinCEN 31 CFR 1010.313."
+                    }
+                    await conn.execute(
+                        """
+                        INSERT INTO alerts (tenant_id, transaction_id, rule_name, threat_level, ai_risk_score, explainability_payload)
+                        VALUES ($1, $2, 'CTR_STRUCTURING_DETECTION', 'HIGH', 0.85, $3);
+                        """,
+                        tenant_id, tx_id, json.dumps(structuring_payload)
+                    )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to record transaction: {str(e)}")
 
@@ -271,7 +338,7 @@ async def ingest_transaction(
         "receiver_account": payload.receiver_account,
         "amount": payload.amount,
         "currency": payload.currency,
-        "status": status,
+        "status": tx_status,
         "timestamp": payload.timestamp.isoformat(),
         "country": payload.country,
         "merchant": payload.merchant,

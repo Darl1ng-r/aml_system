@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
+from services.audit import record_audit_event_tx
 from observability.sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,24 @@ async def verify_account_cip(
             acc_uuid
         )
 
+        # Synchronous in-transaction audit persistence (AUDIT-01)
+        try:
+            await record_audit_event_tx(
+                conn=conn,
+                action="ACCOUNT_CIP_VERIFIED",
+                actor_id=str(current_user.get("id", "system")),
+                actor_role=current_user.get("role", "ANALYST"),
+                resource_type="ACCOUNT",
+                resource_id=id,
+                tenant_id=str(tenant_id),
+                actor_username=current_user.get("username"),
+                before_state={"status": acc["status"]},
+                after_state={"status": "ACTIVE"},
+                details={"document_type": payload.document_type, "document_number": payload.document_number}
+            )
+        except Exception as audit_err:
+            logger.warning(f"Audit log writing failed in verify_account_cip: {audit_err}")
+
         logger.info(
             f"CIP verified for account {id} by '{current_user.get('username')}' "
             f"using {payload.document_type} ({payload.document_number})"
@@ -148,6 +167,24 @@ async def freeze_account(
             payload.reason, payload.freezing_order_ref, acc_uuid
         )
 
+        # Synchronous in-transaction audit persistence (AUDIT-01)
+        try:
+            await record_audit_event_tx(
+                conn=conn,
+                action="ACCOUNT_FROZEN",
+                actor_id=str(current_user.get("id", "system")),
+                actor_role=current_user.get("role", "MLRO"),
+                resource_type="ACCOUNT",
+                resource_id=id,
+                tenant_id=str(tenant_id),
+                actor_username=current_user.get("username"),
+                before_state={"status": acc["status"]},
+                after_state={"status": "FROZEN", "reason": payload.reason, "ref": payload.freezing_order_ref},
+                details={"account_number": acc["account_number"]}
+            )
+        except Exception as audit_err:
+            logger.warning(f"Audit log writing failed in freeze_account: {audit_err}")
+
         logger.warning(
             f"REGULATORY ACTION: Account {id} ({acc['account_number']}) FROZEN by {current_user.get('username')}. "
             f"Reason: {payload.reason} | Ref: {payload.freezing_order_ref}"
@@ -193,6 +230,24 @@ async def unfreeze_account(
             """,
             acc_uuid
         )
+
+        # Synchronous in-transaction audit persistence (AUDIT-01)
+        try:
+            await record_audit_event_tx(
+                conn=conn,
+                action="ACCOUNT_UNFROZEN",
+                actor_id=str(current_user.get("id", "system")),
+                actor_role=current_user.get("role", "MLRO"),
+                resource_type="ACCOUNT",
+                resource_id=id,
+                tenant_id=str(tenant_id),
+                actor_username=current_user.get("username"),
+                before_state={"status": acc["status"]},
+                after_state={"status": "ACTIVE"},
+                details={"account_id": id}
+            )
+        except Exception as audit_err:
+            logger.warning(f"Audit log writing failed in unfreeze_account: {audit_err}")
 
         return {
             "account_id": id,
