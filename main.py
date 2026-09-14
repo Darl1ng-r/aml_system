@@ -73,8 +73,7 @@ async def startup_db_clients(app_instance: FastAPI):
             logger.info("Sentry APM & error tracking initialized.")
         except Exception as e:
             logger.warning(f"Sentry init skipped (non-fatal): {e}")
-    
-    allow_offline = os.getenv("ALLOW_OFFLINE_DEV", "false").lower() == "true"
+    allow_offline = getattr(settings, "allow_offline_dev", False) or os.getenv("ALLOW_OFFLINE_DEV", "false").lower() == "true"
     pg_connected = False
 
     # ── 1. Initialize & Fail-Fast PostgreSQL ─────────────────────────────
@@ -93,7 +92,7 @@ async def startup_db_clients(app_instance: FastAPI):
             from alembic.config import Config as AlembicConfig
             from alembic import command as alembic_command
             alembic_cfg = AlembicConfig("alembic.ini")
-            alembic_command.upgrade(alembic_cfg, "head")
+            await asyncio.to_thread(alembic_command.upgrade, alembic_cfg, "head")
             # Re-apply JSON logging after Alembic's fileConfig may have overwritten handlers
             setup_json_logging(level=logging.INFO)
             logger.info("Alembic database migrations applied successfully.")

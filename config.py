@@ -1,8 +1,12 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict  #fix
 
 class Settings(BaseSettings):
     environment: str = "development"
+    allow_offline_dev: bool = True
     postgres_host: str = "localhost"
     postgres_port: int = 5433
     postgres_replica_host: str = "localhost"

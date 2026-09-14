@@ -33,7 +33,7 @@ def upgrade() -> None:
         BEGIN
             IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'aml_app') THEN
                 CREATE ROLE aml_app WITH LOGIN PASSWORD 'aml_app_secure_pass_2026' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
-            ELSE
+            ELSIF current_user != 'aml_app' THEN
                 ALTER ROLE aml_app WITH NOSUPERUSER NOBYPASSRLS;
             END IF;
         END
