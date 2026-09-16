@@ -274,6 +274,9 @@ def get_postgres_password() -> str:
     if file_password:
         return file_password
 
+    if settings.postgres_user == "aml_app" and (settings.aml_app_password or os.getenv("AML_APP_PASSWORD")):
+        return settings.aml_app_password or os.getenv("AML_APP_PASSWORD", "")
+
     return settings.postgres_password or os.getenv("POSTGRES_PASSWORD", "postgrespassword")
 
 

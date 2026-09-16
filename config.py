@@ -123,7 +123,11 @@ POSTGRES_REPLICA_HOST = settings.postgres_replica_host
 POSTGRES_REPLICA_PORT = settings.postgres_replica_port
 POSTGRES_DB = settings.postgres_db
 POSTGRES_USER = settings.postgres_user
-POSTGRES_PASSWORD = settings.postgres_password
+POSTGRES_PASSWORD = (
+    settings.aml_app_password
+    if settings.postgres_user == "aml_app" and settings.aml_app_password
+    else settings.postgres_password
+)
 POSTGRES_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
 POSTGRES_REPLICA_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_REPLICA_HOST}:{POSTGRES_REPLICA_PORT}/{POSTGRES_DB}"
 

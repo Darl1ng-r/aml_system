@@ -10,12 +10,14 @@ metadata:
     app.kubernetes.io/name: aml-config
     app.kubernetes.io/part-of: aml-platform
 data:
+  ENVIRONMENT: "production"
+  ALLOWED_ORIGINS: "https://aml.yourdomain.com"
   ENABLE_TLS: "true"
   STRICT_MTLS: "true"
   POSTGRES_HOST: "aml-postgres"
   POSTGRES_PORT: "5432"
   POSTGRES_DB: "aml_db"
-  POSTGRES_USER: "postgres"
+  POSTGRES_USER: "aml_app"
   REDIS_HOST: "aml-redis"
   REDIS_PORT: "6379"
   NEO4J_URI: "bolt://aml-neo4j:7687"
