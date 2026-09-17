@@ -12,106 +12,19 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <!-- Tailwind CSS CDN (v3.4.1) -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['"IBM Plex Sans"', 'system-ui', 'sans-serif'],
-            display: ['"IBM Plex Sans"', 'system-ui', 'sans-serif'],
-            mono: ['"IBM Plex Mono"', 'monospace'],
-          },
-          colors: {
-            // Exact System Institutional Palette
-            canvas: '#ECE7DD',      // warm paper canvas
-            panel: '#FFFFFF',       // panel surface
-            edge: '#DAD3C3',        // panel border edge
-            sidebar: '#1B1F2B',     // charcoal-navy sidebar & header
-            sidebarLine: '#2B3040', // sidebar divider
-            ink: '#22262E',         // deep ink text
-            inkMuted: '#6B6F7A',    // secondary muted ink
-            inkSoft: '#8F93A0',     // soft caption text
-            risk: {
-              high: '#C1443B',      // risk/block red
-              highBg: 'rgba(193, 68, 59, 0.10)',
-              med: '#C98A2E',       // escalate amber
-              medBg: 'rgba(201, 138, 46, 0.10)',
-              low: '#4C7A5E',       // approve green
-              lowBg: 'rgba(76, 122, 94, 0.10)',
-            },
-            activeBlue: '#3D5A80',  // active/link blue
-            activeBlueBg: 'rgba(61, 90, 128, 0.10)',
-          }
-        }
-      }
-    }
-  </script>
-
-  <!-- Three.js & OrbitControls for Interactive 3D Financial Graph -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <!-- Precompiled Institutional Stylesheet (CSP-compliant, zero runtime compile latency) -->
+  <link rel="stylesheet" href="/static/landing.css">
 
   <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="/static/lucide.min.js"></script>
 
-  <style>
-    /* Warm Institutional Aesthetics Matching Cockpit */
-    body {
-      background-color: #ECE7DD;
-      color: #22262E;
-      font-family: 'IBM Plex Sans', system-ui, sans-serif;
-    }
-    .paper-grid {
-      background-image: radial-gradient(rgba(34, 38, 46, 0.06) 1px, transparent 1px);
-      background-size: 28px 28px;
-    }
-    .panel-card {
-      background-color: #FFFFFF;
-      border: 1px solid #DAD3C3;
-      box-shadow: 0 4px 16px -2px rgba(27, 31, 43, 0.05);
-      transition: all 0.25s ease;
-    }
-    .panel-card:hover {
-      border-color: #3D5A80;
-      box-shadow: 0 8px 24px -4px rgba(61, 90, 128, 0.12);
-    }
-    .badge-high {
-      background-color: rgba(193, 68, 59, 0.12);
-      color: #C1443B;
-      border: 1px solid rgba(193, 68, 59, 0.3);
-    }
-    .badge-med {
-      background-color: rgba(201, 138, 46, 0.12);
-      color: #C98A2E;
-      border: 1px solid rgba(201, 138, 46, 0.3);
-    }
-    .badge-low {
-      background-color: rgba(76, 122, 94, 0.12);
-      color: #4C7A5E;
-      border: 1px solid rgba(76, 122, 94, 0.3);
-    }
-    .badge-blue {
-      background-color: rgba(61, 90, 128, 0.12);
-      color: #3D5A80;
-      border: 1px solid rgba(61, 90, 128, 0.3);
-    }
-    /* Custom Scrollbars */
-    ::-webkit-scrollbar {
-      width: 7px;
-    }
-    ::-webkit-scrollbar-track {
-      background: #ECE7DD;
-    }
-    ::-webkit-scrollbar-thumb {
-      background: #C4BCAC;
-      border-radius: 4px;
-    }
-    ::-webkit-scrollbar-thumb:hover {
-      background: #9B9384;
-    }
-  </style>
+  <!-- Three.js & OrbitControls from CSP-whitelisted CDN (cdn.jsdelivr.net) -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+  <!-- Sentinel Landing Interactive Logic -->
+  <script src="/static/landing.js" defer></script>
+
 </head>
 
 <body class="bg-canvas text-ink antialiased selection:bg-activeBlue selection:text-white min-h-screen relative overflow-x-hidden">
@@ -175,7 +88,7 @@
         </a>
 
         <!-- Mobile Menu Toggle -->
-        <button onclick="toggleMobileMenu()" class="md:hidden p-1.5 text-slate-400 hover:text-white focus:outline-none">
+        <button data-action="toggle-mobile-menu" aria-label="Toggle navigation menu" class="md:hidden p-1.5 text-slate-400 hover:text-white focus:outline-none">
           <i data-lucide="menu" class="w-5 h-5"></i>
         </button>
       </div>
@@ -184,11 +97,11 @@
 
     <!-- Mobile Dropdown -->
     <div id="mobile-menu" class="hidden md:hidden border-b border-sidebarLine bg-sidebar px-4 py-4 space-y-2 text-xs">
-      <a href="#cockpit-preview" onclick="toggleMobileMenu()" class="block py-1.5 text-slate-300 hover:text-white">Cockpit Tour</a>
-      <a href="#threejs-section" onclick="toggleMobileMenu()" class="block py-1.5 text-slate-300 hover:text-white">Interactive 3D Graph</a>
-      <a href="#features" onclick="toggleMobileMenu()" class="block py-1.5 text-slate-300 hover:text-white">Core Modules</a>
-      <a href="#how-it-works" onclick="toggleMobileMenu()" class="block py-1.5 text-slate-300 hover:text-white">Regulatory Pipeline</a>
-      <a href="#pricing" onclick="toggleMobileMenu()" class="block py-1.5 text-slate-300 hover:text-white">Institutional Licensing</a>
+      <a href="#cockpit-preview" class="block py-1.5 text-slate-300 hover:text-white">Cockpit Tour</a>
+      <a href="#threejs-section" class="block py-1.5 text-slate-300 hover:text-white">Interactive 3D Graph</a>
+      <a href="#features" class="block py-1.5 text-slate-300 hover:text-white">Core Modules</a>
+      <a href="#how-it-works" class="block py-1.5 text-slate-300 hover:text-white">Regulatory Pipeline</a>
+      <a href="#pricing" class="block py-1.5 text-slate-300 hover:text-white">Institutional Licensing</a>
       <div class="pt-2 border-t border-sidebarLine flex gap-2">
         <a href="/login" class="flex-1 text-center py-2 bg-white/5 rounded text-slate-200">Log In</a>
         <a href="/dashboard" class="flex-1 text-center py-2 bg-activeBlue rounded text-white font-semibold">Launch Cockpit</a>
@@ -232,7 +145,7 @@
             <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
           </a>
 
-          <button onclick="openVideoWalkthroughModal()" class="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg text-sm font-semibold text-sidebar bg-white hover:bg-[#F9F8F5] border border-edge shadow-sm transition">
+          <button data-action="open-video-modal" class="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg text-sm font-semibold text-sidebar bg-white hover:bg-[#F9F8F5] border border-edge shadow-sm transition">
             <i data-lucide="play-circle" class="w-4 h-4 text-risk-med"></i>
             <span>Watch Cockpit Video Tour (1:45)</span>
           </button>
@@ -299,7 +212,7 @@
                   <p class="text-xs text-slate-300 font-mono">Offshore entity Harlow Kane Ltd · 🇰🇾 Cayman Islands · Trigger: R-STRUCT-04</p>
                 </div>
 
-                <button onclick="openVideoWalkthroughModal()" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold font-mono text-sidebar bg-white hover:bg-[#ECE7DD] shadow-lg transition">
+                <button data-action="open-video-modal" class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs font-bold font-mono text-sidebar bg-white hover:bg-[#ECE7DD] shadow-lg transition">
                   <i data-lucide="play" class="w-4 h-4 fill-current text-risk-high"></i>
                   <span>PLAY LIVE VIDEO TOUR</span>
                 </button>
@@ -349,15 +262,15 @@
 
         <!-- 3D Controls Toolbar -->
         <div class="flex items-center gap-2 font-mono text-xs">
-          <button onclick="toggle3DRotation()" id="btn-3d-rotate" class="px-3 py-1.5 rounded bg-[#ECE7DD] hover:bg-[#E2DDD1] border border-edge text-ink font-medium transition flex items-center gap-1.5">
+          <button id="btn-3d-rotate" class="px-3 py-1.5 rounded bg-[#ECE7DD] hover:bg-[#E2DDD1] border border-edge text-ink font-medium transition flex items-center gap-1.5">
             <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
             <span>Auto-Rotate: ON</span>
           </button>
-          <button onclick="isolateHighRiskNodes()" class="px-3 py-1.5 rounded bg-risk-highBg hover:bg-red-100 border border-risk-high text-risk-high font-medium transition flex items-center gap-1.5">
+          <button id="btn-3d-isolate" class="px-3 py-1.5 rounded bg-risk-highBg hover:bg-red-100 border border-risk-high text-risk-high font-medium transition flex items-center gap-1.5">
             <i data-lucide="alert-octagon" class="w-3.5 h-3.5"></i>
             <span>Isolate Cayman Red Nodes</span>
           </button>
-          <button onclick="reset3DCamera()" class="px-3 py-1.5 rounded bg-white hover:bg-slate-50 border border-edge text-ink font-medium transition">
+          <button id="btn-3d-reset" class="px-3 py-1.5 rounded bg-white hover:bg-slate-50 border border-edge text-ink font-medium transition">
             Reset View
           </button>
         </div>
@@ -484,8 +397,7 @@
               <span class="text-inkMuted">Fuzzy Sensitivity:</span>
               <span id="demo-thresh-label" class="text-risk-med font-bold">85% Match Limit</span>
             </div>
-            <input type="range" min="70" max="95" value="85" class="w-full accent-risk-med h-1.5 bg-[#DAD3C3] rounded cursor-pointer"
-                   oninput="document.getElementById('demo-thresh-label').innerText = this.value + '% Match Limit'">
+            <input type="range" id="demo-thresh-slider" min="70" max="95" value="85" class="w-full accent-risk-med h-1.5 bg-[#DAD3C3] rounded cursor-pointer">
             <div class="p-2 rounded bg-[#F8F6F0] border border-edge text-xs font-mono">
               <span class="font-bold text-sidebar">Wladimir Smirnow</span>
               <span class="text-risk-high block font-semibold">→ OFAC SDN Blocklist Hit (92%)</span>
@@ -777,7 +689,7 @@
               <li>✓ Source Code Audit License</li>
             </ul>
           </div>
-          <button onclick="openVideoWalkthroughModal()" class="w-full mt-6 py-2 rounded text-center text-xs font-semibold text-sidebar bg-[#ECE7DD] hover:bg-[#E2DDD1] border border-edge transition">
+          <button data-action="open-video-modal" class="w-full mt-6 py-2 rounded text-center text-xs font-semibold text-sidebar bg-[#ECE7DD] hover:bg-[#E2DDD1] border border-edge transition">
             Schedule Architecture Review
           </button>
         </div>
@@ -821,14 +733,14 @@
   <!-- ═════════════════════════════════════════════════════════════
        VIDEO WALKTHROUGH MODAL
   ════════════════════════════════════════════════════════════════ -->
-  <div id="video-walkthrough-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-sidebar/80 backdrop-blur-md hidden" onclick="if(event.target===this)closeVideoWalkthroughModal()">
+  <div id="video-walkthrough-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-sidebar/80 backdrop-blur-md hidden">
     <div class="relative w-full max-w-3xl bg-panel rounded-xl overflow-hidden border-2 border-edge shadow-2xl">
       <div class="flex items-center justify-between px-4 py-3 bg-sidebar border-b border-sidebarLine text-white">
         <div class="flex items-center gap-2 text-xs font-mono">
           <i data-lucide="play-circle" class="w-4 h-4 text-risk-low"></i>
           <span>Sentinel AML Cockpit — Live Case Investigation Walkthrough</span>
         </div>
-        <button onclick="closeVideoWalkthroughModal()" class="text-slate-400 hover:text-white">
+        <button data-action="close-video-modal" class="text-slate-400 hover:text-white">
           <i data-lucide="x" class="w-5 h-5"></i>
         </button>
       </div>
@@ -911,287 +823,7 @@
   </div>
 
 
-  <!-- ═════════════════════════════════════════════════════════════
-       THREE.JS SCRIPT: 3D MONEY FLOW NETWORK TOPOLOGY
-  ════════════════════════════════════════════════════════════════ -->
-  <script>
-    let scene, camera, renderer, controls;
-    let nodesGroup, arcsGroup, particlesGroup;
-    let autoRotate = true;
-    let raycaster, mouse;
-    let nodeMeshes = [];
 
-    // Financial Network Nodes Specification
-    const financialNodes = [
-      { name: "New York Fedwire Clearing", city: "US", x: -45, y: 15, z: 10, type: "low", code: "US-NYC", risk: "12%" },
-      { name: "London SWIFT Hub", city: "GB", x: -10, y: 30, z: 15, type: "low", code: "GB-LON", risk: "14%" },
-      { name: "Zurich Private Banking", city: "CH", x: 5, y: 25, z: -5, type: "low", code: "CH-ZRH", risk: "18%" },
-      { name: "Frankfurt SEPA Core", city: "DE", x: 10, y: 28, z: 10, type: "low", code: "DE-FRA", risk: "15%" },
-      { name: "Cayman Islands Secrecy Shell (Tobias Varga)", city: "KY", x: -35, y: -5, z: 35, type: "high", code: "KY-GCM", risk: "92%" },
-      { name: "Panama Maritime Holding Corp", city: "PA", x: -30, y: -15, z: 20, type: "high", code: "PA-PTY", risk: "88%" },
-      { name: "BVI Virtual Asset Onramp", city: "VG", x: -25, y: -8, z: 30, type: "med", code: "VG-TDA", risk: "76%" },
-      { name: "Singapore Payment Aggregator", city: "SG", x: 45, y: -10, z: -25, type: "med", code: "SG-SIN", risk: "68%" },
-      { name: "Tokyo Trade Settlement", city: "JP", x: 60, y: 15, z: -15, type: "low", code: "JP-TYO", risk: "10%" }
-    ];
-
-    const connections = [
-      { from: 0, to: 4, type: "high" }, // NYC -> Cayman (flagged)
-      { from: 1, to: 4, type: "high" }, // London -> Cayman (flagged)
-      { from: 4, to: 5, type: "high" }, // Cayman -> Panama (structuring ring)
-      { from: 0, to: 1, type: "low" },  // NYC -> London (routine)
-      { from: 1, to: 2, type: "low" },  // London -> Zurich
-      { from: 2, to: 3, type: "low" },  // Zurich -> Frankfurt
-      { from: 3, to: 6, type: "med" },  // Frankfurt -> BVI Onramp
-      { from: 6, to: 7, type: "med" },  // BVI -> Singapore
-      { from: 7, to: 8, type: "low" }   // Singapore -> Tokyo
-    ];
-
-    function initThreeJS() {
-      const container = document.getElementById('threejs-canvas-wrapper');
-      if (!container) return;
-
-      const width = container.clientWidth;
-      const height = container.clientHeight;
-
-      // 1. Scene Setup
-      scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x1B1F2B); // Exact charcoal-navy sidebar color
-
-      // 2. Camera
-      camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
-      camera.position.set(0, 30, 110);
-
-      // 3. Renderer
-      renderer = new THREE.WebGLRenderer({ antialias: true });
-      renderer.setSize(width, height);
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      container.appendChild(renderer.domElement);
-
-      // 4. Controls
-      if (typeof THREE.OrbitControls !== 'undefined') {
-        controls = new THREE.OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
-        controls.dampingFactor = 0.05;
-        controls.maxDistance = 180;
-        controls.minDistance = 40;
-      }
-
-      // 5. Lights
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
-      scene.add(ambientLight);
-
-      const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-      dirLight.position.set(20, 50, 40);
-      scene.add(dirLight);
-
-      // 6. Groups
-      nodesGroup = new THREE.Group();
-      arcsGroup = new THREE.Group();
-      particlesGroup = new THREE.Group();
-      scene.add(nodesGroup);
-      scene.add(arcsGroup);
-      scene.add(particlesGroup);
-
-      // 7. Ambient Lattice Wireframe Globe
-      const globeGeo = new THREE.SphereGeometry(50, 24, 24);
-      const globeMat = new THREE.MeshBasicMaterial({
-        color: 0x2B3040,
-        wireframe: true,
-        transparent: true,
-        opacity: 0.25
-      });
-      const globeMesh = new THREE.Mesh(globeGeo, globeMat);
-      scene.add(globeMesh);
-
-      // 8. Create Nodes with Institutional Colors
-      financialNodes.forEach((data, index) => {
-        let nodeColor = 0x4C7A5E; // low green
-        if (data.type === 'high') nodeColor = 0xC1443B; // high red
-        if (data.type === 'med') nodeColor = 0xC98A2E;  // med amber
-
-        const sphereGeo = new THREE.SphereGeometry(data.type === 'high' ? 3.5 : 2.5, 16, 16);
-        const sphereMat = new THREE.MeshStandardMaterial({
-          color: nodeColor,
-          roughness: 0.3,
-          metalness: 0.2
-        });
-        const mesh = new THREE.Mesh(sphereGeo, sphereMat);
-        mesh.position.set(data.x, data.y, data.z);
-        mesh.userData = data;
-        nodesGroup.add(mesh);
-        nodeMeshes.push(mesh);
-
-        // Halo Ring around High-Risk Nodes
-        if (data.type === 'high') {
-          const ringGeo = new THREE.RingGeometry(4.5, 5.2, 24);
-          const ringMat = new THREE.MeshBasicMaterial({ color: 0xC1443B, side: THREE.DoubleSide, transparent: true, opacity: 0.7 });
-          const ringMesh = new THREE.Mesh(ringGeo, ringMat);
-          ringMesh.position.set(data.x, data.y, data.z);
-          ringMesh.lookAt(camera.position);
-          nodesGroup.add(ringMesh);
-        }
-      });
-
-      // 9. Curved 3D Quadratic Transfer Arcs
-      connections.forEach((conn) => {
-        const startNode = financialNodes[conn.from];
-        const endNode = financialNodes[conn.to];
-
-        const startVec = new THREE.Vector3(startNode.x, startNode.y, startNode.z);
-        const endVec = new THREE.Vector3(endNode.x, endNode.y, endNode.z);
-
-        // Calculate elevated mid-point curve
-        const midVec = new THREE.Vector3().addVectors(startVec, endVec).multiplyScalar(0.5);
-        const distance = startVec.distanceTo(endVec);
-        midVec.y += distance * 0.35;
-
-        const curve = new THREE.QuadraticBezierCurve3(startVec, midVec, endVec);
-        const points = curve.getPoints(36);
-        const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
-
-        let arcColor = 0x3D5A80;
-        if (conn.type === 'high') arcColor = 0xC1443B;
-        if (conn.type === 'med') arcColor = 0xC98A2E;
-
-        const lineMat = new THREE.LineBasicMaterial({
-          color: arcColor,
-          transparent: true,
-          opacity: conn.type === 'high' ? 0.85 : 0.45,
-          linewidth: conn.type === 'high' ? 2 : 1
-        });
-
-        const arcLine = new THREE.Line(lineGeo, lineMat);
-        arcLine.userData = { curve: curve, type: conn.type };
-        arcsGroup.add(arcLine);
-
-        // Add traveling particle pulse
-        const particleGeo = new THREE.SphereGeometry(0.8, 8, 8);
-        const particleMat = new THREE.MeshBasicMaterial({ color: arcColor });
-        const particleMesh = new THREE.Mesh(particleGeo, particleMat);
-        particleMesh.userData = { curve: curve, t: Math.random(), speed: 0.005 + Math.random() * 0.005 };
-        particlesGroup.add(particleMesh);
-      });
-
-      // 10. Raycaster for Interactive Hover
-      raycaster = new THREE.Raycaster();
-      mouse = new THREE.Vector2();
-
-      container.addEventListener('mousemove', onMouseMove, false);
-      window.addEventListener('resize', onWindowResize, false);
-
-      animate();
-    }
-
-    function onMouseMove(event) {
-      const container = document.getElementById('threejs-canvas-wrapper');
-      const rect = container.getBoundingClientRect();
-      mouse.x = ((event.clientX - rect.left) / container.clientWidth) * 2 - 1;
-      mouse.y = -((event.clientY - rect.top) / container.clientHeight) * 2 + 1;
-
-      raycaster.setFromCamera(mouse, camera);
-      const intersects = raycaster.intersectObjects(nodeMeshes);
-
-      const readout = document.getElementById('threejs-hover-readout');
-      if (intersects.length > 0) {
-        const d = intersects[0].object.userData;
-        if (readout) {
-          const colorClass = d.type === 'high' ? '#C1443B' : (d.type === 'med' ? '#C98A2E' : '#4C7A5E');
-          readout.innerHTML = `<span style="color:${colorClass}">AUDIT TARGET: ${d.name} (${d.code}) · Risk: ${d.risk}</span>`;
-        }
-      } else {
-        if (readout) readout.innerText = "Hover over any banking node to audit...";
-      }
-    }
-
-    function onWindowResize() {
-      const container = document.getElementById('threejs-canvas-wrapper');
-      if (!container || !renderer || !camera) return;
-      camera.aspect = container.clientWidth / container.clientHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(container.clientWidth, container.clientHeight);
-    }
-
-    function toggle3DRotation() {
-      autoRotate = !autoRotate;
-      const btn = document.getElementById('btn-3d-rotate');
-      if (btn) btn.innerHTML = `<i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> Auto-Rotate: ${autoRotate ? 'ON' : 'OFF'}`;
-      if (window.lucide) lucide.createIcons();
-    }
-
-    function isolateHighRiskNodes() {
-      autoRotate = false;
-      const btn = document.getElementById('btn-3d-rotate');
-      if (btn) btn.innerHTML = `<i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> Auto-Rotate: OFF`;
-
-      // Position camera directly facing Cayman & Panama threat cluster
-      camera.position.set(-45, 10, 80);
-      if (controls) controls.target.set(-35, -10, 25);
-
-      const readout = document.getElementById('threejs-hover-readout');
-      if (readout) {
-        readout.innerHTML = `<span style="color:#C1443B; font-weight:bold;">ALERT ISOLATION: Cayman Islands &amp; Panama Secrecy Shell Ring Active</span>`;
-      }
-    }
-
-    function reset3DCamera() {
-      camera.position.set(0, 30, 110);
-      if (controls) controls.target.set(0, 0, 0);
-      autoRotate = true;
-      const btn = document.getElementById('btn-3d-rotate');
-      if (btn) btn.innerHTML = `<i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> Auto-Rotate: ON`;
-      if (window.lucide) lucide.createIcons();
-    }
-
-    function animate() {
-      requestAnimationFrame(animate);
-
-      if (autoRotate) {
-        scene.rotation.y += 0.002;
-      }
-
-      if (controls) {
-        controls.update();
-      }
-
-      // Animate transfer packet pulses along 3D curves
-      particlesGroup.children.forEach(p => {
-        p.userData.t += p.userData.speed;
-        if (p.userData.t > 1) p.userData.t = 0;
-        const pos = p.userData.curve.getPoint(p.userData.t);
-        p.position.copy(pos);
-      });
-
-      renderer.render(scene, camera);
-    }
-
-    // Modal Controllers
-    function openVideoWalkthroughModal() {
-      const modal = document.getElementById('video-walkthrough-modal');
-      if (modal) modal.classList.remove('hidden');
-    }
-
-    function closeVideoWalkthroughModal() {
-      const modal = document.getElementById('video-walkthrough-modal');
-      if (modal) modal.classList.add('hidden');
-    }
-
-    function toggleMobileMenu() {
-      const menu = document.getElementById('mobile-menu');
-      if (menu) menu.classList.toggle('hidden');
-    }
-
-    // Escape Key Listener
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        closeVideoWalkthroughModal();
-      }
-    });
-
-    document.addEventListener('DOMContentLoaded', () => {
-      if (window.lucide) lucide.createIcons();
-      initThreeJS();
-    });
-  </script>
 
 </body>
 </html>

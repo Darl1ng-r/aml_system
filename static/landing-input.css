@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Warm Institutional Aesthetics Matching Cockpit */
+body {
+  background-color: #ECE7DD;
+  color: #22262E;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+}
+.paper-grid {
+  background-image: radial-gradient(rgba(34, 38, 46, 0.06) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+.panel-card {
+  background-color: #FFFFFF;
+  border: 1px solid #DAD3C3;
+  box-shadow: 0 4px 16px -2px rgba(27, 31, 43, 0.05);
+  transition: all 0.25s ease;
+}
+.panel-card:hover {
+  border-color: #3D5A80;
+  box-shadow: 0 8px 24px -4px rgba(61, 90, 128, 0.12);
+}
+.badge-high {
+  background-color: rgba(193, 68, 59, 0.12);
+  color: #C1443B;
+  border: 1px solid rgba(193, 68, 59, 0.3);
+}
+.badge-med {
+  background-color: rgba(201, 138, 46, 0.12);
+  color: #C98A2E;
+  border: 1px solid rgba(201, 138, 46, 0.3);
+}
+.badge-low {
+  background-color: rgba(76, 122, 94, 0.12);
+  color: #4C7A5E;
+  border: 1px solid rgba(76, 122, 94, 0.3);
+}
+.badge-blue {
+  background-color: rgba(61, 90, 128, 0.12);
+  color: #3D5A80;
+  border: 1px solid rgba(61, 90, 128, 0.3);
+}
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+}
+::-webkit-scrollbar-track {
+  background: #ECE7DD;
+}
+::-webkit-scrollbar-thumb {
+  background: #C4BCAC;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #9B9384;
+}
