@@ -102,3 +102,22 @@ async def test_outbox_relay_engine_lifecycle():
         shutdown.set()
         await task
         assert engine._running is False
+
+
+@pytest.mark.asyncio
+async def test_mark_outbox_event_failed_triggers_dlq():
+    """Verifies that reaching max retries transitions outbox event to FAILED and triggers DLQ alert."""
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {
+        "retry_count": 5,
+        "status": "FAILED"
+    }
+
+    event_id = str(uuid.uuid4())
+    with patch("database.outbox.logger.critical") as mock_logger_crit:
+        await mark_outbox_event_failed(mock_conn, event_id, "Broker connection timeout", max_retries=5)
+        assert mock_logger_crit.called
+        log_msg = mock_logger_crit.call_args[0][0]
+        assert "[OUTBOX-DLQ]" in log_msg
+        assert event_id in log_msg
+

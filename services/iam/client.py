@@ -49,8 +49,19 @@ class DownstreamAuthValidator:
         x_user_id = request.headers.get("x-user-id")
         x_tenant_id = request.headers.get("x-tenant-id")
         x_roles = request.headers.get("x-user-roles")
+        inbound_gateway_token = request.headers.get("x-internal-gateway-token")
 
         if x_user_id and x_tenant_id:
+            from config import settings
+            expected_secret = getattr(settings, "internal_gateway_secret", None)
+            if expected_secret:
+                if not inbound_gateway_token or inbound_gateway_token != expected_secret:
+                    logger.warning("Untrusted internal identity headers detected without valid gateway token.")
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Access denied: Spoofed or unverified internal gateway headers.",
+                    )
+
             roles = [r.strip() for r in x_roles.split(",")] if x_roles else []
             return UserClaims(
                 user_id=x_user_id,

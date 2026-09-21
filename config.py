@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     tls_client_cert: str | None = None
     tls_client_key: str | None = None
 
+    # Internal API Gateway verification secret
+    internal_gateway_secret: str = "aml-internal-gateway-secret-dev-only"
+
     # ── HashiCorp Vault — secrets management ──────────────────────────────────
     # Non-sensitive connection config (addresses / IDs used to *retrieve* secrets).
     # Actual credentials (passwords, keys) are never stored in settings.

@@ -31,11 +31,29 @@ static_resources:
                 route:
                   cluster: iam_service
                   timeout: 5s
+                  request_headers_to_remove:
+                  - "x-user-id"
+                  - "x-tenant-id"
+                  - "x-user-roles"
+                  - "x-user-name"
+                  - "x-mfa-verified"
+                  - "x-internal-gateway-token"
+                  request_headers_to_add:
+                  - header:
+                      key: "x-internal-gateway-token"
+                      value: "aml-internal-gateway-secret-dev-only"
+                    append: false
+
               - match:
                   exact: "/.well-known/jwks.json"
                 route:
                   cluster: iam_service
                   timeout: 2s
+                  request_headers_to_remove:
+                  - "x-user-id"
+                  - "x-tenant-id"
+                  - "x-user-roles"
+                  - "x-internal-gateway-token"
 
               # 2. Ingestion & Transaction Processing Routes
               - match:
@@ -43,6 +61,18 @@ static_resources:
                 route:
                   cluster: aml_monolith
                   timeout: 3s
+                  request_headers_to_remove:
+                  - "x-user-id"
+                  - "x-tenant-id"
+                  - "x-user-roles"
+                  - "x-user-name"
+                  - "x-mfa-verified"
+                  - "x-internal-gateway-token"
+                  request_headers_to_add:
+                  - header:
+                      key: "x-internal-gateway-token"
+                      value: "aml-internal-gateway-secret-dev-only"
+                    append: false
 
               # 3. Screening & Sanctions Routes
               - match:
@@ -50,6 +80,18 @@ static_resources:
                 route:
                   cluster: aml_monolith
                   timeout: 4s
+                  request_headers_to_remove:
+                  - "x-user-id"
+                  - "x-tenant-id"
+                  - "x-user-roles"
+                  - "x-user-name"
+                  - "x-mfa-verified"
+                  - "x-internal-gateway-token"
+                  request_headers_to_add:
+                  - header:
+                      key: "x-internal-gateway-token"
+                      value: "aml-internal-gateway-secret-dev-only"
+                    append: false
 
               # 4. Case Management & Regulatory Reporting Routes
               - match:
@@ -57,11 +99,36 @@ static_resources:
                 route:
                   cluster: aml_monolith
                   timeout: 10s
+                  request_headers_to_remove:
+                  - "x-user-id"
+                  - "x-tenant-id"
+                  - "x-user-roles"
+                  - "x-user-name"
+                  - "x-mfa-verified"
+                  - "x-internal-gateway-token"
+                  request_headers_to_add:
+                  - header:
+                      key: "x-internal-gateway-token"
+                      value: "aml-internal-gateway-secret-dev-only"
+                    append: false
+
               - match:
                   prefix: "/api/v1/reports"
                 route:
                   cluster: aml_monolith
                   timeout: 15s
+                  request_headers_to_remove:
+                  - "x-user-id"
+                  - "x-tenant-id"
+                  - "x-user-roles"
+                  - "x-user-name"
+                  - "x-mfa-verified"
+                  - "x-internal-gateway-token"
+                  request_headers_to_add:
+                  - header:
+                      key: "x-internal-gateway-token"
+                      value: "aml-internal-gateway-secret-dev-only"
+                    append: false
 
               # 5. Fallback Route to Core AML Application
               - match:
@@ -69,6 +136,13 @@ static_resources:
                 route:
                   cluster: aml_monolith
                   timeout: 15s
+                  request_headers_to_remove:
+                  - "x-user-id"
+                  - "x-tenant-id"
+                  - "x-user-roles"
+                  - "x-user-name"
+                  - "x-mfa-verified"
+                  - "x-internal-gateway-token"
 
           http_filters:
           - name: envoy.filters.http.router

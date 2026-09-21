@@ -13,8 +13,10 @@ services:
       - "127.0.0.1:10000:10000" # Ingress routing port
       - "127.0.0.1:9901:9901"   # Admin dashboard & stats
     depends_on:
-      - iam-service
-      - fastapi-app
+      iam-service:
+        condition: service_healthy
+      fastapi-app:
+        condition: service_healthy
     restart: unless-stopped
 
   # ════════════════════════════════════════════════════════════════════════
@@ -30,6 +32,7 @@ services:
       - "127.0.0.1:8001:8001"
     environment:
       - ENVIRONMENT=production
+      - INTERNAL_GATEWAY_SECRET=${INTERNAL_GATEWAY_SECRET:-aml-internal-gateway-secret-dev-only}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=aml_db
@@ -62,6 +65,7 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       - RUN_EMBEDDED_WORKER=false
+      - INTERNAL_GATEWAY_SECRET=${INTERNAL_GATEWAY_SECRET:-aml-internal-gateway-secret-dev-only}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_REPLICA_HOST=postgres-replica

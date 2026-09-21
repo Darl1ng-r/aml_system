@@ -28,6 +28,14 @@ async def iam_lifespan(app: FastAPI):
     setup_json_logging(level=logging.INFO)
     logger.info("Bootstrapping IAM Microservice...")
 
+    # 0. Bootstrap Vault secrets before loading cryptographic keys or DB passwords
+    try:
+        from services.vault_loader import VaultSecretsLoader
+        await VaultSecretsLoader.bootstrap()
+        logger.info("IAM Vault secrets loaded successfully.")
+    except Exception as e:
+        logger.warning(f"IAM Vault secrets bootstrap skipped/offline: {e}")
+
     from database.postgres import init_db_pool, close_db_pool
     from database.redis_db import get_redis_client, get_async_redis_client, close_redis_client
 

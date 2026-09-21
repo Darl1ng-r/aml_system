@@ -1,17 +1,19 @@
 """
 Test Suite: Standalone IAM Microservice & Auth Client
 =====================================================
-Tests the isolated IAM application routes and downstream token validation client.
+Tests the isolated IAM application routes, downstream token validation client,
+and zero-trust protection against internal header spoofing.
 """
 
 from unittest.mock import MagicMock
 import httpx
 import pytest
-from fastapi import Request
+from fastapi import Request, HTTPException
 
 from services.iam.app import iam_app
 from services.iam.client import DownstreamAuthValidator, UserClaims
 from services.auth import create_access_token
+from config import settings
 
 
 def test_iam_service_routes_registered():
@@ -46,11 +48,11 @@ async def test_iam_liveness_probe():
         assert resp.json()["service"] == "iam-service"
 
 
-def test_downstream_auth_validator_with_gateway_headers():
-    """Verifies that downstream services accept pre-validated gateway headers."""
+def test_downstream_auth_validator_with_trusted_gateway_token():
+    """Verifies that downstream services accept gateway headers when accompanied by the internal token."""
     validator = DownstreamAuthValidator()
 
-    # Simulate request with Envoy-injected trusted headers
+    # Simulate request with Envoy-injected trusted headers + internal token
     mock_request = MagicMock(spec=Request)
     mock_request.headers = {
         "x-user-id": "usr-12345",
@@ -58,6 +60,7 @@ def test_downstream_auth_validator_with_gateway_headers():
         "x-user-roles": "ComplianceOfficer,Analyst",
         "x-user-name": "alice_compliance",
         "x-mfa-verified": "true",
+        "x-internal-gateway-token": settings.internal_gateway_secret,
     }
 
     claims = validator.validate_request(mock_request)
@@ -68,6 +71,26 @@ def test_downstream_auth_validator_with_gateway_headers():
     assert "ComplianceOfficer" in claims.roles
     assert "Analyst" in claims.roles
     assert claims.is_mfa_authenticated is True
+
+
+def test_downstream_auth_validator_rejects_spoofed_headers():
+    """Security Test: Verifies that forged identity headers without a valid gateway token are blocked with 403."""
+    validator = DownstreamAuthValidator()
+
+    # Simulate an attacker forging headers without the internal gateway secret
+    mock_request = MagicMock(spec=Request)
+    mock_request.headers = {
+        "x-user-id": "usr-attacker",
+        "x-tenant-id": "ten-victim",
+        "x-user-roles": "Admin",
+    }
+    mock_request.client = MagicMock(host="192.168.1.100")
+
+    with pytest.raises(HTTPException) as exc_info:
+        validator.validate_request(mock_request)
+
+    assert exc_info.value.status_code == 403
+    assert "Spoofed or unverified internal gateway headers" in exc_info.value.detail
 
 
 def test_downstream_auth_validator_with_jwt():

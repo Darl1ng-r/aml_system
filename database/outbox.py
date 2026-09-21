@@ -119,21 +119,28 @@ async def mark_outbox_event_published(conn, event_id: str) -> None:
 async def mark_outbox_event_failed(
     conn, event_id: str, error_msg: str, max_retries: int = 5
 ) -> None:
-    """Records an outbox publishing failure with retry counting."""
+    """Records an outbox publishing failure with retry counting and DLQ routing."""
     query = """
         UPDATE transactional_outbox
         SET retry_count = retry_count + 1,
             last_error = $2,
             status = CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END
-        WHERE id = $1::uuid;
+        WHERE id = $1::uuid
+        RETURNING retry_count, status;
     """
-    await conn.execute(query, event_id, error_msg, max_retries)
+    row = await conn.fetchrow(query, event_id, error_msg, max_retries)
+    if row and row["status"] == "FAILED":
+        logger.critical(
+            f"[OUTBOX-DLQ] Outbox event {event_id} marked as FAILED after {row['retry_count']} retries. "
+            f"Dead-letter condition triggered: {error_msg}"
+        )
 
 
 class OutboxRelayEngine:
     """
     Background worker that continuously processes unpublished events from
     PostgreSQL outbox and streams them to Kafka / Redpanda.
+    Decouples database locks from network I/O to prevent connection pool starvation.
     """
 
     def __init__(self, poll_interval_seconds: float = 1.0, batch_size: int = 50):
@@ -159,24 +166,44 @@ class OutboxRelayEngine:
                     await asyncio.sleep(self.poll_interval)
                     continue
 
+                # 1. Fetch pending batch inside a brief, isolated read transaction
+                events = []
                 async with pool.acquire() as conn:
                     async with conn.transaction():
                         events = await fetch_pending_outbox_events(conn, limit=self.batch_size)
-                        if events:
-                            from services.redpanda import publish_transaction_async
-                            for event in events:
-                                try:
-                                    success = await publish_transaction_async(event["payload"])
-                                    if success:
-                                        await mark_outbox_event_published(conn, event["id"])
-                                        processed_count += 1
-                                    else:
-                                        await mark_outbox_event_failed(
-                                            conn, event["id"], "Broker publish returned False"
-                                        )
-                                except Exception as pub_exc:
-                                    logger.error(f"Error publishing outbox event {event['id']}: {pub_exc}")
-                                    await mark_outbox_event_failed(conn, event["id"], str(pub_exc))
+
+                # 2. Publish to Kafka outside of any database transaction (Zero DB Lock Contention)
+                if events:
+                    from services.redpanda import publish_transaction_async
+                    published_ids = []
+                    failed_records = []
+
+                    for event in events:
+                        try:
+                            success = await publish_transaction_async(event["payload"])
+                            if success:
+                                published_ids.append(event["id"])
+                                processed_count += 1
+                            else:
+                                failed_records.append((event["id"], "Broker publish returned False"))
+                        except Exception as pub_exc:
+                            logger.error(f"Error publishing outbox event {event['id']}: {pub_exc}")
+                            failed_records.append((event["id"], str(pub_exc)))
+
+                    # 3. Batch update statuses in a single swift transaction
+                    async with pool.acquire() as conn:
+                        async with conn.transaction():
+                            if published_ids:
+                                await conn.execute(
+                                    """
+                                    UPDATE transactional_outbox
+                                    SET status = 'PUBLISHED', published_at = NOW()
+                                    WHERE id = ANY($1::uuid[]);
+                                    """,
+                                    published_ids,
+                                )
+                            for eid, err in failed_records:
+                                await mark_outbox_event_failed(conn, eid, err)
 
             except Exception as loop_exc:
                 logger.error(f"Outbox relay loop encounter error: {loop_exc}")
