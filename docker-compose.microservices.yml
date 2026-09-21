@@ -1,0 +1,186 @@
+version: '3.8'
+
+services:
+  # ════════════════════════════════════════════════════════════════════════
+  # API Gateway: Envoy Proxy (Single Ingress Point)
+  # ════════════════════════════════════════════════════════════════════════
+  envoy-gateway:
+    build:
+      context: ./deployments/docker/envoy
+      dockerfile: Dockerfile
+    container_name: aml-envoy-gateway
+    ports:
+      - "127.0.0.1:10000:10000" # Ingress routing port
+      - "127.0.0.1:9901:9901"   # Admin dashboard & stats
+    depends_on:
+      - iam-service
+      - fastapi-app
+    restart: unless-stopped
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Microservice: Identity & Access Management (IAM)
+  # ════════════════════════════════════════════════════════════════════════
+  iam-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aml-iam-service
+    command: ["python", "-m", "uvicorn", "services.iam.app:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      - ENVIRONMENT=production
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=aml_db
+      - POSTGRES_USER=${POSTGRES_APP_USER:-aml_app}
+      - POSTGRES_PASSWORD=${AML_APP_PASSWORD}
+      - AML_APP_PASSWORD=${AML_APP_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redispassword}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health/liveness"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Core Monolith / Transition Engine (Strangler Fig)
+  # ════════════════════════════════════════════════════════════════════════
+  fastapi-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aml-fastapi-app
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - RUN_EMBEDDED_WORKER=false
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_REPLICA_HOST=postgres-replica
+      - POSTGRES_REPLICA_PORT=5432
+      - POSTGRES_DB=aml_db
+      - POSTGRES_USER=${POSTGRES_APP_USER:-aml_app}
+      - POSTGRES_PASSWORD=${AML_APP_PASSWORD}
+      - AML_APP_PASSWORD=${AML_APP_PASSWORD}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-redispassword}
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-passwordpassword}
+      - KAFKA_BOOTSTRAP_SERVERS=redpanda-0:29092
+      - ELASTICSEARCH_HOST=http://elasticsearch:9200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Relational Database: PostgreSQL Primary
+  # ════════════════════════════════════════════════════════════════════════
+  postgres:
+    image: postgres:15-alpine
+    container_name: aml-postgres
+    environment:
+      POSTGRES_DB: aml_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgrespassword}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deployments/docker/postgres-primary.conf:/etc/postgresql/postgresql.conf:ro
+      - ./deployments/docker/pg_hba_replication.conf:/etc/postgresql/pg_hba.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf -c hba_file=/etc/postgresql/pg_hba.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d aml_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ════════════════════════════════════════════════════════════════════════
+  # In-Memory Cache: Redis
+  # ════════════════════════════════════════════════════════════════════════
+  redis:
+    image: redis:7-alpine
+    container_name: aml-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redispassword} --maxmemory 512mb --maxmemory-policy allkeys-lru --appendonly yes
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redispassword}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Message Queue: Redpanda (Kafka Compatible)
+  # ════════════════════════════════════════════════════════════════════════
+  redpanda-0:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
+    container_name: aml-redpanda-0
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --node-id 0
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda-0:29092,OUTSIDE://localhost:9092
+      - --rpc-addr 0.0.0.0:33145
+      - --advertise-rpc-addr redpanda-0:33145
+      - --set redpanda.auto_create_topics_enabled=true
+    ports:
+      - "127.0.0.1:9092:9092"
+    volumes:
+      - redpanda_0_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info --brokers redpanda-0:29092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # ════════════════════════════════════════════════════════════════════════
+  # Graph Database: Neo4j
+  # ════════════════════════════════════════════════════════════════════════
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: aml-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-passwordpassword}
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p $${NEO4J_PASSWORD:-passwordpassword} 'RETURN 1'"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  redpanda_0_data:
+  neo4j_data:

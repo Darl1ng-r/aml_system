@@ -323,6 +323,38 @@ async def ingest_transaction(
                         """,
                         tenant_id, tx_id, json.dumps(structuring_payload)
                     )
+
+            # Record to Transactional Outbox for guaranteed zero-loss event streaming
+            try:
+                from database.outbox import record_outbox_event
+                outbox_payload = {
+                    "transaction_id": tx_id,
+                    "tenant_id": str(tenant_id),
+                    "sender_id": str(sender_id),
+                    "sender_account": payload.sender_account,
+                    "receiver_id": str(receiver_id),
+                    "receiver_account": payload.receiver_account,
+                    "amount": payload.amount,
+                    "currency": payload.currency,
+                    "status": tx_status,
+                    "timestamp": payload.timestamp.isoformat(),
+                    "country": payload.country,
+                    "merchant": payload.merchant,
+                    "device": payload.device,
+                    "channel": payload.channel,
+                    "dynamic_score": dynamic_score,
+                    "alert_triggered": alert_triggered,
+                }
+                await record_outbox_event(
+                    conn=conn,
+                    aggregate_type="TRANSACTION",
+                    aggregate_id=tx_id,
+                    event_type="aml.core.transaction.ingested.v1",
+                    payload=outbox_payload,
+                    tenant_id=str(tenant_id) if tenant_id else None,
+                )
+            except Exception as ex_outbox:
+                logger.warning(f"Outbox event write skipped/deferred: {ex_outbox}")
     except HTTPException:
         raise
     except Exception as e:

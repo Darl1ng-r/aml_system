@@ -43,6 +43,13 @@ async def init_db_pool():
 
     return db_pool
 
+async def get_db_pool():
+    """Returns the active asyncpg connection pool, initializing it if necessary."""
+    global db_pool
+    if db_pool is None or getattr(db_pool, "_loop", None) is None or db_pool._loop.is_closed():
+        await init_db_pool()
+    return db_pool
+
 async def close_db_pool():
     global db_pool, db_replica_pool
     if db_pool:

@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package aml.screening.v1;
+
+option go_package = "github.com/aml/proto/screening/v1;screeningv1";
+option py_generic_services = true;
+
+service SanctionsScreeningService {
+  rpc ScreenEntity (ScreenEntityRequest) returns (ScreenEntityResponse);
+  rpc BatchScreen (BatchScreenRequest) returns (BatchScreenResponse);
+  rpc CheckBicRisk (BicRiskRequest) returns (BicRiskResponse);
+}
+
+message ScreenEntityRequest {
+  string tenant_id = 1;
+  string query_name = 2;
+  string country = 3;
+  double similarity_threshold = 4;
+}
+
+message SanctionsHit {
+  string entity_id = 1;
+  string matched_name = 2;
+  string list_type = 3; // "OFAC_SDN", "EU_CONSOLIDATED", "UN_SANCTIONS", "PEP"
+  double match_score = 4;
+  string country = 5;
+  repeated string aliases = 6;
+}
+
+message ScreenEntityResponse {
+  bool is_match = 1;
+  double max_score = 2;
+  repeated SanctionsHit hits = 3;
+  int64 screening_duration_ms = 4;
+}
+
+message BatchScreenRequest {
+  string tenant_id = 1;
+  repeated ScreenEntityRequest entities = 2;
+}
+
+message BatchScreenResponse {
+  repeated ScreenEntityResponse results = 1;
+  int32 total_screened = 2;
+  int32 total_flagged = 3;
+}
+
+message BicRiskRequest {
+  string bic = 1;
+  string country = 2;
+}
+
+message BicRiskResponse {
+  bool is_high_risk = 1;
+  string risk_level = 2; // "LOW", "MEDIUM", "HIGH", "CRITICAL"
+  string reason = 3;
+}

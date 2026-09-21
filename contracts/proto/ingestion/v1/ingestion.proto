@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package aml.ingestion.v1;
+
+option go_package = "github.com/aml/proto/ingestion/v1;ingestionv1";
+option py_generic_services = true;
+
+service TransactionIngestionService {
+  rpc SubmitTransaction (SubmitTransactionRequest) returns (SubmitTransactionResponse);
+  rpc SubmitBatch (SubmitBatchRequest) returns (SubmitBatchResponse);
+}
+
+message TransactionPayload {
+  string transaction_id = 1;
+  string tenant_id = 2;
+  string sender_account = 3;
+  string receiver_account = 4;
+  double amount = 5;
+  string currency = 6;
+  string channel = 7;
+  string sender_bic = 8;
+  string receiver_bic = 9;
+  string payment_purpose = 10;
+  int64 timestamp = 11;
+  map<string, string> metadata = 12;
+}
+
+message SubmitTransactionRequest {
+  string idempotency_key = 1;
+  TransactionPayload transaction = 2;
+}
+
+message SubmitTransactionResponse {
+  string transaction_id = 1;
+  string status = 2; // "ACCEPTED", "DUPLICATE", "REJECTED"
+  int64 ingested_at = 3;
+  string outbox_event_id = 4;
+}
+
+message SubmitBatchRequest {
+  string batch_id = 1;
+  repeated SubmitTransactionRequest transactions = 2;
+}
+
+message SubmitBatchResponse {
+  string batch_id = 1;
+  int32 accepted_count = 2;
+  int32 duplicate_count = 3;
+  int32 rejected_count = 4;
+  repeated SubmitTransactionResponse item_responses = 5;
+}

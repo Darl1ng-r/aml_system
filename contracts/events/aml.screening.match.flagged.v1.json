@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aml.internal/events/aml.screening.match.flagged.v1.json",
+  "title": "AmlScreeningMatchFlaggedEvent",
+  "description": "CloudEvents v1.0 specification for a high-confidence watchlist/PEP/sanctions match.",
+  "type": "object",
+  "required": ["specversion", "id", "source", "type", "time", "datacontenttype", "data"],
+  "properties": {
+    "specversion": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "format": "uuid" },
+    "source": { "type": "string", "format": "uri" },
+    "type": { "type": "string", "const": "aml.screening.match.flagged.v1" },
+    "time": { "type": "string", "format": "date-time" },
+    "datacontenttype": { "type": "string", "const": "application/json" },
+    "traceparent": { "type": "string" },
+    "tenantid": { "type": "string" },
+    "data": {
+      "type": "object",
+      "required": ["screening_id", "tenant_id", "query_name", "matched_entity_id", "list_type", "match_score"],
+      "properties": {
+        "screening_id": { "type": "string" },
+        "tenant_id": { "type": "string" },
+        "query_name": { "type": "string" },
+        "matched_entity_id": { "type": "string" },
+        "matched_name": { "type": "string" },
+        "list_type": { "type": "string" },
+        "match_score": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "action_taken": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

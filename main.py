@@ -365,14 +365,13 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get("/")
 def read_root(request: Request):
     accept = request.headers.get("accept", "")
-    sec_fetch_dest = request.headers.get("sec-fetch-dest", "")
-    if sec_fetch_dest == "document" or ("text/html" in accept and "application/json" not in accept):
-        return FileResponse("static/landing.html")
-    return {
-        "status": "ONLINE",
-        "service": "AML Platform Ingestion Gateway",
-        "version": "1.0.0"
-    }
+    if "application/json" in accept and "text/html" not in accept:
+        return {
+            "status": "ONLINE",
+            "service": "AML Platform Ingestion Gateway",
+            "version": "1.0.0"
+        }
+    return FileResponse("static/landing.html")
 
 @app.get("/landing", response_class=FileResponse)
 def read_landing():

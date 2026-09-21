@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aml.internal/events/aml.core.transaction.ingested.v1.json",
+  "title": "AmlTransactionIngestedEvent",
+  "description": "CloudEvents v1.0 specification for an ingested transaction committed to the transactional ledger.",
+  "type": "object",
+  "required": ["specversion", "id", "source", "type", "time", "datacontenttype", "data"],
+  "properties": {
+    "specversion": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source": {
+      "type": "string",
+      "format": "uri"
+    },
+    "type": {
+      "type": "string",
+      "const": "aml.core.transaction.ingested.v1"
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "datacontenttype": {
+      "type": "string",
+      "const": "application/json"
+    },
+    "traceparent": {
+      "type": "string"
+    },
+    "tenantid": {
+      "type": "string"
+    },
+    "data": {
+      "type": "object",
+      "required": ["transaction_id", "tenant_id", "sender_account", "receiver_account", "amount", "currency", "timestamp"],
+      "properties": {
+        "transaction_id": { "type": "string" },
+        "tenant_id": { "type": "string" },
+        "sender_account": { "type": "string" },
+        "receiver_account": { "type": "string" },
+        "amount": { "type": "number", "minimum": 0.01 },
+        "currency": { "type": "string", "minLength": 3, "maxLength": 3 },
+        "channel": { "type": "string" },
+        "sender_bic": { "type": "string" },
+        "receiver_bic": { "type": "string" },
+        "payment_purpose": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "additionalProperties": true
+    }
+  }
+}
