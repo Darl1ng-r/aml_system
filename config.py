@@ -113,6 +113,11 @@ class Settings(BaseSettings):
                 raise ValueError("CRITICAL: Default elastic_password is forbidden in production environment!")
             if self.aml_app_password in insecure_defaults:
                 raise ValueError("CRITICAL: Default aml_app_password is forbidden in production environment!")
+            if self.internal_gateway_secret in {"aml-internal-gateway-secret-dev-only", ""}:
+                raise ValueError("CRITICAL: Default internal_gateway_secret is forbidden in production environment!")
+
+            # Fail-Closed: Production must NEVER run in offline development mode
+            self.allow_offline_dev = False
         return self
 
 settings = Settings()

@@ -56,6 +56,33 @@ def test_production_rejects_default_passwords():
         )
     assert "Default neo4j_password is forbidden in production" in str(exc_info.value)
 
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            environment="production",
+            postgres_password="secure_prod_password_123",
+            neo4j_password="secure_prod_password_123",
+            elastic_password="secure_prod_password_456",
+            aml_app_password="secure_prod_app_password_789",
+            internal_gateway_secret="aml-internal-gateway-secret-dev-only"
+        )
+    assert "Default internal_gateway_secret is forbidden in production" in str(exc_info.value)
+
+
+def test_production_forces_offline_dev_false():
+    """Verifies that production environment forces allow_offline_dev=False."""
+    from config import Settings
+
+    s = Settings(
+        environment="production",
+        postgres_password="secure_prod_password_123",
+        neo4j_password="secure_prod_password_123",
+        elastic_password="secure_prod_password_456",
+        aml_app_password="secure_prod_app_password_789",
+        internal_gateway_secret="super-high-entropy-prod-gateway-secret-991823"
+    )
+    assert s.allow_offline_dev is False
+
+
 
 def test_metric_path_normalization():
     """Verifies that normalize_metric_path collapses UUIDs and numbers to prevent label cardinality explosion."""

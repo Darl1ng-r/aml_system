@@ -28,8 +28,8 @@ services:
       dockerfile: Dockerfile
     container_name: aml-iam-service
     command: ["python", "-m", "uvicorn", "services.iam.app:app", "--host", "0.0.0.0", "--port", "8001"]
-    ports:
-      - "127.0.0.1:8001:8001"
+    expose:
+      - "8001"
     environment:
       - ENVIRONMENT=production
       - INTERNAL_GATEWAY_SECRET=${INTERNAL_GATEWAY_SECRET:-aml-internal-gateway-secret-dev-only}
@@ -61,8 +61,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: aml-fastapi-app
-    ports:
-      - "127.0.0.1:8000:8000"
+    expose:
+      - "8000"
     environment:
       - RUN_EMBEDDED_WORKER=false
       - INTERNAL_GATEWAY_SECRET=${INTERNAL_GATEWAY_SECRET:-aml-internal-gateway-secret-dev-only}
