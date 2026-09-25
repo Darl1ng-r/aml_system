@@ -66,9 +66,25 @@ class UserSignup(BaseModel):
         return sanitize_text(v)
 
 class UserProvision(BaseModel):
+    """
+    Admin-only payload to provision a new compliance team member.
+
+    Allowed roles (5-tier RBAC model):
+      • L1_ANALYST      — Tier 1: Alert triage & false-positive dismissal
+      • L2_INVESTIGATOR — Tier 2: Full case investigation, SAR drafting, EDD requests
+      • MLRO            — Compliance Manager: SAR approval, team oversight, risk-appetite config
+      • ADMIN           — Rule Builder, User Manager, Integration Settings (tenant-scoped)
+      • AUDITOR         — Read-only access to audit vault, model reports, decision snapshots
+      • TENANT_ADMIN    — Cross-feature admin within a single tenant
+      • SUPER_ADMIN     — Platform-wide access (internal ops only)
+      • ANALYST         — Legacy alias for L2_INVESTIGATOR; retained for backward-compat
+    """
     username: str = Field(..., min_length=3, max_length=100, pattern=r"^[A-Za-z0-9._@+-]+$")
     password: str = Field(..., min_length=8, max_length=128)
-    role: str = Field("ANALYST", pattern=r"^(ANALYST|AUDITOR|ADMIN)$")
+    role: str = Field(
+        "ANALYST",
+        pattern=r"^(L1_ANALYST|L2_INVESTIGATOR|MLRO|ANALYST|AUDITOR|ADMIN|TENANT_ADMIN|SUPER_ADMIN)$"
+    )
     tenant_id: Optional[str] = None
 
     @field_validator("username", mode="before")

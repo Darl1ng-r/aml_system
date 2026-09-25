@@ -32,9 +32,6 @@ async def startup_db_clients(app_instance: FastAPI):
     import asyncio
     from database.postgres import init_db_pool
     from database.redis_db import get_redis_client, get_async_redis_client
-    from database.neo4j_db import get_neo4j_driver, get_async_neo4j_driver
-    from database.elasticsearch_db import get_elasticsearch_client, get_async_elasticsearch_client
-    from scripts.sync_worker import main as run_sync_worker
 
     # ── 0. Bootstrap Vault secrets (must be FIRST — all subsequent steps depend on it) ──
     try:
@@ -123,6 +120,10 @@ async def startup_db_clients(app_instance: FastAPI):
 
 async def warm_soft_dependencies(allow_offline: bool):
     """Asynchronously initializes and pre-warms soft dependencies without blocking startup (Finding #1)."""
+    from database.neo4j_db import get_neo4j_driver, get_async_neo4j_driver
+    from database.elasticsearch_db import get_elasticsearch_client, get_async_elasticsearch_client
+    from scripts.sync_worker import main as run_sync_worker
+
     # 3. Initialize Neo4j
     try:
         get_neo4j_driver()
