@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
 from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist, jwks
-from routers import cases, accounts, ctr, compliance_reporting, privacy
+from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, evidence
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
@@ -323,6 +323,8 @@ app.include_router(accounts.edd_router)
 app.include_router(ctr.router)
 app.include_router(compliance_reporting.router)
 app.include_router(privacy.router)
+app.include_router(locks.router)
+app.include_router(evidence.router)
 
 # Mount static files directory for dashboard styling and frontend client logic
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -398,4 +400,31 @@ def read_dashboard(request: Request):
 @app.get("/login", response_class=FileResponse)
 def read_login():
     return FileResponse("static/login.html")
+
+@app.get("/alerts/triage", response_class=FileResponse)
+@app.get("/triage", response_class=FileResponse)
+def read_triage(request: Request):
+    """Server-side cookie authentication guard for Alert Triage Inbox."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/triage.html")
+
+@app.get("/admin/rules", response_class=FileResponse)
+@app.get("/rules-admin", response_class=FileResponse)
+def read_rules_admin(request: Request):
+    """Server-side cookie authentication guard for Rule Builder & Tuner."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/rules-admin.html")
+
+@app.get("/admin/users", response_class=FileResponse)
+@app.get("/users-admin", response_class=FileResponse)
+def read_users_admin(request: Request):
+    """Server-side cookie authentication guard for User & Permissions Governance."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/users-admin.html")
 

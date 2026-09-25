@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="AML Sentinel — Tier 1 & Tier 2 Alert Triage Inbox & Investigation Stream">
+  <title>Alert Triage Inbox — AML Sentinel</title>
+
+  <!-- Google Fonts: IBM Plex Sans & IBM Plex Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Core Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css">
+
+  <!-- Lucide Icon Library -->
+  <script src="/static/lucide.min.js" defer></script>
+
+  <style>
+    /* Triage Specific Theme Extensions */
+    .triage-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: var(--canvas);
+      overflow: hidden;
+      font-family: var(--font-ui);
+    }
+
+    .triage-nav {
+      background: var(--sidebar);
+      color: var(--sidebar-text-bright);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--sidebar-line);
+      flex-shrink: 0;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      font-size: 15px;
+    }
+
+    .nav-brand .shield-badge {
+      background: var(--brand);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: var(--r-sm);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .nav-link-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--sidebar-text);
+      padding: 6px 14px;
+      border-radius: var(--r-md);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all var(--dur-f) ease;
+      text-decoration: none;
+    }
+
+    .nav-link-btn:hover {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--sidebar-text-bright);
+    }
+
+    .nav-link-btn.active {
+      background: var(--brand);
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .triage-kpis {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      padding: 16px 24px 0 24px;
+      flex-shrink: 0;
+    }
+
+    .kpi-card {
+      background: var(--panel);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-lg);
+      padding: 14px 18px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: transform var(--dur-f) ease;
+    }
+
+    .kpi-card:hover {
+      transform: translateY(-1px);
+    }
+
+    .kpi-val {
+      font-family: var(--font-data);
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .kpi-lbl {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--ink-soft);
+      margin-top: 2px;
+    }
+
+    .triage-controls {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 24px;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    .filter-pills {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .pill-btn {
+      padding: 5px 12px;
+      border-radius: var(--r-pill);
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--panel-edge);
+      background: var(--panel);
+      color: var(--ink-soft);
+      cursor: pointer;
+      transition: all var(--dur-f) ease;
+    }
+
+    .pill-btn:hover {
+      background: var(--active-bg);
+      color: var(--ink);
+    }
+
+    .pill-btn.active {
+      background: var(--brand);
+      color: #fff;
+      border-color: var(--brand);
+    }
+
+    .pill-btn.danger.active {
+      background: var(--risk-high);
+      border-color: var(--risk-high);
+      color: #fff;
+    }
+
+    .search-box {
+      position: relative;
+      width: 320px;
+    }
+
+    .search-box input {
+      width: 100%;
+      padding: 7px 12px 7px 34px;
+      border-radius: var(--r-md);
+      border: 1px solid var(--panel-edge);
+      font-size: 13px;
+      background: var(--panel);
+      color: var(--ink);
+    }
+
+    .search-box i {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--ink-soft);
+      width: 15px;
+      height: 15px;
+    }
+
+    .triage-body {
+      display: flex;
+      flex: 1;
+      padding: 0 24px 20px 24px;
+      gap: 16px;
+      overflow: hidden;
+    }
+
+    .table-container {
+      flex: 1;
+      background: var(--panel);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-lg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.03);
+    }
+
+    .table-scroll {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    table.triage-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+
+    table.triage-table th {
+      background: #F8F6F1;
+      color: var(--ink-soft);
+      font-size: 11px;
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--panel-edge);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+
+    table.triage-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--panel-edge);
+      color: var(--ink);
+      vertical-align: middle;
+    }
+
+    table.triage-table tr {
+      cursor: pointer;
+      transition: background var(--dur-f) ease;
+    }
+
+    table.triage-table tr:hover {
+      background: #FAF8F5;
+    }
+
+    table.triage-table tr.selected {
+      background: var(--active-bg);
+    }
+
+    .score-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: var(--r-pill);
+      font-family: var(--font-data);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .score-badge.critical {
+      background: var(--risk-high-bg);
+      color: var(--risk-high);
+      border: 1px solid rgba(193, 68, 59, 0.25);
+    }
+
+    .score-badge.high {
+      background: #FDF1E8;
+      color: #C05621;
+      border: 1px solid rgba(192, 86, 33, 0.25);
+    }
+
+    .score-badge.med {
+      background: var(--risk-med-bg);
+      color: var(--risk-med);
+      border: 1px solid rgba(201, 138, 46, 0.25);
+    }
+
+    .score-badge.low {
+      background: var(--risk-low-bg);
+      color: var(--risk-low);
+      border: 1px solid rgba(76, 122, 94, 0.25);
+    }
+
+    .rule-tag {
+      font-family: var(--font-data);
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: var(--r-sm);
+      background: #F0EBE1;
+      color: var(--ink-soft);
+      font-weight: 500;
+    }
+
+    /* Quick Triage Slide-over Drawer */
+    .drawer {
+      width: 440px;
+      background: var(--panel);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-lg);
+      display: flex;
+      flex-direction: column;
+      box-shadow: -4px 0 16px rgba(0,0,0,0.06);
+      transition: transform var(--dur-f) ease;
+    }
+
+    .drawer-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--panel-edge);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: #FAF8F5;
+    }
+
+    .drawer-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .lock-banner {
+      background: #FFFBEB;
+      border: 1px solid #FDE68A;
+      color: #92400E;
+      padding: 10px 12px;
+      border-radius: var(--r-md);
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .lock-banner.locked-by-other {
+      background: #FEF2F2;
+      border-color: #FECACA;
+      color: #991B1B;
+    }
+
+    .drawer-section {
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-md);
+      padding: 12px 14px;
+      background: #FFFFFF;
+    }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--ink-soft);
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 12px;
+      font-size: 12px;
+    }
+
+    .info-label {
+      color: var(--ink-soft);
+    }
+
+    .info-value {
+      font-weight: 600;
+      color: var(--ink);
+      font-family: var(--font-data);
+    }
+
+    .drawer-actions {
+      padding: 16px 20px;
+      border-top: 1px solid var(--panel-edge);
+      background: #FAF8F5;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .btn-action {
+      padding: 8px 16px;
+      border-radius: var(--r-md);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: 1px solid transparent;
+      transition: all var(--dur-f) ease;
+    }
+
+    .btn-claim {
+      background: var(--brand);
+      color: #fff;
+    }
+    .btn-claim:hover { background: var(--brand-dark); }
+
+    .btn-escalate {
+      background: #D97706;
+      color: #fff;
+    }
+    .btn-escalate:hover { background: #B45309; }
+
+    .btn-dismiss {
+      background: transparent;
+      border: 1px solid var(--panel-edge);
+      color: var(--ink);
+    }
+    .btn-dismiss:hover { background: #F0EBE1; }
+
+    .btn-case {
+      background: #1B1F2B;
+      color: #fff;
+    }
+    .btn-case:hover { background: #2B3040; }
+  </style>
+</head>
+
+<body>
+
+  <div class="triage-shell">
+
+    <!-- Top Navigation Bar -->
+    <header class="triage-nav">
+      <div class="nav-brand">
+        <span class="shield-badge">AML</span>
+        <span>SENTINEL</span>
+        <span style="font-size:12px; color:var(--sidebar-text); font-weight:400;">| Alert Triage Console</span>
+      </div>
+
+      <nav class="nav-links">
+        <a href="/alerts/triage" class="nav-link-btn active">
+          <i data-lucide="inbox" style="width:15px; height:15px;"></i> Triage Inbox
+        </a>
+        <a href="/dashboard" class="nav-link-btn">
+          <i data-lucide="crosshair" style="width:15px; height:15px;"></i> Case Cockpit
+        </a>
+        <a href="/admin/rules" class="nav-link-btn" id="nav-rule-builder">
+          <i data-lucide="sliders" style="width:15px; height:15px;"></i> Rule Builder
+        </a>
+        <a href="/admin/users" class="nav-link-btn" id="nav-user-admin">
+          <i data-lucide="users" style="width:15px; height:15px;"></i> Team & Roles
+        </a>
+      </nav>
+
+      <div style="display:flex; align-items:center; gap:12px;">
+        <div id="ws-indicator" style="display:flex; align-items:center; gap:6px; font-size:12px; color:#10B981;">
+          <span style="width:8px; height:8px; border-radius:50%; background:#10B981; display:inline-block;" class="pulse-dot"></span>
+          <span>Stream Active</span>
+        </div>
+        <div style="background:rgba(255,255,255,0.1); padding:4px 10px; border-radius:14px; font-size:12px;" id="user-chip">
+          analyst.tier1
+        </div>
+        <button onclick="logout()" class="nav-link-btn" title="Sign Out">
+          <i data-lucide="log-out" style="width:15px; height:15px;"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- KPI Metric Cards -->
+    <section class="triage-kpis">
+      <div class="kpi-card">
+        <div>
+          <div class="kpi-val" id="kpi-unresolved">--</div>
+          <div class="kpi-lbl">Unresolved Alerts</div>
+        </div>
+        <i data-lucide="alert-circle" style="color:var(--brand); width:28px; height:28px;"></i>
+      </div>
+      <div class="kpi-card">
+        <div>
+          <div class="kpi-val" id="kpi-critical" style="color:var(--risk-high);">--</div>
+          <div class="kpi-lbl">Critical / High Severity</div>
+        </div>
+        <i data-lucide="flame" style="color:var(--risk-high); width:28px; height:28px;"></i>
+      </div>
+      <div class="kpi-card">
+        <div>
+          <div class="kpi-val" id="kpi-escalated" style="color:#D97706;">--</div>
+          <div class="kpi-lbl">Escalated to Tier 2</div>
+        </div>
+        <i data-lucide="arrow-up-right" style="color:#D97706; width:28px; height:28px;"></i>
+      </div>
+      <div class="kpi-card">
+        <div>
+          <div class="kpi-val" id="kpi-triaged-today" style="color:var(--risk-low);">--</div>
+          <div class="kpi-lbl">Closed Today</div>
+        </div>
+        <i data-lucide="check-circle" style="color:var(--risk-low); width:28px; height:28px;"></i>
+      </div>
+    </section>
+
+    <!-- Controls & Filters -->
+    <div class="triage-controls">
+      <div class="filter-pills">
+        <span style="font-size:11px; font-weight:700; color:var(--ink-soft); margin-right:4px;">SEVERITY:</span>
+        <button class="pill-btn active" onclick="setSeverityFilter('ALL', this)">All</button>
+        <button class="pill-btn danger" onclick="setSeverityFilter('CRITICAL', this)">Critical</button>
+        <button class="pill-btn" onclick="setSeverityFilter('HIGH', this)">High</button>
+        <button class="pill-btn" onclick="setSeverityFilter('MEDIUM', this)">Medium</button>
+        <button class="pill-btn" onclick="setSeverityFilter('LOW', this)">Low</button>
+
+        <span style="font-size:11px; font-weight:700; color:var(--ink-soft); margin:0 4px 0 12px;">STATUS:</span>
+        <button class="pill-btn active" onclick="setStatusFilter('ACTIVE', this)">Active</button>
+        <button class="pill-btn" onclick="setStatusFilter('NEW', this)">New</button>
+        <button class="pill-btn" onclick="setStatusFilter('IN_REVIEW', this)">In Review</button>
+        <button class="pill-btn" onclick="setStatusFilter('ESCALATED', this)">Escalated</button>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div class="search-box">
+          <i data-lucide="search"></i>
+          <input type="text" id="triage-search-input" placeholder="Search account, rule, alert ID..." oninput="handleSearch(this.value)">
+        </div>
+        <button class="btn-action btn-dismiss" onclick="fetchAlerts()" title="Refresh alerts list">
+          <i data-lucide="refresh-cw" style="width:14px; height:14px;"></i> Refresh
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Content: Data Table & Quick Drawer -->
+    <div class="triage-body">
+
+      <!-- Alerts Table View -->
+      <section class="table-container">
+        <div class="table-scroll">
+          <table class="triage-table">
+            <thead>
+              <tr>
+                <th style="width: 32px;"></th>
+                <th>Alert ID</th>
+                <th>Rule Fired</th>
+                <th>Subject / Account</th>
+                <th>Amount</th>
+                <th>Threat Level</th>
+                <th>AI Risk</th>
+                <th>Status</th>
+                <th>Assignee</th>
+                <th>Lock</th>
+                <th>Detected</th>
+              </tr>
+            </thead>
+            <tbody id="alerts-table-body">
+              <tr>
+                <td colspan="11" style="text-align:center; padding:40px; color:var(--ink-soft);">
+                  Loading alerts stream...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Quick Triage Drawer (Right Side) -->
+      <aside class="drawer" id="quick-triage-drawer">
+        <div class="drawer-header">
+          <div>
+            <div style="font-weight:700; font-size:14px;" id="drawer-alert-id">Select an Alert</div>
+            <div style="font-size:11px; color:var(--ink-soft);" id="drawer-alert-crumb">Click any row to open quick triage</div>
+          </div>
+          <button style="background:none; border:none; cursor:pointer;" onclick="closeDrawer()">
+            <i data-lucide="x" style="width:16px; height:16px; color:var(--ink-soft);"></i>
+          </button>
+        </div>
+
+        <div class="drawer-content" id="drawer-content-area">
+          <div style="text-align:center; padding:40px 10px; color:var(--ink-soft);">
+            <i data-lucide="inbox" style="width:36px; height:36px; margin-bottom:8px; opacity:0.4;"></i>
+            <p>Select an alert from the table to inspect rule explanations, acquire pessimistic lease, and take triage action.</p>
+          </div>
+        </div>
+
+        <div class="drawer-actions" id="drawer-actions-panel" style="display:none;">
+          <button class="btn-action btn-claim" id="btn-claim-action" onclick="claimSelectedAlert()">
+            <i data-lucide="user-check" style="width:15px; height:15px;"></i> Claim Alert
+          </button>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+            <button class="btn-action btn-dismiss" onclick="dismissFalsePositive()">
+              <i data-lucide="check" style="width:14px; height:14px;"></i> False Positive
+            </button>
+            <button class="btn-action btn-escalate" onclick="escalateToL2()">
+              <i data-lucide="arrow-up-right" style="width:15px; height:15px;"></i> Escalate L2
+            </button>
+          </div>
+          <button class="btn-action btn-case" onclick="openCaseCockpit()">
+            <i data-lucide="external-link" style="width:15px; height:15px;"></i> Open in Investigation Cockpit
+          </button>
+        </div>
+      </aside>
+
+    </div>
+
+  </div>
+
+  <!-- Client-Side Triage Logic -->
+  <script>
+    let allAlerts = [];
+    let currentSeverity = 'ALL';
+    let currentStatus = 'ACTIVE';
+    let selectedAlert = null;
+    let lockHeartbeatInterval = null;
+    let currentLockToken = null;
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      if (window.lucide) lucide.createIcons();
+      decodeUserRole();
+      await fetchAlerts();
+      setupWebSocket();
+    });
+
+    function decodeUserRole() {
+      // Decode JWT token from cookie if present
+      const match = document.cookie.match(new RegExp('(^| )access_token=([^;]+)'));
+      if (match) {
+        try {
+          const payload = JSON.parse(atob(match[2].split('.')[1]));
+          const username = payload.username || payload.sub || 'Analyst';
+          const role = payload.role || 'ANALYST';
+          document.getElementById('user-chip').innerText = `${username} (${role})`;
+
+          // Hide admin links if not ADMIN / SUPER_ADMIN
+          if (!['ADMIN', 'SUPER_ADMIN', 'TENANT_ADMIN'].includes(role)) {
+            const ruleNav = document.getElementById('nav-rule-builder');
+            const userNav = document.getElementById('nav-user-admin');
+            if (ruleNav) ruleNav.style.display = 'none';
+            if (userNav) userNav.style.display = 'none';
+          }
+        } catch (e) {
+          console.error('Error decoding JWT', e);
+        }
+      }
+    }
+
+    async function fetchAlerts() {
+      try {
+        const res = await fetch('/api/v1/alerts?limit=100');
+        if (!res.ok) throw new Error('Failed to load alerts');
+        const data = await res.json();
+        allAlerts = Array.isArray(data) ? data : (data.alerts || []);
+        updateKPIs();
+        renderAlertsTable();
+      } catch (err) {
+        console.error('Fetch alerts error', err);
+      }
+    }
+
+    function updateKPIs() {
+      const unresolved = allAlerts.filter(a => !['CLOSED_SAR', 'CLOSED_FALSE_POSITIVE', 'CLOSED'].includes(a.status)).length;
+      const critical = allAlerts.filter(a => ['CRITICAL', 'HIGH'].includes((a.threat_level || '').toUpperCase())).length;
+      const escalated = allAlerts.filter(a => a.status === 'ESCALATED').length;
+      const closed = allAlerts.filter(a => ['CLOSED_SAR', 'CLOSED_FALSE_POSITIVE'].includes(a.status)).length;
+
+      document.getElementById('kpi-unresolved').innerText = unresolved;
+      document.getElementById('kpi-critical').innerText = critical;
+      document.getElementById('kpi-escalated').innerText = escalated;
+      document.getElementById('kpi-triaged-today').innerText = closed;
+    }
+
+    function renderAlertsTable() {
+      const tbody = document.getElementById('alerts-table-body');
+      let filtered = allAlerts.filter(a => {
+        if (currentSeverity !== 'ALL' && (a.threat_level || '').toUpperCase() !== currentSeverity) return false;
+        if (currentStatus === 'ACTIVE' && ['CLOSED_SAR', 'CLOSED_FALSE_POSITIVE', 'CLOSED'].includes(a.status)) return false;
+        if (currentStatus === 'NEW' && a.status !== 'NEW' && a.status !== 'OPEN') return false;
+        if (currentStatus === 'IN_REVIEW' && a.status !== 'IN_REVIEW') return false;
+        if (currentStatus === 'ESCALATED' && a.status !== 'ESCALATED') return false;
+        return true;
+      });
+
+      const q = (document.getElementById('triage-search-input').value || '').toLowerCase();
+      if (q) {
+        filtered = filtered.filter(a =>
+          (a.id || '').toLowerCase().includes(q) ||
+          (a.rule_name || '').toLowerCase().includes(q) ||
+          (a.subject_account_id || '').toLowerCase().includes(q) ||
+          (a.owner_name || '').toLowerCase().includes(q)
+        );
+      }
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding:30px; color:var(--ink-soft);">No alerts match active filters.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(a => {
+        const sevClass = (a.threat_level || 'LOW').toLowerCase();
+        const score = Math.round(Number(a.ai_risk_score || 0) * 100);
+        const isSelected = selectedAlert && selectedAlert.id === a.id;
+        const dateStr = a.created_at ? new Date(a.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--';
+
+        return `
+          <tr class="${isSelected ? 'selected' : ''}" onclick="selectAlert('${a.id}')">
+            <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+            <td style="font-family:var(--font-data); font-weight:600;">#${a.id.substring(0,8)}</td>
+            <td><span class="rule-tag">${a.rule_name || 'MONITORING_HIT'}</span></td>
+            <td>
+              <div style="font-weight:600;">${a.owner_name || 'Account Holder'}</div>
+              <div style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${a.subject_account_id || 'ACC-****'}</div>
+            </td>
+            <td style="font-family:var(--font-data); font-weight:600;">$${Number(a.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+            <td><span class="score-badge ${sevClass}">● ${a.threat_level || 'LOW'}</span></td>
+            <td><span class="score-badge ${score > 80 ? 'critical' : score > 50 ? 'med' : 'low'}">${score}%</span></td>
+            <td><span style="font-size:11px; font-weight:600; text-transform:uppercase;">${a.status || 'OPEN'}</span></td>
+            <td><span style="font-size:12px; color:var(--ink-soft);">${a.assigned_officer_id ? 'Assigned' : '<span style="color:#D97706;">Unclaimed</span>'}</span></td>
+            <td id="lock-col-${a.id}">--</td>
+            <td style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${dateStr}</td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function setSeverityFilter(sev, btn) {
+      currentSeverity = sev;
+      btn.parentElement.querySelectorAll('.pill-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderAlertsTable();
+    }
+
+    function setStatusFilter(stat, btn) {
+      currentStatus = stat;
+      btn.parentElement.querySelectorAll('.pill-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderAlertsTable();
+    }
+
+    function handleSearch() {
+      renderAlertsTable();
+    }
+
+    async function selectAlert(alertId) {
+      selectedAlert = allAlerts.find(a => a.id === alertId);
+      renderAlertsTable();
+
+      // Clear existing lock heartbeat
+      if (lockHeartbeatInterval) {
+        clearInterval(lockHeartbeatInterval);
+        lockHeartbeatInterval = null;
+      }
+
+      // Try acquiring pessimistic lock lease on this alert
+      let lockState = null;
+      try {
+        const lockRes = await fetch(`/api/v1/locks/ALERT/${alertId}`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ttl_seconds: 300})
+        });
+        if (lockRes.status === 409) {
+          const errData = await lockRes.json();
+          lockState = { locked: true, other: true, info: errData.detail ? errData.detail.lock_info : null };
+        } else if (lockRes.ok) {
+          const data = await lockRes.json();
+          lockState = { locked: true, other: false, lock: data.lock };
+          currentLockToken = data.lock.lock_token;
+          // Start 60s heartbeat
+          lockHeartbeatInterval = setInterval(refreshLockHeartbeat, 60000);
+        }
+      } catch (e) {
+        console.warn('Lock lease acquisition error:', e);
+      }
+
+      renderDrawer(selectedAlert, lockState);
+    }
+
+    async function refreshLockHeartbeat() {
+      if (!selectedAlert || !currentLockToken) return;
+      try {
+        await fetch(`/api/v1/locks/ALERT/${selectedAlert.id}`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({lock_token: currentLockToken, ttl_seconds: 300})
+        });
+      } catch (e) {
+        console.warn('Heartbeat failed', e);
+      }
+    }
+
+    function renderDrawer(alert, lockState) {
+      document.getElementById('drawer-alert-id').innerText = `ALERT #${alert.id.substring(0, 8)}`;
+      document.getElementById('drawer-alert-crumb').innerText = `${alert.rule_name || 'Monitoring Hit'} · ${alert.status}`;
+      document.getElementById('drawer-actions-panel').style.display = 'flex';
+
+      let lockBannerHtml = '';
+      if (lockState && lockState.other) {
+        const lockedBy = lockState.info ? lockState.info.locked_by_name : 'another investigator';
+        lockBannerHtml = `
+          <div class="lock-banner locked-by-other">
+            <i data-lucide="lock" style="width:16px; height:16px;"></i>
+            <span><strong>Locked by ${lockedBy}</strong> — You are viewing in read-only mode to prevent edit collisions.</span>
+          </div>
+        `;
+      } else if (lockState && lockState.locked) {
+        lockBannerHtml = `
+          <div class="lock-banner">
+            <i data-lucide="shield-check" style="width:16px; height:16px; color:#10B981;"></i>
+            <span><strong>Active Edit Lease Acquired</strong> — Heartbeat active (300s TTL).</span>
+          </div>
+        `;
+      }
+
+      const score = Math.round(Number(alert.ai_risk_score || 0) * 100);
+      const explanation = alert.explainability_payload || 'Triggered pattern matched regulatory compliance thresholds.';
+
+      document.getElementById('drawer-content-area').innerHTML = `
+        ${lockBannerHtml}
+
+        <div class="drawer-section">
+          <div class="section-title">
+            <span>Transaction Snapshot</span>
+            <span class="score-badge ${score > 80 ? 'critical' : 'med'}">Risk ${score}/100</span>
+          </div>
+          <div class="info-grid">
+            <div>
+              <div class="info-label">Amount</div>
+              <div class="info-value">$${Number(alert.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+            </div>
+            <div>
+              <div class="info-label">Threat Level</div>
+              <div class="info-value" style="color:var(--risk-high);">${alert.threat_level || 'LOW'}</div>
+            </div>
+            <div>
+              <div class="info-label">Account</div>
+              <div class="info-value">${alert.subject_account_id || 'ACC-8912'}</div>
+            </div>
+            <div>
+              <div class="info-label">Counterparty</div>
+              <div class="info-value">${alert.counterparty_account_id || 'EXTERNAL-BANK'}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="drawer-section">
+          <div class="section-title">AI & Rule Explainability</div>
+          <div style="font-size:12px; line-height:1.5; color:var(--ink);">
+            ${typeof explanation === 'string' ? explanation : JSON.stringify(explanation, null, 2)}
+          </div>
+        </div>
+
+        <div class="drawer-section">
+          <div class="section-title">
+            <span>Escalation History</span>
+            <button onclick="viewEscalationHistory('${alert.id}')" style="background:none; border:none; color:var(--brand); cursor:pointer; font-size:11px;">View Log</button>
+          </div>
+          <div id="drawer-escalation-list" style="font-size:12px; color:var(--ink-soft);">
+            Status: <strong>${alert.status}</strong>
+          </div>
+        </div>
+      `;
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    async function claimSelectedAlert() {
+      if (!selectedAlert) return;
+      try {
+        const res = await fetch(`/api/v1/alerts/${selectedAlert.id}/claim`, {method: 'POST'});
+        if (res.ok) {
+          alert('Alert claimed successfully! Status changed to IN_REVIEW.');
+          await fetchAlerts();
+        } else {
+          const err = await res.json();
+          alert(`Could not claim: ${err.detail || 'Error'}`);
+        }
+      } catch (e) {
+        alert('Network error claiming alert');
+      }
+    }
+
+    async function dismissFalsePositive() {
+      if (!selectedAlert) return;
+      const justification = prompt('Enter mandatory compliance justification for False Positive dismissal:');
+      if (!justification) return;
+
+      try {
+        const res = await fetch(`/api/v1/alerts/${selectedAlert.id}/action`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            action: 'CLOSE_FALSE_POSITIVE',
+            justification: justification,
+            sar_xml_generate: false
+          })
+        });
+        if (res.ok) {
+          alert('Alert dismissed as False Positive.');
+          await fetchAlerts();
+          closeDrawer();
+        } else {
+          alert('Error dismissing alert');
+        }
+      } catch (e) {
+        alert('Failed to dismiss alert');
+      }
+    }
+
+    async function escalateToL2() {
+      if (!selectedAlert) return;
+      const reason = prompt('Enter rationale for escalating to Tier 2 (L2_INVESTIGATOR):');
+      if (!reason) return;
+
+      try {
+        const res = await fetch(`/api/v1/alerts/${selectedAlert.id}/escalate`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({justification: reason})
+        });
+        if (res.ok) {
+          alert('Alert successfully escalated to Tier 2 with audit trail.');
+          await fetchAlerts();
+          selectAlert(selectedAlert.id);
+        } else {
+          alert('Failed to escalate alert.');
+        }
+      } catch (e) {
+        alert('Escalation failed');
+      }
+    }
+
+    async function viewEscalationHistory(alertId) {
+      try {
+        const res = await fetch(`/api/v1/alerts/${alertId}/escalations`);
+        const data = await res.json();
+        const listDiv = document.getElementById('drawer-escalation-list');
+        if (data.length === 0) {
+          listDiv.innerHTML = '<em>No prior escalations recorded for this alert.</em>';
+        } else {
+          listDiv.innerHTML = data.map(e => `
+            <div style="padding:6px 0; border-bottom:1px solid #ECE7DD;">
+              <strong>Tier ${e.from_tier} → Tier ${e.to_tier}</strong> by ${e.escalated_by_name}<br>
+              <span style="font-size:11px;">${e.escalation_reason}</span>
+            </div>
+          `).join('');
+        }
+      } catch (e) {
+        console.error('Failed to load escalations', e);
+      }
+    }
+
+    function openCaseCockpit() {
+      window.location.href = '/dashboard';
+    }
+
+    function closeDrawer() {
+      if (selectedAlert && currentLockToken) {
+        fetch(`/api/v1/locks/ALERT/${selectedAlert.id}`, {method: 'DELETE'});
+      }
+      if (lockHeartbeatInterval) {
+        clearInterval(lockHeartbeatInterval);
+        lockHeartbeatInterval = null;
+      }
+      selectedAlert = null;
+      currentLockToken = null;
+      document.getElementById('drawer-alert-id').innerText = 'Select an Alert';
+      document.getElementById('drawer-alert-crumb').innerText = 'Click any row to open quick triage';
+      document.getElementById('drawer-actions-panel').style.display = 'none';
+      document.getElementById('drawer-content-area').innerHTML = `
+        <div style="text-align:center; padding:40px 10px; color:var(--ink-soft);">
+          <i data-lucide="inbox" style="width:36px; height:36px; margin-bottom:8px; opacity:0.4;"></i>
+          <p>Select an alert from the table to inspect rule explanations, acquire pessimistic lease, and take triage action.</p>
+        </div>
+      `;
+      renderAlertsTable();
+    }
+
+    function setupWebSocket() {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${window.location.host}/ws/live-stream`);
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.event === 'ALERT_CREATED' || msg.event === 'ALERT_ESCALATED') {
+            fetchAlerts();
+          }
+        } catch (e) {}
+      };
+    }
+
+    function logout() {
+      document.cookie = 'access_token=; Max-Age=0; path=/;';
+      sessionStorage.clear();
+      window.location.href = '/login';
+    }
+
+    window.addEventListener('beforeunload', () => {
+      if (selectedAlert && currentLockToken) {
+        navigator.sendBeacon(`/api/v1/locks/ALERT/${selectedAlert.id}`);
+      }
+    });
+  </script>
+
+</body>
+
+</html>

@@ -437,7 +437,12 @@ async def escalate_alert(
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            user_uuid = uuid.UUID(str(current_user["id"]))
+            user_uuid = None
+            if current_user.get("id"):
+                try:
+                    user_uuid = uuid.UUID(str(current_user["id"]))
+                except (ValueError, TypeError):
+                    user_uuid = None
             updated = await conn.execute(
                 """
                 UPDATE alerts
@@ -448,6 +453,22 @@ async def escalate_alert(
             )
             if updated == "UPDATE 0":
                 raise HTTPException(status_code=404, detail="Alert not found")
+
+            # Persist to alert_escalations table (Sprint 1 / Section 1.2)
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO alert_escalations (
+                        tenant_id, alert_id, escalated_by, escalated_by_name,
+                        from_tier, to_tier, escalation_reason
+                    )
+                    VALUES ($1, $2, $3, $4, 1, 2, $5);
+                    """,
+                    uuid.UUID(str(tenant_id)), alert_uuid, user_uuid,
+                    current_user.get("username", "Analyst"), justification
+                )
+            except Exception as esc_err:
+                logger.warning(f"Could not persist alert_escalations entry: {esc_err}")
 
             # Audit log
             from observability.logging import log_audit_event
@@ -485,6 +506,117 @@ async def escalate_alert(
     except Exception as e:
         logger.error(f"Failed to escalate alert: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to escalate alert: {str(e)}")
+
+
+@router.post("/{id}/claim")
+async def claim_alert(
+    id: str,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    """
+    Claims an alert for investigation, binding assigned_officer_id to current user
+    and transitioning status to IN_REVIEW.
+    """
+    try:
+        alert_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    user_uuid = None
+    if current_user.get("id"):
+        try:
+            user_uuid = uuid.UUID(str(current_user["id"]))
+        except (ValueError, TypeError):
+            user_uuid = None
+
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            updated = await conn.execute(
+                """
+                UPDATE alerts
+                SET assigned_officer_id = $1,
+                    status = CASE WHEN status IN ('NEW', 'OPEN') THEN 'IN_REVIEW' ELSE status END
+                WHERE id = $2;
+                """,
+                user_uuid, alert_uuid
+            )
+            if updated == "UPDATE 0":
+                raise HTTPException(status_code=404, detail="Alert not found")
+
+            from observability.logging import log_audit_event
+            log_audit_event(
+                event_type="ALERT_CLAIMED",
+                actor_id=str(current_user["id"]),
+                actor_role=current_user["role"],
+                action="CLAIM",
+                resource_type="ALERT",
+                resource_id=id,
+                tenant_id=tenant_id,
+                details={"username": current_user.get("username")}
+            )
+
+            return {
+                "status": "CLAIMED",
+                "alert_id": id,
+                "assigned_officer": current_user.get("username")
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to claim alert: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to claim alert: {e}")
+
+
+@router.get("/{id}/escalations")
+async def get_alert_escalations(
+    id: str,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
+):
+    """
+    Returns the complete escalation audit chain for an alert (Tier 1 -> Tier 2 -> MLRO handoffs).
+    """
+    try:
+        alert_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, alert_id, case_id, escalated_by, escalated_by_name,
+                       escalated_to, escalated_to_name, escalated_at,
+                       from_tier, to_tier, escalation_reason, resolved_at, resolution_action
+                FROM alert_escalations
+                WHERE alert_id = $1
+                ORDER BY escalated_at ASC;
+                """,
+                alert_uuid
+            )
+            return [
+                {
+                    "id": str(r["id"]),
+                    "alert_id": str(r["alert_id"]),
+                    "case_id": str(r["case_id"]) if r["case_id"] else None,
+                    "escalated_by": str(r["escalated_by"]),
+                    "escalated_by_name": r["escalated_by_name"],
+                    "escalated_to": str(r["escalated_to"]) if r["escalated_to"] else None,
+                    "escalated_to_name": r["escalated_to_name"],
+                    "escalated_at": r["escalated_at"].isoformat() if r["escalated_at"] else None,
+                    "from_tier": r["from_tier"],
+                    "to_tier": r["to_tier"],
+                    "escalation_reason": r["escalation_reason"],
+                    "resolved_at": r["resolved_at"].isoformat() if r["resolved_at"] else None,
+                    "resolution_action": r["resolution_action"]
+                }
+                for r in rows
+            ]
+    except Exception as e:
+        logger.warning(f"Failed to fetch alert escalations: {e}")
+        return []
 
 
 class AlertPatch(BaseModel):

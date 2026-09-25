@@ -255,6 +255,7 @@ async function initAuth() {
             localStorage.setItem('username', user.username);
             localStorage.setItem('role', user.role);
             setProfileUI(user.username);
+            applyRoleBasedVisibility(user.role);
             checkServerStatus();
             loadAlerts();
             return;
@@ -265,8 +266,18 @@ async function initAuth() {
 
     const username = localStorage.getItem('username') || 'rama.tubeh';
     setProfileUI(username);
+    applyRoleBasedVisibility();
     checkServerStatus();
     loadAlerts();
+}
+
+function applyRoleBasedVisibility(role) {
+    role = role || localStorage.getItem('role') || 'ANALYST';
+    const isAdmin = ['ADMIN', 'SUPER_ADMIN', 'TENANT_ADMIN'].includes(role);
+    const ruleNav = document.getElementById('nav-rule-builder');
+    const userNav = document.getElementById('nav-user-admin');
+    if (ruleNav) ruleNav.style.display = isAdmin ? 'inline-flex' : 'none';
+    if (userNav) userNav.style.display = isAdmin ? 'inline-flex' : 'none';
 }
 
 async function logout() {
@@ -936,6 +947,84 @@ function filterInboxTable() {
     }, 300);
 }
 
+let caseLockHeartbeat = null;
+let currentCaseLockToken = null;
+
+async function acquireCaseLock(caseId) {
+    if (caseLockHeartbeat) {
+        clearInterval(caseLockHeartbeat);
+        caseLockHeartbeat = null;
+    }
+    const banner = document.getElementById('case-lock-banner');
+    const textEl = document.getElementById('case-lock-status-text');
+    const timerEl = document.getElementById('case-lock-timer');
+    const forceBtn = document.getElementById('btn-force-unlock');
+
+    try {
+        const res = await fetch(`${BASE_URL}/api/v1/locks/CASE/${caseId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ ttl_seconds: 300 })
+        });
+
+        if (res.status === 409) {
+            const data = await res.json();
+            const holder = data.detail && data.detail.lock_info ? data.detail.lock_info.locked_by_name : 'another investigator';
+            if (banner) {
+                banner.style.display = 'flex';
+                banner.style.background = '#FEF2F2';
+                banner.style.borderColor = '#FECACA';
+                banner.style.color = '#991B1B';
+            }
+            if (textEl) textEl.innerHTML = `⚠️ <strong>Locked by ${holder}</strong> — Editing disabled to prevent data collisions.`;
+            if (timerEl) timerEl.innerText = 'Read-Only Mode';
+            const role = localStorage.getItem('role') || 'ANALYST';
+            if (forceBtn && ['ADMIN', 'SUPER_ADMIN', 'MLRO'].includes(role)) {
+                forceBtn.style.display = 'inline-block';
+            }
+        } else if (res.ok) {
+            const data = await res.json();
+            currentCaseLockToken = data.lock.lock_token;
+            if (banner) {
+                banner.style.display = 'flex';
+                banner.style.background = '#FFFBEB';
+                banner.style.borderColor = '#FDE68A';
+                banner.style.color = '#92400E';
+            }
+            if (textEl) textEl.innerHTML = `🔒 <strong>Pessimistic Lease Active</strong> — Collision protection enabled.`;
+            if (timerEl) timerEl.innerText = 'Lease Active (300s)';
+            if (forceBtn) forceBtn.style.display = 'none';
+
+            caseLockHeartbeat = setInterval(() => {
+                fetch(`${BASE_URL}/api/v1/locks/CASE/${caseId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    body: JSON.stringify({ lock_token: currentCaseLockToken, ttl_seconds: 300 })
+                });
+            }, 60000);
+        }
+    } catch (e) {
+        console.warn('Case lock acquisition error:', e);
+    }
+}
+
+async function forceUnlockCurrentCase() {
+    if (!activeAlertId) return;
+    if (!confirm('Force break lock on this case? This action is recorded in the permanent audit trail.')) return;
+    try {
+        const res = await fetch(`${BASE_URL}/api/v1/locks/CASE/${activeAlertId}?force=true`, {
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        });
+        if (res.ok) {
+            alert('Lock broken. Re-acquiring lease...');
+            acquireCaseLock(activeAlertId);
+        }
+    } catch (e) {
+        alert('Failed to force unlock');
+    }
+}
+
 // Selecting a case to open Case Investigation Cockpit
 function selectCase(id) {
     activeAlertId = id;
@@ -973,6 +1062,9 @@ function selectCase(id) {
         const openTime = alert.created_at ? new Date(alert.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '09:14';
         topbarCrumb.innerText = `${ruleFormatted} · ${channelFormatted} · Opened ${openTime} today`;
     }
+
+    // 3. Pessimistic Case Lease Locking (Section 4.1)
+    acquireCaseLock(alert.alert_id);
 
     // 3. Center Evidence Pane Header
     const txnTitle = document.getElementById('evidence-txn-title');

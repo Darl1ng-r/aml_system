@@ -24,6 +24,7 @@ from services.auth import (
     reset_failed_logins,
     RoleChecker,
     LOCKOUT_THRESHOLD,
+    enforce_tenant_data_scope,
 )
 from observability.logging import log_audit_event
 
@@ -525,7 +526,11 @@ async def provision(
     else:
         target_tenant_id = str(current_user.get("tenant_id") or "00000000-0000-0000-0000-000000000001")
 
-    assigned_role = payload.role if caller_role == "SUPER_ADMIN" else "ANALYST"
+    # Allow ADMIN / SUPER_ADMIN to assign permitted 5-tier role (Task 1.1 / 1.7)
+    if payload.role == "SUPER_ADMIN" and caller_role != "SUPER_ADMIN":
+        assigned_role = "ADMIN"
+    else:
+        assigned_role = payload.role or "ANALYST"
     hashed_pw = hash_password(payload.password)
 
     import uuid
@@ -572,6 +577,84 @@ async def provision(
         "role": assigned_role,
         "tenant_id": target_tenant_id
     }
+
+
+class UserRoleUpdate(BaseModel):
+    role: str = Field(..., pattern=r"^(L1_ANALYST|L2_INVESTIGATOR|MLRO|ANALYST|AUDITOR|ADMIN|TENANT_ADMIN|SUPER_ADMIN)$")
+
+
+@router.get("/users", summary="List users within current tenant (Admin only)")
+async def list_users(
+    current_user: dict = Depends(RoleChecker(["SUPER_ADMIN", "ADMIN"])),
+):
+    from database.postgres import get_async_db_conn
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, username, role, tenant_id, mfa_enabled, created_at
+                FROM users
+                ORDER BY created_at DESC;
+                """
+            )
+            return [
+                {
+                    "id": str(r["id"]),
+                    "username": r["username"],
+                    "role": r["role"],
+                    "tenant_id": str(r["tenant_id"]) if r["tenant_id"] else None,
+                    "mfa_enabled": bool(r.get("mfa_enabled", False)),
+                    "created_at": r["created_at"].isoformat() if r.get("created_at") else ""
+                }
+                for r in rows
+            ]
+    except Exception as e:
+        logger.warning(f"Error listing users: {e}")
+        return []
+
+
+@router.patch("/users/{user_id}/role", summary="Update user role (Admin only)")
+async def update_user_role(
+    user_id: str,
+    payload: UserRoleUpdate,
+    current_user: dict = Depends(RoleChecker(["SUPER_ADMIN", "ADMIN"])),
+):
+    caller_role = current_user.get("role", "ADMIN")
+    if payload.role == "SUPER_ADMIN" and caller_role != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Only SUPER_ADMIN can assign SUPER_ADMIN role.")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    from database.postgres import get_async_db_conn
+    from services.auth import revoke_user_sessions
+    import uuid
+
+    try:
+        u_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        row = await conn.fetchrow("SELECT username, role FROM users WHERE id = $1;", u_uuid)
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        await conn.execute("UPDATE users SET role = $1 WHERE id = $2;", payload.role, u_uuid)
+
+    await revoke_user_sessions(user_id)
+
+    log_audit_event(
+        event_type="USER_ROLE_CHANGED",
+        actor_id=str(current_user.get("id", "")),
+        actor_role=caller_role,
+        action="UPDATE_ROLE",
+        resource_type="USER",
+        resource_id=user_id,
+        tenant_id=tenant_id,
+        details={"username": row["username"], "old_role": row["role"], "new_role": payload.role}
+    )
+
+    return {"status": "SUCCESS", "user_id": user_id, "new_role": payload.role}
 
 
 class RefreshRequest(BaseModel):

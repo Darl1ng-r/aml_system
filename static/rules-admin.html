@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="AML Sentinel — Rule Builder & Detection Threshold Configurator">
+  <title>Rule Builder — AML Sentinel</title>
+
+  <!-- Google Fonts: IBM Plex Sans & IBM Plex Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Core Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css">
+
+  <!-- Lucide Icon Library -->
+  <script src="/static/lucide.min.js" defer></script>
+
+  <style>
+    .rules-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: var(--canvas);
+      overflow-y: auto;
+      font-family: var(--font-ui);
+    }
+
+    .rules-nav {
+      background: var(--sidebar);
+      color: var(--sidebar-text-bright);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--sidebar-line);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 15px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .nav-link-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--sidebar-text);
+      padding: 6px 14px;
+      border-radius: var(--r-md);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      transition: all var(--dur-f) ease;
+    }
+
+    .nav-link-btn:hover {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--sidebar-text-bright);
+    }
+
+    .nav-link-btn.active {
+      background: var(--brand);
+      color: #fff;
+    }
+
+    .rules-header {
+      padding: 24px 32px 0 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+
+    .rules-title {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .rules-subtitle {
+      font-size: 13px;
+      color: var(--ink-soft);
+      margin-top: 4px;
+    }
+
+    .rules-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 20px;
+      padding: 24px 32px;
+    }
+
+    .rule-card {
+      background: var(--panel);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-lg);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+      transition: all var(--dur-f) ease;
+    }
+
+    .rule-card:hover {
+      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+      border-color: var(--border-strong);
+    }
+
+    .rule-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+
+    .rule-name-tag {
+      font-family: var(--font-data);
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ink);
+    }
+
+    .rule-desc {
+      font-size: 12px;
+      color: var(--ink-soft);
+      line-height: 1.4;
+      margin-bottom: 16px;
+      min-height: 34px;
+    }
+
+    /* Switch toggle */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #CBD5E1;
+      transition: .3s;
+      border-radius: 24px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .3s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: #10B981;
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+
+    .rule-param-group {
+      background: #FAF8F5;
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-md);
+      padding: 12px 14px;
+      margin-bottom: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .param-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+    }
+
+    .param-label {
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    .param-input {
+      font-family: var(--font-data);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--panel-edge);
+      background: #FFFFFF;
+      width: 120px;
+      text-align: right;
+    }
+
+    .rule-meta-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--ink-soft);
+      padding-top: 12px;
+      border-top: 1px solid var(--panel-edge);
+      margin-top: auto;
+    }
+
+    .btn-save {
+      background: var(--brand);
+      color: #fff;
+      border: none;
+      padding: 6px 14px;
+      border-radius: var(--r-md);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background var(--dur-f) ease;
+    }
+
+    .btn-save:hover {
+      background: var(--brand-dark);
+    }
+
+    /* Simulation Drawer / Panel */
+    .simulator-panel {
+      margin: 0 32px 32px 32px;
+      background: var(--panel);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-lg);
+      padding: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="rules-shell">
+
+    <!-- Top Navigation -->
+    <header class="rules-nav">
+      <div class="nav-brand">
+        <span style="background:var(--brand); color:#fff; padding:4px 8px; border-radius:4px; font-size:11px;">AML</span>
+        <span>SENTINEL</span>
+        <span style="font-size:12px; color:var(--sidebar-text); font-weight:400;">| Rule Builder & Tuner</span>
+      </div>
+
+      <nav class="nav-links">
+        <a href="/alerts/triage" class="nav-link-btn">
+          <i data-lucide="inbox" style="width:15px; height:15px;"></i> Triage Inbox
+        </a>
+        <a href="/dashboard" class="nav-link-btn">
+          <i data-lucide="crosshair" style="width:15px; height:15px;"></i> Case Cockpit
+        </a>
+        <a href="/admin/rules" class="nav-link-btn active">
+          <i data-lucide="sliders" style="width:15px; height:15px;"></i> Rule Builder
+        </a>
+        <a href="/admin/users" class="nav-link-btn">
+          <i data-lucide="users" style="width:15px; height:15px;"></i> Team & Roles
+        </a>
+      </nav>
+
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span style="font-size:12px; color:#10B981;">● Invalidation Engine Online</span>
+        <button onclick="logout()" class="nav-link-btn" title="Sign Out">
+          <i data-lucide="log-out" style="width:15px; height:15px;"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Header Section -->
+    <div class="rules-header">
+      <div>
+        <h1 class="rules-title">Detection Rule Configurations & Parameters</h1>
+        <div class="rules-subtitle">Per-tenant real-time threshold adjustments. All changes increment versioning and trigger instant distributed Redis cache invalidation.</div>
+      </div>
+      <div>
+        <button class="btn-save" onclick="scrollToSimulator()" style="background:#1B1F2B; padding:8px 16px;">
+          <i data-lucide="play" style="width:14px; height:14px; display:inline-block; vertical-align:middle; margin-right:4px;"></i> Test Rule Simulator
+        </button>
+      </div>
+    </div>
+
+    <!-- Rule Cards Container -->
+    <div class="rules-grid" id="rules-cards-container">
+      <div style="padding:40px; text-align:center; color:var(--ink-soft); grid-column: 1 / -1;">
+        Loading rule configurations from PostgreSQL...
+      </div>
+    </div>
+
+    <!-- Rule Testing Simulator -->
+    <div class="simulator-panel" id="simulator-section">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+        <div>
+          <h2 style="font-size:16px; font-weight:700; color:var(--ink);">🧪 Rule Testing Harness & Sandbox</h2>
+          <div style="font-size:12px; color:var(--ink-soft);">Simulate synthetic transactions through the active engine without writing alerts or touching the database.</div>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
+        <div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:10px;">
+            <div>
+              <label style="font-size:11px; font-weight:600;">Sender Account</label>
+              <input type="text" id="sim-sender-id" value="ACC-TEST-9921" class="param-input" style="width:100%; text-align:left;">
+            </div>
+            <div>
+              <label style="font-size:11px; font-weight:600;">Receiver Account</label>
+              <input type="text" id="sim-receiver-id" value="ACC-RCVR-1104" class="param-input" style="width:100%; text-align:left;">
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:10px;">
+            <div>
+              <label style="font-size:11px; font-weight:600;">Transaction Amount ($)</label>
+              <input type="number" id="sim-amount" value="15000.00" class="param-input" style="width:100%; text-align:left;">
+            </div>
+            <div>
+              <label style="font-size:11px; font-weight:600;">Receiver BIC / Swift</label>
+              <input type="text" id="sim-receiver-bic" value="SABRRUMM" class="param-input" style="width:100%; text-align:left;">
+            </div>
+          </div>
+
+          <button class="btn-save" onclick="runSimulation()" style="width:100%; padding:10px;">
+            Evaluate Against Rules Engine
+          </button>
+        </div>
+
+        <div style="background:#FAF8F5; border:1px solid var(--panel-edge); border-radius:var(--r-md); padding:14px;">
+          <div style="font-size:12px; font-weight:700; text-transform:uppercase; margin-bottom:8px;">Evaluation Result</div>
+          <div id="sim-results" style="font-size:13px; font-family:var(--font-data); color:var(--ink);">
+            <em>Click "Evaluate Against Rules Engine" to test payload...</em>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    let rulesData = [];
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      if (window.lucide) lucide.createIcons();
+      await fetchRules();
+    });
+
+    async function fetchRules() {
+      try {
+        const res = await fetch('/api/v1/rules');
+        if (!res.ok) throw new Error('Failed to load rules');
+        rulesData = await res.json();
+        renderRules();
+      } catch (e) {
+        console.error('Error fetching rules', e);
+      }
+    }
+
+    function renderRules() {
+      const container = document.getElementById('rules-cards-container');
+      if (!rulesData || rulesData.length === 0) {
+        container.innerHTML = '<div style="padding:40px; color:var(--ink-soft); grid-column:1/-1;">No rules found.</div>';
+        return;
+      }
+
+      container.innerHTML = rulesData.map(r => {
+        const cfg = r.config || {};
+        const paramKeys = Object.keys(cfg);
+
+        const paramInputsHtml = paramKeys.map(k => {
+          let val = cfg[k];
+          if (Array.isArray(val)) val = val.join(', ');
+          return `
+            <div class="param-row">
+              <span class="param-label">${k}</span>
+              <input type="text" class="param-input" id="input-${r.rule_name}-${k}" value="${val}">
+            </div>
+          `;
+        }).join('');
+
+        return `
+          <div class="rule-card" id="card-${r.rule_name}">
+            <div class="rule-card-header">
+              <div class="rule-name-tag">${r.rule_name}</div>
+              <label class="switch">
+                <input type="checkbox" id="toggle-${r.rule_name}" ${r.enabled ? 'checked' : ''} onchange="toggleRuleState('${r.rule_name}', this.checked)">
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <div class="rule-desc">${r.description || 'Institutional transaction monitoring logic.'}</div>
+
+            <div class="rule-param-group">
+              ${paramInputsHtml}
+            </div>
+
+            <div class="rule-meta-bar">
+              <div>
+                <span style="font-weight:600;">v${r.version}</span> · Updated by ${r.updated_by_name || 'SYSTEM'}
+              </div>
+              <button class="btn-save" onclick="saveRuleConfig('${r.rule_name}')">Save</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    async function toggleRuleState(ruleName, enabled) {
+      try {
+        const res = await fetch(`/api/v1/rules/${ruleName}`, {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled: enabled, change_reason: `Toggled ${enabled ? 'ON' : 'OFF'} in Rule Builder`})
+        });
+        if (!res.ok) alert('Failed to toggle rule state');
+      } catch (e) {
+        alert('Network error updating rule');
+      }
+    }
+
+    async function saveRuleConfig(ruleName) {
+      const rule = rulesData.find(r => r.rule_name === ruleName);
+      if (!rule) return;
+
+      const reason = prompt('Enter audit reason for modifying rule threshold:');
+      if (!reason) return;
+
+      const newConfig = {};
+      Object.keys(rule.config || {}).forEach(k => {
+        const input = document.getElementById(`input-${ruleName}-${k}`);
+        if (input) {
+          let v = input.value.trim();
+          if (Array.isArray(rule.config[k])) {
+            newConfig[k] = v.split(',').map(s => s.trim());
+          } else if (!isNaN(Number(v))) {
+            newConfig[k] = Number(v);
+          } else {
+            newConfig[k] = v;
+          }
+        }
+      });
+
+      try {
+        const res = await fetch(`/api/v1/rules/${ruleName}`, {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({config: newConfig, change_reason: reason})
+        });
+        if (res.ok) {
+          alert(`Rule ${ruleName} updated and published across all pods!`);
+          await fetchRules();
+        } else {
+          alert('Failed to save rule configuration.');
+        }
+      } catch (e) {
+        alert('Error saving rule');
+      }
+    }
+
+    async function runSimulation() {
+      const payload = {
+        sender_id: document.getElementById('sim-sender-id').value,
+        receiver_id: document.getElementById('sim-receiver-id').value,
+        amount: parseFloat(document.getElementById('sim-amount').value),
+        receiver_bic: document.getElementById('sim-receiver-bic').value
+      };
+
+      try {
+        const res = await fetch('/api/v1/rules/test', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        const resultsDiv = document.getElementById('sim-results');
+
+        if (data.is_suspicious) {
+          resultsDiv.innerHTML = `
+            <div style="color:var(--risk-high); font-weight:700; margin-bottom:8px;">
+              ⚠️ VIOLATION DETECTED (${data.triggered_count} rules fired)
+            </div>
+            <ul>
+              ${data.triggered_rules.map(r => `<li><strong>${r}</strong></li>`).join('')}
+            </ul>
+          `;
+        } else {
+          resultsDiv.innerHTML = `
+            <div style="color:var(--risk-low); font-weight:700;">
+              ✅ Transaction cleared. No threshold triggered.
+            </div>
+          `;
+        }
+      } catch (e) {
+        alert('Failed to run simulation');
+      }
+    }
+
+    function scrollToSimulator() {
+      document.getElementById('simulator-section').scrollIntoView({behavior: 'smooth'});
+    }
+
+    function logout() {
+      document.cookie = 'access_token=; Max-Age=0; path=/;';
+      sessionStorage.clear();
+      window.location.href = '/login';
+    }
+  </script>
+
+</body>
+
+</html>

@@ -42,6 +42,19 @@
     SIMULATED EVALUATION MODE: Database connection offline. Actions are evaluating on local mock fixtures.
   </div>
 
+  <div id="case-lock-banner" style="display:none; padding:8px 24px; font-size:12px; font-weight:600; align-items:center; justify-content:space-between; border-bottom:1px solid #FDE68A; background:#FFFBEB; color:#92400E;">
+    <div style="display:flex; align-items:center; gap:8px;">
+      <i data-lucide="shield-check" style="width:15px; height:15px; color:#10B981;"></i>
+      <span id="case-lock-status-text">Case Edit Lease Acquired</span>
+    </div>
+    <div style="display:flex; align-items:center; gap:8px;">
+      <span id="case-lock-timer" style="font-family:var(--font-data); font-size:11px;">Expires in 5:00</span>
+      <button id="btn-force-unlock" onclick="forceUnlockCurrentCase()" style="display:none; background:none; border:1px solid #B45309; color:#B45309; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700; cursor:pointer;">
+        Force Break Lock (Admin)
+      </button>
+    </div>
+  </div>
+
   <div class="shell">
 
     <!-- ── TOP BAR ─────────────────────────────────────────── -->
@@ -58,6 +71,17 @@
         </div>
         <span class="queue-pos" id="queue-position-display">Case 1 of 1 in queue</span>
         <span class="kbd-hint"><kbd>A</kbd> approve <kbd>B</kbd> block <kbd>→</kbd> next</span>
+
+        <!-- System Cross-Module Navigation (5-Tier RBAC) -->
+        <a href="/alerts/triage" class="topbar-btn" title="Alert Triage Inbox" style="text-decoration:none;">
+          <i data-lucide="inbox"></i> Triage
+        </a>
+        <a href="/admin/rules" class="topbar-btn" id="nav-rule-builder" title="Rule Builder & Tuning" style="text-decoration:none;">
+          <i data-lucide="sliders"></i> Rules
+        </a>
+        <a href="/admin/users" class="topbar-btn" id="nav-user-admin" title="Team & 5-Tier RBAC" style="text-decoration:none;">
+          <i data-lucide="users"></i> Users
+        </a>
 
         <!-- System View Overlays -->
         <button class="topbar-btn" onclick="openModal('executive-modal')" title="Executive Dashboard">
@@ -133,6 +157,7 @@
         <div class="tab active" onclick="switchEvidenceTab('overview', this)">Overview</div>
         <div class="tab" onclick="switchEvidenceTab('network', this)">Network graph</div>
         <div class="tab" onclick="switchEvidenceTab('rules', this)">Rule logic</div>
+        <div class="tab" onclick="switchEvidenceTab('evidence', this)">Evidence Locker</div>
         <div class="tab" onclick="switchEvidenceTab('raw', this)">Raw data</div>
       </div>
 
@@ -252,6 +277,46 @@
           <div class="panel-title">Explainable AI (SHAP) Risk Drivers</div>
           <div id="inbox-shap-list" style="display: flex; flex-direction: column; gap: 10px;">
             <!-- Rendered by app.js -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Section: Case Evidence Locker (Task 1.9 Audit Remediation) -->
+      <div id="tab-content-evidence" style="display:none;">
+        <div class="panel">
+          <div class="panel-title" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>Case Evidence Locker & Chain of Custody</span>
+            <span style="font-size:11px; font-weight:normal; color:var(--ink-soft);">Tamper-evident artifact storage</span>
+          </div>
+
+          <!-- Upload Dropzone / Form -->
+          <div style="background:#FAF8F5; border:1px dashed var(--border-strong); border-radius:var(--r-md); padding:16px; margin-bottom:16px;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:10px;">
+              <div>
+                <label style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Attach Document / Screenshot</label>
+                <input type="file" id="evidence-file-input" style="font-size:12px; width:100%;">
+              </div>
+              <div>
+                <label style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Tags / Classification</label>
+                <input type="text" id="evidence-tags-input" placeholder="e.g. OFAC_SEARCH, BANK_STATEMENT" style="width:100%; padding:6px 10px; font-size:12px; border:1px solid var(--panel-edge); border-radius:var(--r-sm);">
+              </div>
+            </div>
+            <div style="margin-bottom:10px;">
+              <label style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Investigative Rationale & Description</label>
+              <input type="text" id="evidence-desc-input" placeholder="Document source and relevance to case..." style="width:100%; padding:6px 10px; font-size:12px; border:1px solid var(--panel-edge); border-radius:var(--r-sm);">
+            </div>
+            <div style="display:flex; justify-content:flex-end;">
+              <button class="topbar-btn" onclick="uploadEvidenceFile()" style="background:var(--brand); color:#fff; border:none; padding:6px 14px; font-weight:600; border-radius:var(--r-sm); cursor:pointer;">
+                <i data-lucide="upload" style="width:13px; height:13px; display:inline-block; vertical-align:middle; margin-right:4px;"></i> Upload Evidence
+              </button>
+            </div>
+          </div>
+
+          <!-- Evidence Artifacts List -->
+          <div id="case-evidence-list">
+            <div style="text-align:center; padding:20px; color:var(--ink-soft); font-size:12px;">
+              No evidence documents attached to this case yet.
+            </div>
           </div>
         </div>
       </div>
@@ -630,7 +695,7 @@
       document.querySelectorAll('.center .tabs .tab').forEach(t => t.classList.remove('active'));
       if (el) el.classList.add('active');
 
-      const tabs = ['overview', 'network', 'rules', 'raw'];
+      const tabs = ['overview', 'network', 'rules', 'evidence', 'raw'];
       tabs.forEach(k => {
         const content = document.getElementById('tab-content-' + k);
         if (content) content.style.display = (k === tabKey) ? 'block' : 'none';
@@ -639,7 +704,87 @@
       if (tabKey === 'network' && typeof fitVisGraph === 'function') {
         setTimeout(() => fitVisGraph(), 50);
       }
+      if (tabKey === 'evidence') {
+        loadCaseEvidence();
+      }
       if (window.lucide) lucide.createIcons();
+    }
+
+    async function loadCaseEvidence() {
+      const caseId = (typeof activeAlertId !== 'undefined' && activeAlertId) ? activeAlertId : '00000000-0000-0000-0000-000000000001';
+      const container = document.getElementById('case-evidence-list');
+      if (!container) return;
+      try {
+        const res = await fetch(`/api/v1/cases/${caseId}/evidence`);
+        if (!res.ok) {
+          container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--ink-soft); font-size:12px;">No evidence files attached to this case.</div>';
+          return;
+        }
+        const items = await res.json();
+        if (items.length === 0) {
+          container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--ink-soft); font-size:12px;">No evidence files attached to this case yet.</div>';
+          return;
+        }
+        container.innerHTML = items.map(ev => `
+          <div style="background:#FFF; border:1px solid var(--panel-edge); border-radius:var(--r-md); padding:12px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div style="font-weight:600; font-size:13px; color:var(--ink);">${ev.filename}</div>
+              <div style="font-size:11px; color:var(--ink-soft); margin-top:2px;">
+                ${ev.description || 'No description'} · <span style="font-family:var(--font-data);">${(ev.file_size/1024).toFixed(1)} KB</span> · Uploaded by ${ev.uploaded_by_name}
+              </div>
+            </div>
+            <div>
+              <button onclick="deleteEvidence('${caseId}', '${ev.id}')" style="background:none; border:1px solid #FECACA; color:#DC2626; padding:4px 8px; border-radius:var(--r-sm); font-size:11px; cursor:pointer;">
+                Remove
+              </button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        container.innerHTML = '<div style="color:var(--ink-soft); font-size:12px; padding:10px;">Error loading evidence files.</div>';
+      }
+      if (window.lucide) lucide.createIcons();
+    }
+
+    async function uploadEvidenceFile() {
+      const fileInput = document.getElementById('evidence-file-input');
+      if (!fileInput.files || fileInput.files.length === 0) {
+        alert('Please select a file to upload');
+        return;
+      }
+      const caseId = (typeof activeAlertId !== 'undefined' && activeAlertId) ? activeAlertId : '00000000-0000-0000-0000-000000000001';
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+      formData.append('description', document.getElementById('evidence-desc-input').value);
+      formData.append('tags', document.getElementById('evidence-tags-input').value);
+
+      try {
+        const res = await fetch(`/api/v1/cases/${caseId}/evidence`, {
+          method: 'POST',
+          body: formData
+        });
+        if (res.ok) {
+          alert('Evidence attached successfully to case chain of custody!');
+          fileInput.value = '';
+          document.getElementById('evidence-desc-input').value = '';
+          document.getElementById('evidence-tags-input').value = '';
+          loadCaseEvidence();
+        } else {
+          alert('Failed to upload evidence');
+        }
+      } catch (e) {
+        alert('Error uploading evidence file');
+      }
+    }
+
+    async function deleteEvidence(caseId, evId) {
+      if (!confirm('Remove this evidence attachment?')) return;
+      try {
+        const res = await fetch(`/api/v1/cases/${caseId}/evidence/${evId}`, {method: 'DELETE'});
+        if (res.ok) loadCaseEvidence();
+      } catch (e) {
+        alert('Failed to delete evidence');
+      }
     }
 
     document.addEventListener('DOMContentLoaded', () => {

@@ -47,7 +47,7 @@ async def test_escalate_alert_success(mock_analyst):
 
         assert result["status"] == "ESCALATED"
         assert result["alert_id"] == alert_id
-        mock_conn.execute.assert_called_once()
+        assert mock_conn.execute.call_count >= 1
         mock_broadcast.assert_called_once()
 
 

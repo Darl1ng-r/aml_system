@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="AML Sentinel — Institutional User & 5-Tier RBAC Management">
+  <title>User & Roles Management — AML Sentinel</title>
+
+  <!-- Google Fonts: IBM Plex Sans & IBM Plex Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Core Stylesheet -->
+  <link rel="stylesheet" href="/static/style.css">
+
+  <!-- Lucide Icon Library -->
+  <script src="/static/lucide.min.js" defer></script>
+
+  <style>
+    .users-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background: var(--canvas);
+      overflow-y: auto;
+      font-family: var(--font-ui);
+    }
+
+    .users-nav {
+      background: var(--sidebar);
+      color: var(--sidebar-text-bright);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--sidebar-line);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 15px;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .nav-link-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--sidebar-text);
+      padding: 6px 14px;
+      border-radius: var(--r-md);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      transition: all var(--dur-f) ease;
+    }
+
+    .nav-link-btn:hover {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--sidebar-text-bright);
+    }
+
+    .nav-link-btn.active {
+      background: var(--brand);
+      color: #fff;
+    }
+
+    .users-header {
+      padding: 24px 32px 0 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+
+    .users-container {
+      padding: 24px 32px;
+    }
+
+    .table-card {
+      background: var(--panel);
+      border: 1px solid var(--panel-edge);
+      border-radius: var(--r-lg);
+      overflow: hidden;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+    }
+
+    table.users-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+
+    table.users-table th {
+      background: #F8F6F1;
+      color: var(--ink-soft);
+      font-size: 11px;
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--panel-edge);
+    }
+
+    table.users-table td {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--panel-edge);
+      color: var(--ink);
+      vertical-align: middle;
+    }
+
+    .role-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: var(--r-pill);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .role-L1_ANALYST { background: #E0F2FE; color: #0284C7; }
+    .role-L2_INVESTIGATOR { background: #DBEAFE; color: #2563EB; }
+    .role-MLRO { background: #F3E8FF; color: #7E22CE; }
+    .role-ADMIN { background: #FEE2E2; color: #DC2626; }
+    .role-AUDITOR { background: #DCFCE7; color: #16A34A; }
+    .role-ANALYST { background: #E0F2FE; color: #0284C7; }
+
+    .role-select {
+      font-family: var(--font-ui);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 8px;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--panel-edge);
+      background: #FFFFFF;
+      cursor: pointer;
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(27, 31, 43, 0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      backdrop-filter: blur(2px);
+    }
+
+    .modal-card {
+      background: var(--panel);
+      width: 460px;
+      border-radius: var(--r-lg);
+      padding: 24px;
+      border: 1px solid var(--panel-edge);
+      box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+    }
+
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 4px;
+      color: var(--ink);
+    }
+
+    .form-input {
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: var(--r-md);
+      border: 1px solid var(--panel-edge);
+      font-size: 13px;
+      background: #FFFFFF;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="users-shell">
+
+    <!-- Top Navigation -->
+    <header class="users-nav">
+      <div class="nav-brand">
+        <span style="background:var(--brand); color:#fff; padding:4px 8px; border-radius:4px; font-size:11px;">AML</span>
+        <span>SENTINEL</span>
+        <span style="font-size:12px; color:var(--sidebar-text); font-weight:400;">| Team & Role Governance</span>
+      </div>
+
+      <nav class="nav-links">
+        <a href="/alerts/triage" class="nav-link-btn">
+          <i data-lucide="inbox" style="width:15px; height:15px;"></i> Triage Inbox
+        </a>
+        <a href="/dashboard" class="nav-link-btn">
+          <i data-lucide="crosshair" style="width:15px; height:15px;"></i> Case Cockpit
+        </a>
+        <a href="/admin/rules" class="nav-link-btn">
+          <i data-lucide="sliders" style="width:15px; height:15px;"></i> Rule Builder
+        </a>
+        <a href="/admin/users" class="nav-link-btn active">
+          <i data-lucide="users" style="width:15px; height:15px;"></i> Team & Roles
+        </a>
+      </nav>
+
+      <div style="display:flex; align-items:center; gap:12px;">
+        <span style="font-size:12px; color:#10B981;">● IAM Directory Active</span>
+        <button onclick="logout()" class="nav-link-btn" title="Sign Out">
+          <i data-lucide="log-out" style="width:15px; height:15px;"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Header Section -->
+    <div class="users-header">
+      <div>
+        <h1 style="font-size:22px; font-weight:700; color:var(--ink);">5-Tier Role & Access Governance</h1>
+        <div style="font-size:13px; color:var(--ink-soft); margin-top:4px;">
+          Enforces regulatory separation of duties across Tier 1 Analysts, Tier 2 Investigators, MLRO Sign-off, and External Auditors.
+        </div>
+      </div>
+      <div>
+        <button onclick="openProvisionModal()" style="background:var(--brand); color:#fff; border:none; padding:10px 18px; border-radius:var(--r-md); font-weight:600; cursor:pointer; font-size:13px;">
+          <i data-lucide="user-plus" style="width:15px; height:15px; display:inline-block; vertical-align:middle; margin-right:6px;"></i> Provision New Member
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Table Container -->
+    <div class="users-container">
+      <div class="table-card">
+        <table class="users-table">
+          <thead>
+            <tr>
+              <th>Username</th>
+              <th>Current Tier / Role</th>
+              <th>Quick Role Reassignment</th>
+              <th>MFA Security</th>
+              <th>Registered At</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="users-table-body">
+            <tr>
+              <td colspan="6" style="text-align:center; padding:40px; color:var(--ink-soft);">
+                Loading compliance personnel...
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Provision Modal -->
+  <div class="modal-overlay" id="provision-modal">
+    <div class="modal-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 style="font-size:16px; font-weight:700;">Provision Compliance User</h2>
+        <button onclick="closeProvisionModal()" style="background:none; border:none; cursor:pointer;">
+          <i data-lucide="x" style="width:16px; height:16px;"></i>
+        </button>
+      </div>
+
+      <form id="provision-form" onsubmit="handleProvision(event)">
+        <div class="form-group">
+          <label>Username / Email</label>
+          <input type="text" id="prov-username" required class="form-input" placeholder="e.g. sarah.k@bank.com">
+        </div>
+
+        <div class="form-group">
+          <label>Temporary Password (min 8 chars)</label>
+          <input type="password" id="prov-password" required minlength="8" class="form-input" placeholder="••••••••••••">
+        </div>
+
+        <div class="form-group">
+          <label>Assigned 5-Tier Role</label>
+          <select id="prov-role" class="form-input" style="cursor:pointer;">
+            <option value="L1_ANALYST">Tier 1 Analyst (L1_ANALYST) — Triage & Dismissal</option>
+            <option value="L2_INVESTIGATOR">Tier 2 Investigator (L2_INVESTIGATOR) — Full Case & SAR Draft</option>
+            <option value="MLRO">MLRO Compliance Manager (MLRO) — Sign-off & Risk Appetite</option>
+            <option value="AUDITOR">External Auditor (AUDITOR) — Read-Only Logs & Models</option>
+            <option value="ADMIN">System Administrator (ADMIN) — Rule Builder & Users</option>
+          </select>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:20px;">
+          <button type="button" onclick="closeProvisionModal()" style="background:transparent; border:1px solid var(--panel-edge); padding:8px 14px; border-radius:var(--r-md); cursor:pointer;">Cancel</button>
+          <button type="submit" style="background:var(--brand); color:#fff; border:none; padding:8px 18px; border-radius:var(--r-md); font-weight:600; cursor:pointer;">Provision</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    let usersList = [];
+
+    document.addEventListener('DOMContentLoaded', async () => {
+      if (window.lucide) lucide.createIcons();
+      await fetchUsers();
+    });
+
+    async function fetchUsers() {
+      try {
+        const res = await fetch('/api/v1/auth/users');
+        if (!res.ok) throw new Error('Failed to load users');
+        usersList = await res.json();
+        renderUsers();
+      } catch (e) {
+        console.error('Error fetching users', e);
+      }
+    }
+
+    function renderUsers() {
+      const tbody = document.getElementById('users-table-body');
+      if (!usersList || usersList.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:30px;">No users found.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = usersList.map(u => {
+        const role = u.role || 'ANALYST';
+        const dateStr = u.created_at ? new Date(u.created_at).toLocaleDateString() : '--';
+
+        return `
+          <tr>
+            <td style="font-weight:600;">${u.username}</td>
+            <td><span class="role-badge role-${role}">${role}</span></td>
+            <td>
+              <select class="role-select" onchange="changeUserRole('${u.id}', this.value)">
+                <option value="L1_ANALYST" ${role === 'L1_ANALYST' ? 'selected' : ''}>L1_ANALYST</option>
+                <option value="L2_INVESTIGATOR" ${role === 'L2_INVESTIGATOR' ? 'selected' : ''}>L2_INVESTIGATOR</option>
+                <option value="MLRO" ${role === 'MLRO' ? 'selected' : ''}>MLRO</option>
+                <option value="ADMIN" ${role === 'ADMIN' ? 'selected' : ''}>ADMIN</option>
+                <option value="AUDITOR" ${role === 'AUDITOR' ? 'selected' : ''}>AUDITOR</option>
+                <option value="ANALYST" ${role === 'ANALYST' ? 'selected' : ''}>ANALYST (Legacy)</option>
+              </select>
+            </td>
+            <td>
+              ${u.mfa_enabled ? '<span style="color:#10B981; font-weight:600;">● Enabled</span>' : '<span style="color:#94A3B8;">○ Disabled</span>'}
+            </td>
+            <td style="font-family:var(--font-data); font-size:12px; color:var(--ink-soft);">${dateStr}</td>
+            <td>
+              <button onclick="revokeSessions('${u.id}')" style="background:transparent; border:1px solid var(--panel-edge); font-size:11px; padding:3px 8px; border-radius:var(--r-sm); cursor:pointer;">
+                Revoke Sessions
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      if (window.lucide) lucide.createIcons();
+    }
+
+    async function changeUserRole(userId, newRole) {
+      if (!confirm(`Are you sure you want to transition this user to ${newRole}? This will immediately revoke their existing tokens.`)) {
+        await fetchUsers();
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/v1/auth/users/${userId}/role`, {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({role: newRole})
+        });
+        if (res.ok) {
+          alert('Role updated and sessions rotated!');
+          await fetchUsers();
+        } else {
+          alert('Failed to update user role.');
+        }
+      } catch (e) {
+        alert('Error updating user role');
+      }
+    }
+
+    async function revokeSessions(userId) {
+      if (!confirm('Immediately invalidate all active JWTs for this user?')) return;
+      try {
+        const res = await fetch(`/api/v1/auth/users/${userId}/role`, {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({role: usersList.find(u => u.id === userId).role})
+        });
+        if (res.ok) alert('Sessions revoked successfully.');
+      } catch (e) {
+        alert('Failed to revoke sessions.');
+      }
+    }
+
+    function openProvisionModal() {
+      document.getElementById('provision-modal').style.display = 'flex';
+    }
+
+    function closeProvisionModal() {
+      document.getElementById('provision-modal').style.display = 'none';
+    }
+
+    async function handleProvision(e) {
+      e.preventDefault();
+      const username = document.getElementById('prov-username').value.trim();
+      const password = document.getElementById('prov-password').value;
+      const role = document.getElementById('prov-role').value;
+
+      try {
+        const res = await fetch('/api/v1/auth/provision', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({username, password, role})
+        });
+        if (res.ok) {
+          alert(`User ${username} provisioned successfully with role ${role}!`);
+          closeProvisionModal();
+          await fetchUsers();
+        } else {
+          const err = await res.json();
+          alert(`Failed to provision: ${err.detail || 'Error'}`);
+        }
+      } catch (e) {
+        alert('Network error provisioning user');
+      }
+    }
+
+    function logout() {
+      document.cookie = 'access_token=; Max-Age=0; path=/;';
+      sessionStorage.clear();
+      window.location.href = '/login';
+    }
+  </script>
+
+</body>
+
+</html>

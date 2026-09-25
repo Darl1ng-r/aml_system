@@ -201,7 +201,7 @@ async def get_current_user(
     # 1. Attempt Local JWT Verification with key rotation fallback support
     try:
         payload = decode_jwt_with_rotation(resolved_token, algorithm=ALGORITHM)
-        user_id = payload.get("sub")
+        user_id = payload.get("id") or payload.get("sub")
         role = payload.get("role", "ANALYST")
         username = payload.get("username", "anonymous")
         email = payload.get("email", f"{username}@aml.com")
@@ -377,7 +377,7 @@ class RoleChecker:
 
     def __call__(self, current_user: dict = Depends(get_current_user)):
         user_role = current_user.get("role", "ANALYST")
-        if user_role not in self.allowed_roles and "SUPER_ADMIN" not in self.allowed_roles:
+        if user_role not in self.allowed_roles and user_role != "SUPER_ADMIN":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Operation not permitted for user role '{user_role}'.",
