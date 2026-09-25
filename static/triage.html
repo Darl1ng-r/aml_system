@@ -441,6 +441,33 @@
       color: #fff;
     }
     .btn-case:hover { background: #2B3040; }
+
+    @keyframes pulseSkeleton {
+      0% { opacity: 0.45; }
+      50% { opacity: 0.85; }
+      100% { opacity: 0.45; }
+    }
+    .skeleton-box {
+      display: inline-block;
+      height: 14px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      animation: pulseSkeleton 1.4s ease-in-out infinite;
+    }
+    .triage-toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1e293b;
+      color: #f8fafc;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      border: 1px solid rgba(255,255,255,0.15);
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+      z-index: 9999;
+      display: none;
+    }
   </style>
 </head>
 
@@ -659,16 +686,51 @@
       }
     }
 
+    function showToast(msg) {
+      const t = document.getElementById('triage-toast');
+      if (!t) return;
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3200);
+    }
+
+    function renderSkeletonTable() {
+      const tbody = document.getElementById('alerts-table-body');
+      if (!tbody) return;
+      tbody.innerHTML = Array(6).fill(0).map(() => `
+        <tr>
+          <td><span class="skeleton-box" style="width:70px;"></span></td>
+          <td><span class="skeleton-box" style="width:140px;"></span></td>
+          <td><span class="skeleton-box" style="width:50px;"></span></td>
+          <td><span class="skeleton-box" style="width:40px;"></span></td>
+          <td><span class="skeleton-box" style="width:70px;"></span></td>
+          <td><span class="skeleton-box" style="width:90px;"></span></td>
+          <td><span class="skeleton-box" style="width:90px;"></span></td>
+          <td><span class="skeleton-box" style="width:70px;"></span></td>
+          <td><span class="skeleton-box" style="width:80px;"></span></td>
+          <td><span class="skeleton-box" style="width:40px;"></span></td>
+          <td><span class="skeleton-box" style="width:30px;"></span></td>
+        </tr>
+      `).join('');
+    }
+
     async function fetchAlerts() {
       try {
+        if (!allAlerts.length) renderSkeletonTable();
         const res = await fetch('/api/v1/alerts?limit=100');
         if (!res.ok) throw new Error('Failed to load alerts');
         const data = await res.json();
-        allAlerts = Array.isArray(data) ? data : (data.alerts || []);
+        const rawAlerts = Array.isArray(data) ? data : (data.alerts || []);
+        allAlerts = rawAlerts.map(a => ({
+          ...a,
+          id: a.id || a.alert_id,
+          alert_id: a.alert_id || a.id
+        }));
         updateKPIs();
         renderAlertsTable();
       } catch (err) {
         console.error('Fetch alerts error', err);
+        showToast('Error loading alerts: ' + err.message);
       }
     }
 
@@ -1017,7 +1079,7 @@
       }
     });
   </script>
-
+  <div id="triage-toast" class="triage-toast"></div>
 </body>
 
 </html>

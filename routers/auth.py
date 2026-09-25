@@ -818,6 +818,52 @@ async def revoke_sessions(current_user: dict = Depends(get_current_user)):
     }
 
 
+@router.post("/users/{user_id}/revoke-sessions", summary="Revoke all active sessions for a target user (Admin only)")
+@router.delete("/users/{user_id}/sessions", summary="Revoke all active sessions for a target user (RESTful DELETE)")
+async def admin_revoke_target_user_sessions(
+    user_id: str,
+    current_user: dict = Depends(RoleChecker(["SUPER_ADMIN", "ADMIN"])),
+):
+    """
+    Increments token_version for the target user ID, immediately invalidating
+    all active JWT access and refresh tokens across all pods and devices.
+    """
+    import uuid
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID format.")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    from database.postgres import get_async_db_conn
+    from services.auth import revoke_user_sessions
+
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        row = await conn.fetchrow("SELECT username, role FROM users WHERE id = $1;", uuid.UUID(user_id))
+        if not row:
+            raise HTTPException(status_code=404, detail="Target user not found.")
+
+    new_ver = await revoke_user_sessions(user_id)
+
+    log_audit_event(
+        event_type="USER_SESSIONS_REVOKED",
+        actor_id=str(current_user.get("id", "")),
+        actor_role=current_user.get("role", "ADMIN"),
+        action="REVOKE_SESSIONS",
+        resource_type="USER",
+        resource_id=user_id,
+        tenant_id=tenant_id,
+        details={"username": row["username"], "target_role": row["role"], "new_token_version": new_ver}
+    )
+
+    return {
+        "status": "SUCCESS",
+        "detail": f"All active sessions for user '{row['username']}' revoked successfully.",
+        "user_id": user_id,
+        "token_version": new_ver
+    }
+
+
 # ── Multi-Factor Authentication (MFA / TOTP) Endpoints ─────────────────────────
 
 class MFAEnableRequest(BaseModel):

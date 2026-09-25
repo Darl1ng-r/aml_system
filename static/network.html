@@ -288,6 +288,9 @@
     </div>
 
     <!-- Network Canvas -->
+    <div id="demoModeBanner" style="display:none; position:absolute; top:75px; left:50%; transform:translateX(-50%); z-index:20; background:rgba(180, 83, 9, 0.95); color:#fff; padding:6px 16px; border-radius:6px; font-size:12px; font-weight:600; box-shadow:0 4px 14px rgba(0,0,0,0.5); border:1px solid #f59e0b;">
+      ⚠ DEMO TOPOLOGY: Entity not found in Neo4j graph database. Rendering synthetic demonstrator topology.
+    </div>
     <div id="networkCanvas"></div>
 
     <!-- Right Properties Drawer -->
@@ -450,7 +453,10 @@
           font: { size: 10, color: '#94a3b8' }
         })));
 
-        showToast(`Graph expanded: ${visNodes.length} nodes loaded.`);
+        const banner = document.getElementById('demoModeBanner');
+        if (banner) banner.style.display = 'none';
+
+        showToast(`Graph expanded: ${visNodes.length} live Neo4j nodes loaded.`);
       } catch (err) {
         createDemoGraph(entityId);
       }
@@ -476,8 +482,11 @@
         { from: '5', to: '1', label: '$45,000 (Cycle)', color: { color: '#ef4444' }, dashes: true }
       ]);
 
+      const banner = document.getElementById('demoModeBanner');
+      if (banner) banner.style.display = 'block';
+
       displayNodeDetails(nodesDataSet.get('1'));
-      showToast('Loaded interactive topology for target entity.');
+      showToast('Notice: Entity not found in Neo4j. Loaded demonstration topology.');
     }
 
     function displayNodeDetails(node) {

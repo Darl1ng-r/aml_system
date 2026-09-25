@@ -399,14 +399,19 @@
     async function revokeSessions(userId) {
       if (!confirm('Immediately invalidate all active JWTs for this user?')) return;
       try {
-        const res = await fetch(`/api/v1/auth/users/${userId}/role`, {
-          method: 'PATCH',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({role: usersList.find(u => u.id === userId).role})
+        const res = await fetch(`/api/v1/auth/users/${userId}/revoke-sessions`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-CSRF-Protection': '1'},
+          credentials: 'include'
         });
-        if (res.ok) alert('Sessions revoked successfully.');
+        if (res.ok) {
+          const data = await res.json();
+          alert(data.detail || 'Sessions revoked successfully.');
+        } else {
+          alert('Failed to revoke sessions.');
+        }
       } catch (e) {
-        alert('Failed to revoke sessions.');
+        alert('Failed to revoke sessions: ' + e.message);
       }
     }
 

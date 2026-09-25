@@ -308,6 +308,19 @@
       z-index: 100;
       display: none;
     }
+
+    @keyframes pulseSkeleton {
+      0% { opacity: 0.4; }
+      50% { opacity: 0.85; }
+      100% { opacity: 0.4; }
+    }
+    .skeleton-box {
+      display: inline-block;
+      height: 14px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      animation: pulseSkeleton 1.4s ease-in-out infinite;
+    }
   </style>
 </head>
 <body>
@@ -525,8 +538,20 @@
       }
     }
 
+    function renderSkeletonCustomerList() {
+      const listEl = document.getElementById('customerList');
+      if (!listEl) return;
+      listEl.innerHTML = Array(5).fill(0).map(() => `
+        <div class="customer-item" style="pointer-events:none;">
+          <div class="skeleton-box" style="width:120px; height:14px; margin-bottom:6px;"></div>
+          <div class="skeleton-box" style="width:160px; height:10px;"></div>
+        </div>
+      `).join('');
+    }
+
     async function loadCustomerList(search = '') {
       try {
+        if (!customerListCache.length) renderSkeletonCustomerList();
         const url = search ? `/api/v1/customers?search=${encodeURIComponent(search)}` : '/api/v1/customers';
         const res = await fetch(url, { credentials: 'include' });
         if (!res.ok) throw new Error('Failed to load customers');

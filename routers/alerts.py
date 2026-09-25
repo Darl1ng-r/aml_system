@@ -112,6 +112,7 @@ async def list_alerts(
                     return val.isoformat() if hasattr(val, "isoformat") else str(val)
 
                 alerts.append({
+                    "id": str(row[0]),
                     "alert_id": str(row[0]),
                     "rule_name": row[1],
                     "threat_level": row[2],

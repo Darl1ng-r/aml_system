@@ -464,10 +464,29 @@
     }
 
     async function loadExplainability(alertId = null) {
-      const id = alertId || document.getElementById('alertIdInput').value.trim() || '00000000-0000-0000-0000-000000000001';
+      let id = alertId || document.getElementById('alertIdInput').value.trim();
+      if (!id) {
+        try {
+          const alertRes = await fetch('/api/v1/alerts?limit=1', { credentials: 'include' });
+          if (alertRes.ok) {
+            const alertList = await alertRes.json();
+            const topAlert = Array.isArray(alertList) ? alertList[0] : (alertList.alerts && alertList.alerts[0]);
+            if (topAlert) {
+              id = topAlert.id || topAlert.alert_id;
+              document.getElementById('alertIdInput').value = id;
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (!id) {
+        document.getElementById('narrativeBox').innerText = 'No alert available in database. Enter an active Alert UUID above to compute SHAP attributions.';
+        return;
+      }
+
       try {
         const res = await fetch(`/api/v1/ml/explain/${id}`, { credentials: 'include' });
-        if (!res.ok) throw new Error('Explainability fetch failed');
+        if (!res.ok) throw new Error('Explainability fetch failed with status ' + res.status);
         const d = await res.json();
 
         document.getElementById('narrativeBox').innerText = d.plain_english_summary;
@@ -504,7 +523,7 @@
           </div>
         `;
       } catch (err) {
-        showToast('Explainability sample loaded.');
+        showToast('Explainability lookup error: ' + err.message);
       }
     }
 
