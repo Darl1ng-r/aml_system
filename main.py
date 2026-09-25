@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
 from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist, jwks
-from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, evidence, audit, customers
+from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, evidence, audit, customers, siem, risk_appetite
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
@@ -327,6 +327,8 @@ app.include_router(locks.router)
 app.include_router(evidence.router)
 app.include_router(audit.router)
 app.include_router(customers.router)
+app.include_router(siem.router)
+app.include_router(risk_appetite.router)
 
 # Mount static files directory for dashboard styling and frontend client logic
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -493,5 +495,25 @@ def read_system_health(request: Request):
     if not token:
         return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/system-health.html")
+
+@app.get("/ml/governance", response_class=FileResponse)
+@app.get("/admin/ml-governance", response_class=FileResponse)
+@app.get("/audit/model-reports", response_class=FileResponse)
+def read_ml_governance(request: Request):
+    """Server-side cookie authentication guard for ML Governance & Model Validation."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/ml-governance.html")
+
+@app.get("/settings/risk-appetite", response_class=FileResponse)
+@app.get("/risk-appetite", response_class=FileResponse)
+def read_risk_appetite(request: Request):
+    """Server-side cookie authentication guard for Institutional Risk Appetite Settings."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/risk-appetite.html")
+
 
 

@@ -277,9 +277,33 @@
         <h1 style="font-size:1.4rem; font-weight:700;">Immutable Audit Log Vault</h1>
         <p style="font-size:0.85rem; color:var(--text-muted); margin-top:3px;">Append-only regulatory audit registry under FFIEC, BSA 31 CFR 1010, and EU AMLD6 mandate.</p>
       </div>
-      <div style="display:flex; gap:0.5rem;">
+      <div style="display:flex; gap:0.5rem; align-items:center;">
+        <button class="btn" id="btnVerifyChain" onclick="verifyChainIntegrity()" style="border-color:rgba(16,185,129,0.4); color:#6ee7b7;">
+          <span id="verifySpinner" style="display:none;" class="spinner"></span> 🔒 Verify Chain Integrity
+        </button>
         <button class="btn" onclick="exportLogs('csv')">Export CSV (SHA-256)</button>
         <button class="btn" onclick="exportLogs('json')">Export JSON</button>
+      </div>
+    </div>
+
+    <!-- Cryptographic Verification Seal Banner -->
+    <div id="chainVerificationCard" style="display:none; background:rgba(16, 185, 129, 0.08); border:1px solid rgba(16, 185, 129, 0.3); border-radius:8px; padding:1rem 1.25rem; font-size:0.8rem;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+        <div>
+          <div style="display:flex; align-items:center; gap:0.5rem; font-weight:600; color:#34d399; font-size:0.9rem;">
+            <span>🛡️ WORM Storage Integrity: Cryptographically Verified</span>
+            <span class="role-badge" id="chainStatusBadge">VALID</span>
+          </div>
+          <p style="color:var(--text-muted); margin-top:4px;" id="chainVerificationDetail">
+            Sequential SHA-256 hash chaining validated across all indexed audit records. Zero tampering or unauthorized mutations detected.
+          </p>
+          <div style="display:flex; gap:1.5rem; margin-top:0.5rem; font-family:'IBM Plex Mono', monospace; font-size:0.7rem; color:var(--text-dim);">
+            <div>Records Verified: <span id="chainRecordsCount" style="color:#fff;">0</span></div>
+            <div>Chain Root: <span id="chainGenesis" style="color:#7dd3fc;">...</span></div>
+            <div>Chain Head: <span id="chainHead" style="color:#7dd3fc;">...</span></div>
+          </div>
+        </div>
+        <button onclick="document.getElementById('chainVerificationCard').style.display='none'" style="background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:1rem;">&times;</button>
       </div>
     </div>
 
@@ -469,6 +493,49 @@
 
       window.open(url, '_blank');
       showToast(`Exporting ${format.toUpperCase()} archive with digital checksum...`);
+    }
+
+    async function verifyChainIntegrity() {
+      const btn = document.getElementById('btnVerifyChain');
+      const spinner = document.getElementById('verifySpinner');
+      const card = document.getElementById('chainVerificationCard');
+
+      try {
+        btn.disabled = true;
+        spinner.style.display = 'inline-block';
+        showToast('Traversing cryptographic WORM hash chain...');
+
+        const res = await fetch('/api/v1/audit/verify-chain', { credentials: 'include' });
+        if (!res.ok) throw new Error('Verification request failed');
+        const data = await res.json();
+
+        document.getElementById('chainStatusBadge').innerText = data.status;
+        document.getElementById('chainRecordsCount').innerText = data.verified_records;
+        document.getElementById('chainGenesis').innerText = (data.genesis_hash || '').slice(0, 16) + '...';
+        document.getElementById('chainHead').innerText = (data.chain_head || '').slice(0, 16) + '...';
+
+        if (data.tampered) {
+          card.style.background = 'rgba(239, 68, 68, 0.1)';
+          card.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+          document.getElementById('chainStatusBadge').style.background = 'rgba(239,68,68,0.2)';
+          document.getElementById('chainStatusBadge').style.color = '#f87171';
+          document.getElementById('chainVerificationDetail').innerText = `CRITICAL ALERT: Tampering detected at record ID ${data.tampered_record_id || 'unknown'}!`;
+        } else {
+          card.style.background = 'rgba(16, 185, 129, 0.08)';
+          card.style.borderColor = 'rgba(16, 185, 129, 0.3)';
+          document.getElementById('chainStatusBadge').style.background = 'rgba(16,185,129,0.2)';
+          document.getElementById('chainStatusBadge').style.color = '#6ee7b7';
+          document.getElementById('chainVerificationDetail').innerText = `Sequential SHA-256 hash chaining validated across ${data.verified_records} indexed audit records. Zero tampering or unauthorized mutations detected.`;
+        }
+
+        card.style.display = 'block';
+        showToast('Chain integrity verification complete.');
+      } catch (err) {
+        showToast(err.message);
+      } finally {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+      }
     }
 
     function logout() {

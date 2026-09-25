@@ -418,6 +418,7 @@
       <textarea id="narrativeText" class="narrative-textarea" placeholder="Enter exhaustive narrative of suspicious transactions, unusual velocity spikes, structuring patterns, or counterparty connections..."></textarea>
 
       <div class="btn-row">
+        <button class="btn btn-secondary" onclick="generateAiNarrative()" style="border-color:rgba(125,211,252,0.4); color:#7dd3fc;">✨ AI Generate Narrative</button>
         <button class="btn btn-secondary" onclick="generatePreview()">Generate Live XML Preview</button>
         <button class="btn btn-primary" onclick="saveDraft()">Save Draft</button>
         <button class="btn btn-submit" onclick="submitForReview()">Submit for MLRO Review ➔</button>
@@ -556,6 +557,39 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
         document.getElementById('xmlDisplay').innerText = data.xml;
       } catch (err) {
         document.getElementById('xmlDisplay').innerText = '<!-- XML preview generation failed: ' + err.message + ' -->';
+      }
+    }
+
+    async function generateAiNarrative() {
+      showToast('Synthesizing 5-part FinCEN regulatory narrative...');
+      try {
+        const payload = {
+          alert_id: activeAlertId,
+          subject_name: document.getElementById('ctxSubject').innerText !== 'Loading...' ? document.getElementById('ctxSubject').innerText : null,
+          account_number: document.getElementById('ctxAccount').innerText !== 'Loading...' ? document.getElementById('ctxAccount').innerText : null,
+          amount: parseFloat((document.getElementById('ctxAmount').innerText || '0').replace(/[^0-9.]/g, '')) || 45000.0,
+          currency: 'USD',
+          typologies: [document.getElementById('ctxRule').innerText]
+        };
+
+        const res = await fetch('/api/v1/fincen/sar/generate-narrative', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) throw new Error('AI narrative generation failed');
+        const data = await res.json();
+
+        const textarea = document.getElementById('narrativeText');
+        textarea.value = data.narrative;
+        updateCharCounter();
+        showToast(`AI narrative synthesized (${data.word_count} words). Generating live XML...`);
+        await saveDraft(true);
+        generatePreview();
+      } catch (err) {
+        showToast(err.message);
       }
     }
 

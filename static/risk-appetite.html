@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AML Sentinel — Institutional Risk Appetite</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-base: #06090e;
+      --bg-surface: #0b0f17;
+      --bg-card: #111722;
+      --bg-elevated: #161e2e;
+      --border-subtle: #1e293b;
+      --border-bright: #334155;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent-blue: #38bdf8;
+      --accent-purple: #a855f7;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-crimson: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-base);
+      color: var(--text-main);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header-nav {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 1.5rem;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: #fff;
+      text-decoration: none;
+      letter-spacing: 0.04em;
+    }
+    .brand-badge {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--accent-amber);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      font-size: 0.65rem;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+    .nav-links { display: flex; align-items: center; gap: 0.25rem; }
+    .nav-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.8rem;
+      font-weight: 500;
+      padding: 6px 10px;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+    .nav-link:hover { color: #fff; background: var(--bg-card); }
+    .nav-link.active { color: #fff; background: var(--bg-elevated); border: 1px solid var(--border-subtle); }
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      background: var(--bg-card);
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+    }
+    .role-badge {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      background: rgba(245, 158, 11, 0.2);
+      color: var(--accent-amber);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .btn-logout {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 0.75rem;
+    }
+    .btn-logout:hover { color: var(--accent-crimson); }
+
+    .main-container {
+      flex: 1;
+      max-width: 1100px;
+      margin: 0 auto;
+      width: 100%;
+      padding: 1.75rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+    .card-header {
+      border-bottom: 1px solid var(--border-subtle);
+      padding-bottom: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .card-title { font-size: 1rem; font-weight: 600; color: #fff; }
+    .card-desc { font-size: 0.75rem; color: var(--text-muted); margin-top: 3px; }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .label {
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-main);
+    }
+    .sublabel {
+      font-size: 0.675rem;
+      color: var(--text-dim);
+    }
+    .input {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: #fff;
+      font-size: 0.85rem;
+      font-family: 'IBM Plex Mono', monospace;
+      outline: none;
+    }
+    .input:focus { border-color: var(--accent-blue); }
+
+    .switch-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--bg-card);
+      padding: 10px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .btn {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-bright);
+      color: var(--text-main);
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.15s ease;
+    }
+    .btn-primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+    .btn-primary:hover { background: #1d4ed8; }
+
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: var(--bg-elevated);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      font-size: 0.825rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      z-index: 100;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="header-nav">
+    <div style="display:flex; align-items:center; gap:1.5rem;">
+      <a href="/alerts/triage" class="brand">
+        <span>AML SENTINEL</span>
+        <span class="brand-badge">RISK APPETITE</span>
+      </a>
+      <nav class="nav-links">
+        <a href="/alerts/triage" class="nav-link">Alert Triage</a>
+        <a href="/dashboard" class="nav-link">Case Cockpit</a>
+        <a href="/sar/editor" class="nav-link">SAR Editor</a>
+        <a href="/sar/queue" class="nav-link" data-role="MLRO,ADMIN">Filing Queue</a>
+        <a href="/customers" class="nav-link">Customer 360</a>
+        <a href="/network" class="nav-link">Network Graph</a>
+        <a href="/dashboard/executive" class="nav-link" data-role="MLRO,ADMIN">Executive</a>
+        <a href="/audit/logs" class="nav-link">Audit Vault</a>
+        <a href="/ml/governance" class="nav-link" data-role="ADMIN,MLRO">AI Models</a>
+        <a href="/settings/risk-appetite" class="nav-link active" data-role="MLRO,ADMIN">Risk Settings</a>
+      </nav>
+    </div>
+    <div style="display:flex; align-items:center; gap:0.75rem;">
+      <div class="user-pill">
+        <span id="navUsername">MLRO</span>
+        <span class="role-badge" id="navRole">MLRO</span>
+      </div>
+      <button class="btn-logout" onclick="logout()" title="Sign Out">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="main-container">
+
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div>
+        <h1 style="font-size:1.4rem; font-weight:700;">Institutional Risk Appetite & Compliance Policy</h1>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-top:2px;">
+          Configure institutional risk tolerance multipliers, SAR filing SLA deadlines, and mandatory EDD triggers.
+        </p>
+      </div>
+      <div style="display:flex; align-items:center; gap:1rem;">
+        <span style="font-size:0.75rem; color:var(--text-dim);" id="lastUpdatedLabel">Last updated: ...</span>
+        <button class="btn btn-primary" onclick="saveRiskAppetite()">Save Changes</button>
+      </div>
+    </div>
+
+    <!-- Section 1: Geographic & Counterparty Risk Multipliers -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Jurisdiction & PEP Risk Multipliers</div>
+          <div class="card-desc">Governs risk weight elevations applied during transaction screening and Customer 360 scoring.</div>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="label">Jurisdiction Risk Multiplier</label>
+          <span class="sublabel">Elevation factor applied to transactions involving FATF grey/black listed countries.</span>
+          <input type="number" id="jurisdictionMultiplier" class="input" step="0.1" min="1.0" max="5.0" value="1.5">
+        </div>
+        <div class="form-group">
+          <label class="label">High-Risk Jurisdictions (ISO Codes)</label>
+          <span class="sublabel">Comma-separated country codes subject to enhanced sanctions checks.</span>
+          <input type="text" id="highRiskCountries" class="input" value="RU, IR, KP, SY, MM, YE, VE">
+        </div>
+      </div>
+      <div class="switch-row">
+        <div>
+          <div class="label">Auto-Escalate Sanctions & PEP Hits to MLRO</div>
+          <div class="sublabel">Directly bypass Tier 1 triage and route matches to Senior Compliance Investigators.</div>
+        </div>
+        <input type="checkbox" id="pepAutoEscalate" checked style="width:18px; height:18px; cursor:pointer;">
+      </div>
+    </div>
+
+    <!-- Section 2: Transactional & Structuring Boundaries -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Transaction Monitoring & Structuring Boundaries</div>
+          <div class="card-desc">Thresholds for smurfing, cash structuring, and crypto Travel Rule enforcement.</div>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="label">Cash Structuring Threshold (USD)</label>
+          <span class="sublabel">FinCEN BSA mandatory reporting baseline.</span>
+          <input type="number" id="cashThreshold" class="input" step="500" value="10000">
+        </div>
+        <div class="form-group">
+          <label class="label">Crypto VASP Travel Rule Threshold (USD)</label>
+          <span class="sublabel">FATF R.16 / EU MiCA threshold requiring originator/beneficiary verification.</span>
+          <input type="number" id="travelRuleThreshold" class="input" step="100" value="1000">
+        </div>
+        <div class="form-group">
+          <label class="label">Max Velocity Deviation (Z-Score)</label>
+          <span class="sublabel">Standard deviations above 30-day baseline to trigger velocity alerts.</span>
+          <input type="number" id="maxZScore" class="input" step="0.5" value="3.0">
+        </div>
+        <div class="form-group">
+          <label class="label">Round-Trip Detection Window (Hours)</label>
+          <span class="sublabel">Lookback timeframe for circular fund flows returning to sender.</span>
+          <input type="number" id="roundTripHours" class="input" step="12" value="72">
+        </div>
+      </div>
+    </div>
+
+    <!-- Section 3: Governance & Operational SLAs -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <div class="card-title">Regulatory Governance & SLAs</div>
+          <div class="card-desc">SLA breach limits and mandatory Enhanced Due Diligence (EDD) escalation thresholds.</div>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="label">SAR Filing SLA Deadline (Hours)</label>
+          <span class="sublabel">Time from alert escalation to regulatory submission before marking SLA breach.</span>
+          <input type="number" id="slaHours" class="input" step="6" value="72">
+        </div>
+        <div class="form-group">
+          <label class="label">Mandatory EDD Score Threshold</label>
+          <span class="sublabel">AI risk probability that automatically locks transactions pending EDD review.</span>
+          <input type="number" id="eddThreshold" class="input" step="0.05" min="0.50" max="0.99" value="0.85">
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+
+    async function loadRiskAppetite() {
+      try {
+        const res = await fetch('/api/v1/settings/risk-appetite', { credentials: 'include' });
+        if (!res.ok) throw new Error('Failed to load risk appetite settings');
+        const d = await res.json();
+
+        document.getElementById('jurisdictionMultiplier').value = d.jurisdiction_risk_multiplier || 1.5;
+        document.getElementById('highRiskCountries').value = (d.high_risk_jurisdictions || []).join(', ');
+        document.getElementById('pepAutoEscalate').checked = !!d.pep_sanctions_auto_escalate;
+        document.getElementById('cashThreshold').value = d.cash_structuring_threshold || 10000;
+        document.getElementById('travelRuleThreshold').value = d.crypto_travel_rule_threshold || 1000;
+        document.getElementById('maxZScore').value = d.max_velocity_deviation_zscore || 3.0;
+        document.getElementById('roundTripHours').value = d.round_trip_window_hours || 72;
+        document.getElementById('slaHours').value = d.sar_filing_sla_hours || 72;
+        document.getElementById('eddThreshold').value = d.edd_mandatory_score_threshold || 0.85;
+
+        if (d.updated_at) {
+          document.getElementById('lastUpdatedLabel').innerText = `Last updated: ${d.updated_at.slice(0, 19).replace('T', ' ')} by ${d.updated_by || 'ADMIN'}`;
+        }
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    async function saveRiskAppetite() {
+      const payload = {
+        jurisdiction_risk_multiplier: parseFloat(document.getElementById('jurisdictionMultiplier').value),
+        high_risk_jurisdictions: document.getElementById('highRiskCountries').value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
+        pep_sanctions_auto_escalate: document.getElementById('pepAutoEscalate').checked,
+        cash_structuring_threshold: parseFloat(document.getElementById('cashThreshold').value),
+        crypto_travel_rule_threshold: parseFloat(document.getElementById('travelRuleThreshold').value),
+        max_velocity_deviation_zscore: parseFloat(document.getElementById('maxZScore').value),
+        round_trip_window_hours: parseInt(document.getElementById('roundTripHours').value, 10),
+        sar_filing_sla_hours: parseInt(document.getElementById('slaHours').value, 10),
+        edd_mandatory_score_threshold: parseFloat(document.getElementById('eddThreshold').value)
+      };
+
+      try {
+        const res = await fetch('/api/v1/settings/risk-appetite', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Save failed');
+        const data = await res.json();
+        showToast('Institutional Risk Appetite settings saved & audit-logged.');
+        loadRiskAppetite();
+      } catch (err) {
+        showToast('Error saving settings: ' + err.message);
+      }
+    }
+
+    function logout() {
+      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
+      window.location.href = '/login';
+    }
+
+    window.addEventListener('DOMContentLoaded', loadRiskAppetite);
+  </script>
+</body>
+</html>

@@ -38,6 +38,18 @@
       "enabled": true,
       "account_age_days": 90,
       "high_value_threshold": 50000.0
+    },
+    "TRADE_BASED_ML_OVER_UNDER_INVOICING": {
+      "enabled": true,
+      "unit_price_variance_threshold_pct": 35.0,
+      "invoice_amount_threshold": 100000.0,
+      "high_risk_goods": ["PRECIOUS_METALS", "ELECTRONICS", "PETROLEUM", "PHARMACEUTICALS", "LUXURY_GOODS"]
+    },
+    "CRYPTO_FIAT_VASP_STRUCTURING": {
+      "enabled": true,
+      "travel_rule_threshold": 1000.0,
+      "rapid_conversion_hours": 24,
+      "max_consecutive_conversions": 3
     }
   }
 }

@@ -75,7 +75,8 @@ class RulesEngine:
         receiver_name: str = None,
         receiver_bic: str = None,
         timestamp: datetime = None,
-        tenant_id: str = None
+        tenant_id: str = None,
+        metadata: dict = None
     ) -> list[str]:
         triggered_rules = []
         config = get_rules_config()
@@ -356,6 +357,45 @@ class RulesEngine:
                                     triggered_rules.append("NEWLY_INCORPORATED_HIGH_VALUE")
                 except Exception as e:
                     logger.debug(f"Newly incorporated check error: {e}")
+
+        # 9. TRADE_BASED_ML_OVER_UNDER_INVOICING (Task 3.5: TBML)
+        tbml_config = config.get("rules", {}).get("TRADE_BASED_ML_OVER_UNDER_INVOICING", {})
+        if tbml_config.get("enabled", True):
+            var_thresh = tbml_config.get("unit_price_variance_threshold_pct", 35.0)
+            inv_thresh = tbml_config.get("invoice_amount_threshold", 100000.0)
+            high_risk_goods = [g.upper() for g in tbml_config.get("high_risk_goods", ["PRECIOUS_METALS", "ELECTRONICS", "PETROLEUM", "PHARMACEUTICALS", "LUXURY_GOODS"])]
+            
+            meta = metadata or {}
+            declared_goods = str(meta.get("goods_category", "")).upper()
+            unit_price_variance = float(meta.get("unit_price_variance_pct", 0.0))
+            invoice_val = float(meta.get("invoice_amount", 0.0))
+
+            is_high_risk_category = declared_goods in high_risk_goods
+            has_price_variance = unit_price_variance >= var_thresh
+            has_invoice_discrepancy = (invoice_val >= inv_thresh and abs(amount - invoice_val) / max(invoice_val, 1.0) >= 0.20)
+
+            if is_high_risk_category and (has_price_variance or has_invoice_discrepancy):
+                triggered_rules.append("TRADE_BASED_ML_OVER_UNDER_INVOICING")
+
+        # 10. CRYPTO_FIAT_VASP_STRUCTURING (Task 3.6: VASP & Travel Rule Gap)
+        crypto_config = config.get("rules", {}).get("CRYPTO_FIAT_VASP_STRUCTURING", {})
+        if crypto_config.get("enabled", True):
+            travel_rule_thresh = crypto_config.get("travel_rule_threshold", 1000.0)
+            meta = metadata or {}
+            is_vasp = (
+                bool(meta.get("is_vasp_transfer", False)) or 
+                "VASP" in (sender_bic or "").upper() or 
+                "VASP" in (receiver_bic or "").upper() or
+                str(meta.get("counterparty_type", "")).upper() == "VASP"
+            )
+            travel_rule_complete = meta.get("travel_rule_complete", True)
+            rapid_count = int(meta.get("rapid_conversion_count", 0))
+            max_conversions = crypto_config.get("max_consecutive_conversions", 3)
+            
+            if is_vasp and amount >= travel_rule_thresh and not travel_rule_complete:
+                triggered_rules.append("CRYPTO_FIAT_VASP_STRUCTURING")
+            elif is_vasp and rapid_count >= max_conversions:
+                triggered_rules.append("CRYPTO_FIAT_VASP_STRUCTURING")
 
         return triggered_rules
 

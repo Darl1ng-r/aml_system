@@ -1014,3 +1014,55 @@ svg.lucide, i[data-lucide] {
   stroke-width: 2;
   vertical-align: middle;
 }
+
+/* ─── MOBILE & TABLET RESPONSIVE PASS (Task 3.10) ─────────── */
+@media (max-width: 1024px) {
+  .shell {
+    grid-template-columns: 60px 1fr !important;
+    grid-template-areas:
+      "topbar topbar"
+      "rail center" !important;
+  }
+  .context-pane {
+    display: none;
+  }
+  .grid-3 {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .shell {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: 52px 48px 1fr !important;
+    grid-template-areas:
+      "topbar"
+      "rail"
+      "center" !important;
+    overflow-y: auto !important;
+    height: auto !important;
+    min-height: 100vh;
+  }
+  .nav-rail {
+    flex-direction: row !important;
+    width: 100% !important;
+    height: 48px !important;
+    padding: 0 10px !important;
+    justify-content: space-around !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--sidebar-line) !important;
+  }
+  .topbar {
+    padding: 0 12px !important;
+  }
+  .editor-container, .grid-2, .grid-3, .form-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .preview-pane {
+    height: 400px !important;
+  }
+  .modal-content, .drawer {
+    width: 95vw !important;
+  }
+}
+
