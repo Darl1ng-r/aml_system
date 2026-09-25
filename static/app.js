@@ -278,6 +278,13 @@ function applyRoleBasedVisibility(role) {
     const userNav = document.getElementById('nav-user-admin');
     if (ruleNav) ruleNav.style.display = isAdmin ? 'inline-flex' : 'none';
     if (userNav) userNav.style.display = isAdmin ? 'inline-flex' : 'none';
+
+    // Dynamic data-role visibility filtering
+    document.querySelectorAll('[data-role]').forEach(el => {
+        const allowed = el.getAttribute('data-role').split(',').map(r => r.trim());
+        const hasAccess = allowed.includes(role) || ['ADMIN', 'SUPER_ADMIN'].includes(role);
+        el.style.display = hasAccess ? '' : 'none';
+    });
 }
 
 async function logout() {

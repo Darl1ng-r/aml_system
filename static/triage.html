@@ -456,19 +456,18 @@
         <span style="font-size:12px; color:var(--sidebar-text); font-weight:400;">| Alert Triage Console</span>
       </div>
 
-      <nav class="nav-links">
-        <a href="/alerts/triage" class="nav-link-btn active">
-          <i data-lucide="inbox" style="width:15px; height:15px;"></i> Triage Inbox
-        </a>
-        <a href="/dashboard" class="nav-link-btn">
-          <i data-lucide="crosshair" style="width:15px; height:15px;"></i> Case Cockpit
-        </a>
-        <a href="/admin/rules" class="nav-link-btn" id="nav-rule-builder">
-          <i data-lucide="sliders" style="width:15px; height:15px;"></i> Rule Builder
-        </a>
-        <a href="/admin/users" class="nav-link-btn" id="nav-user-admin">
-          <i data-lucide="users" style="width:15px; height:15px;"></i> Team & Roles
-        </a>
+      <nav class="nav-links" style="display:flex; gap:6px; flex-wrap:wrap;">
+        <a href="/alerts/triage" class="nav-link-btn active"><i data-lucide="inbox" style="width:14px; height:14px;"></i> Triage</a>
+        <a href="/dashboard" class="nav-link-btn"><i data-lucide="crosshair" style="width:14px; height:14px;"></i> Cockpit</a>
+        <a href="/sar/editor" class="nav-link-btn"><i data-lucide="file-text" style="width:14px; height:14px;"></i> SAR Editor</a>
+        <a href="/sar/queue" class="nav-link-btn" data-role="MLRO,ADMIN"><i data-lucide="send" style="width:14px; height:14px;"></i> Filing Queue</a>
+        <a href="/customers" class="nav-link-btn"><i data-lucide="user-check" style="width:14px; height:14px;"></i> Customer 360</a>
+        <a href="/network" class="nav-link-btn"><i data-lucide="share-2" style="width:14px; height:14px;"></i> Network</a>
+        <a href="/dashboard/executive" class="nav-link-btn" data-role="MLRO,ADMIN"><i data-lucide="bar-chart-2" style="width:14px; height:14px;"></i> Executive</a>
+        <a href="/audit/logs" class="nav-link-btn" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN"><i data-lucide="shield" style="width:14px; height:14px;"></i> Audit Vault</a>
+        <a href="/admin/rules" class="nav-link-btn" data-role="ADMIN" id="nav-rule-builder"><i data-lucide="sliders" style="width:14px; height:14px;"></i> Rules</a>
+        <a href="/admin/users" class="nav-link-btn" data-role="ADMIN" id="nav-user-admin"><i data-lucide="users" style="width:14px; height:14px;"></i> Team</a>
+        <a href="/admin/health" class="nav-link-btn" data-role="ADMIN"><i data-lucide="activity" style="width:14px; height:14px;"></i> Health</a>
       </nav>
 
       <div style="display:flex; align-items:center; gap:12px;">

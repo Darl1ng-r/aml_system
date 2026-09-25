@@ -13,6 +13,7 @@ Provides HTTP API endpoints for electronic FinCEN SAR transmission:
 
 import logging
 import uuid
+from datetime import datetime, timezone
 from pydantic import BaseModel, Field, field_validator
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from database.postgres import get_async_db_conn
@@ -57,6 +58,27 @@ class SARDraftReview(BaseModel):
     @classmethod
     def sanitize_reason(cls, v: str | None) -> str | None:
         return sanitize_text(v) if v else None
+
+
+class SARDraftUpdate(BaseModel):
+    narrative: str | None = Field(None, min_length=10, max_length=10000)
+    xml_payload: str | None = None
+    status: str | None = Field(None, pattern=r"^(DRAFT|PENDING_MLRO_REVIEW)$")
+
+    @field_validator("narrative", mode="before")
+    @classmethod
+    def sanitize_narrative(cls, v: str | None) -> str | None:
+        return sanitize_text(v) if v else None
+
+
+class SARPreviewRequest(BaseModel):
+    alert_id: str | None = None
+    narrative: str = Field(..., min_length=5, max_length=10000)
+    format: str = Field("FINCEN", pattern=r"^(FINCEN|GOAML)$")
+    amount: float | None = None
+    currency: str | None = "USD"
+    sender_name: str | None = None
+    receiver_name: str | None = None
 
 
 @router.post("/sars", status_code=status.HTTP_201_CREATED)
@@ -329,3 +351,207 @@ async def review_sar_draft(
             "reviewed_by": current_user.get("username", "mlro"),
             "message": f"SAR draft successfully {new_status.lower()}."
         }
+
+
+@router.get("/sar/drafts/{id}")
+async def get_sar_draft(
+    id: str,
+    current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    """Retrieves full details of a specific SAR draft, including linked alert context."""
+    try:
+        draft_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid draft ID.")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        draft = await conn.fetchrow(
+            """
+            SELECT d.*, 
+                   a.rule_name, a.threat_level, a.ai_risk_score,
+                   t.amount, t.currency, t.sender_account_id, t.receiver_account_id
+            FROM sar_drafts d
+            LEFT JOIN alerts a ON d.alert_id = a.id
+            LEFT JOIN transactions t ON a.transaction_id = t.id
+            WHERE d.id = $1 AND d.tenant_id = $2;
+            """,
+            draft_uuid, uuid.UUID(str(tenant_id))
+        )
+        if not draft:
+            raise HTTPException(status_code=404, detail="SAR draft not found.")
+
+        return {
+            "draft_id": str(draft["id"]),
+            "alert_id": str(draft["alert_id"]) if draft["alert_id"] else None,
+            "case_id": str(draft["case_id"]) if draft["case_id"] else None,
+            "status": draft["status"],
+            "drafted_by": str(draft["drafted_by"]) if draft["drafted_by"] else None,
+            "drafted_by_username": draft["drafted_by_username"],
+            "narrative": draft["narrative"] or "",
+            "xml_payload": draft["xml_payload"] or "",
+            "reviewed_by_username": draft["reviewed_by_username"],
+            "rejection_reason": draft["rejection_reason"],
+            "created_at": draft["created_at"].isoformat() if draft["created_at"] else None,
+            "updated_at": draft["updated_at"].isoformat() if draft.get("updated_at") else None,
+            "alert_details": {
+                "rule_name": draft.get("rule_name") or "SUSPICIOUS_ACTIVITY",
+                "threat_level": draft.get("threat_level") or "HIGH",
+                "risk_score": float(draft.get("ai_risk_score") or 0.85),
+                "amount": float(draft.get("amount") or 0.0),
+                "currency": draft.get("currency") or "USD",
+                "sender_account": draft.get("sender_account_id") or "",
+                "receiver_account": draft.get("receiver_account_id") or ""
+            }
+        }
+
+
+@router.patch("/sar/drafts/{id}")
+async def update_sar_draft(
+    id: str,
+    payload: SARDraftUpdate,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
+    """Updates narrative or xml_payload of an open or in-progress SAR draft."""
+    try:
+        draft_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid draft ID.")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        draft = await conn.fetchrow(
+            "SELECT id, status FROM sar_drafts WHERE id = $1 AND tenant_id = $2;",
+            draft_uuid, uuid.UUID(str(tenant_id))
+        )
+        if not draft:
+            raise HTTPException(status_code=404, detail="SAR draft not found.")
+
+        if draft["status"] in ["APPROVED", "FILED"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot edit SAR draft in '{draft['status']}' state."
+            )
+
+        new_narrative = payload.narrative
+        new_xml = payload.xml_payload
+        new_status = payload.status or draft["status"]
+
+        await conn.execute(
+            """
+            UPDATE sar_drafts
+            SET narrative = COALESCE($1, narrative),
+                xml_payload = COALESCE($2, xml_payload),
+                status = $3,
+                updated_at = NOW()
+            WHERE id = $4;
+            """,
+            new_narrative, new_xml, new_status, draft_uuid
+        )
+
+        return {
+            "draft_id": str(draft_uuid),
+            "status": new_status,
+            "message": "SAR draft updated successfully."
+        }
+
+
+@router.post("/sar/preview")
+async def preview_sar_xml(
+    payload: SARPreviewRequest,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
+):
+    """Generates a live preview XML payload in either FinCEN BSA or UNODC EU goAML format."""
+    from services.goaml import generate_goaml_xml
+    from routers.alerts import generate_sar_xml
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    alert_tuple = None
+
+    if payload.alert_id:
+        try:
+            alert_uuid = uuid.UUID(payload.alert_id)
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score,
+                           COALESCE(t.amount, 10000.0) as amount,
+                           COALESCE(t.currency, 'USD') as currency,
+                           COALESCE(t.timestamp, NOW()) as timestamp,
+                           COALESCE(t.sender_account_id, 'ACC-ORIGINATOR') as s_acc,
+                           COALESCE(s_acc.owner_name, 'Sender Entity') as s_owner,
+                           COALESCE(t.receiver_account_id, 'ACC-BENEFICIARY') as r_acc,
+                           COALESCE(r_acc.owner_name, 'Receiver Entity') as r_owner
+                    FROM alerts a
+                    LEFT JOIN transactions t ON a.transaction_id = t.id
+                    LEFT JOIN accounts s_acc ON t.sender_account_id = s_acc.account_number
+                    LEFT JOIN accounts r_acc ON t.receiver_account_id = r_acc.account_number
+                    WHERE a.id = $1;
+                    """,
+                    alert_uuid
+                )
+                if row:
+                    alert_tuple = (
+                        row["id"], row["rule_name"], row["threat_level"],
+                        float(row["ai_risk_score"] or 0.8), float(row["amount"]),
+                        row["currency"], row["timestamp"], row["s_acc"],
+                        row["s_owner"], row["r_acc"], row["r_owner"]
+                    )
+        except Exception as e:
+            logger.debug(f"Alert lookup for XML preview fallback to payload values: {e}")
+
+    if not alert_tuple:
+        alert_tuple = (
+            payload.alert_id or str(uuid.uuid4()),
+            "SUSPICIOUS_ACTIVITY",
+            "HIGH",
+            0.85,
+            payload.amount or 15000.0,
+            payload.currency or "USD",
+            datetime.now(timezone.utc),
+            "ORIG-ACCOUNT-001",
+            payload.sender_name or "Subject Organization Inc.",
+            "DEST-ACCOUNT-002",
+            payload.receiver_name or "Counterparty LLC"
+        )
+
+    if payload.format.upper() == "GOAML":
+        xml_output = generate_goaml_xml(alert_tuple, payload.narrative, report_code="STR")
+    else:
+        xml_output = generate_sar_xml(alert_tuple, payload.narrative)
+
+    return {
+        "format": payload.format.upper(),
+        "xml": xml_output
+    }
+
+
+@router.get("/sar/drafts/{id}/export")
+async def export_sar_draft_xml(
+    id: str,
+    format: str = "FINCEN",
+    current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"]))
+):
+    """Downloads the generated XML representation for a draft in FinCEN or EU goAML schema."""
+    draft_data = await get_sar_draft(id=id, current_user=current_user)
+    alert_info = draft_data.get("alert_details", {})
+
+    prev_req = SARPreviewRequest(
+        alert_id=draft_data.get("alert_id"),
+        narrative=draft_data.get("narrative") or "Suspicious activity detected.",
+        format=format.upper(),
+        amount=alert_info.get("amount"),
+        currency=alert_info.get("currency"),
+        sender_name=alert_info.get("sender_account"),
+        receiver_name=alert_info.get("receiver_account")
+    )
+
+    preview_res = await preview_sar_xml(payload=prev_req, current_user=current_user)
+    return Response(
+        content=preview_res["xml"],
+        media_type="application/xml",
+        headers={"Content-Disposition": f"attachment; filename=sar_{id}_{format.lower()}.xml"}
+    )
+

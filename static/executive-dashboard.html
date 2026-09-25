@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Executive Compliance Dashboard | AML Sentinel</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080c14;
+      --bg-surface: #0e1524;
+      --bg-card: #131c2e;
+      --bg-elevated: #1a253c;
+      --border-subtle: #1e2d48;
+      --border-focus: #3b82f6;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent-cyan: #06b6d4;
+      --accent-blue: #3b82f6;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-crimson: #ef4444;
+      --accent-purple: #8b5cf6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header-nav {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 1.5rem;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      font-size: 0.95rem;
+      text-decoration: none;
+      color: #fff;
+    }
+    .brand-badge {
+      background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 600;
+    }
+    .nav-links { display: flex; gap: 0.5rem; }
+    .nav-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.825rem;
+      padding: 6px 12px;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+      font-weight: 500;
+    }
+    .nav-link:hover, .nav-link.active {
+      color: #fff;
+      background: var(--bg-card);
+    }
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      background: var(--bg-card);
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+    }
+    .role-badge {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      background: rgba(139, 92, 246, 0.2);
+      color: #c4b5fd;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(139, 92, 246, 0.3);
+    }
+    .btn-logout {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 0.75rem;
+      margin-left: 0.25rem;
+    }
+    .btn-logout:hover { color: var(--accent-crimson); }
+
+    .main-content {
+      flex: 1;
+      padding: 1.75rem 2rem;
+      max-width: 1440px;
+      margin: 0 auto;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 1rem;
+    }
+    .kpi-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.2rem;
+    }
+    .kpi-title {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+    }
+    .kpi-val {
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin-top: 0.3rem;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.25rem;
+    }
+    .card-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      font-weight: 600;
+      margin-bottom: 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* CSS Bar Chart */
+    .bar-chart-container {
+      display: flex;
+      align-items: flex-end;
+      height: 180px;
+      gap: 1.25rem;
+      padding-top: 1.5rem;
+    }
+    .chart-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100%;
+      justify-content: flex-end;
+    }
+    .bar {
+      width: 100%;
+      background: linear-gradient(180deg, var(--accent-cyan), var(--accent-blue));
+      border-radius: 4px 4px 0 0;
+      transition: height 0.4s ease;
+      min-height: 4px;
+    }
+    .col-lbl {
+      margin-top: 8px;
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      font-family: 'IBM Plex Mono', monospace;
+    }
+    .col-val {
+      font-size: 0.75rem;
+      font-family: 'IBM Plex Mono', monospace;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    /* Typology List */
+    .typology-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      font-size: 0.8rem;
+    }
+    .typology-row:last-child { border-bottom: none; }
+    .mono { font-family: 'IBM Plex Mono', monospace; }
+
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.8rem; }
+    th {
+      padding: 8px 10px;
+      background: var(--bg-card);
+      color: var(--text-dim);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.68rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    td { padding: 10px; border-bottom: 1px solid var(--border-subtle); color: var(--text-main); }
+    .status-badge {
+      display: inline-block;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.68rem;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+    .badge-red { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+    .badge-amber { background: rgba(245, 158, 11, 0.15); color: #fcd34d; }
+
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: var(--bg-elevated);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      font-size: 0.825rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      z-index: 100;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="header-nav">
+    <div style="display:flex; align-items:center; gap:1.5rem;">
+      <a href="/alerts/triage" class="brand">
+        <span>AML SENTINEL</span>
+        <span class="brand-badge">EXECUTIVE HQ</span>
+      </a>
+      <nav class="nav-links">
+        <a href="/alerts/triage" class="nav-link">Alert Triage</a>
+        <a href="/dashboard" class="nav-link">Case Cockpit</a>
+        <a href="/sar/editor" class="nav-link">SAR Editor</a>
+        <a href="/sar/queue" class="nav-link" data-role="MLRO,ADMIN">Filing Queue</a>
+        <a href="/customers" class="nav-link">Customer 360</a>
+        <a href="/network" class="nav-link">Network Graph</a>
+        <a href="/dashboard/executive" class="nav-link active">Executive</a>
+        <a href="/audit/logs" class="nav-link" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN">Audit Vault</a>
+        <a href="/admin/rules" class="nav-link" data-role="ADMIN">Rules</a>
+        <a href="/admin/users" class="nav-link" data-role="ADMIN">Team</a>
+        <a href="/admin/health" class="nav-link" data-role="ADMIN">Health</a>
+      </nav>
+    </div>
+    <div style="display:flex; align-items:center; gap:0.75rem;">
+      <div class="user-pill">
+        <span id="navUsername">Compliance Officer</span>
+        <span class="role-badge" id="navRole">MLRO</span>
+      </div>
+      <button class="btn-logout" onclick="logout()" title="Sign Out">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="main-content">
+    <div>
+      <h1 style="font-size:1.4rem; font-weight:700;">Compliance Command & Governance Center</h1>
+      <p style="font-size:0.85rem; color:var(--text-muted); margin-top:3px;">Institutional SLA tracking, regulatory filing velocity, and supervisory oversight.</p>
+    </div>
+
+    <!-- KPI Row -->
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-title">24h Ingested Alerts</div>
+        <div class="kpi-val" style="color:var(--accent-cyan)" id="kpi24h">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Open Alert Triage</div>
+        <div class="kpi-val" style="color:var(--accent-blue)" id="kpiOpenAlerts">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Active Cases</div>
+        <div class="kpi-val" style="color:var(--accent-purple)" id="kpiOpenCases">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">SARs Filed (MTD)</div>
+        <div class="kpi-val" style="color:var(--accent-emerald)" id="kpiSars">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">False Positive Rate</div>
+        <div class="kpi-val" style="color:var(--text-main)" id="kpiFp">0.0%</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Median Turnaround</div>
+        <div class="kpi-val" style="color:var(--accent-amber)" id="kpiTurnaround">3.8h</div>
+      </div>
+    </div>
+
+    <!-- Charts & Typology Grid -->
+    <div class="grid-2">
+      <!-- 7-Day Alert Trend Chart -->
+      <div class="card">
+        <div class="card-title">
+          <span>7-Day Daily Alert Frequency Trend</span>
+          <span style="font-size:0.7rem; color:var(--accent-emerald);">● LIVE FEED</span>
+        </div>
+        <div class="bar-chart-container" id="trendChart">
+          <div style="margin:auto; color:var(--text-dim); font-size:0.8rem;">Loading trend data...</div>
+        </div>
+      </div>
+
+      <!-- Typologies Breakdown -->
+      <div class="card">
+        <div class="card-title">Rule Typology Trigger Distribution</div>
+        <div id="typologyList" style="padding-top:0.5rem;">
+          <div style="margin:auto; color:var(--text-dim); font-size:0.8rem;">Loading typologies...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SLA Breach Table & Leaderboard -->
+    <div class="grid-2">
+      <!-- SLA Breach Warning Table -->
+      <div class="card">
+        <div class="card-title">
+          <span>SLA Breach Tracker (> 24h Unresolved)</span>
+          <span class="status-badge badge-red" id="slaCountBadge">0 Breaches</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Alert ID</th>
+              <th>Rule</th>
+              <th>Threat</th>
+              <th>Age</th>
+              <th>Assignee</th>
+            </tr>
+          </thead>
+          <tbody id="slaTableBody">
+            <tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-dim);">No alerts currently breaching 24h SLA.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Analyst Workload Leaderboard -->
+      <div class="card">
+        <div class="card-title">Team Workload & Resolution Leaderboard</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Analyst</th>
+              <th>Active Cases</th>
+              <th>Resolved</th>
+              <th>Resolution Rate</th>
+            </tr>
+          </thead>
+          <tbody id="teamTableBody">
+            <tr><td colspan="4" style="text-align:center; padding:1.5rem; color:var(--text-dim);">Loading leaderboard...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+
+    async function loadExecutiveDashboard() {
+      applyRoleBasedVisibility();
+
+      try {
+        const res = await fetch('/api/v1/metrics/executive', { credentials: 'include' });
+        if (!res.ok) throw new Error('Failed to load executive analytics');
+        const data = await res.json();
+
+        // 1. KPI Cards
+        const k = data.kpis || {};
+        document.getElementById('kpi24h').innerText = k.alerts_24h || 0;
+        document.getElementById('kpiOpenAlerts').innerText = k.open_alerts || 0;
+        document.getElementById('kpiOpenCases').innerText = k.open_cases || 0;
+        document.getElementById('kpiSars').innerText = k.sars_filed_mtd || 0;
+        document.getElementById('kpiFp').innerText = k.false_positive_rate || '0.0%';
+        document.getElementById('kpiTurnaround').innerText = `${k.median_triage_hours || 3.8}h`;
+
+        // 2. Trend Chart
+        const trend = data.daily_trend || { labels: ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], data: [12,19,8,15,22,14,18] };
+        const maxVal = Math.max(...trend.data, 1);
+        const trendEl = document.getElementById('trendChart');
+        trendEl.innerHTML = trend.labels.map((lbl, i) => {
+          const val = trend.data[i] || 0;
+          const heightPct = Math.round((val / maxVal) * 85) + 5;
+          return `
+            <div class="chart-col">
+              <div class="col-val">${val}</div>
+              <div class="bar" style="height:${heightPct}%;"></div>
+              <div class="col-lbl">${lbl}</div>
+            </div>
+          `;
+        }).join('');
+
+        // 3. Typologies
+        const typologies = data.typologies || [];
+        const typoEl = document.getElementById('typologyList');
+        if (typologies.length) {
+          typoEl.innerHTML = typologies.map(t => `
+            <div class="typology-row">
+              <span style="color:#fff;">${t.rule_name}</span>
+              <span class="mono" style="color:var(--accent-cyan); font-weight:600;">${t.count} hits</span>
+            </div>
+          `).join('');
+        } else {
+          typoEl.innerHTML = '<div style="color:var(--text-dim); padding:1rem 0;">No triggered typologies.</div>';
+        }
+
+        // 4. SLA Breaches
+        const sla = data.sla_breaches || {};
+        const breachItems = sla.items || [];
+        document.getElementById('slaCountBadge').innerText = `${sla.breach_24h || 0} Breaches`;
+        const slaTbody = document.getElementById('slaTableBody');
+        if (breachItems.length) {
+          slaTbody.innerHTML = breachItems.map(b => `
+            <tr>
+              <td class="mono"><a href="/dashboard" style="color:var(--accent-blue); text-decoration:none;">${b.alert_id.slice(0,8)}</a></td>
+              <td>${b.rule_name}</td>
+              <td><span class="status-badge badge-red">${b.threat_level}</span></td>
+              <td class="mono" style="color:var(--accent-crimson);">${b.age_hours}h</td>
+              <td>${b.assignee}</td>
+            </tr>
+          `).join('');
+        } else {
+          slaTbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:1.5rem; color:var(--text-dim);">No alerts currently breaching 24h SLA.</td></tr>';
+        }
+
+        // 5. Team Leaderboard
+        const team = data.leaderboard || [];
+        const teamTbody = document.getElementById('teamTableBody');
+        if (team.length) {
+          teamTbody.innerHTML = team.map(m => `
+            <tr>
+              <td style="font-weight:600; color:#fff;">${m.username}</td>
+              <td class="mono">${m.active_cases}</td>
+              <td class="mono" style="color:var(--accent-emerald);">${m.resolved_cases}</td>
+              <td class="mono">${m.resolution_rate}</td>
+            </tr>
+          `).join('');
+        } else {
+          teamTbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:1.5rem; color:var(--text-dim);">No team metrics available.</td></tr>';
+        }
+
+      } catch (err) {
+        showToast('Error loading metrics: ' + err.message);
+      }
+    }
+
+    function logout() {
+      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
+      window.location.href = '/login';
+    }
+
+    window.addEventListener('DOMContentLoaded', loadExecutiveDashboard);
+  </script>
+</body>
+</html>

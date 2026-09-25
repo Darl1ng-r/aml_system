@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
 from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist, jwks
-from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, evidence
+from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, evidence, audit, customers
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
@@ -325,6 +325,8 @@ app.include_router(compliance_reporting.router)
 app.include_router(privacy.router)
 app.include_router(locks.router)
 app.include_router(evidence.router)
+app.include_router(audit.router)
+app.include_router(customers.router)
 
 # Mount static files directory for dashboard styling and frontend client logic
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -427,4 +429,69 @@ def read_users_admin(request: Request):
     if not token:
         return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/users-admin.html")
+
+@app.get("/sar/draft/{id}", response_class=FileResponse)
+@app.get("/sar/drafts/{id}", response_class=FileResponse)
+@app.get("/sar/editor", response_class=FileResponse)
+def read_sar_editor(request: Request, id: str = None):
+    """Server-side cookie authentication guard for SAR Draft Editor."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/sar-editor.html")
+
+@app.get("/sar/queue", response_class=FileResponse)
+@app.get("/sar/filings", response_class=FileResponse)
+def read_sar_queue(request: Request):
+    """Server-side cookie authentication guard for MLRO SAR Filing Queue."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/sar-queue.html")
+
+@app.get("/customers/{id}", response_class=FileResponse)
+@app.get("/customers", response_class=FileResponse)
+def read_customer_360(request: Request, id: str = None):
+    """Server-side cookie authentication guard for Customer 360 Dossier."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/customer-360.html")
+
+@app.get("/network/{account_id}", response_class=FileResponse)
+@app.get("/network", response_class=FileResponse)
+def read_network_graph(request: Request, account_id: str = None):
+    """Server-side cookie authentication guard for Network Graph Visualizer."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/network.html")
+
+@app.get("/dashboard/executive", response_class=FileResponse)
+@app.get("/executive", response_class=FileResponse)
+def read_executive_dashboard(request: Request):
+    """Server-side cookie authentication guard for Executive Compliance Dashboard."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/executive-dashboard.html")
+
+@app.get("/audit/logs", response_class=FileResponse)
+@app.get("/audit", response_class=FileResponse)
+def read_audit_vault(request: Request):
+    """Server-side cookie authentication guard for Audit Log Vault."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/audit-vault.html")
+
+@app.get("/admin/health", response_class=FileResponse)
+@app.get("/health-admin", response_class=FileResponse)
+def read_system_health(request: Request):
+    """Server-side cookie authentication guard for Admin System Health."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/system-health.html")
+
 

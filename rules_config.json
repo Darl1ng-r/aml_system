@@ -28,6 +28,16 @@
       "enabled": true,
       "high_risk_countries": ["RU", "IR", "KP", "SY"],
       "sanctions_similarity_threshold": 0.80
+    },
+    "ROUND_TRIP_DETECTION": {
+      "enabled": true,
+      "window_hours": 72,
+      "amount_tolerance": 0.10
+    },
+    "NEWLY_INCORPORATED_HIGH_VALUE": {
+      "enabled": true,
+      "account_age_days": 90,
+      "high_value_threshold": 50000.0
     }
   }
 }

@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAR Filing Queue | AML Sentinel</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080c14;
+      --bg-surface: #0e1524;
+      --bg-card: #131c2e;
+      --bg-elevated: #1a253c;
+      --border-subtle: #1e2d48;
+      --border-focus: #3b82f6;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent-cyan: #06b6d4;
+      --accent-blue: #3b82f6;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-crimson: #ef4444;
+      --accent-purple: #8b5cf6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header-nav {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 1.5rem;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      font-size: 0.95rem;
+      text-decoration: none;
+      color: #fff;
+    }
+    .brand-badge {
+      background: linear-gradient(135deg, var(--accent-emerald), var(--accent-cyan));
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 600;
+      color: #000;
+    }
+    .nav-links { display: flex; gap: 0.5rem; }
+    .nav-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.825rem;
+      padding: 6px 12px;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+      font-weight: 500;
+    }
+    .nav-link:hover, .nav-link.active {
+      color: #fff;
+      background: var(--bg-card);
+    }
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      background: var(--bg-card);
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+    }
+    .role-badge {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      background: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .btn-logout {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 0.75rem;
+      margin-left: 0.25rem;
+    }
+    .btn-logout:hover { color: var(--accent-crimson); }
+
+    .main-content {
+      flex: 1;
+      padding: 1.75rem 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .kpi-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.25rem;
+    }
+    .kpi-title {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
+    }
+    .kpi-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      margin-top: 0.35rem;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+
+    .table-container {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .table-header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--bg-card);
+    }
+    .tab-pills { display: flex; gap: 0.5rem; }
+    .tab-pill {
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tab-pill.active {
+      background: var(--accent-blue);
+      color: #fff;
+      border-color: var(--accent-blue);
+    }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.825rem; }
+    th {
+      padding: 10px 14px;
+      background: var(--bg-card);
+      color: var(--text-dim);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.7rem;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-main);
+    }
+    tr:hover { background: rgba(255,255,255,0.02); }
+    .mono { font-family: 'IBM Plex Mono', monospace; }
+    .status-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 500;
+    }
+    .status-pending { background: rgba(245, 158, 11, 0.15); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .status-approved { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .status-rejected { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .status-draft { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+
+    .btn-action {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .btn-action:hover { background: var(--bg-elevated); border-color: var(--accent-blue); }
+    .btn-approve { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border-color: rgba(16, 185, 129, 0.4); }
+    .btn-approve:hover { background: rgba(16, 185, 129, 0.3); }
+    .btn-reject { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); }
+    .btn-reject:hover { background: rgba(239, 68, 68, 0.3); }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal-box {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      width: 520px;
+      max-width: 95vw;
+      padding: 1.5rem;
+      box-shadow: 0 16px 36px rgba(0,0,0,0.6);
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: var(--bg-elevated);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      font-size: 0.825rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      z-index: 100;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="header-nav">
+    <div style="display:flex; align-items:center; gap:1.5rem;">
+      <a href="/alerts/triage" class="brand">
+        <span>AML SENTINEL</span>
+        <span class="brand-badge">MLRO QUEUE</span>
+      </a>
+      <nav class="nav-links">
+        <a href="/alerts/triage" class="nav-link">Alert Triage</a>
+        <a href="/dashboard" class="nav-link">Case Cockpit</a>
+        <a href="/sar/editor" class="nav-link">SAR Editor</a>
+        <a href="/sar/queue" class="nav-link active">Filing Queue</a>
+        <a href="/customers" class="nav-link">Customer 360</a>
+        <a href="/network" class="nav-link">Network Graph</a>
+        <a href="/dashboard/executive" class="nav-link" data-role="MLRO,ADMIN">Executive</a>
+        <a href="/audit/logs" class="nav-link" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN">Audit Vault</a>
+        <a href="/admin/rules" class="nav-link" data-role="ADMIN">Rules</a>
+        <a href="/admin/users" class="nav-link" data-role="ADMIN">Team</a>
+        <a href="/admin/health" class="nav-link" data-role="ADMIN">Health</a>
+      </nav>
+    </div>
+    <div style="display:flex; align-items:center; gap:0.75rem;">
+      <div class="user-pill">
+        <span id="navUsername">Compliance Officer</span>
+        <span class="role-badge" id="navRole">MLRO</span>
+      </div>
+      <button class="btn-logout" onclick="logout()" title="Sign Out">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="main-content">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.25rem;">
+      <div>
+        <h1 style="font-size:1.4rem; font-weight:700;">Regulatory SAR Filing Queue</h1>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-top:3px;">Four-eyes compliance review and electronic FinCEN/goAML submission registry.</p>
+      </div>
+      <a href="/sar/editor" class="btn-action" style="padding:8px 16px; background:var(--accent-blue); color:#fff; border-color:var(--accent-blue); font-weight:600;">+ New SAR Draft</a>
+    </div>
+
+    <!-- KPI Summary Row -->
+    <div class="kpi-row">
+      <div class="kpi-card">
+        <div class="kpi-title">Awaiting MLRO Review</div>
+        <div class="kpi-value" style="color:var(--accent-amber)" id="kpiPending">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Approved & Filed (MTD)</div>
+        <div class="kpi-value" style="color:var(--accent-emerald)" id="kpiApproved">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Rejected Drafts</div>
+        <div class="kpi-value" style="color:var(--accent-crimson)" id="kpiRejected">0</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Total Registry Filings</div>
+        <div class="kpi-value" id="kpiTotal">0</div>
+      </div>
+    </div>
+
+    <!-- Table Container -->
+    <div class="table-container">
+      <div class="table-header">
+        <div class="tab-pills">
+          <button class="tab-pill active" onclick="filterStatus('')">All Filings</button>
+          <button class="tab-pill" onclick="filterStatus('PENDING_MLRO_REVIEW')">Pending Review</button>
+          <button class="tab-pill" onclick="filterStatus('APPROVED')">Approved</button>
+          <button class="tab-pill" onclick="filterStatus('REJECTED')">Rejected</button>
+        </div>
+        <span style="font-size:0.75rem; color:var(--text-dim);" id="tableCount">Showing 0 drafts</span>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Draft ID</th>
+            <th>Linked Alert / Case</th>
+            <th>Author</th>
+            <th>Status</th>
+            <th>Narrative Excerpt</th>
+            <th>Reviewed By</th>
+            <th>Created At</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="draftsTableBody">
+          <tr><td colspan="8" style="text-align:center; padding:2rem; color:var(--text-dim);">Loading filings queue...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Review Determination Modal -->
+  <div class="modal-overlay" id="reviewModal">
+    <div class="modal-box">
+      <h3 style="font-size:1.1rem; margin-bottom:0.5rem;" id="modalTitle">MLRO SAR Determination</h3>
+      <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:1rem;" id="modalSubtitle">Segregation of duties enforced: Reviewers cannot sign off on drafts they authored.</p>
+      
+      <div style="margin-bottom:1rem;" id="rejectReasonBlock">
+        <label style="display:block; font-size:0.75rem; color:var(--text-dim); text-transform:uppercase; margin-bottom:4px;">Rejection Justification</label>
+        <textarea id="rejectionReason" style="width:100%; min-height:80px; background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:6px; color:#fff; padding:8px; font-size:0.85rem;" placeholder="Explain reason for returning draft to investigator..."></textarea>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
+        <button class="btn-action" onclick="closeModal()">Cancel</button>
+        <button class="btn-action" id="modalSubmitBtn" onclick="confirmDetermination()">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    let allDrafts = [];
+    let activeFilter = '';
+    let pendingModalAction = null;
+    let pendingModalDraftId = null;
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+
+    async function fetchQueue() {
+      applyRoleBasedVisibility();
+      try {
+        const url = activeFilter ? `/api/v1/fincen/sar/drafts?status_filter=${activeFilter}` : '/api/v1/fincen/sar/drafts';
+        const res = await fetch(url, { credentials: 'include' });
+        if (!res.ok) throw new Error('Failed to load queue');
+        allDrafts = await res.json();
+        renderQueue();
+      } catch (err) {
+        showToast('Error loading queue: ' + err.message);
+      }
+    }
+
+    function renderQueue() {
+      let pending = 0, approved = 0, rejected = 0;
+      allDrafts.forEach(d => {
+        if (d.status === 'PENDING_MLRO_REVIEW') pending++;
+        else if (d.status === 'APPROVED' || d.status === 'FILED') approved++;
+        else if (d.status === 'REJECTED') rejected++;
+      });
+
+      document.getElementById('kpiPending').innerText = pending;
+      document.getElementById('kpiApproved').innerText = approved;
+      document.getElementById('kpiRejected').innerText = rejected;
+      document.getElementById('kpiTotal').innerText = allDrafts.length;
+      document.getElementById('tableCount').innerText = `Showing ${allDrafts.length} drafts`;
+
+      const tbody = document.getElementById('draftsTableBody');
+      if (!allDrafts.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:2rem; color:var(--text-dim);">No filings found in queue.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = allDrafts.map(d => {
+        const statusClass = d.status === 'PENDING_MLRO_REVIEW' ? 'status-pending' : (d.status === 'APPROVED' ? 'status-approved' : (d.status === 'REJECTED' ? 'status-rejected' : 'status-draft'));
+        const excerpt = d.narrative ? (d.narrative.length > 55 ? d.narrative.slice(0, 55) + '...' : d.narrative) : '-';
+        const dateStr = d.created_at ? d.created_at.slice(0, 16).replace('T', ' ') : '-';
+        const isPending = d.status === 'PENDING_MLRO_REVIEW';
+
+        return `
+          <tr>
+            <td class="mono"><a href="/sar/draft/${d.draft_id}" style="color:var(--accent-blue); text-decoration:none;">${d.draft_id.slice(0, 8)}</a></td>
+            <td class="mono">${d.alert_id ? d.alert_id.slice(0, 8) : (d.case_id ? d.case_id.slice(0, 8) : '-')}</td>
+            <td>${d.drafted_by_username || 'Analyst'}</td>
+            <td><span class="status-badge ${statusClass}">${d.status}</span></td>
+            <td style="color:var(--text-muted); max-width:240px;">${excerpt}</td>
+            <td>${d.reviewed_by_username || '-'}</td>
+            <td class="mono" style="font-size:0.75rem; color:var(--text-dim);">${dateStr}</td>
+            <td style="text-align:right;">
+              <div style="display:inline-flex; gap:0.4rem;">
+                <a href="/sar/draft/${d.draft_id}" class="btn-action" title="Open Editor">Edit</a>
+                ${isPending ? `
+                  <button class="btn-action btn-approve" onclick="openReviewModal('${d.draft_id}', 'APPROVE')">Approve</button>
+                  <button class="btn-action btn-reject" onclick="openReviewModal('${d.draft_id}', 'REJECT')">Reject</button>
+                ` : ''}
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function filterStatus(status) {
+      activeFilter = status;
+      document.querySelectorAll('.tab-pill').forEach((btn, idx) => {
+        btn.classList.toggle('active', 
+          (status === '' && idx === 0) ||
+          (status === 'PENDING_MLRO_REVIEW' && idx === 1) ||
+          (status === 'APPROVED' && idx === 2) ||
+          (status === 'REJECTED' && idx === 3)
+        );
+      });
+      fetchQueue();
+    }
+
+    function openReviewModal(draftId, action) {
+      pendingModalDraftId = draftId;
+      pendingModalAction = action;
+      document.getElementById('modalTitle').innerText = action === 'APPROVE' ? 'Approve SAR Filing' : 'Reject SAR Draft';
+      document.getElementById('rejectReasonBlock').style.display = action === 'REJECT' ? 'block' : 'none';
+      const submitBtn = document.getElementById('modalSubmitBtn');
+      submitBtn.innerText = action === 'APPROVE' ? 'Confirm Approval' : 'Confirm Rejection';
+      submitBtn.className = action === 'APPROVE' ? 'btn-action btn-approve' : 'btn-action btn-reject';
+      document.getElementById('reviewModal').style.display = 'flex';
+    }
+
+    function closeModal() {
+      document.getElementById('reviewModal').style.display = 'none';
+      pendingModalDraftId = null;
+      pendingModalAction = null;
+    }
+
+    async function confirmDetermination() {
+      const reason = document.getElementById('rejectionReason').value;
+      if (pendingModalAction === 'REJECT' && (!reason || reason.length < 5)) {
+        showToast('Please provide rejection justification (min 5 chars).');
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/v1/fincen/sar/drafts/${pendingModalDraftId}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify({
+            action: pendingModalAction,
+            rejection_reason: pendingModalAction === 'REJECT' ? reason : null
+          })
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || 'Review action failed');
+        }
+
+        showToast(`SAR draft ${pendingModalAction.toLowerCase()}d successfully.`);
+        closeModal();
+        fetchQueue();
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    function logout() {
+      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
+      window.location.href = '/login';
+    }
+
+    window.addEventListener('DOMContentLoaded', fetchQueue);
+  </script>
+</body>
+</html>

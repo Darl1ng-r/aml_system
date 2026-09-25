@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Customer 360 Dossier | AML Sentinel</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080c14;
+      --bg-surface: #0e1524;
+      --bg-card: #131c2e;
+      --bg-elevated: #1a253c;
+      --border-subtle: #1e2d48;
+      --border-focus: #3b82f6;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent-cyan: #06b6d4;
+      --accent-blue: #3b82f6;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-crimson: #ef4444;
+      --accent-purple: #8b5cf6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header-nav {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 1.5rem;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      font-size: 0.95rem;
+      text-decoration: none;
+      color: #fff;
+    }
+    .brand-badge {
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 600;
+      color: #000;
+    }
+    .nav-links { display: flex; gap: 0.5rem; }
+    .nav-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.825rem;
+      padding: 6px 12px;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+      font-weight: 500;
+    }
+    .nav-link:hover, .nav-link.active {
+      color: #fff;
+      background: var(--bg-card);
+    }
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      background: var(--bg-card);
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+    }
+    .role-badge {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      background: rgba(59, 130, 246, 0.2);
+      color: #93c5fd;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+    .btn-logout {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 0.75rem;
+      margin-left: 0.25rem;
+    }
+    .btn-logout:hover { color: var(--accent-crimson); }
+
+    .dossier-layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      flex: 1;
+      height: calc(100vh - 56px);
+      overflow: hidden;
+    }
+    .customer-sidebar {
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+    .search-box {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .search-input {
+      width: 100%;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: #fff;
+      font-size: 0.825rem;
+      outline: none;
+    }
+    .customer-list {
+      flex: 1;
+      overflow-y: auto;
+    }
+    .customer-item {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .customer-item:hover, .customer-item.active {
+      background: var(--bg-card);
+      border-left: 3px solid var(--accent-cyan);
+    }
+    .customer-name { font-weight: 600; font-size: 0.85rem; color: #fff; }
+    .customer-sub { font-size: 0.725rem; color: var(--text-dim); margin-top: 2px; font-family: 'IBM Plex Mono', monospace; }
+
+    .dossier-pane {
+      padding: 1.5rem 2rem;
+      overflow-y: auto;
+      background: var(--bg-dark);
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .hero-strip {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .hero-meta { display: flex; align-items: center; gap: 1.25rem; }
+    .hero-avatar {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 1.1rem;
+      color: #fff;
+    }
+    .hero-actions { display: flex; gap: 0.5rem; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.25rem;
+    }
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.25rem;
+    }
+    .card-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .gauge-container {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+    .gauge-circle {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background: conic-gradient(var(--accent-crimson) 0% 75%, rgba(255,255,255,0.08) 75% 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .gauge-inner {
+      width: 76px;
+      height: 76px;
+      border-radius: 50%;
+      background: var(--bg-surface);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    .gauge-val { font-size: 1.3rem; font-weight: 700; font-family: 'IBM Plex Mono', monospace; }
+    .gauge-lbl { font-size: 0.6rem; color: var(--text-dim); text-transform: uppercase; }
+
+    .factor-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+    .factor-table td { padding: 5px 0; }
+    .factor-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255,255,255,0.1);
+      overflow: hidden;
+      margin-top: 3px;
+    }
+    .factor-fill { height: 100%; background: var(--accent-cyan); border-radius: 3px; }
+
+    .badge-strip { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .status-pill {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.7rem;
+      padding: 3px 8px;
+      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .pill-green { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .pill-amber { background: rgba(245, 158, 11, 0.15); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .pill-red { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
+
+    .ubo-tree-node {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 8px 12px;
+      margin-bottom: 0.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.8rem;
+    }
+
+    .btn {
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-main);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: all 0.15s;
+    }
+    .btn:hover { background: var(--bg-elevated); border-color: var(--text-dim); }
+    .btn-danger { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border-color: rgba(239, 68, 68, 0.3); }
+    .btn-danger:hover { background: rgba(239, 68, 68, 0.25); }
+
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: var(--bg-elevated);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      font-size: 0.825rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      z-index: 100;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="header-nav">
+    <div style="display:flex; align-items:center; gap:1.5rem;">
+      <a href="/alerts/triage" class="brand">
+        <span>AML SENTINEL</span>
+        <span class="brand-badge">CUSTOMER 360</span>
+      </a>
+      <nav class="nav-links">
+        <a href="/alerts/triage" class="nav-link">Alert Triage</a>
+        <a href="/dashboard" class="nav-link">Case Cockpit</a>
+        <a href="/sar/editor" class="nav-link">SAR Editor</a>
+        <a href="/sar/queue" class="nav-link" data-role="MLRO,ADMIN">Filing Queue</a>
+        <a href="/customers" class="nav-link active">Customer 360</a>
+        <a href="/network" class="nav-link">Network Graph</a>
+        <a href="/dashboard/executive" class="nav-link" data-role="MLRO,ADMIN">Executive</a>
+        <a href="/audit/logs" class="nav-link" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN">Audit Vault</a>
+        <a href="/admin/rules" class="nav-link" data-role="ADMIN">Rules</a>
+        <a href="/admin/users" class="nav-link" data-role="ADMIN">Team</a>
+        <a href="/admin/health" class="nav-link" data-role="ADMIN">Health</a>
+      </nav>
+    </div>
+    <div style="display:flex; align-items:center; gap:0.75rem;">
+      <div class="user-pill">
+        <span id="navUsername">Analyst</span>
+        <span class="role-badge" id="navRole">L2_INVESTIGATOR</span>
+      </div>
+      <button class="btn-logout" onclick="logout()" title="Sign Out">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="dossier-layout">
+    <!-- Customer List Sidebar -->
+    <div class="customer-sidebar">
+      <div class="search-box">
+        <input type="text" id="customerSearch" class="search-input" placeholder="Search name, account, BIC..." oninput="handleSearch()">
+      </div>
+      <div class="customer-list" id="customerList">
+        <div style="padding:1.5rem; text-align:center; color:var(--text-dim); font-size:0.8rem;">Loading accounts...</div>
+      </div>
+    </div>
+
+    <!-- Main Customer Dossier Workspace -->
+    <div class="dossier-pane" id="dossierPane">
+      
+      <!-- Hero Header Strip -->
+      <div class="hero-strip">
+        <div class="hero-meta">
+          <div class="hero-avatar" id="dossierAvatar">JS</div>
+          <div>
+            <div style="display:flex; align-items:center; gap:0.6rem;">
+              <h2 style="font-size:1.25rem; font-weight:700;" id="dossierName">Acme International Holdings Ltd</h2>
+              <span class="status-pill pill-amber" id="dossierRiskTier">HIGH RISK</span>
+              <span class="status-pill pill-green" id="dossierStatus">ACTIVE</span>
+            </div>
+            <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px; font-family:'IBM Plex Mono',monospace;">
+              ACC: <span id="dossierAccNum" style="color:#fff;">DE8937040044</span> &bull;
+              BIC: <span id="dossierBic" style="color:#fff;">DEUTDEDDFXX</span> &bull;
+              ONBOARDED: <span id="dossierCreated">2026-01-14</span>
+            </div>
+          </div>
+        </div>
+        <div class="hero-actions">
+          <button class="btn" onclick="rescreenCustomer()">Re-Screen Now</button>
+          <button class="btn" onclick="requestEdd()">Request EDD</button>
+          <button class="btn btn-danger" id="freezeBtn" onclick="toggleFreeze()">Freeze Account</button>
+          <a class="btn" id="networkGraphLink" href="/network">View Network ➔</a>
+        </div>
+      </div>
+
+      <!-- Risk Factors & Screening Strip -->
+      <div class="grid-2">
+        <!-- Card 1: Risk Gauge Breakdown -->
+        <div class="card">
+          <div class="card-title">
+            <span>Dynamic Risk Score Engine</span>
+            <span style="font-family:'IBM Plex Mono',monospace; color:var(--text-dim);" id="riskModelVer">MODEL: BLENDED-v2</span>
+          </div>
+          <div class="gauge-container">
+            <div class="gauge-circle" id="riskGaugeCircle">
+              <div class="gauge-inner">
+                <div class="gauge-val" id="riskScoreVal">82%</div>
+                <div class="gauge-lbl">Risk Score</div>
+              </div>
+            </div>
+            <div style="flex:1;">
+              <table class="factor-table">
+                <tr>
+                  <td>Geographic Risk (BIC)</td>
+                  <td style="text-align:right;" id="fGeo">65%</td>
+                </tr>
+                <tr><td colspan="2"><div class="factor-bar"><div class="factor-fill" id="fGeoBar" style="width:65%"></div></div></td></tr>
+                <tr>
+                  <td>Velocity & Turnover</td>
+                  <td style="text-align:right;" id="fVel">78%</td>
+                </tr>
+                <tr><td colspan="2"><div class="factor-bar"><div class="factor-fill" id="fVelBar" style="width:78%; background:var(--accent-amber)"></div></div></td></tr>
+                <tr>
+                  <td>Sanctions & PEP Proximity</td>
+                  <td style="text-align:right;" id="fPep">85%</td>
+                </tr>
+                <tr><td colspan="2"><div class="factor-bar"><div class="factor-fill" id="fPepBar" style="width:85%; background:var(--accent-crimson)"></div></div></td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: Screening & Watchlist Badges -->
+        <div class="card">
+          <div class="card-title">Watchlist & Adverse Media Screening</div>
+          <div class="badge-strip" style="margin-bottom:1rem;">
+            <span class="status-pill pill-green" id="ofacBadge">✓ OFAC SDN: CLEARED</span>
+            <span class="status-pill pill-green" id="unBadge">✓ UN CONSOLIDATED: CLEARED</span>
+            <span class="status-pill pill-amber" id="pepBadge">⚠ PEP: TIER-2 ASSOCIATE</span>
+            <span class="status-pill pill-green" id="mediaBadge">✓ ADVERSE MEDIA: 0 HITS</span>
+          </div>
+          <div style="font-size:0.75rem; color:var(--text-muted); line-height:1.5;">
+            Automated nightly batch re-screening matches against U.S. Treasury OFAC, UN 1267, EU Consolidated sanctions, and Dow Jones PEP databases.
+          </div>
+          <div style="margin-top:0.75rem; font-size:0.7rem; font-family:'IBM Plex Mono',monospace; color:var(--text-dim);">
+            Last Screened: <span id="lastScreenTime">Today, 04:00 UTC</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Corporate UBO & Transaction Timeline -->
+      <div class="grid-2">
+        <!-- Card 3: Neo4j UBO Corporate Hierarchy -->
+        <div class="card">
+          <div class="card-title">Beneficial Ownership (UBO Graph)</div>
+          <div id="uboContainer">
+            <div class="ubo-tree-node">
+              <div>
+                <strong style="color:#fff;">Elena Rostova</strong>
+                <div style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;">TAX-ID: CY99182301 &bull; Direct Shareholder</div>
+              </div>
+              <span class="status-pill pill-amber">55.0% UBO</span>
+            </div>
+            <div class="ubo-tree-node">
+              <div>
+                <strong style="color:#fff;">Valentin Korolev</strong>
+                <div style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;">TAX-ID: CY44192004 &bull; Managing Director</div>
+              </div>
+              <span class="status-pill pill-green">25.0% UBO</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 4: Historical Alerts & EDD -->
+        <div class="card">
+          <div class="card-title">Linked Alerts & EDD Inquiries</div>
+          <div id="alertHistoryList" style="max-height:220px; overflow-y:auto;">
+            <div style="font-size:0.8rem; color:var(--text-dim);">Loading alert history...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transaction History Table -->
+      <div class="card">
+        <div class="card-title">Recent Transaction Activity</div>
+        <table style="width:100%; border-collapse:collapse; font-size:0.8rem;">
+          <thead>
+            <tr style="text-align:left; border-bottom:1px solid var(--border-subtle); color:var(--text-dim); font-size:0.7rem;">
+              <th style="padding:6px 0;">DIRECTION</th>
+              <th>COUNTERPARTY</th>
+              <th>AMOUNT</th>
+              <th>TIMESTAMP</th>
+            </tr>
+          </thead>
+          <tbody id="txHistoryBody">
+            <tr><td colspan="4" style="padding:1rem 0; color:var(--text-dim);">Loading transactions...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    let activeCustomerId = null;
+    let customerListCache = [];
+    let activeCustomerData = null;
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+
+    async function initCustomerDossier() {
+      applyRoleBasedVisibility();
+
+      // Parse ID from URL path or query parameter
+      const urlParams = new URLSearchParams(window.location.search);
+      const queryId = urlParams.get('id') || urlParams.get('account_id');
+      const pathSegments = window.location.pathname.split('/');
+      if (pathSegments.length >= 3 && pathSegments[1] === 'customers' && pathSegments[2]) {
+        activeCustomerId = pathSegments[2];
+      } else if (queryId) {
+        activeCustomerId = queryId;
+      }
+
+      await loadCustomerList();
+      if (activeCustomerId) {
+        await loadDossier(activeCustomerId);
+      } else if (customerListCache.length > 0) {
+        await loadDossier(customerListCache[0].id);
+      }
+    }
+
+    async function loadCustomerList(search = '') {
+      try {
+        const url = search ? `/api/v1/customers?search=${encodeURIComponent(search)}` : '/api/v1/customers';
+        const res = await fetch(url, { credentials: 'include' });
+        if (!res.ok) throw new Error('Failed to load customers');
+        const data = await res.json();
+        customerListCache = data.items || [];
+        renderCustomerList();
+      } catch (err) {
+        showToast('Error loading customer list: ' + err.message);
+      }
+    }
+
+    function renderCustomerList() {
+      const listEl = document.getElementById('customerList');
+      if (!customerListCache.length) {
+        listEl.innerHTML = '<div style="padding:1.5rem; text-align:center; color:var(--text-dim); font-size:0.8rem;">No customer accounts found.</div>';
+        return;
+      }
+
+      listEl.innerHTML = customerListCache.map(c => {
+        const initials = c.owner_name ? c.owner_name.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase() : 'CU';
+        const isActive = c.id === activeCustomerId;
+        return `
+          <div class="customer-item ${isActive ? 'active' : ''}" onclick="selectCustomer('${c.id}')">
+            <div class="customer-name">${c.owner_name || 'Anonymous Account'}</div>
+            <div class="customer-sub">${c.account_number} &bull; ${Math.round(c.risk_score * 100)}% Risk</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function handleSearch() {
+      const q = document.getElementById('customerSearch').value;
+      loadCustomerList(q);
+    }
+
+    function selectCustomer(id) {
+      activeCustomerId = id;
+      renderCustomerList();
+      loadDossier(id);
+    }
+
+    async function loadDossier(id) {
+      try {
+        const res = await fetch(`/api/v1/customers/${id}/dossier`, { credentials: 'include' });
+        if (!res.ok) throw new Error('Failed to load dossier');
+        const d = await res.json();
+        activeCustomerData = d;
+
+        document.getElementById('dossierName').innerText = d.owner_name;
+        document.getElementById('dossierAvatar').innerText = d.owner_name.slice(0,2).toUpperCase();
+        document.getElementById('dossierAccNum').innerText = d.account_number;
+        document.getElementById('dossierBic').innerText = d.swift_bic || 'N/A';
+        document.getElementById('dossierCreated').innerText = d.created_at ? d.created_at.slice(0,10) : '2026-01-01';
+        document.getElementById('dossierStatus').innerText = d.status;
+        document.getElementById('dossierRiskTier').innerText = d.risk_tier;
+
+        const isFrozen = d.status === 'FROZEN';
+        const freezeBtn = document.getElementById('freezeBtn');
+        freezeBtn.innerText = isFrozen ? 'Unfreeze Account' : 'Freeze Account';
+        freezeBtn.className = isFrozen ? 'btn' : 'btn btn-danger';
+
+        // Risk Gauge
+        const scorePct = Math.round(d.risk_score * 100);
+        document.getElementById('riskScoreVal').innerText = `${scorePct}%`;
+        const gaugeColor = scorePct >= 80 ? 'var(--accent-crimson)' : (scorePct >= 50 ? 'var(--accent-amber)' : 'var(--accent-emerald)');
+        document.getElementById('riskGaugeCircle').style.background = `conic-gradient(${gaugeColor} 0% ${scorePct}%, rgba(255,255,255,0.08) ${scorePct}% 100%)`;
+
+        const rb = d.risk_breakdown || {};
+        document.getElementById('fGeo').innerText = `${Math.round((rb.jurisdiction_risk || 0.2) * 100)}%`;
+        document.getElementById('fGeoBar').style.width = `${Math.round((rb.jurisdiction_risk || 0.2) * 100)}%`;
+        document.getElementById('fVel').innerText = `${Math.round((rb.velocity_risk || 0.4) * 100)}%`;
+        document.getElementById('fVelBar').style.width = `${Math.round((rb.velocity_risk || 0.4) * 100)}%`;
+        document.getElementById('fPep').innerText = `${Math.round((rb.pep_risk || 0.1) * 100)}%`;
+        document.getElementById('fPepBar').style.width = `${Math.round((rb.pep_risk || 0.1) * 100)}%`;
+
+        // UBO list
+        const uboContainer = document.getElementById('uboContainer');
+        if (d.ubos && d.ubos.length > 0) {
+          uboContainer.innerHTML = d.ubos.map(u => `
+            <div class="ubo-tree-node">
+              <div>
+                <strong style="color:#fff;">${u.name}</strong>
+                <div style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;">TAX-ID: ${u.tax_id} &bull; Beneficial Owner</div>
+              </div>
+              <span class="status-pill pill-amber">${u.percentage}% UBO</span>
+            </div>
+          `).join('');
+        } else {
+          uboContainer.innerHTML = '<div style="font-size:0.8rem; color:var(--text-dim); padding:0.5rem 0;">No corporate UBO tree recorded for this individual account.</div>';
+        }
+
+        // Linked Alerts
+        const alertHistoryList = document.getElementById('alertHistoryList');
+        if (d.alerts && d.alerts.length > 0) {
+          alertHistoryList.innerHTML = d.alerts.map(a => `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); font-size:0.75rem;">
+              <div>
+                <span class="status-pill ${a.threat_level === 'CRITICAL' ? 'pill-red' : 'pill-amber'}">${a.threat_level}</span>
+                <span style="color:#fff; margin-left:6px;">${a.rule_name}</span>
+              </div>
+              <span style="font-family:'IBM Plex Mono',monospace; color:var(--text-dim);">${a.created_at.slice(0,10)}</span>
+            </div>
+          `).join('');
+        } else {
+          alertHistoryList.innerHTML = '<div style="font-size:0.8rem; color:var(--text-dim); padding:0.5rem 0;">No active alerts on this account.</div>';
+        }
+
+        // Transactions
+        const txHistoryBody = document.getElementById('txHistoryBody');
+        if (d.recent_transactions && d.recent_transactions.length > 0) {
+          txHistoryBody.innerHTML = d.recent_transactions.map(t => `
+            <tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
+              <td style="padding:6px 0;"><span class="status-pill ${t.type === 'INBOUND' ? 'pill-green' : 'pill-amber'}">${t.type}</span></td>
+              <td class="mono" style="font-size:0.75rem;">${t.counterparty}</td>
+              <td class="mono" style="font-weight:600; color:#fff;">$${t.amount.toLocaleString()} ${t.currency}</td>
+              <td class="mono" style="font-size:0.7rem; color:var(--text-dim);">${t.timestamp.slice(0,16).replace('T', ' ')}</td>
+            </tr>
+          `).join('');
+        } else {
+          txHistoryBody.innerHTML = '<tr><td colspan="4" style="padding:1rem 0; color:var(--text-dim);">No recent transaction history recorded.</td></tr>';
+        }
+
+        document.getElementById('networkGraphLink').href = `/network/${d.account_number}`;
+      } catch (err) {
+        showToast('Error loading dossier: ' + err.message);
+      }
+    }
+
+    async function rescreenCustomer() {
+      if (!activeCustomerId) return;
+      try {
+        const res = await fetch('/api/v1/watchlist/rescreen', {
+          method: 'POST',
+          headers: { 'X-CSRF-Protection': '1' },
+          credentials: 'include'
+        });
+        if (!res.ok) throw new Error('Re-screening trigger failed');
+        const data = await res.json();
+        showToast(`Re-screening completed. ${data.accounts_checked} evaluated, ${data.hits_detected} hits.`);
+        loadDossier(activeCustomerId);
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    async function requestEdd() {
+      if (!activeCustomerId) return;
+      try {
+        const res = await fetch('/api/v1/edd/requests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify({
+            account_id: activeCustomerId,
+            trigger_reason: 'PEP_HIT',
+            source_of_wealth: 'Corporate Dividends and Real Estate',
+            source_of_funds: 'Commercial Wire Transfers'
+          })
+        });
+        if (!res.ok) throw new Error('EDD request failed');
+        showToast('Enhanced Due Diligence (EDD) workflow initiated.');
+        loadDossier(activeCustomerId);
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    async function toggleFreeze() {
+      if (!activeCustomerData) return;
+      const isFrozen = activeCustomerData.status === 'FROZEN';
+      const endpoint = isFrozen ? `/api/v1/accounts/${activeCustomerId}/unfreeze` : `/api/v1/accounts/${activeCustomerId}/freeze`;
+      const body = isFrozen ? {} : { reason: 'Regulatory freeze order pending court investigation.', freezing_order_ref: 'ORD-2026-992' };
+
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) throw new Error('Freeze/Unfreeze action failed');
+        showToast(isFrozen ? 'Account successfully unfrozen.' : 'Account frozen under regulatory mandate.');
+        loadDossier(activeCustomerId);
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    function logout() {
+      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
+      window.location.href = '/login';
+    }
+
+    window.addEventListener('DOMContentLoaded', initCustomerDossier);
+  </script>
+</body>
+</html>

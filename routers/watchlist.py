@@ -49,6 +49,26 @@ async def sync_watchlists(
         raise HTTPException(status_code=500, detail=f"Watchlist sync failed: {str(e)}")
 
 
+@router.post("/rescreen")
+async def trigger_cdd_rescreen(
+    current_user: dict = Depends(RoleChecker(["ADMIN", "MLRO"])),
+    _rate_limit=Depends(RateLimiter(limit=10, window=60))
+):
+    """
+    Triggers an immediate CDD re-screening cycle across all active tenant accounts
+    against the indexed OFAC, UN, EU, and PEP databases.
+    """
+    from services.watchlist_sync import trigger_ongoing_cdd_rescreening
+    from services.auth import enforce_tenant_data_scope
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        res = await trigger_ongoing_cdd_rescreening(tenant_id=str(tenant_id))
+        return res
+    except Exception as e:
+        logger.error(f"CDD re-screening invocation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"CDD re-screening failed: {str(e)}")
+
+
 @router.get("/status")
 async def get_watchlist_status(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),

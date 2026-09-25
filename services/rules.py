@@ -1,6 +1,7 @@
 import time
 import json
 import os
+import uuid
 import logging
 from datetime import datetime, timezone
 from database.redis_db import get_async_redis_client
@@ -300,6 +301,61 @@ class RulesEngine:
                         triggered_rules.append("SANCTIONS_HIT")
             except Exception as e:
                 logger.error(f"Sanctions check within rules engine error: {e}")
+
+        # 7. ROUND_TRIP_DETECTION (Task 2.7)
+        round_trip_config = config.get("rules", {}).get("ROUND_TRIP_DETECTION", {})
+        if round_trip_config.get("enabled", True):
+            window_hours = round_trip_config.get("window_hours", 72)
+            amount_tolerance = round_trip_config.get("amount_tolerance", 0.10)
+            if sender_id and receiver_id:
+                try:
+                    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                        min_amt = amount * (1.0 - amount_tolerance)
+                        max_amt = amount * (1.0 + amount_tolerance)
+                        reverse_tx = await conn.fetchval(
+                            """
+                            SELECT 1 FROM transactions
+                            WHERE sender_account_id = $1 
+                              AND receiver_account_id = $2
+                              AND amount BETWEEN $3 AND $4
+                              AND timestamp >= ($5::timestamptz - ($6 || ' hours')::interval)
+                            LIMIT 1;
+                            """,
+                            receiver_id, sender_id, min_amt, max_amt, timestamp, str(window_hours)
+                        )
+                        if reverse_tx:
+                            triggered_rules.append("ROUND_TRIP_DETECTION")
+                except Exception as e:
+                    logger.debug(f"Round-trip check error: {e}")
+
+        # 8. NEWLY_INCORPORATED_HIGH_VALUE (Task 2.8: Shell company pattern)
+        newly_inc_config = config.get("rules", {}).get("NEWLY_INCORPORATED_HIGH_VALUE", {})
+        if newly_inc_config.get("enabled", True):
+            account_age_days = newly_inc_config.get("account_age_days", 90)
+            high_value_threshold = newly_inc_config.get("high_value_threshold", 50000.0)
+            if amount >= high_value_threshold and sender_id:
+                try:
+                    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                        sender_uuid = None
+                        try:
+                            sender_uuid = uuid.UUID(str(sender_id))
+                        except ValueError:
+                            sender_uuid = None
+
+                        if sender_uuid:
+                            acc_created_at = await conn.fetchval(
+                                "SELECT created_at FROM accounts WHERE id = $1;",
+                                sender_uuid
+                            )
+                            if acc_created_at:
+                                if acc_created_at.tzinfo is None:
+                                    acc_created_at = acc_created_at.replace(tzinfo=timezone.utc)
+                                curr_ts = timestamp if (hasattr(timestamp, "tzinfo") and timestamp.tzinfo) else timestamp.replace(tzinfo=timezone.utc)
+                                age_days = (curr_ts - acc_created_at).days
+                                if age_days <= account_age_days:
+                                    triggered_rules.append("NEWLY_INCORPORATED_HIGH_VALUE")
+                except Exception as e:
+                    logger.debug(f"Newly incorporated check error: {e}")
 
         return triggered_rules
 

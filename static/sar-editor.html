@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SAR Draft Editor | AML Sentinel</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080c14;
+      --bg-surface: #0e1524;
+      --bg-card: #131c2e;
+      --bg-elevated: #1a253c;
+      --border-subtle: #1e2d48;
+      --border-focus: #3b82f6;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent-cyan: #06b6d4;
+      --accent-blue: #3b82f6;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-crimson: #ef4444;
+      --accent-purple: #8b5cf6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header-nav {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 1.5rem;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      font-size: 0.95rem;
+      text-decoration: none;
+      color: #fff;
+    }
+    .brand-badge {
+      background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 600;
+    }
+    .nav-links { display: flex; gap: 0.5rem; }
+    .nav-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.825rem;
+      padding: 6px 12px;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+      font-weight: 500;
+    }
+    .nav-link:hover, .nav-link.active {
+      color: #fff;
+      background: var(--bg-card);
+    }
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      background: var(--bg-card);
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+    }
+    .role-badge {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      background: rgba(139, 92, 246, 0.2);
+      color: #c4b5fd;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(139, 92, 246, 0.3);
+    }
+    .btn-logout {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 0.75rem;
+      margin-left: 0.25rem;
+    }
+    .btn-logout:hover { color: var(--accent-crimson); }
+
+    .editor-container {
+      display: grid;
+      grid-template-columns: 340px 1fr 420px;
+      flex: 1;
+      height: calc(100vh - 56px);
+      overflow: hidden;
+    }
+
+    /* Left Context Column */
+    .context-pane {
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
+      padding: 1.25rem;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .pane-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+    .info-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+      font-size: 0.8rem;
+    }
+    .info-row:last-child { margin-bottom: 0; }
+    .info-label { color: var(--text-muted); }
+    .info-val { font-family: 'IBM Plex Mono', monospace; font-weight: 500; color: #fff; }
+    .typology-tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-family: 'IBM Plex Mono', monospace;
+      background: rgba(59, 130, 246, 0.15);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      margin-top: 0.25rem;
+    }
+
+    /* Center Narrative Column */
+    .narrative-pane {
+      padding: 1.5rem;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      background: var(--bg-dark);
+    }
+    .toolbar-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .autosave-indicator {
+      font-size: 0.75rem;
+      color: var(--accent-emerald);
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-family: 'IBM Plex Mono', monospace;
+    }
+    .char-counter {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      font-family: 'IBM Plex Mono', monospace;
+    }
+    .narrative-textarea {
+      width: 100%;
+      flex: 1;
+      min-height: 400px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.25rem;
+      color: var(--text-main);
+      font-family: 'IBM Plex Sans', sans-serif;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      resize: vertical;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .narrative-textarea:focus {
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+    }
+    .btn-row {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: flex-end;
+      padding-top: 0.5rem;
+    }
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      border: 1px solid transparent;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .btn-secondary {
+      background: var(--bg-card);
+      border-color: var(--border-subtle);
+      color: var(--text-main);
+    }
+    .btn-secondary:hover { background: var(--bg-elevated); border-color: var(--text-dim); }
+    .btn-primary {
+      background: var(--accent-blue);
+      color: #fff;
+    }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-submit {
+      background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+      color: #fff;
+    }
+    .btn-submit:hover { opacity: 0.9; }
+
+    /* Right Preview Column */
+    .preview-pane {
+      background: var(--bg-surface);
+      border-left: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+    .preview-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+    }
+    .preview-tab {
+      flex: 1;
+      padding: 10px;
+      text-align: center;
+      font-size: 0.75rem;
+      font-family: 'IBM Plex Mono', monospace;
+      color: var(--text-muted);
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      transition: all 0.15s;
+    }
+    .preview-tab.active {
+      color: #fff;
+      background: var(--bg-surface);
+      border-bottom: 2px solid var(--accent-cyan);
+      font-weight: 600;
+    }
+    .xml-content {
+      flex: 1;
+      padding: 1rem;
+      overflow: auto;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.75rem;
+      color: #7dd3fc;
+      background: #060910;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: var(--bg-elevated);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      font-size: 0.825rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      z-index: 100;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="header-nav">
+    <div style="display:flex; align-items:center; gap:1.5rem;">
+      <a href="/alerts/triage" class="brand">
+        <span>AML SENTINEL</span>
+        <span class="brand-badge">SAR EDITOR</span>
+      </a>
+      <nav class="nav-links">
+        <a href="/alerts/triage" class="nav-link">Alert Triage</a>
+        <a href="/dashboard" class="nav-link">Case Cockpit</a>
+        <a href="/sar/editor" class="nav-link active">SAR Editor</a>
+        <a href="/sar/queue" class="nav-link" data-role="MLRO,ADMIN">Filing Queue</a>
+        <a href="/customers" class="nav-link">Customer 360</a>
+        <a href="/network" class="nav-link">Network Graph</a>
+        <a href="/dashboard/executive" class="nav-link" data-role="MLRO,ADMIN">Executive</a>
+        <a href="/audit/logs" class="nav-link" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN">Audit Vault</a>
+        <a href="/admin/rules" class="nav-link" data-role="ADMIN">Rules</a>
+        <a href="/admin/users" class="nav-link" data-role="ADMIN">Team</a>
+        <a href="/admin/health" class="nav-link" data-role="ADMIN">Health</a>
+      </nav>
+    </div>
+    <div style="display:flex; align-items:center; gap:0.75rem;">
+      <div class="user-pill">
+        <span id="navUsername">Analyst</span>
+        <span class="role-badge" id="navRole">L2_INVESTIGATOR</span>
+      </div>
+      <button class="btn-logout" onclick="logout()" title="Sign Out">Sign Out</button>
+    </div>
+  </header>
+
+  <!-- 3-Column SAR Editor Grid -->
+  <div class="editor-container">
+
+    <!-- Column 1: Alert & Subject Context -->
+    <div class="context-pane">
+      <div>
+        <div class="pane-title">SAR Draft Details</div>
+        <div class="info-card">
+          <div class="info-row">
+            <span class="info-label">Draft ID:</span>
+            <span class="info-val" id="ctxDraftId">NEW</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Status:</span>
+            <span class="info-val" id="ctxStatus" style="color:var(--accent-amber)">DRAFT</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Author:</span>
+            <span class="info-val" id="ctxAuthor">-</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="pane-title">Subject & Counterparty</div>
+        <div class="info-card">
+          <div class="info-row">
+            <span class="info-label">Sender Account:</span>
+            <span class="info-val" id="ctxSenderAcc">DE8937040044</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Beneficiary:</span>
+            <span class="info-val" id="ctxReceiverAcc">US9128003920</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Amount:</span>
+            <span class="info-val" id="ctxAmount" style="color:var(--accent-emerald)">$49,500.00 USD</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="pane-title">Typology & Reasoning Code</div>
+        <div class="info-card">
+          <div class="info-row">
+            <span class="info-label">Rule Fired:</span>
+            <span class="info-val" id="ctxRule">STRUCTURING_SMURFING</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Threat Level:</span>
+            <span class="info-val" id="ctxThreat" style="color:var(--accent-crimson)">CRITICAL</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">AI Risk Score:</span>
+            <span class="info-val" id="ctxScore">96%</span>
+          </div>
+          <div class="typology-tag">FATF R.20 / BSA Smurfing Pattern</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="pane-title">Examiner Guidance</div>
+        <div class="info-card" style="font-size:0.75rem; color:var(--text-muted); line-height:1.4;">
+          State the who, what, when, where, and why of the suspicious activity. Include clear transaction references, counterparty relationships, and reasons for deviation from baseline behavior.
+        </div>
+      </div>
+    </div>
+
+    <!-- Column 2: Narrative Drafting Workspace -->
+    <div class="narrative-pane">
+      <div class="toolbar-row">
+        <div>
+          <h2 style="font-size:1.15rem; font-weight:600;">Suspicious Activity Narrative</h2>
+          <p style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">Complete 4-eyes compliant narrative before submitting for MLRO sign-off.</p>
+        </div>
+        <div style="display:flex; align-items:center; gap:1.25rem;">
+          <div class="autosave-indicator" id="autosaveStatus">● Ready</div>
+          <div class="char-counter" id="charCounter">0 / 10,000 characters</div>
+        </div>
+      </div>
+
+      <textarea id="narrativeText" class="narrative-textarea" placeholder="Enter exhaustive narrative of suspicious transactions, unusual velocity spikes, structuring patterns, or counterparty connections..."></textarea>
+
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="generatePreview()">Generate Live XML Preview</button>
+        <button class="btn btn-primary" onclick="saveDraft()">Save Draft</button>
+        <button class="btn btn-submit" onclick="submitForReview()">Submit for MLRO Review ➔</button>
+      </div>
+    </div>
+
+    <!-- Column 3: Live Dual XML Preview -->
+    <div class="preview-pane">
+      <div class="preview-tabs">
+        <button class="preview-tab active" id="tabFincen" onclick="switchFormat('FINCEN')">FinCEN BSA XML</button>
+        <button class="preview-tab" id="tabGoaml" onclick="switchFormat('GOAML')">UNODC EU goAML</button>
+      </div>
+      <div style="padding: 8px 12px; background:var(--bg-card); display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-subtle);">
+        <span style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;" id="xmlFormatLabel">SCHEMA: FinCEN BSA E-Filing v2.0</span>
+        <button class="btn btn-secondary" style="padding:4px 8px; font-size:0.7rem;" onclick="downloadXml()">Download XML</button>
+      </div>
+      <pre class="xml-content" id="xmlDisplay">&lt;!-- Click 'Generate Live XML Preview' or type to update --&gt;</pre>
+    </div>
+
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    let activeDraftId = null;
+    let activeAlertId = null;
+    let activeFormat = 'FINCEN';
+    let lastGeneratedXml = '';
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+
+    async function initEditor() {
+      applyRoleBasedVisibility();
+
+      // Parse draft_id or alert_id from URL path or query params
+      const urlParams = new URLSearchParams(window.location.search);
+      activeDraftId = urlParams.get('draft_id') || urlParams.get('id');
+      activeAlertId = urlParams.get('alert_id') || '00000000-0000-0000-0000-000000000001';
+
+      const pathSegments = window.location.pathname.split('/');
+      if (pathSegments.length >= 4 && pathSegments[1] === 'sar' && pathSegments[2] === 'draft') {
+        activeDraftId = pathSegments[3];
+      }
+
+      if (activeDraftId && activeDraftId !== 'new') {
+        await loadDraft(activeDraftId);
+      } else {
+        document.getElementById('ctxDraftId').innerText = 'NEW DRAFT';
+        document.getElementById('ctxAuthor').innerText = document.getElementById('navUsername').innerText;
+        document.getElementById('narrativeText').value = 
+`SUSPICIOUS ACTIVITY REPORT NARRATIVE
+Subject Organization / Individual exhibits repetitive structured transactions consistently just below statutory thresholds.
+Counterparty analysis reveals rapid pass-through transit behavior across high-risk accounts. 
+Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitimate commercial justification.`;
+        updateCharCounter();
+        generatePreview();
+      }
+
+      document.getElementById('narrativeText').addEventListener('input', () => {
+        updateCharCounter();
+        document.getElementById('autosaveStatus').innerText = '● Unsaved changes';
+        document.getElementById('autosaveStatus').style.color = 'var(--accent-amber)';
+      });
+
+      // Auto-save interval every 30 seconds
+      setInterval(() => {
+        if (document.getElementById('narrativeText').value.length > 10) {
+          saveDraft(true);
+        }
+      }, 30000);
+    }
+
+    function updateCharCounter() {
+      const len = document.getElementById('narrativeText').value.length;
+      document.getElementById('charCounter').innerText = `${len.toLocaleString()} / 10,000 characters`;
+    }
+
+    async function loadDraft(draftId) {
+      try {
+        const res = await fetch(`/api/v1/fincen/sar/drafts/${draftId}`, { credentials: 'include' });
+        if (!res.ok) throw new Error('Failed to load SAR draft');
+        const data = await res.json();
+        
+        document.getElementById('ctxDraftId').innerText = data.draft_id.slice(0, 8);
+        document.getElementById('ctxStatus').innerText = data.status;
+        document.getElementById('ctxAuthor').innerText = data.drafted_by_username || 'Analyst';
+        document.getElementById('narrativeText').value = data.narrative || '';
+        activeAlertId = data.alert_id;
+
+        if (data.alert_details) {
+          document.getElementById('ctxRule').innerText = data.alert_details.rule_name;
+          document.getElementById('ctxThreat').innerText = data.alert_details.threat_level;
+          document.getElementById('ctxScore').innerText = `${Math.round(data.alert_details.risk_score * 100)}%`;
+          document.getElementById('ctxAmount').innerText = `$${data.alert_details.amount.toLocaleString()} ${data.alert_details.currency}`;
+          document.getElementById('ctxSenderAcc').innerText = data.alert_details.sender_account || 'N/A';
+          document.getElementById('ctxReceiverAcc').innerText = data.alert_details.receiver_account || 'N/A';
+        }
+
+        updateCharCounter();
+        generatePreview();
+      } catch (err) {
+        showToast('Error loading draft: ' + err.message);
+      }
+    }
+
+    function switchFormat(fmt) {
+      activeFormat = fmt;
+      document.getElementById('tabFincen').classList.toggle('active', fmt === 'FINCEN');
+      document.getElementById('tabGoaml').classList.toggle('active', fmt === 'GOAML');
+      document.getElementById('xmlFormatLabel').innerText = fmt === 'FINCEN' ? 'SCHEMA: FinCEN BSA E-Filing v2.0' : 'SCHEMA: UNODC goAML v5.0.0 (EU FIU)';
+      generatePreview();
+    }
+
+    async function generatePreview() {
+      const narrative = document.getElementById('narrativeText').value;
+      try {
+        const res = await fetch('/api/v1/fincen/sar/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify({
+            alert_id: activeAlertId,
+            narrative: narrative || 'Suspicious transfer activity under investigation.',
+            format: activeFormat
+          })
+        });
+        if (!res.ok) throw new Error('Failed to generate preview');
+        const data = await res.json();
+        lastGeneratedXml = data.xml;
+        document.getElementById('xmlDisplay').innerText = data.xml;
+      } catch (err) {
+        document.getElementById('xmlDisplay').innerText = '<!-- XML preview generation failed: ' + err.message + ' -->';
+      }
+    }
+
+    async function saveDraft(isSilent = false) {
+      const narrative = document.getElementById('narrativeText').value;
+      if (!narrative || narrative.length < 10) {
+        if (!isSilent) showToast('Narrative must be at least 10 characters.');
+        return;
+      }
+
+      try {
+        if (activeDraftId && activeDraftId !== 'new') {
+          const res = await fetch(`/api/v1/fincen/sar/drafts/${activeDraftId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+            credentials: 'include',
+            body: JSON.stringify({ narrative, xml_payload: lastGeneratedXml })
+          });
+          if (!res.ok) throw new Error('Update failed');
+        } else {
+          const res = await fetch('/api/v1/fincen/sar/drafts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+            credentials: 'include',
+            body: JSON.stringify({ alert_id: activeAlertId, narrative, xml_payload: lastGeneratedXml })
+          });
+          if (!res.ok) throw new Error('Creation failed');
+          const data = await res.json();
+          activeDraftId = data.draft_id;
+          document.getElementById('ctxDraftId').innerText = activeDraftId.slice(0, 8);
+        }
+
+        document.getElementById('autosaveStatus').innerText = '● All changes saved';
+        document.getElementById('autosaveStatus').style.color = 'var(--accent-emerald)';
+        if (!isSilent) showToast('Draft saved successfully.');
+      } catch (err) {
+        if (!isSilent) showToast('Save failed: ' + err.message);
+      }
+    }
+
+    async function submitForReview() {
+      await saveDraft(true);
+      if (!activeDraftId) {
+        showToast('Please save draft before submission.');
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/v1/fincen/sar/drafts/${activeDraftId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify({ status: 'PENDING_MLRO_REVIEW' })
+        });
+        if (!res.ok) throw new Error('Submission failed');
+        document.getElementById('ctxStatus').innerText = 'PENDING_MLRO_REVIEW';
+        showToast('SAR draft submitted to MLRO Filing Queue.');
+        setTimeout(() => { window.location.href = '/sar/queue'; }, 1500);
+      } catch (err) {
+        showToast('Submission failed: ' + err.message);
+      }
+    }
+
+    function downloadXml() {
+      if (!lastGeneratedXml) {
+        showToast('Generate preview first before downloading.');
+        return;
+      }
+      const blob = new Blob([lastGeneratedXml], { type: 'application/xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `sar_${activeFormat.toLowerCase()}_${new Date().toISOString().slice(0,10)}.xml`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function logout() {
+      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
+      window.location.href = '/login';
+    }
+
+    window.addEventListener('DOMContentLoaded', initEditor);
+  </script>
+</body>
+</html>

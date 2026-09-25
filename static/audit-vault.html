@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audit Log Vault | AML Sentinel</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080c14;
+      --bg-surface: #0e1524;
+      --bg-card: #131c2e;
+      --bg-elevated: #1a253c;
+      --border-subtle: #1e2d48;
+      --border-focus: #3b82f6;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent-cyan: #06b6d4;
+      --accent-blue: #3b82f6;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-crimson: #ef4444;
+      --accent-purple: #8b5cf6;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .header-nav {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-subtle);
+      padding: 0 1.5rem;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      font-size: 0.95rem;
+      text-decoration: none;
+      color: #fff;
+    }
+    .brand-badge {
+      background: linear-gradient(135deg, var(--accent-emerald), var(--accent-blue));
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 600;
+      color: #000;
+    }
+    .nav-links { display: flex; gap: 0.5rem; }
+    .nav-link {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.825rem;
+      padding: 6px 12px;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+      font-weight: 500;
+    }
+    .nav-link:hover, .nav-link.active {
+      color: #fff;
+      background: var(--bg-card);
+    }
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      background: var(--bg-card);
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border-subtle);
+    }
+    .role-badge {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.65rem;
+      background: rgba(16, 185, 129, 0.2);
+      color: #6ee7b7;
+      padding: 2px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .btn-logout {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 0.75rem;
+      margin-left: 0.25rem;
+    }
+    .btn-logout:hover { color: var(--accent-crimson); }
+
+    .main-content {
+      flex: 1;
+      padding: 1.75rem 2rem;
+      max-width: 1440px;
+      margin: 0 auto;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .filter-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .input-field {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 6px 10px;
+      color: #fff;
+      font-size: 0.8rem;
+      outline: none;
+    }
+    .btn {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-main);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: all 0.15s;
+    }
+    .btn:hover { background: var(--bg-elevated); border-color: var(--text-dim); }
+    .btn-primary { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+    .btn-primary:hover { background: #2563eb; }
+
+    .table-container {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.8rem; }
+    th {
+      padding: 10px 12px;
+      background: var(--bg-card);
+      color: var(--text-dim);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.68rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    td { padding: 10px 12px; border-bottom: 1px solid var(--border-subtle); color: var(--text-main); }
+    tr:hover { background: rgba(255,255,255,0.02); }
+    .mono { font-family: 'IBM Plex Mono', monospace; }
+
+    .action-tag {
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.68rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(59, 130, 246, 0.15);
+      color: #93c5fd;
+    }
+
+    /* Diff Drawer */
+    .drawer-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      display: none;
+      justify-content: flex-end;
+      z-index: 100;
+    }
+    .diff-drawer {
+      width: 520px;
+      max-width: 90vw;
+      background: var(--bg-surface);
+      border-left: 1px solid var(--border-subtle);
+      height: 100vh;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      overflow-y: auto;
+    }
+    .diff-box {
+      background: #060910;
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 1rem;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.75rem;
+      color: #7dd3fc;
+      white-space: pre-wrap;
+      overflow: auto;
+      max-height: 280px;
+    }
+    .diff-del { color: #f87171; }
+    .diff-ins { color: #4ade80; }
+
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: var(--bg-elevated);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      font-size: 0.825rem;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      z-index: 100;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header class="header-nav">
+    <div style="display:flex; align-items:center; gap:1.5rem;">
+      <a href="/alerts/triage" class="brand">
+        <span>AML SENTINEL</span>
+        <span class="brand-badge">AUDIT VAULT</span>
+      </a>
+      <nav class="nav-links">
+        <a href="/alerts/triage" class="nav-link">Alert Triage</a>
+        <a href="/dashboard" class="nav-link">Case Cockpit</a>
+        <a href="/sar/editor" class="nav-link">SAR Editor</a>
+        <a href="/sar/queue" class="nav-link" data-role="MLRO,ADMIN">Filing Queue</a>
+        <a href="/customers" class="nav-link">Customer 360</a>
+        <a href="/network" class="nav-link">Network Graph</a>
+        <a href="/dashboard/executive" class="nav-link" data-role="MLRO,ADMIN">Executive</a>
+        <a href="/audit/logs" class="nav-link active">Audit Vault</a>
+        <a href="/admin/rules" class="nav-link" data-role="ADMIN">Rules</a>
+        <a href="/admin/users" class="nav-link" data-role="ADMIN">Team</a>
+        <a href="/admin/health" class="nav-link" data-role="ADMIN">Health</a>
+      </nav>
+    </div>
+    <div style="display:flex; align-items:center; gap:0.75rem;">
+      <div class="user-pill">
+        <span id="navUsername">Auditor</span>
+        <span class="role-badge" id="navRole">AUDITOR</span>
+      </div>
+      <button class="btn-logout" onclick="logout()" title="Sign Out">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="main-content">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div>
+        <h1 style="font-size:1.4rem; font-weight:700;">Immutable Audit Log Vault</h1>
+        <p style="font-size:0.85rem; color:var(--text-muted); margin-top:3px;">Append-only regulatory audit registry under FFIEC, BSA 31 CFR 1010, and EU AMLD6 mandate.</p>
+      </div>
+      <div style="display:flex; gap:0.5rem;">
+        <button class="btn" onclick="exportLogs('csv')">Export CSV (SHA-256)</button>
+        <button class="btn" onclick="exportLogs('json')">Export JSON</button>
+      </div>
+    </div>
+
+    <!-- Filter Bar -->
+    <div class="filter-card">
+      <input type="text" id="actorFilter" class="input-field" placeholder="Filter by Actor..." style="width:160px;">
+      
+      <select id="actionFilter" class="input-field" style="width:180px;">
+        <option value="">All Actions</option>
+        <option value="UPDATE_RULE">UPDATE_RULE</option>
+        <option value="ACCOUNT_FROZEN">ACCOUNT_FROZEN</option>
+        <option value="ACCOUNT_UNFROZEN">ACCOUNT_UNFROZEN</option>
+        <option value="ESCALATE_ALERT">ESCALATE_ALERT</option>
+        <option value="CLAIM_ALERT">CLAIM_ALERT</option>
+        <option value="FINCEN_SAR_FILED">FINCEN_SAR_FILED</option>
+        <option value="CDD_RESCREENING_WATCHLIST_HIT">CDD_RESCREENING_HIT</option>
+      </select>
+
+      <select id="resourceFilter" class="input-field" style="width:140px;">
+        <option value="">All Resources</option>
+        <option value="ALERT">ALERT</option>
+        <option value="CASE">CASE</option>
+        <option value="RULE">RULE</option>
+        <option value="ACCOUNT">ACCOUNT</option>
+      </select>
+
+      <button class="btn btn-primary" onclick="loadAuditLogs()">Apply Filters</button>
+      <button class="btn" onclick="resetFilters()">Reset</button>
+
+      <span style="margin-left:auto; font-size:0.75rem; color:var(--text-dim);" id="logCount">0 records indexed</span>
+    </div>
+
+    <!-- Table Container -->
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp (UTC)</th>
+            <th>Actor</th>
+            <th>Role</th>
+            <th>Action</th>
+            <th>Resource Type</th>
+            <th>Resource ID</th>
+            <th>IP Address</th>
+            <th style="text-align:right">State Diff</th>
+          </tr>
+        </thead>
+        <tbody id="auditTableBody">
+          <tr><td colspan="8" style="text-align:center; padding:2rem; color:var(--text-dim);">Loading audit trail...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- State Diff Slide-over Drawer -->
+  <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer(event)">
+    <div class="diff-drawer" id="diffDrawer" onclick="event.stopPropagation()">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="font-size:1.1rem; font-weight:600;">Audit Event Detail</h3>
+        <button class="btn" onclick="document.getElementById('drawerOverlay').style.display='none'">✕ Close</button>
+      </div>
+
+      <div style="font-size:0.8rem; color:var(--text-muted); line-height:1.5;">
+        Event ID: <span class="mono" id="dEventId" style="color:#fff;">-</span><br>
+        Actor: <span id="dActor" style="color:#fff;">-</span> (<span id="dRole">-</span>)<br>
+        Recorded IP: <span class="mono" id="dIp">-</span>
+      </div>
+
+      <div>
+        <div style="font-size:0.75rem; text-transform:uppercase; color:var(--text-dim); margin-bottom:4px;">Before State</div>
+        <pre class="diff-box diff-del" id="dBefore">None</pre>
+      </div>
+
+      <div>
+        <div style="font-size:0.75rem; text-transform:uppercase; color:var(--text-dim); margin-bottom:4px;">After State</div>
+        <pre class="diff-box diff-ins" id="dAfter">None</pre>
+      </div>
+
+      <div>
+        <div style="font-size:0.75rem; text-transform:uppercase; color:var(--text-dim); margin-bottom:4px;">Additional Details</div>
+        <pre class="diff-box" id="dDetails">{}</pre>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/static/app.js"></script>
+  <script>
+    let auditRecords = [];
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+
+    async function loadAuditLogs() {
+      applyRoleBasedVisibility();
+
+      const actor = document.getElementById('actorFilter').value.trim();
+      const action = document.getElementById('actionFilter').value;
+      const resource = document.getElementById('resourceFilter').value;
+
+      let url = '/api/v1/audit/logs?limit=50';
+      if (actor) url += `&actor=${encodeURIComponent(actor)}`;
+      if (action) url += `&action=${encodeURIComponent(action)}`;
+      if (resource) url += `&resource_type=${encodeURIComponent(resource)}`;
+
+      try {
+        const res = await fetch(url, { credentials: 'include' });
+        if (!res.ok) throw new Error('Failed to query audit logs');
+        const data = await res.json();
+        auditRecords = data.items || [];
+        document.getElementById('logCount').innerText = `${data.total || 0} records indexed`;
+        renderAuditTable();
+      } catch (err) {
+        showToast('Error querying audit logs: ' + err.message);
+      }
+    }
+
+    function renderAuditTable() {
+      const tbody = document.getElementById('auditTableBody');
+      if (!auditRecords.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:2rem; color:var(--text-dim);">No audit records match the query.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = auditRecords.map(r => `
+        <tr>
+          <td class="mono" style="font-size:0.725rem; color:var(--text-dim);">${r.created_at.slice(0,19).replace('T', ' ')}</td>
+          <td style="font-weight:600; color:#fff;">${r.actor_username || r.actor_id}</td>
+          <td class="mono" style="font-size:0.7rem; color:var(--text-muted);">${r.actor_role}</td>
+          <td><span class="action-tag">${r.action}</span></td>
+          <td class="mono" style="font-size:0.7rem;">${r.resource_type}</td>
+          <td class="mono" style="font-size:0.7rem; color:var(--accent-blue);">${r.resource_id.slice(0,12)}</td>
+          <td class="mono" style="font-size:0.725rem; color:var(--text-dim);">${r.actor_ip || '127.0.0.1'}</td>
+          <td style="text-align:right;">
+            <button class="btn" style="padding:2px 8px; font-size:0.7rem;" onclick="viewDiff('${r.id}')">Inspect Diff ➔</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    async function viewDiff(logId) {
+      try {
+        const res = await fetch(`/api/v1/audit/logs/${logId}`, { credentials: 'include' });
+        if (!res.ok) throw new Error('Failed to load log detail');
+        const d = await res.json();
+
+        document.getElementById('dEventId').innerText = d.id;
+        document.getElementById('dActor').innerText = d.actor_username || d.actor_id;
+        document.getElementById('dRole').innerText = d.actor_role;
+        document.getElementById('dIp').innerText = d.actor_ip || 'Internal';
+
+        document.getElementById('dBefore').innerText = d.before_state ? JSON.stringify(d.before_state, null, 2) : 'No previous state recorded.';
+        document.getElementById('dAfter').innerText = d.after_state ? JSON.stringify(d.after_state, null, 2) : 'No subsequent state recorded.';
+        document.getElementById('dDetails').innerText = JSON.stringify(d.details || {}, null, 2);
+
+        document.getElementById('drawerOverlay').style.display = 'flex';
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    function closeDrawer(e) {
+      document.getElementById('drawerOverlay').style.display = 'none';
+    }
+
+    function resetFilters() {
+      document.getElementById('actorFilter').value = '';
+      document.getElementById('actionFilter').value = '';
+      document.getElementById('resourceFilter').value = '';
+      loadAuditLogs();
+    }
+
+    function exportLogs(format) {
+      const actor = document.getElementById('actorFilter').value.trim();
+      const action = document.getElementById('actionFilter').value;
+      const resource = document.getElementById('resourceFilter').value;
+
+      let url = `/api/v1/audit/logs/export?format=${format}`;
+      if (actor) url += `&actor=${encodeURIComponent(actor)}`;
+      if (action) url += `&action=${encodeURIComponent(action)}`;
+      if (resource) url += `&resource_type=${encodeURIComponent(resource)}`;
+
+      window.open(url, '_blank');
+      showToast(`Exporting ${format.toUpperCase()} archive with digital checksum...`);
+    }
+
+    function logout() {
+      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
+      window.location.href = '/login';
+    }
+
+    window.addEventListener('DOMContentLoaded', loadAuditLogs);
+  </script>
+</body>
+</html>

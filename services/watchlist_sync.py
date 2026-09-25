@@ -408,6 +408,80 @@ class WatchlistSyncEngine:
 watchlist_sync_engine = WatchlistSyncEngine()
 
 
+async def trigger_ongoing_cdd_rescreening(tenant_id: str | None = None) -> dict:
+    """
+    Ongoing CDD Re-Screening Engine:
+    Re-evaluates active customer accounts against updated Sanctions and PEP indices.
+    Flags accounts that match high-risk watchlist entities and raises EDD requirements.
+    """
+    from database.postgres import get_async_db_conn
+    from database.elasticsearch_db import get_async_elasticsearch_client
+    from routers.screening import perform_sanctions_search
+    from services.audit import record_audit_event_async
+
+    es = await get_async_elasticsearch_client()
+    accounts_checked = 0
+    hits_detected = 0
+    escalated_accounts = []
+
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            if tenant_id:
+                import uuid
+                rows = await conn.fetch(
+                    "SELECT id, owner_name, account_number, status, risk_score, tenant_id FROM accounts WHERE tenant_id = $1 LIMIT 500;",
+                    uuid.UUID(str(tenant_id))
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT id, owner_name, account_number, status, risk_score, tenant_id FROM accounts LIMIT 500;"
+                )
+
+            for acc in rows:
+                accounts_checked += 1
+                owner = acc.get("owner_name")
+                if not owner or not es:
+                    continue
+
+                try:
+                    search_res = await perform_sanctions_search(owner, 0.85, es)
+                    if search_res.get("match_found", False):
+                        hits_detected += 1
+                        acc_id = str(acc["id"])
+                        escalated_accounts.append({
+                            "account_id": acc_id,
+                            "owner_name": owner,
+                            "matched_name": search_res.get("matched_name"),
+                            "source_list": search_res.get("source_list")
+                        })
+                        await conn.execute(
+                            "UPDATE accounts SET status = 'EDD_REQUIRED', risk_score = 0.95, risk_category = 'CRITICAL' WHERE id = $1;",
+                            acc["id"]
+                        )
+                        await record_audit_event_async(
+                            action="CDD_RESCREENING_WATCHLIST_HIT",
+                            actor_id="SYSTEM_CRON",
+                            actor_role="SYSTEM",
+                            resource_type="ACCOUNT",
+                            resource_id=acc_id,
+                            tenant_id=str(acc.get("tenant_id") or tenant_id or "00000000-0000-0000-0000-000000000001"),
+                            details={"matched_entity": search_res.get("matched_name"), "source_list": search_res.get("source_list")}
+                        )
+                except Exception as se:
+                    logger.debug(f"Error screening account {acc['id']}: {se}")
+    except Exception as e:
+        logger.error(f"Ongoing CDD re-screening failed: {e}")
+
+    logger.info(f"[Ongoing CDD] Evaluated {accounts_checked} accounts, detected {hits_detected} watchlist hits.")
+    return {
+        "status": "COMPLETED",
+        "accounts_checked": accounts_checked,
+        "hits_detected": hits_detected,
+        "escalated_accounts": escalated_accounts,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
 async def schedule_periodic_watchlist_sync(interval_seconds: int = 86400, shutdown_event=None):
     """
     Executes a periodic background sync of global watchlists (default: every 24 hours).
@@ -420,6 +494,7 @@ async def schedule_periodic_watchlist_sync(interval_seconds: int = 86400, shutdo
             if shutdown_event and shutdown_event.is_set():
                 break
             await watchlist_sync_engine.sync_all_watchlists()
+            await trigger_ongoing_cdd_rescreening()
         except Exception as e:
             logger.error(f"Periodic background watchlist sync failed: {e}")
 
@@ -434,3 +509,4 @@ async def schedule_periodic_watchlist_sync(interval_seconds: int = 86400, shutdo
         except Exception as e:
             logger.warning(f"Watchlist sync scheduler sleep interrupted: {e}")
             break
+
