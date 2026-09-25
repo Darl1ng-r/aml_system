@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
+from services.state_machine import validate_case_transition
 from observability.sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -308,6 +309,75 @@ async def add_case_note(
         }
 
 
+@router.patch("/{id}")
+async def update_case(
+    id: str,
+    payload: CaseUpdateRequest,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
+    try:
+        case_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid case ID format.")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        case_row = await conn.fetchrow(
+            "SELECT * FROM cases WHERE id = $1 AND tenant_id = $2;",
+            case_uuid, uuid.UUID(str(tenant_id))
+        )
+        if not case_row:
+            raise HTTPException(status_code=404, detail="Case not found.")
+
+        if payload.status:
+            validate_case_transition(case_row["status"], payload.status)
+
+        updates = []
+        params = []
+        p_idx = 1
+
+        if payload.title is not None:
+            updates.append(f"title = ${p_idx}")
+            params.append(payload.title)
+            p_idx += 1
+        if payload.priority is not None:
+            updates.append(f"priority = ${p_idx}")
+            params.append(payload.priority)
+            p_idx += 1
+        if payload.status is not None:
+            updates.append(f"status = ${p_idx}")
+            params.append(payload.status)
+            p_idx += 1
+            if payload.status == "CLOSED":
+                updates.append("closed_at = NOW()")
+        if payload.assigned_to is not None:
+            try:
+                assigned_uuid = uuid.UUID(payload.assigned_to) if payload.assigned_to else None
+            except ValueError:
+                assigned_uuid = None
+            updates.append(f"assigned_to = ${p_idx}")
+            params.append(assigned_uuid)
+            p_idx += 1
+        if payload.narrative is not None:
+            updates.append(f"narrative = ${p_idx}")
+            params.append(payload.narrative)
+            p_idx += 1
+
+        if updates:
+            updates.append("updated_at = NOW()")
+            params.append(case_uuid)
+            params.append(uuid.UUID(str(tenant_id)))
+            query = f"UPDATE cases SET {', '.join(updates)} WHERE id = ${p_idx} AND tenant_id = ${p_idx+1};"
+            await conn.execute(query, *params)
+
+        return {
+            "case_id": str(case_uuid),
+            "status": payload.status or case_row["status"],
+            "message": "Case updated successfully."
+        }
+
+
 @router.post("/{id}/close")
 async def close_case(
     id: str,
@@ -329,12 +399,8 @@ async def close_case(
         if not case_row:
             raise HTTPException(status_code=404, detail="Case not found.")
 
-        # State machine validation (STATE-01): Cannot close an already closed case
-        if case_row["status"] == "CLOSED":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid state transition: Case is already CLOSED."
-            )
+        # State machine validation (STATE-01): Deterministic FSM transition guard
+        validate_case_transition(case_row["status"], "CLOSED")
 
         await conn.execute(
             """

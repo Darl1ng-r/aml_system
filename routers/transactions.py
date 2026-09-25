@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, status, status as http_status, Query
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, Request, status, status as http_status, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 import logging
 import json
@@ -13,6 +14,7 @@ from services.rate_limiter import RateLimiter
 from services.behavioral import get_customer_baseline, calculate_customer_baseline
 from services.isolation_forest import get_iforest_score
 from services.dynamic_scorer import compute_dynamic_risk
+from services.idempotency import check_idempotency, save_idempotency_result, extract_idempotency_key
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +33,9 @@ class TransactionRequest(BaseModel):
     merchant: str | None = Field(None, max_length=100)
     device: str | None = Field(None, max_length=100)
     channel: str | None = Field(None, max_length=50)
+    idempotency_key: str | None = Field(None, max_length=128)
 
-    @field_validator("sender_account", "receiver_account", "merchant", "device", "channel", mode="before")
+    @field_validator("sender_account", "receiver_account", "merchant", "device", "channel", "idempotency_key", mode="before")
     @classmethod
     def sanitize_input_strings(cls, v: str | None) -> str | None:
         return sanitize_text(v) if v is not None else None
@@ -41,12 +44,31 @@ class TransactionRequest(BaseModel):
 async def ingest_transaction(
     payload: TransactionRequest, 
     background_tasks: BackgroundTasks, 
+    request: Request = None,
     response: Response = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=100, window=60))
 ):
     # Enforce Data-Level RBAC tenant scoping
     user_tenant_id = enforce_tenant_data_scope(current_user)
+
+    # Check Idempotency Key (FinTech standard / RFC 7231)
+    idemp_key = await extract_idempotency_key(request, payload.idempotency_key)
+    if idemp_key:
+        is_cached, cached_val = await check_idempotency(
+            idemp_key,
+            tenant_id=str(user_tenant_id) if user_tenant_id else None
+        )
+        if is_cached and cached_val:
+            headers = {"Idempotency-Key": idemp_key, "X-Cache-Lookup": "HIT"}
+            if response is not None:
+                response.headers["Idempotency-Key"] = idemp_key
+                response.headers["X-Cache-Lookup"] = "HIT"
+            return JSONResponse(
+                status_code=cached_val.get("status_code", status.HTTP_201_CREATED),
+                content=cached_val.get("body", {}),
+                headers=headers
+            )
 
     # Step 1: Look up sender, receiver, and velocity count using read replica pool
     try:
@@ -401,10 +423,7 @@ async def ingest_transaction(
     }
     background_tasks.add_task(ws_manager.broadcast, event_payload)
 
-    if response is not None:
-        response.headers["Location"] = f"/api/v1/transactions/{tx_id}"
-
-    return {
+    result = {
         "transaction_id": tx_id,
         "decision": decision,
         "alert_triggered": alert_triggered,
@@ -415,6 +434,116 @@ async def ingest_transaction(
             "dynamic_risk": explainability
         }
     }
+
+    if idemp_key:
+        await save_idempotency_result(
+            key=idemp_key,
+            status_code=status.HTTP_201_CREATED,
+            body=result,
+            tenant_id=str(user_tenant_id) if user_tenant_id else None
+        )
+        if response is not None:
+            response.headers["Idempotency-Key"] = idemp_key
+            response.headers["X-Cache-Lookup"] = "MISS"
+
+    if response is not None:
+        response.headers["Location"] = f"/api/v1/transactions/{tx_id}"
+
+    return result
+
+
+@router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_transaction_async(
+    payload: TransactionRequest,
+    background_tasks: BackgroundTasks,
+    request: Request = None,
+    response: Response = None,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=1000, window=60))
+):
+    """
+    Decoupled, high-throughput asynchronous ingestion buffer route (GAP-ASYNC).
+    Accepts transactions, validates idempotency, buffers to Redpanda stream
+    and durable transactional outbox, returning HTTP 202 (<5ms) for downstream
+    asynchronous scoring workers.
+    """
+    user_tenant_id = enforce_tenant_data_scope(current_user)
+    idemp_key = await extract_idempotency_key(request, payload.idempotency_key)
+
+    if idemp_key:
+        is_cached, cached_val = await check_idempotency(
+            idemp_key,
+            tenant_id=str(user_tenant_id) if user_tenant_id else None
+        )
+        if is_cached and cached_val:
+            headers = {"Idempotency-Key": idemp_key, "X-Cache-Lookup": "HIT"}
+            if response is not None:
+                response.headers["Idempotency-Key"] = idemp_key
+                response.headers["X-Cache-Lookup"] = "HIT"
+            return JSONResponse(
+                status_code=cached_val.get("status_code", status.HTTP_202_ACCEPTED),
+                content=cached_val.get("body", {}),
+                headers=headers
+            )
+
+    tx_id = str(uuid.uuid4())
+
+    buffer_payload = {
+        "transaction_id": tx_id,
+        "tenant_id": str(user_tenant_id) if user_tenant_id else None,
+        "sender_account": payload.sender_account,
+        "receiver_account": payload.receiver_account,
+        "amount": payload.amount,
+        "currency": payload.currency,
+        "timestamp": payload.timestamp.isoformat(),
+        "country": payload.country,
+        "merchant": payload.merchant,
+        "device": payload.device,
+        "channel": payload.channel,
+        "ingested_by": current_user.get("username", "api_ingest"),
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Asynchronous publish to event stream
+    background_tasks.add_task(publish_transaction, buffer_payload)
+
+    # Persist to transactional outbox for durable streaming
+    try:
+        from database.outbox import record_outbox_event
+        async with get_async_db_conn(tenant_id=user_tenant_id) as conn:
+            await record_outbox_event(
+                conn=conn,
+                aggregate_type="TRANSACTION_BUFFER",
+                aggregate_id=tx_id,
+                event_type="aml.core.transaction.buffered.v1",
+                payload=buffer_payload,
+                tenant_id=str(user_tenant_id) if user_tenant_id else None,
+            )
+    except Exception as ex_buf:
+        logger.warning(f"Async ingestion outbox buffering warning: {ex_buf}")
+
+    accepted_body = {
+        "status": "ACCEPTED",
+        "transaction_id": tx_id,
+        "message": "Transaction buffered for asynchronous AML scoring.",
+        "ingestion_mode": "ASYNC_BUFFERED"
+    }
+
+    if idemp_key:
+        await save_idempotency_result(
+            key=idemp_key,
+            status_code=status.HTTP_202_ACCEPTED,
+            body=accepted_body,
+            tenant_id=str(user_tenant_id) if user_tenant_id else None
+        )
+        if response is not None:
+            response.headers["Idempotency-Key"] = idemp_key
+            response.headers["X-Cache-Lookup"] = "MISS"
+
+    if response is not None:
+        response.headers["Location"] = f"/api/v1/transactions/{tx_id}"
+
+    return accepted_body
 
 
 @router.get("/{id}")

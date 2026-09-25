@@ -5,6 +5,7 @@ from database.postgres import get_async_db_conn, get_async_db_read_conn
 from database.neo4j_db import get_async_neo4j_driver
 from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
+from services.state_machine import validate_alert_transition
 import xml.etree.ElementTree as ET
 # minidom import removed for XXE hardening
 from datetime import datetime, timezone
@@ -299,7 +300,7 @@ async def resolve_alert(
             # Check alert exists
             alert = await conn.fetchrow(
                 """
-                SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score,
+                SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.status,
                        t.amount, t.currency, t.timestamp,
                        s.account_number, s.owner_name,
                        r.account_number, r.owner_name
@@ -313,6 +314,9 @@ async def resolve_alert(
             )
             if not alert:
                 raise HTTPException(status_code=404, detail="Alert not found")
+
+            # Deterministic State Guard: Validate alert transition
+            validate_alert_transition(alert["status"] or "OPEN", status)
 
             # Update Alert Status and assign the resolving officer
             await conn.execute(
@@ -444,6 +448,16 @@ async def escalate_alert(
                     user_uuid = uuid.UUID(str(current_user["id"]))
                 except (ValueError, TypeError):
                     user_uuid = None
+
+            alert_row = await conn.fetchrow(
+                "SELECT id, status FROM alerts WHERE id = $1;",
+                alert_uuid
+            )
+            if not alert_row:
+                raise HTTPException(status_code=404, detail="Alert not found")
+
+            validate_alert_transition(alert_row["status"] or "OPEN", "ESCALATED")
+
             updated = await conn.execute(
                 """
                 UPDATE alerts
@@ -534,6 +548,16 @@ async def claim_alert(
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            alert_row = await conn.fetchrow(
+                "SELECT id, status FROM alerts WHERE id = $1;",
+                alert_uuid
+            )
+            if not alert_row:
+                raise HTTPException(status_code=404, detail="Alert not found")
+
+            target_status = "IN_REVIEW" if alert_row["status"] in ("NEW", "OPEN") else alert_row["status"]
+            validate_alert_transition(alert_row["status"] or "OPEN", target_status)
+
             updated = await conn.execute(
                 """
                 UPDATE alerts
@@ -543,8 +567,6 @@ async def claim_alert(
                 """,
                 user_uuid, alert_uuid
             )
-            if updated == "UPDATE 0":
-                raise HTTPException(status_code=404, detail="Alert not found")
 
             from observability.logging import log_audit_event
             log_audit_event(
