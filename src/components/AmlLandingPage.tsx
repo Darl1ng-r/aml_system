@@ -93,10 +93,15 @@ const CONNECTIONS = [
 // ─────────────────────────────────────────────────────────────
 // THREE.JS INTERACTIVE 3D MONEY FLOW COMPONENT WITH 2D FALLBACK
 // ─────────────────────────────────────────────────────────────
-const ThreeJsMoneyFlowGraph: React.FC<{
+interface ThreeJsMoneyFlowGraphProps {
   onSelectNode: (node: FinancialNode) => void;
   selectedNode: FinancialNode | null;
-}> = ({ onSelectNode, selectedNode }) => {
+}
+
+const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
+  onSelectNode,
+  selectedNode,
+}: ThreeJsMoneyFlowGraphProps) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [autoRotate, setAutoRotate] = useState(true);
   const [hoveredNode, setHoveredNode] = useState<FinancialNode | null>(null);
@@ -586,7 +591,7 @@ const RuleEngineSimulator: React.FC = () => {
               max="25000"
               step="100"
               value={wireAmount}
-              onChange={(e) => setWireAmount(Number(e.target.value))}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setWireAmount(Number(e.target.value))}
               aria-label="Simulated wire amount slider"
               className="w-full accent-[#3D5A80] h-1.5 bg-[#DAD3C3] rounded cursor-pointer"
             />
@@ -605,7 +610,7 @@ const RuleEngineSimulator: React.FC = () => {
                 <input
                   type="checkbox"
                   checked={ruleStructuring}
-                  onChange={(e) => setRuleStructuring(e.target.checked)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRuleStructuring(e.target.checked)}
                   className="rounded text-[#3D5A80] focus:ring-0"
                 />
                 <span>R-STRUCT-04 (Sub-Threshold Smurfing)</span>
@@ -618,7 +623,7 @@ const RuleEngineSimulator: React.FC = () => {
                 <input
                   type="checkbox"
                   checked={ruleVelocity}
-                  onChange={(e) => setRuleVelocity(e.target.checked)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRuleVelocity(e.target.checked)}
                   className="rounded text-[#3D5A80] focus:ring-0"
                 />
                 <span>R-VEL-02 (24h Velocity Spike Z &gt; 3.0)</span>
@@ -631,7 +636,7 @@ const RuleEngineSimulator: React.FC = () => {
                 <input
                   type="checkbox"
                   checked={ruleOffshore}
-                  onChange={(e) => setRuleOffshore(e.target.checked)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRuleOffshore(e.target.checked)}
                   className="rounded text-[#3D5A80] focus:ring-0"
                 />
                 <span>R-GEO-09 (High-Risk Secrecy Haven - KY/PA)</span>
@@ -644,7 +649,7 @@ const RuleEngineSimulator: React.FC = () => {
                 <input
                   type="checkbox"
                   checked={ruleDormant}
-                  onChange={(e) => setRuleDormant(e.target.checked)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRuleDormant(e.target.checked)}
                   className="rounded text-[#3D5A80] focus:ring-0"
                 />
                 <span>R-DORM-01 (Sudden 180-Day Dormant Wakeup)</span>
@@ -715,11 +720,19 @@ const RuleEngineSimulator: React.FC = () => {
 // ─────────────────────────────────────────────────────────────
 // INTERACTIVE KYC / SANCTIONS FUZZY MATCH TESTER
 // ─────────────────────────────────────────────────────────────
+interface SanctionsHit {
+  name: string;
+  list: string;
+  type: string;
+  country: string;
+  rawScore: number;
+}
+
 const SanctionsRadarTester: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('Smirnow');
   const [threshold, setThreshold] = useState(85);
 
-  const testDatabase = [
+  const testDatabase: SanctionsHit[] = [
     { name: 'Wladimir Smirnow', list: 'OFAC SDN Blocklist', type: 'Designated Individual', country: 'RU', rawScore: 94 },
     { name: 'Tobias M. Varga', list: 'EU Consolidated Sanctions', type: 'Special Scrutiny PEP', country: 'HU', rawScore: 89 },
     { name: 'Alexander Petrov', list: 'UK OFSI Sanctions', type: 'Asset Freeze Target', country: 'RU', rawScore: 78 },
@@ -727,9 +740,9 @@ const SanctionsRadarTester: React.FC = () => {
     { name: 'General Ahmed Al-Hassan', list: 'UN Security Council 1267', type: 'Terror Financing Watch', country: 'SD', rawScore: 92 },
   ];
 
-  const matchedResults = useMemo(() => {
+  const matchedResults = useMemo<SanctionsHit[]>(() => {
     if (!searchTerm.trim()) return [];
-    return testDatabase.filter((item) => {
+    return testDatabase.filter((item: SanctionsHit) => {
       const isNameMatch = item.name.toLowerCase().includes(searchTerm.toLowerCase());
       return isNameMatch && item.rawScore >= threshold;
     });
@@ -753,7 +766,7 @@ const SanctionsRadarTester: React.FC = () => {
           <input
             type="text"
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
             placeholder="Type name to test (e.g. Smirnow, Varga, Al-Hassan)..."
             aria-label="Search sanctions test radar"
             className="w-full pl-9 pr-3 py-1.5 rounded border border-[#DAD3C3] bg-[#F8F6F0] text-xs font-mono text-[#22262E] focus:outline-none focus:border-[#3D5A80]"
@@ -770,7 +783,7 @@ const SanctionsRadarTester: React.FC = () => {
             min="70"
             max="95"
             value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setThreshold(Number(e.target.value))}
             aria-label="Fuzzy sensitivity threshold"
             className="w-full accent-[#C98A2E] h-1.5 bg-[#DAD3C3] rounded cursor-pointer"
           />
@@ -778,7 +791,7 @@ const SanctionsRadarTester: React.FC = () => {
 
         <div className="min-h-[72px] space-y-1.5">
           {matchedResults.length > 0 ? (
-            matchedResults.map((hit) => (
+            matchedResults.map((hit: SanctionsHit) => (
               <div key={hit.name} className="p-2 rounded bg-[#C1443B]/10 border border-[#C1443B]/30 text-xs font-mono">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-[#1B1F2B]">{hit.name}</span>
@@ -1644,7 +1657,7 @@ export const AmlLandingPage: React.FC = () => {
             role="dialog"
             aria-modal="true"
             aria-label="Sentinel AML Cockpit Case Walkthrough Video"
-            onClick={(e) => {
+            onClick={(e: React.MouseEvent<HTMLDivElement>) => {
               if (e.target === e.currentTarget) setVideoModalOpen(false);
             }}
           >
