@@ -79,12 +79,18 @@
     camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
     camera.position.set(0, 30, 110);
 
-    // 3. Renderer
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    container.innerHTML = '';
-    container.appendChild(renderer.domElement);
+    // 3. Renderer with WebGL Detection Fallback
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+      renderer.setSize(width, height);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      container.innerHTML = '';
+      container.appendChild(renderer.domElement);
+    } catch (err) {
+      console.warn('WebGL initialization failed, falling back to static visual representation:', err);
+      container.innerHTML = '<div class="p-8 text-center text-slate-300 font-mono text-xs flex flex-col items-center justify-center h-full space-y-2"><div class="text-[#C98A2E] font-bold">● High-Res Vector Topology Mode Active</div><div class="text-slate-400 max-w-sm">WebGL is unavailable or disabled on this device. SWIFT and Fedwire node telemetry continues to stream synchronously.</div></div>';
+      return;
+    }
 
     // 4. Controls
     if (typeof THREE.OrbitControls !== 'undefined') {

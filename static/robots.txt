@@ -1,0 +1,32 @@
+# Robots.txt for Sentinel AML Compliance Platform
+User-agent: *
+
+# Allow public landing, login, and static assets
+Allow: /$
+Allow: /landing
+Allow: /login
+Allow: /static/
+
+# Strictly Disallow internal authenticated applications & API endpoints
+Disallow: /dashboard
+Disallow: /dashboard/*
+Disallow: /triage
+Disallow: /triage/*
+Disallow: /sar/
+Disallow: /sar/*
+Disallow: /admin/
+Disallow: /admin/*
+Disallow: /api/
+Disallow: /api/*
+Disallow: /health
+Disallow: /health/*
+Disallow: /metrics
+Disallow: /audit/
+Disallow: /audit/*
+Disallow: /customers
+Disallow: /customers/*
+Disallow: /network
+Disallow: /network/*
+
+# Canonical Sitemap
+Sitemap: https://aml.yourdomain.com/sitemap.xml

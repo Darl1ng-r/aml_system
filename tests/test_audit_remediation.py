@@ -117,3 +117,42 @@ def test_conditional_shap_computation():
     # Explicit explain=True: SHAP explainer computes actual feature contributions
     res_explain = model.predict_risk(amount=100.0, sender_risk=0.1, receiver_risk=0.1, velocity_count=1, explain=True)
     assert any(val != 0.0 for val in res_explain["attributions"].values())
+
+
+@pytest.mark.anyio
+async def test_security_headers_injected():
+    """Verify that HSTS, COOP, CORP, CSP, and X-Content-Type-Options are properly injected."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        res = await ac.get("/health/live")
+        assert res.status_code == 200
+        headers = res.headers
+        assert "Strict-Transport-Security" in headers
+        assert "max-age=63072000" in headers["Strict-Transport-Security"]
+        assert headers.get("Cross-Origin-Opener-Policy") == "same-origin"
+        assert headers.get("Cross-Origin-Resource-Policy") == "same-origin"
+        assert headers.get("X-Frame-Options") == "DENY"
+        assert headers.get("X-Content-Type-Options") == "nosniff"
+        assert "upgrade-insecure-requests" in headers.get("Content-Security-Policy", "")
+
+
+@pytest.mark.anyio
+async def test_seo_routes_and_404_html():
+    """Verify that /robots.txt and /sitemap.xml are served, and 404 HTML returns for browser traffic."""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        # 1. robots.txt
+        robots_res = await ac.get("/robots.txt")
+        assert robots_res.status_code == 200
+        assert "Disallow: /dashboard" in robots_res.text
+
+        # 2. sitemap.xml
+        sitemap_res = await ac.get("/sitemap.xml")
+        assert sitemap_res.status_code == 200
+        assert "<loc>" in sitemap_res.text
+
+        # 3. Browser 404 HTML
+        not_found_res = await ac.get("/nonexistent-route-xyz", headers={"accept": "text/html,application/xhtml+xml"})
+        assert not_found_res.status_code == 404
+        assert "text/html" in not_found_res.headers.get("content-type", "")
+        assert "404" in not_found_res.text

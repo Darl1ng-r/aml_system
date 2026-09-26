@@ -305,8 +305,12 @@ async function logout() {
 }
 
 function getAuthHeaders() {
+    const headers = { 'X-CSRF-Protection': '1' };
     const token = localStorage.getItem('jwt_token');
-    return token ? { 'Authorization': `Bearer ${token}` } : {};
+    if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+    }
+    return headers;
 }
 
 function setMockMode(enabled) {

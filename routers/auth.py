@@ -30,13 +30,14 @@ from observability.logging import log_audit_event
 
 def set_auth_cookies(response: Response, access_token: str, refresh_token: str | None = None):
     """Sets secure HttpOnly cookies for browser web sessions."""
+    is_secure = bool(settings.enable_tls or str(settings.environment).lower() == "production")
     response.set_cookie(
         key="access_token",
         value=access_token,
         max_age=900,  # 15 minutes
         httponly=True,
         samesite="strict",
-        secure=settings.enable_tls,
+        secure=is_secure,
         path="/"
     )
     if refresh_token:
@@ -46,7 +47,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str |
             max_age=30 * 86400,  # 30 days
             httponly=True,
             samesite="strict",
-            secure=settings.enable_tls,
+            secure=is_secure,
             path="/"
         )
 

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>404 — Record Not Found | Sentinel AML</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/landing.css">
+  <script src="/static/lucide.min.js" defer></script>
+</head>
+<body class="bg-[#ECE7DD] text-[#22262E] min-h-screen flex flex-col justify-between font-sans antialiased selection:bg-[#3D5A80] selection:text-white">
+
+  <!-- Header -->
+  <header class="w-full bg-[#1B1F2B] border-b border-[#2B3040] py-4 px-6 sm:px-8">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+      <a href="/" class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded bg-[#2B3040] border border-white/10 flex items-center justify-center text-white">
+          <i data-lucide="shield-alert" class="w-4 h-4 text-[#C98A2E]"></i>
+        </div>
+        <span class="text-base font-bold text-white font-mono">SENTINEL AML</span>
+      </a>
+      <a href="/" class="text-xs font-mono text-slate-300 hover:text-white transition">← Return Home</a>
+    </div>
+  </header>
+
+  <!-- Error Card Container -->
+  <main class="flex-1 flex items-center justify-center p-6">
+    <div class="max-w-lg w-full bg-white rounded-xl border border-[#DAD3C3] shadow-xl p-8 sm:p-10 text-center space-y-6">
+      
+      <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-[#C98A2E]/10 border border-[#C98A2E]/30 text-[#C98A2E] mx-auto">
+        <i data-lucide="file-question" class="w-8 h-8"></i>
+      </div>
+
+      <div class="space-y-2">
+        <div class="text-xs font-mono uppercase tracking-wider text-[#C98A2E] font-bold">HTTP 404 // ROUTE NOT FOUND</div>
+        <h1 class="text-2xl sm:text-3xl font-bold text-[#1B1F2B]">Record or Dossier Not Located</h1>
+        <p class="text-sm text-[#6B6F7A] leading-relaxed">
+          The requested compliance route, case ledger ID, or report does not exist or has been relocated to cold regulatory archive storage.
+        </p>
+      </div>
+
+      <div class="p-3 rounded-lg bg-[#F8F6F0] border border-[#DAD3C3] text-xs font-mono text-left space-y-1 text-[#6B6F7A]">
+        <div><strong>Status:</strong> Unmapped Ingestion Endpoint</div>
+        <div><strong>Security Protocol:</strong> Access logged and audit ledger preserved.</div>
+      </div>
+
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2 font-mono text-xs">
+        <a href="/" class="w-full sm:w-auto px-5 py-2.5 rounded-lg font-semibold text-white bg-[#1B1F2B] hover:bg-[#2B3040] transition">
+          Return to Platform Gateway
+        </a>
+        <a href="/dashboard" class="w-full sm:w-auto px-5 py-2.5 rounded-lg font-semibold text-[#1B1F2B] bg-[#ECE7DD] hover:bg-[#E2DDD1] border border-[#DAD3C3] transition">
+          Open Case Cockpit
+        </a>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="py-6 px-4 text-center text-xs font-mono text-[#6B6F7A] border-t border-[#DAD3C3]">
+    Sentinel AML Institutional Case Engine · Error Handling Gateway
+  </footer>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide) lucide.createIcons();
+    });
+  </script>
+</body>
+</html>

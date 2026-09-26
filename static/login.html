@@ -264,14 +264,6 @@
                     </div>
                     <button type="submit" id="btn-login-submit" class="btn"
                         style="width: 100%; margin-top: 0.5rem;">Access Console</button>
-                    <button type="button" class="btn btn-secondary"
-                        style="width: 100%; margin-top: 0.6rem; border: 1px dashed var(--accent-blue); color: var(--accent-blue); background: transparent; font-weight: 600; display:inline-flex; align-items:center; justify-content:center;"
-                        onclick="loginDemoMode()"><i data-lucide="zap" style="width:14px;height:14px;stroke-width:2;margin-right:6px;"></i> Quick Demo / Guest Preview</button>
-                    <div style="margin-top: 1rem; padding: 0.75rem; background: rgba(29, 100, 245, 0.05); border-radius: 8px; border: 1px solid rgba(29, 100, 245, 0.15); font-size: 0.75rem; color: var(--text-secondary); line-height: 1.5;">
-                        <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">Dev Demo Credentials:</strong>
-                        <span>Analyst: <code style="color: var(--accent-blue);">compliance_analyst</code> / <code style="color: var(--accent-blue);">Analyst2026!</code></span><br>
-                        <span>Admin: <code style="color: var(--accent-blue);">compliance_admin</code> / <code style="color: var(--accent-blue);">Admin2026!</code></span>
-                    </div>
                 </form>
 
                 <!-- 2. MFA CHALLENGE FORM -->
@@ -344,38 +336,6 @@
                 document.getElementById('tab-signup').classList.add('active');
                 document.getElementById('form-login').classList.remove('active');
                 document.getElementById('form-signup').classList.add('active');
-            }
-        }
-
-        async function loginDemoMode() {
-            try {
-                const formData = new URLSearchParams();
-                formData.append('username', 'compliance_analyst');
-                formData.append('password', 'Analyst2026!');
-
-                const response = await fetch('/api/v1/auth/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: formData,
-                    credentials: 'include'
-                });
-
-                const data = await response.json();
-                if (response.ok && (data.access_token || data.username)) {
-                    if (data.access_token) {
-                        localStorage.setItem('jwt_token', data.access_token);
-                    }
-                    localStorage.setItem('auth_session_active', 'true');
-                    localStorage.setItem('username', data.username);
-                    localStorage.setItem('role', data.role);
-                    window.location.href = '/dashboard';
-                } else {
-                    document.getElementById('login-username').value = 'compliance_analyst';
-                    document.getElementById('login-password').value = 'Analyst2026!';
-                }
-            } catch (e) {
-                document.getElementById('login-username').value = 'compliance_analyst';
-                document.getElementById('login-password').value = 'Analyst2026!';
             }
         }
 
@@ -490,9 +450,6 @@
 
                 // Standard login success
                 if (data.access_token || data.username) {
-                    if (data.access_token) {
-                        localStorage.setItem('jwt_token', data.access_token);
-                    }
                     localStorage.setItem('auth_session_active', 'true');
                     localStorage.setItem('username', data.username);
                     localStorage.setItem('role', data.role);
@@ -530,9 +487,6 @@
                     throw new Error(formatError(data.detail, 'Verification code invalid.'));
                 }
 
-                if (data.access_token) {
-                    localStorage.setItem('jwt_token', data.access_token);
-                }
                 localStorage.setItem('auth_session_active', 'true');
                 localStorage.setItem('username', data.username);
                 localStorage.setItem('role', data.role);
@@ -596,9 +550,6 @@
                 successEl.innerText = 'Account registered successfully! Redirecting...';
                 successEl.style.display = 'block';
 
-                if (data.access_token) {
-                    localStorage.setItem('jwt_token', data.access_token);
-                }
                 localStorage.setItem('auth_session_active', 'true');
                 localStorage.setItem('username', data.username);
                 localStorage.setItem('role', data.role);

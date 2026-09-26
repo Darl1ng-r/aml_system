@@ -275,6 +275,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Response GZip compression for API JSON and web static assets
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # Include Routers
 app.include_router(health.router)  # /health, /health/live, /health/ready — must be before static mount
 
@@ -337,6 +341,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from observability.middleware import correlation_id_var
 
 @app.exception_handler(RequestValidationError)
@@ -353,6 +358,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"detail": friendly_msg, "errors": errors}
     )
 
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    accept = request.headers.get("accept", "")
+    if exc.status_code == 404 and "text/html" in accept and os.path.exists("static/404.html"):
+        return FileResponse("static/404.html", status_code=404)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     correlation_id = correlation_id_var.get("")
@@ -361,6 +376,13 @@ async def global_exception_handler(request: Request, exc: Exception):
         exc_info=exc,
         extra={"correlation_id": correlation_id}
     )
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and os.path.exists("static/500.html"):
+        return FileResponse(
+            "static/500.html",
+            status_code=500,
+            headers={"X-Correlation-ID": correlation_id}
+        )
     return JSONResponse(
         status_code=500,
         content={
@@ -368,6 +390,14 @@ async def global_exception_handler(request: Request, exc: Exception):
             "correlation_id": correlation_id
         }
     )
+
+@app.get("/robots.txt", response_class=FileResponse)
+def read_robots():
+    return FileResponse("static/robots.txt", media_type="text/plain")
+
+@app.get("/sitemap.xml", response_class=FileResponse)
+def read_sitemap():
+    return FileResponse("static/sitemap.xml", media_type="application/xml")
 
 @app.get("/")
 def read_root(request: Request):
