@@ -21,14 +21,15 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
     """
     logger.info(f"Recalculating baseline for customer account: {account_id}")
     
-    # 1. Fetch completed outgoing transactions for this account in the last 90 days
+    # 1. Fetch completed outgoing transactions for this account in the last 90 days (bounded to 10,000 to prevent OOM)
     query = """
         SELECT amount, receiver_account_id, country, merchant, device, channel, timestamp
         FROM transactions
         WHERE sender_account_id = $1::uuid
           AND status = 'COMPLETED'
           AND timestamp >= NOW() - INTERVAL '90 days'
-        ORDER BY timestamp DESC;
+        ORDER BY timestamp DESC
+        LIMIT 10000;
     """
     
     try:

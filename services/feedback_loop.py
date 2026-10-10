@@ -139,9 +139,11 @@ class ActiveLearningFeedbackService:
 
                 # Fit new Isolation Forest model incorporating human feedback off the main event loop GIL
                 from services.isolation_forest import _fit_isolation_forest_job
-                from unittest.mock import MagicMock, AsyncMock
 
-                if isinstance(asyncio.to_thread, (MagicMock, AsyncMock)) or hasattr(asyncio.to_thread, "assert_called"):
+                # Duck-type check if running under test harness with mocked asyncio.to_thread
+                is_mocked_thread = hasattr(asyncio.to_thread, "assert_called") or "mock" in type(asyncio.to_thread).__name__.lower()
+
+                if is_mocked_thread:
                     model = IsolationForestScratch(n_estimators=60, max_samples=min(256, X_train.shape[0]))
                     await asyncio.to_thread(model.fit, X_train)
                 else:

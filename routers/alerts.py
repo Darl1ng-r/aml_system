@@ -767,13 +767,18 @@ async def get_alert_details(
                 sender_id
             )
 
-            # 3. Trailing 30-day transactions for dynamic timeline
+            # 3. Trailing 30-day transactions for dynamic timeline (capped at 500 most recent to prevent OOM)
             tx_rows = await conn.fetch(
                 """
                 SELECT id, amount, currency, timestamp, country, channel, status
-                FROM transactions
-                WHERE sender_account_id = $1
-                  AND timestamp >= $2::timestamptz - INTERVAL '30 days'
+                FROM (
+                    SELECT id, amount, currency, timestamp, country, channel, status
+                    FROM transactions
+                    WHERE sender_account_id = $1
+                      AND timestamp >= $2::timestamptz - INTERVAL '30 days'
+                    ORDER BY timestamp DESC
+                    LIMIT 500
+                ) recent_txs
                 ORDER BY timestamp ASC;
                 """,
                 sender_id, row["txn_time"]

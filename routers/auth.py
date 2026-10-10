@@ -586,18 +586,24 @@ class UserRoleUpdate(BaseModel):
 
 @router.get("/users", summary="List users within current tenant (Admin only)")
 async def list_users(
+    limit: int = 50,
+    offset: int = 0,
     current_user: dict = Depends(RoleChecker(["SUPER_ADMIN", "ADMIN"])),
 ):
     from database.postgres import get_async_db_conn
     tenant_id = enforce_tenant_data_scope(current_user)
+    clamped_limit = max(1, min(limit, 200))
+    clamped_offset = max(0, offset)
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, username, role, tenant_id, mfa_enabled, created_at
                 FROM users
-                ORDER BY created_at DESC;
-                """
+                ORDER BY created_at DESC
+                LIMIT $1 OFFSET $2;
+                """,
+                clamped_limit, clamped_offset
             )
             return [
                 {

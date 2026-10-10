@@ -290,14 +290,15 @@ def prometheus_metrics(
 ):
     """Exposes internal compliance, SLO, and performance metrics in Prometheus exposition format."""
     metrics_secret = getattr(settings, "metrics_secret", "") or os.getenv("METRICS_SECRET", "")
-    # Finding #16: Authenticate unconditionally whenever METRICS_SECRET is configured
-    if metrics_secret:
+    is_prod = str(settings.environment).lower() == "production"
+    # PRR: Fail-closed in production or whenever METRICS_SECRET is configured
+    if is_prod or metrics_secret:
         token = None
         if authorization and authorization.startswith("Bearer "):
             token = authorization.split(" ")[1]
         elif x_metrics_token:
             token = x_metrics_token
-        if token != metrics_secret:
+        if not metrics_secret or token != metrics_secret:
             raise HTTPException(status_code=401, detail="Unauthorized metrics scrape access.")
 
     from observability.prometheus import generate_metrics_text

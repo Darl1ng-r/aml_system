@@ -78,9 +78,47 @@ def test_production_forces_offline_dev_false():
         neo4j_password="secure_prod_password_123",
         elastic_password="secure_prod_password_456",
         aml_app_password="secure_prod_app_password_789",
-        internal_gateway_secret="super-high-entropy-prod-gateway-secret-991823"
+        internal_gateway_secret="super-high-entropy-prod-gateway-secret-991823",
+        metrics_secret="super-secret-metrics-token-prod-999",
+        allowed_origins="https://aml.internal.bank.com"
     )
     assert s.allow_offline_dev is False
+
+
+def test_production_rejects_missing_metrics_secret():
+    """Verifies that production environment rejects missing or short metrics_secret."""
+    from config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            environment="production",
+            postgres_password="secure_prod_password_123",
+            neo4j_password="secure_prod_password_123",
+            elastic_password="secure_prod_password_456",
+            aml_app_password="secure_prod_app_password_789",
+            internal_gateway_secret="super-high-entropy-prod-gateway-secret-991823",
+            allowed_origins="https://aml.internal.bank.com",
+            metrics_secret=""
+        )
+    assert "METRICS_SECRET must be configured with >= 16 characters in production" in str(exc_info.value)
+
+
+def test_production_rejects_localhost_allowed_origins():
+    """Verifies that production environment rejects localhost or wildcard in allowed_origins."""
+    from config import Settings
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            environment="production",
+            postgres_password="secure_prod_password_123",
+            neo4j_password="secure_prod_password_123",
+            elastic_password="secure_prod_password_456",
+            aml_app_password="secure_prod_app_password_789",
+            internal_gateway_secret="super-high-entropy-prod-gateway-secret-991823",
+            metrics_secret="super-secret-metrics-token-prod-999",
+            allowed_origins="http://localhost:3000"
+        )
+    assert "Insecure ALLOWED_ORIGINS entry" in str(exc_info.value)
 
 
 
