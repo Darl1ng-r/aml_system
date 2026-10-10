@@ -1,0 +1,28 @@
+meta {
+  name: Submit Transaction
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/transactions
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{token}}
+}
+
+body:json {
+  {
+    "sender_account_id": "DE12003400567890111100",
+    "receiver_account_id": "US99887766554433221100",
+    "amount": 10500.00,
+    "currency": "USD",
+    "country": "US",
+    "merchant": "Apex Global Wire",
+    "device": "Terminal-01",
+    "channel": "SWIFT"
+  }
+}

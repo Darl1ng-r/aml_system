@@ -1,0 +1,28 @@
+meta {
+  name: Login (Auto-captures Token)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "username": "{{username}}",
+    "password": "{{password}}"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    const data = res.getBody();
+    if (data && data.access_token) {
+      bru.setEnvVar("token", data.access_token);
+      console.log("Captured JWT access_token into Bruno environment!");
+    }
+  }
+}

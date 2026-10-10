@@ -1,0 +1,12 @@
+{
+  "name": "AML Sentinel API",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ],
+  "size": 0.0012836456298828125,
+  "filesCount": 5,
+  "version": "1",
+  "collectionVersion": "v1.0"
+}
