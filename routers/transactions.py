@@ -14,7 +14,7 @@ from services.rate_limiter import RateLimiter
 from services.behavioral import get_customer_baseline, calculate_customer_baseline
 from services.isolation_forest import get_iforest_score
 from services.dynamic_scorer import compute_dynamic_risk
-from services.idempotency import check_idempotency, save_idempotency_result, extract_idempotency_key
+from services.idempotency import check_idempotency, save_idempotency_result, clear_idempotency_key, extract_idempotency_key
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +54,14 @@ async def ingest_transaction(
 
     # Check Idempotency Key (FinTech standard / RFC 7231)
     idemp_key = await extract_idempotency_key(request, payload.idempotency_key)
+    body_hash = None
     if idemp_key:
+        import hashlib
+        body_hash = hashlib.sha256(payload.model_dump_json(exclude={"idempotency_key"}).encode("utf-8")).hexdigest()
         is_cached, cached_val = await check_idempotency(
             idemp_key,
-            tenant_id=str(user_tenant_id) if user_tenant_id else None
+            tenant_id=str(user_tenant_id) if user_tenant_id else None,
+            request_hash=body_hash
         )
         if is_cached and cached_val:
             headers = {"Idempotency-Key": idemp_key, "X-Cache-Lookup": "HIT"}
@@ -159,9 +163,14 @@ async def ingest_transaction(
             velocity_count = int(row["velocity_count"])
 
     except HTTPException:
+        if idemp_key:
+            await clear_idempotency_key(idemp_key, tenant_id=str(user_tenant_id) if user_tenant_id else None)
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database lookup failed: {str(e)}")
+        if idemp_key:
+            await clear_idempotency_key(idemp_key, tenant_id=str(user_tenant_id) if user_tenant_id else None)
+        logger.error(f"Database lookup failed for account: {e}")
+        raise HTTPException(status_code=500, detail="Database lookup failed during transaction validation.")
 
     # Step 2: Run Rules Engine (asynchronously)
     triggered_rules = await RulesEngine.evaluate_transaction(
@@ -305,10 +314,12 @@ async def ingest_transaction(
                         SELECT COALESCE(SUM(amount), 0) AS total_cash_24h, COUNT(*) AS cash_count_24h
                         FROM transactions
                         WHERE sender_account_id = $1
+                          AND id != $2::uuid
                           AND (UPPER(COALESCE(channel, '')) = 'CASH' OR UPPER(COALESCE(merchant, '')) = 'CASH')
-                          AND timestamp >= NOW() - INTERVAL '24 hours';
+                          AND timestamp >= ($3::timestamptz - INTERVAL '24 hours')
+                          AND timestamp <= $3::timestamptz;
                         """,
-                        sender_id
+                        sender_id, uuid.UUID(tx_id), dt
                     )
                     if rolling_cash_row:
                         prior_24h_cash = float(rolling_cash_row.get("total_cash_24h", 0) if hasattr(rolling_cash_row, "get") else rolling_cash_row["total_cash_24h"])
@@ -330,7 +341,7 @@ async def ingest_transaction(
 
                 # Sub-threshold Structuring / Smurfing detection: sub-threshold deposits deliberately dodging $10,000 threshold
                 is_sub_threshold = 9000.0 <= payload.amount < 10000.0
-                if is_sub_threshold or (cash_count_24h >= 1 and total_aggregate_cash >= 9500.0):
+                if (is_sub_threshold and (prior_24h_cash > 0 or cash_count_24h >= 1)) or (cash_count_24h >= 1 and total_aggregate_cash >= 9500.0):
                     structuring_payload = {
                         "rule": "CTR_STRUCTURING_DETECTION",
                         "current_amount": payload.amount,
@@ -378,9 +389,14 @@ async def ingest_transaction(
             except Exception as ex_outbox:
                 logger.warning(f"Outbox event write skipped/deferred: {ex_outbox}")
     except HTTPException:
+        if idemp_key:
+            await clear_idempotency_key(idemp_key, tenant_id=str(user_tenant_id) if user_tenant_id else None)
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to record transaction: {str(e)}")
+        if idemp_key:
+            await clear_idempotency_key(idemp_key, tenant_id=str(user_tenant_id) if user_tenant_id else None)
+        logger.error(f"Failed to record transaction {tx_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to record transaction due to internal database error.")
 
     # Step 5: Publish Scored Transaction to Redpanda for Async Graph Updates
     redpanda_payload = {
@@ -405,13 +421,18 @@ async def ingest_transaction(
     }
     background_tasks.add_task(publish_transaction, redpanda_payload)
     
-    # Recalculate customer behavior baseline in background
-    background_tasks.add_task(calculate_customer_baseline, str(sender_id))
+    # Recalculate customer behavior baseline in background with strict tenant context (B9)
+    background_tasks.add_task(
+        calculate_customer_baseline,
+        str(sender_id),
+        tenant_id=str(tenant_id) if tenant_id else None
+    )
 
     # Broadcast real-time WebSocket event to active dashboard clients
     from routers.metrics import ws_manager
     event_payload = {
         "event": "NEW_ALERT" if alert_triggered else "NEW_TRANSACTION",
+        "tenant_id": str(tenant_id) if tenant_id else None,
         "transaction_id": tx_id,
         "amount": payload.amount,
         "currency": payload.currency,
@@ -421,7 +442,7 @@ async def ingest_transaction(
         "rule_name": triggered_rules[0] if triggered_rules else "NORMAL",
         "timestamp": payload.timestamp.isoformat()
     }
-    background_tasks.add_task(ws_manager.broadcast, event_payload)
+    background_tasks.add_task(ws_manager.broadcast, event_payload, target_tenant_id=str(tenant_id) if tenant_id else None)
 
     result = {
         "transaction_id": tx_id,
@@ -440,7 +461,8 @@ async def ingest_transaction(
             key=idemp_key,
             status_code=status.HTTP_201_CREATED,
             body=result,
-            tenant_id=str(user_tenant_id) if user_tenant_id else None
+            tenant_id=str(user_tenant_id) if user_tenant_id else None,
+            request_hash=body_hash
         )
         if response is not None:
             response.headers["Idempotency-Key"] = idemp_key

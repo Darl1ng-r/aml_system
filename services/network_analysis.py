@@ -101,21 +101,22 @@ def compute_betweenness_centrality(graph: dict) -> dict:
     # Or keep it as is since it is a directed representation of flows. Let's return raw scores rounded.
     return {node: round(score, 4) for node, score in cb.items()}
 
-async def fetch_transaction_graph(limit: int = 2000) -> dict:
+async def fetch_transaction_graph(tenant_id: str | None = None, limit: int = 2000) -> dict:
     """
-    Fetches transaction topology from Neo4j up to a safe limit
-    to build an adjacency list without memory exhaustion.
+    Fetches transaction topology from Neo4j up to a safe limit,
+    scoped by tenant_id to prevent cross-tenant data leakage (B4).
     """
     driver = await get_async_neo4j_driver()
     query = """
         MATCH (s:Account)-[t:TRANSFERS_TO]->(r:Account)
+        WHERE ($tenant_id IS NULL OR t.tenant_id = $tenant_id OR s.tenant_id = $tenant_id)
         RETURN s.account_number AS sender, r.account_number AS receiver
         LIMIT $limit;
     """
     graph = {}
     try:
         async with driver.session() as session:
-            result = await session.run(query, limit=limit)
+            result = await session.run(query, tenant_id=tenant_id, limit=limit)
             async for record in result:
                 sender = record["sender"]
                 receiver = record["receiver"]
@@ -129,9 +130,9 @@ async def fetch_transaction_graph(limit: int = 2000) -> dict:
         
     return graph
 
-async def run_network_analysis() -> dict:
+async def run_network_analysis(tenant_id: str | None = None) -> dict:
     """
-    Analyzes the transaction graph to detect:
+    Analyzes the transaction graph scoped to tenant_id (B4) to detect:
     - Circular money flows (Server-side Cypher / GDS SCC / Tarjan's SCC fallback)
     - Fan-In patterns (potential mules via server-side aggregation)
     - Fan-Out patterns (potential layering via server-side aggregation)
@@ -152,16 +153,19 @@ async def run_network_analysis() -> dict:
         try:
             degree_query = """
             MATCH (a:Account)
-            OPTIONAL MATCH (s:Account)-[:TRANSFERS_TO]->(a)
+            WHERE ($tenant_id IS NULL OR a.tenant_id = $tenant_id)
+            OPTIONAL MATCH (s:Account)-[t1:TRANSFERS_TO]->(a)
+            WHERE ($tenant_id IS NULL OR t1.tenant_id = $tenant_id)
             WITH a, count(DISTINCT s) AS in_degree
-            OPTIONAL MATCH (a)-[:TRANSFERS_TO]->(r:Account)
+            OPTIONAL MATCH (a)-[t2:TRANSFERS_TO]->(r:Account)
+            WHERE ($tenant_id IS NULL OR t2.tenant_id = $tenant_id)
             WITH a, in_degree, count(DISTINCT r) AS out_degree
             WHERE (in_degree >= 3 AND out_degree <= 1) OR (out_degree >= 3 AND in_degree <= 1)
             RETURN a.account_number AS account_number, in_degree, out_degree
             LIMIT 100;
             """
             async with driver.session() as session:
-                res = await session.run(degree_query)
+                res = await session.run(degree_query, tenant_id=tenant_id)
                 async for record in res:
                     acc = record["account_number"]
                     ind = record["in_degree"]
@@ -191,13 +195,14 @@ async def run_network_analysis() -> dict:
     if driver:
         try:
             cycle_query = """
-            MATCH path = (a:Account)-[:TRANSFERS_TO*2..5]->(a)
+            MATCH path = (a:Account)-[t:TRANSFERS_TO*2..5]->(a)
+            WHERE ($tenant_id IS NULL OR ALL(rel IN relationships(path) WHERE rel.tenant_id = $tenant_id))
             WITH [n IN nodes(path) | n.account_number] AS node_list
             RETURN DISTINCT node_list AS cycle
             LIMIT 50;
             """
             async with driver.session() as session:
-                res = await session.run(cycle_query)
+                res = await session.run(cycle_query, tenant_id=tenant_id)
                 seen_cycles = set()
                 async for record in res:
                     cycle = record["cycle"]
@@ -241,7 +246,7 @@ async def run_network_analysis() -> dict:
 
     # If any analytics component failed server-side execution, run bounded in-memory fallback
     if not cypher_degrees_success or not cypher_cycles_success or not gds_success:
-        graph = await fetch_transaction_graph(limit=2000)
+        graph = await fetch_transaction_graph(tenant_id=tenant_id, limit=2000)
         
         # Fallback for cycles
         if not cypher_cycles_success:

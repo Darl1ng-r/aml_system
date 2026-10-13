@@ -24,7 +24,12 @@ def compute_dynamic_risk(
     # 1. Z-score calculation for the transaction amount
     avg_amount = float(baseline.get("avg_amount", 0.0))
     var_amount = float(baseline.get("variance_amount", 0.0))
-    std_amount = math.sqrt(var_amount)
+    if var_amount > 0.0:
+        std_amount = math.sqrt(var_amount)
+    elif "std_amount" in baseline and float(baseline.get("std_amount", 0.0)) > 0.0:
+        std_amount = float(baseline.get("std_amount"))
+    else:
+        std_amount = 0.0
     
     if avg_amount > 0.0:
         min_std = avg_amount * 0.1
@@ -61,10 +66,13 @@ def compute_dynamic_risk(
             pep_elevation = 0.05
     dynamic_score += pep_elevation
     
-    # 4. Rule trigger scaling / escalations
+    # 4. Rule trigger scaling / escalations (M4)
+    # Scale proportionally with triggered rules while enforcing the regulatory >= 0.80 floor
     rule_applied = False
+    rule_elevation = 0.0
     if rules_triggered:
-        dynamic_score = max(dynamic_score, 0.80)
+        rule_elevation = 0.25 * len(rules_triggered)
+        dynamic_score = max(dynamic_score + rule_elevation, 0.80)
         rule_applied = True
         
     dynamic_score = min(max(dynamic_score, 0.0), 1.0)
@@ -78,6 +86,7 @@ def compute_dynamic_risk(
         "crr_sender_contribution": round(0.10 * sender_risk, 4),
         "crr_receiver_contribution": round(0.10 * receiver_risk, 4),
         "pep_elevation": round(pep_elevation, 4),
+        "rule_elevation": round(rule_elevation, 4),
         "amount_zscore": round(z_score, 4),
         "rule_escalated": rule_applied
     }

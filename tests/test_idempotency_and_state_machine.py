@@ -391,3 +391,175 @@ async def test_async_transaction_buffer_endpoint():
             assert body["ingestion_mode"] == "ASYNC_BUFFERED"
             assert "transaction_id" in body
             assert resp.headers.get("Location") == f"/api/v1/transactions/{body['transaction_id']}"
+
+
+@pytest.mark.asyncio
+async def test_idempotency_payload_hash_mismatch():
+    """Verify that submitting differing payloads with the same Idempotency-Key returns HTTP 422."""
+    from services.idempotency import clear_idempotency_key
+    mock_redis = AsyncMock()
+    mock_redis.set.return_value = False
+    cached_payload = {
+        "status": "COMPLETED",
+        "request_hash": "different_hash_value",
+        "status_code": 201,
+        "response_body": {"transaction_id": "tx-123"}
+    }
+    mock_redis.get.return_value = json.dumps(cached_payload)
+
+    with patch("services.idempotency.get_async_redis_client", return_value=mock_redis):
+        with pytest.raises(HTTPException) as exc_info:
+            await check_idempotency(
+                key="test-key-123",
+                tenant_id=TENANT_ID,
+                request_hash="current_payload_hash_abc"
+            )
+        assert exc_info.value.status_code == 422
+        assert "payload differs" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_alert_resolution_releases_held_transaction():
+    """Verify that resolving an alert releases underlying HELD transaction to COMPLETED (false positive) or REJECTED (SAR)."""
+    from routers.alerts import resolve_alert, AlertAction
+    from fastapi import BackgroundTasks
+
+    alert_id = str(uuid.uuid4())
+    tx_id = uuid.uuid4()
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {
+        "id": alert_id,
+        "transaction_id": tx_id,
+        "rule_name": "LARGE_TX",
+        "threat_level": "HIGH",
+        "ai_risk_score": 0.9,
+        "status": "OPEN",
+        "amount": 50000.0,
+        "currency": "USD",
+        "timestamp": datetime.now(timezone.utc),
+        "account_number": "ACC_1",
+        "owner_name": "Alice"
+    }
+    mock_conn.execute.return_value = "UPDATE 1"
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__.return_value = mock_conn
+    mock_ctx.__aexit__.return_value = None
+
+    current_user = {
+        "id": str(uuid.uuid4()),
+        "role": "ANALYST",
+        "username": "analyst1",
+        "tenant_id": TENANT_ID
+    }
+
+    # 1. Close as false positive -> COMPLETED
+    with patch("routers.alerts.get_async_db_conn", return_value=mock_ctx), \
+         patch("routers.metrics.ws_manager.broadcast", new_callable=AsyncMock):
+        res = await resolve_alert(
+            id=alert_id,
+            payload=AlertAction(action="CLOSE_FALSE_POSITIVE", justification="False positive confirmed"),
+            background_tasks=BackgroundTasks(),
+            current_user=current_user
+        )
+        assert res["status"] == "CLOSED_FALSE_POSITIVE"
+        # Check that transactions update was called with COMPLETED
+        calls = [c for c in mock_conn.execute.call_args_list if "UPDATE transactions" in str(c)]
+        assert len(calls) == 1
+        assert "COMPLETED" in str(calls[0])
+
+    # 2. Close as SAR -> REJECTED
+    mock_conn.fetchrow.return_value["status"] = "OPEN"
+    with patch("routers.alerts.get_async_db_conn", return_value=mock_ctx), \
+         patch("routers.metrics.ws_manager.broadcast", new_callable=AsyncMock):
+        res_sar = await resolve_alert(
+            id=alert_id,
+            payload=AlertAction(action="CLOSE_SAR", justification="Suspicious activity confirmed"),
+            background_tasks=BackgroundTasks(),
+            current_user=current_user
+        )
+        assert res_sar["status"] == "CLOSED_SAR"
+        calls_sar = [c for c in mock_conn.execute.call_args_list if "UPDATE transactions" in str(c) and "REJECTED" in str(c)]
+        assert len(calls_sar) == 1
+
+
+@pytest.mark.asyncio
+async def test_alert_resolution_concurrency_conflict_409():
+    """Verify that concurrent conflicting update raises HTTP 409 Conflict."""
+    from routers.alerts import resolve_alert, AlertAction
+    from fastapi import BackgroundTasks
+
+    alert_id = str(uuid.uuid4())
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {
+        "id": alert_id,
+        "transaction_id": uuid.uuid4(),
+        "rule_name": "LARGE_TX",
+        "threat_level": "HIGH",
+        "ai_risk_score": 0.9,
+        "status": "OPEN",
+        "amount": 50000.0,
+        "currency": "USD",
+        "timestamp": datetime.now(timezone.utc),
+        "account_number": "ACC_1",
+        "owner_name": "Alice"
+    }
+    # Simulate optimistic concurrency collision: 0 rows updated
+    mock_conn.execute.return_value = "UPDATE 0"
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__.return_value = mock_conn
+    mock_ctx.__aexit__.return_value = None
+
+    current_user = {
+        "id": str(uuid.uuid4()),
+        "role": "ANALYST",
+        "username": "analyst1",
+        "tenant_id": TENANT_ID
+    }
+
+    with patch("routers.alerts.get_async_db_conn", return_value=mock_ctx):
+        with pytest.raises(HTTPException) as exc_info:
+            await resolve_alert(
+                id=alert_id,
+                payload=AlertAction(action="CLOSE_FALSE_POSITIVE", justification="Colliding update"),
+                background_tasks=BackgroundTasks(),
+                current_user=current_user
+            )
+        assert exc_info.value.status_code == 409
+        assert "modified concurrently" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_sanctions_search_token_order_and_aliases():
+    """Verify that perform_sanctions_search matches token permutations and aliases across hits."""
+    from routers.screening import perform_sanctions_search
+
+    mock_es = AsyncMock()
+    # Hit 0 is a weak hit, Hit 1 has the target as an alias in inverted order
+    mock_es.search.return_value = {
+        "hits": {
+            "hits": [
+                {
+                    "_source": {
+                        "name": "Vladimir Ivanovich",
+                        "source_list": "OFAC SDN",
+                        "aliases": []
+                    }
+                },
+                {
+                    "_source": {
+                        "name": "Vladimir Vladimirovich Putin",
+                        "source_list": "EU Sanctions",
+                        "aliases": ["Putin, Vladimir", "V. Putin"]
+                    }
+                }
+            ]
+        }
+    }
+
+    # Query with inverted order
+    res = await perform_sanctions_search("Vladimir Putin", 0.80, mock_es)
+    assert res["match_found"] is True
+    assert res["score"] >= 0.90
+    assert res["source_list"] == "EU Sanctions"
+    assert "Putin" in res["matched_entry"]["name"]
+

@@ -90,6 +90,7 @@ async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
     status = tx_payload.get("status", "UNKNOWN")
     currency = tx_payload.get("currency", "USD")
     timestamp_str = tx_payload.get("timestamp", "")
+    tenant_id = tx_payload.get("tenant_id")
 
     # Parse timestamp → epoch int for Neo4j (stores as integer property)
     try:
@@ -99,24 +100,30 @@ async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
     except Exception:
         epoch = int(datetime.now(timezone.utc).timestamp())
 
-    # MERGE on transaction_id guarantees idempotency
+    # MERGE on transaction_id guarantees idempotency with tenant isolation (B4)
     query = """
     MERGE (s:Account {id: $sender_id})
       ON CREATE SET s.account_number = $sender_acc,
+                    s.tenant_id      = $tenant_id,
                     s.created_at     = timestamp()
-      ON MATCH  SET s.account_number = $sender_acc
+      ON MATCH  SET s.account_number = $sender_acc,
+                    s.tenant_id      = coalesce(s.tenant_id, $tenant_id)
 
     MERGE (r:Account {id: $receiver_id})
       ON CREATE SET r.account_number = $receiver_acc,
+                    r.tenant_id      = $tenant_id,
                     r.created_at     = timestamp()
-      ON MATCH  SET r.account_number = $receiver_acc
+      ON MATCH  SET r.account_number = $receiver_acc,
+                    r.tenant_id      = coalesce(r.tenant_id, $tenant_id)
 
     MERGE (s)-[t:TRANSFERS_TO {transaction_id: $tx_id}]->(r)
       ON CREATE SET t.amount    = $amount,
                     t.currency  = $currency,
                     t.status    = $status,
+                    t.tenant_id = $tenant_id,
                     t.timestamp = $epoch
-      ON MATCH  SET t.status    = $status
+      ON MATCH  SET t.status    = $status,
+                    t.tenant_id = coalesce(t.tenant_id, $tenant_id)
     """
 
     try:
@@ -131,23 +138,25 @@ async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
                 amount=amount,
                 currency=currency,
                 status=status,
+                tenant_id=str(tenant_id) if tenant_id else None,
                 epoch=epoch,
             )
         logger.info(
             f"[Neo4j] Wrote edge: {sender_acc} --[${amount:.2f}]--> {receiver_acc} "
-            f"(tx={tx_id}, status={status})"
+            f"(tx={tx_id}, status={status}, tenant={tenant_id})"
         )
-        # Broadcast real-time graph update event to connected dashboard clients
+        # Broadcast real-time graph update event with tenant isolation (B3 & B4)
         try:
             from routers.metrics import ws_manager
+            t_id = str(tenant_id) if tenant_id else None
             await ws_manager.broadcast({
                 "event": "GRAPH_SYNCED",
-                "tenant_id": str(tx_payload.get("tenant_id", "")),
+                "tenant_id": t_id,
                 "transaction_id": tx_id,
                 "sender_account": sender_acc,
                 "receiver_account": receiver_acc,
                 "amount": amount
-            })
+            }, target_tenant_id=t_id)
         except Exception:
             pass
         return True
@@ -348,7 +357,7 @@ async def run_postgres_poll_fallback(neo4j_driver, shutdown_event: asyncio.Event
             try:
                 rows = await conn.fetch(
                     """
-                    SELECT t.id, t.sender_account_id, s.account_number AS sender_acc,
+                    SELECT t.id, t.tenant_id, t.sender_account_id, s.account_number AS sender_acc,
                            t.receiver_account_id, r.account_number AS receiver_acc,
                            t.amount, t.currency, t.status, t.timestamp
                     FROM transactions t
@@ -366,6 +375,7 @@ async def run_postgres_poll_fallback(neo4j_driver, shutdown_event: asyncio.Event
                     tx_id = str(row["id"])
                     payload = {
                         "transaction_id": tx_id,
+                        "tenant_id": str(row["tenant_id"]) if row.get("tenant_id") else None,
                         "sender_id": str(row["sender_account_id"]),
                         "sender_account": row["sender_acc"],
                         "receiver_id": str(row["receiver_account_id"]),

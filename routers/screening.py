@@ -91,9 +91,28 @@ def levenshtein_ratio(s1: str, s2: str) -> float:
     dist = rapidfuzz.distance.Levenshtein.distance(norm_s1, norm_s2, weights=(1, 1, 2))
     return (max_len - dist) / max_len
 
+def name_similarity_score(s1: str, s2: str) -> float:
+    """
+    Computes comprehensive string and token similarity between two names in [0.0, 1.0]
+    combining homoglyph/diacritic normalization, Levenshtein edit distance,
+    and token-order-independent matching (token_sort_ratio / token_set_ratio) via rapidfuzz.
+    """
+    norm_s1 = normalize_screening_name(s1)
+    norm_s2 = normalize_screening_name(s2)
+    if not norm_s1 and not norm_s2:
+        return 1.0
+    if not norm_s1 or not norm_s2:
+        return 0.0
+
+    lev = levenshtein_ratio(norm_s1, norm_s2)
+    token_sort = rapidfuzz.fuzz.token_sort_ratio(norm_s1, norm_s2) / 100.0
+    token_set = rapidfuzz.fuzz.token_set_ratio(norm_s1, norm_s2) / 100.0
+    return max(lev, token_sort, token_set)
+
 async def perform_sanctions_search(name: str, threshold: float, es) -> dict:
     """
     Core fuzzy sanctions search logic against Elasticsearch with normalized query expansion.
+    Evaluates all candidate hits and aliases using token-aware fuzzy matching (M11).
     """
     norm_name = normalize_screening_name(name)
     # Search Elasticsearch sanctions index using fuzzy match on both raw and normalized queries
@@ -124,7 +143,7 @@ async def perform_sanctions_search(name: str, threshold: float, es) -> dict:
         }
     }
     
-    response = await es.search(index=SANCTIONS_INDEX, body=query, size=5)
+    response = await es.search(index=SANCTIONS_INDEX, body=query, size=10)
     hits = response.get("hits", {}).get("hits", [])
     
     if not hits:
@@ -135,29 +154,51 @@ async def perform_sanctions_search(name: str, threshold: float, es) -> dict:
             "matched_entry": None
         }
         
-    # Select best hit and compute exact string similarity ratio
-    best_hit = hits[0]
-    source = best_hit["_source"]
-    matched_name = source.get("name", "")
+    best_similarity = 0.0
+    best_source_list = "Unknown List"
+    best_matched_name = ""
     
-    similarity_score = levenshtein_ratio(name, matched_name)
-    match_found = similarity_score >= threshold
+    for hit in hits:
+        source = hit.get("_source", {})
+        names_to_check = [source.get("name", "")]
+        aliases = source.get("aliases", [])
+        if isinstance(aliases, list):
+            names_to_check.extend(aliases)
+        elif isinstance(aliases, str):
+            names_to_check.append(aliases)
+            
+        src_list = source.get("source_list", "Unknown List")
+        
+        for candidate_name in names_to_check:
+            if not candidate_name:
+                continue
+            sim = name_similarity_score(name, candidate_name)
+            if sim > best_similarity:
+                best_similarity = sim
+                best_source_list = src_list
+                best_matched_name = source.get("name", candidate_name)
+                
+    match_found = best_similarity >= threshold
     
     return {
         "match_found": match_found,
-        "score": round(similarity_score, 2),
-        "source_list": source.get("source_list", "Unknown List"),
+        "score": round(best_similarity, 2),
+        "source_list": best_source_list if best_similarity > 0.0 else None,
         "matched_entry": {
-            "name": matched_name,
-            "reason": f"Fuzzy similarity match of {int(similarity_score * 100)}%"
-        }
+            "name": best_matched_name,
+            "reason": f"Fuzzy similarity match of {int(best_similarity * 100)}%"
+        } if best_similarity > 0.0 else None
     }
 
 async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | None = None) -> dict:
     """
     Dedicated Politically Exposed Persons (PEP) database search & tiering evaluation.
+    Evaluates all returned hits and aliases across Elasticsearch and PostgreSQL fallback (M11).
     """
     from config import PEP_INDEX
+    best_pep_score = 0.0
+    best_pep_res = None
+
     try:
         query = {
             "query": {
@@ -170,29 +211,40 @@ async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | N
                 }
             }
         }
-        response = await es.search(index=PEP_INDEX, body=query, size=5)
+        response = await es.search(index=PEP_INDEX, body=query, size=10)
         hits = response.get("hits", {}).get("hits", [])
 
-        if hits:
-            best_hit = hits[0]["_source"]
-            matched_name = best_hit.get("name", "")
-            similarity_score = levenshtein_ratio(name, matched_name)
+        for hit in hits:
+            source = hit.get("_source", {})
+            names_to_check = [source.get("name", "")]
+            aliases = source.get("aliases", [])
+            if isinstance(aliases, list):
+                names_to_check.extend(aliases)
+            elif isinstance(aliases, str):
+                names_to_check.append(aliases)
 
-            if similarity_score >= threshold:
-                return {
-                    "match_found": True,
-                    "score": round(similarity_score, 2),
-                    "pep_tier": best_hit.get("pep_tier", "TIER_2_GOVERNMENT_OFFICIAL"),
-                    "position": best_hit.get("position", "Senior Official"),
-                    "country": best_hit.get("country", "GLOBAL"),
-                    "rca_flag": best_hit.get("rca_flag", False),
-                    "source_list": best_hit.get("source_database", "FATF PEP Register"),
-                    "matched_entry": {
-                        "name": matched_name,
-                        "edd_required": True,
-                        "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory."
+            for candidate_name in names_to_check:
+                if not candidate_name:
+                    continue
+                sim = name_similarity_score(name, candidate_name)
+                if sim > best_pep_score:
+                    best_pep_score = sim
+                    best_pep_res = {
+                        "match_found": sim >= threshold,
+                        "score": round(sim, 2),
+                        "pep_tier": source.get("pep_tier", "TIER_2_GOVERNMENT_OFFICIAL"),
+                        "position": source.get("position", "Senior Official"),
+                        "country": source.get("country", "GLOBAL"),
+                        "rca_flag": source.get("rca_flag", False),
+                        "source_list": source.get("source_database", "FATF PEP Register"),
+                        "matched_entry": {
+                            "name": source.get("name", candidate_name),
+                            "edd_required": True,
+                            "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory."
+                        }
                     }
-                }
+        if best_pep_res and best_pep_res["match_found"]:
+            return best_pep_res
     except Exception as e:
         logger.warning(f"Elasticsearch PEP search bypass/fallback: {e}")
 
@@ -242,10 +294,11 @@ async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | N
 
             for row in rows:
                 p_name = row["name"]
-                sim = levenshtein_ratio(name, p_name)
-                if sim >= threshold:
-                    return {
-                        "match_found": True,
+                sim = name_similarity_score(name, p_name)
+                if sim > best_pep_score:
+                    best_pep_score = sim
+                    best_pep_res = {
+                        "match_found": sim >= threshold,
                         "score": round(sim, 2),
                         "pep_tier": row["pep_tier"],
                         "position": row["position"],
@@ -258,8 +311,13 @@ async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | N
                             "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory."
                         }
                     }
+            if best_pep_res and best_pep_res["match_found"]:
+                return best_pep_res
     except Exception as e:
         logger.warning(f"PostgreSQL PEP query fallback bypass: {e}")
+
+    if best_pep_res:
+        return best_pep_res
 
     return {
         "match_found": False,

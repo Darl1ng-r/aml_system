@@ -123,15 +123,16 @@ async def submit_sar_to_fincen(
             f"for Alert {payload.alert_id} | Tracking ID: {receipt['fincen_tracking_id']} | Status: {receipt['status']}"
         )
 
-        # Broadcast real-time WebSocket notification
+        # Broadcast real-time WebSocket notification with strict tenant isolation (B3)
         from routers.metrics import ws_manager
         await ws_manager.broadcast({
             "event": "FINCEN_SAR_FILED",
+            "tenant_id": str(tenant_id),
             "alert_id": payload.alert_id,
             "fincen_tracking_id": receipt["fincen_tracking_id"],
             "status": receipt["status"],
             "submitted_by": current_user["username"]
-        })
+        }, target_tenant_id=str(tenant_id))
 
         if response is not None:
             response.headers["Location"] = f"/api/v1/fincen/sars/{payload.alert_id}"

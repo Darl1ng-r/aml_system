@@ -48,15 +48,16 @@ async def generate_str_batch(
         if result.get("batch_id"):
             if response is not None:
                 response.headers["Location"] = f"/api/v1/str/batch/batches/{result['batch_id']}"
-            # Broadcast real-time WebSocket update
+            # Broadcast real-time WebSocket update with strict tenant isolation (B3)
             from routers.metrics import ws_manager
             await ws_manager.broadcast({
                 "event": "STR_BATCH_GENERATED",
+                "tenant_id": str(tenant_id),
                 "batch_id": result["batch_id"],
                 "record_count": result["record_count"],
                 "total_amount": result["total_amount"],
                 "generated_by": current_user["username"]
-            })
+            }, target_tenant_id=str(tenant_id))
 
         return result
     except Exception as e:
@@ -170,14 +171,15 @@ async def transmit_str_batch(
                 receipt["status"], batch_id
             )
 
-            # Broadcast real-time WebSocket update
+            # Broadcast real-time WebSocket update with strict tenant isolation (B3)
             from routers.metrics import ws_manager
             await ws_manager.broadcast({
                 "event": "STR_BATCH_TRANSMITTED",
+                "tenant_id": str(tenant_id),
                 "batch_id": batch_id,
                 "status": receipt["status"],
                 "fincen_tracking_id": receipt["fincen_tracking_id"]
-            })
+            }, target_tenant_id=str(tenant_id))
 
             return {
                 "batch_id": batch_id,

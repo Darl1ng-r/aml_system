@@ -82,6 +82,23 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                 daily_freq = count_30 / span_days
                 weekly_freq = daily_freq * 7.0
                 
+                # Circular mean for 24-hour cycle
+                if hours:
+                    import math
+                    angles = [2.0 * math.pi * h / 24.0 for h in hours]
+                    sin_mean = float(np.mean([math.sin(a) for a in angles]))
+                    cos_mean = float(np.mean([math.cos(a) for a in angles]))
+                    circ_hour = (math.atan2(sin_mean, cos_mean) * 24.0 / (2.0 * math.pi)) % 24.0
+                    avg_hour_val = round(circ_hour, 2)
+                    var_hour_val = float(np.var(hours))
+                else:
+                    avg_hour_val = 0.0
+                    var_hour_val = 0.0
+
+                # Cap variance to prevent numeric(15,2) database overflow
+                raw_variance = float(np.var(amounts)) if len(amounts) > 1 else 0.0
+                safe_variance = min(raw_variance, 999_999_999_999.0)
+
                 # Compute Jurisdiction Risk Score based on top countries
                 high_risk_set = {"RU", "IR", "KP", "SY", "AF", "MM"}
                 j_risk = 0.1
@@ -94,14 +111,14 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                     "account_id": account_id,
                     "avg_amount": float(np.mean(amounts)),
                     "median_amount": float(np.median(amounts)),
-                    "variance_amount": float(np.var(amounts)) if len(amounts) > 1 else 0.0,
+                    "variance_amount": safe_variance,
                     "daily_frequency": float(daily_freq),
                     "weekly_frequency": float(weekly_freq),
                     "monthly_frequency": int(count_30),
                     "unique_receivers_count": int(len(set(receivers))),
                     "unique_receiver_countries_count": int(len(set(countries))),
-                    "avg_hour": float(np.mean(hours)),
-                    "variance_hour": float(np.var(hours)) if len(hours) > 1 else 0.0,
+                    "avg_hour": avg_hour_val,
+                    "variance_hour": var_hour_val,
                     "top_countries": get_mode_list(countries),
                     "top_merchants": get_mode_list(merchants),
                     "top_devices": get_mode_list(devices),
@@ -116,9 +133,10 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                     account_id, tenant_id, avg_amount, median_amount, variance_amount,
                     daily_frequency, weekly_frequency, monthly_frequency,
                     unique_receivers_count, unique_receiver_countries_count,
-                    avg_hour, variance_hour, top_countries, top_merchants, top_devices, top_channels, updated_at
+                    avg_hour, variance_hour, top_countries, top_merchants, top_devices, top_channels,
+                    jurisdiction_risk_score, kyc_risk_tier, updated_at
                 )
-                SELECT $1, a.tenant_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW()
+                SELECT $1, a.tenant_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW()
                 FROM accounts a WHERE a.id = $1::uuid
                 ON CONFLICT (account_id) DO UPDATE SET
                     tenant_id = EXCLUDED.tenant_id,
@@ -136,6 +154,8 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                     top_merchants = EXCLUDED.top_merchants,
                     top_devices = EXCLUDED.top_devices,
                     top_channels = EXCLUDED.top_channels,
+                    jurisdiction_risk_score = EXCLUDED.jurisdiction_risk_score,
+                    kyc_risk_tier = EXCLUDED.kyc_risk_tier,
                     updated_at = NOW();
             """
             
@@ -155,7 +175,9 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                 baseline["top_countries"],
                 baseline["top_merchants"],
                 baseline["top_devices"],
-                baseline["top_channels"]
+                baseline["top_channels"],
+                baseline["jurisdiction_risk_score"],
+                baseline["kyc_risk_tier"]
             )
             
             return baseline

@@ -39,6 +39,7 @@ async def sync_watchlists(
         from routers.metrics import ws_manager
         await ws_manager.broadcast({
             "event": "WATCHLIST_SYNCED",
+            "is_system_broadcast": True,
             "total_records": result["total_records_processed"],
             "synced_by": current_user["username"]
         })

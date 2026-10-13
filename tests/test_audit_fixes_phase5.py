@@ -181,6 +181,8 @@ def test_sentry_settings_configuration():
         neo4j_password="secure_prod_password_456",
         elastic_password="secure_prod_password_789",
         internal_gateway_secret="secure_prod_internal_gateway_secret_999",
+        metrics_secret="secure_metrics_secret_12345",
+        allowed_origins="https://aml.example.com",
         sentry_dsn="https://public@sentry.io/12345"
     )
     assert s.sentry_dsn == "https://public@sentry.io/12345"

@@ -24,6 +24,7 @@ DEFAULT_IDEMPOTENCY_TTL_SECONDS = 86400  # 24 Hours retention per financial comp
 async def check_idempotency(
     key: str,
     tenant_id: Optional[str] = None,
+    request_hash: Optional[str] = None,
     ttl_seconds: int = DEFAULT_IDEMPOTENCY_TTL_SECONDS
 ) -> Tuple[bool, Optional[Dict[str, Any]]]:
     """
@@ -32,6 +33,7 @@ async def check_idempotency(
         (is_cached, cached_payload_or_none)
     Raises:
         HTTPException(409) if a request with this key is currently in-flight.
+        HTTPException(422) if the key was already completed with a different payload.
     """
     if not key:
         return False, None
@@ -44,9 +46,13 @@ async def check_idempotency(
             return False, None
 
         # Attempt to atomically set the key in 'IN_FLIGHT' state if not present
+        in_flight_payload = {"status": "IN_FLIGHT"}
+        if request_hash:
+            in_flight_payload["request_hash"] = request_hash
+
         acquired = await r.set(
             redis_key,
-            json.dumps({"status": "IN_FLIGHT"}),
+            json.dumps(in_flight_payload),
             nx=True,
             ex=ttl_seconds
         )
@@ -68,6 +74,12 @@ async def check_idempotency(
             )
 
         if data.get("status") == "COMPLETED":
+            # Guard against idempotency key reuse with mismatched body (RFC 7231 / FinTech standard)
+            if request_hash and data.get("request_hash") and data["request_hash"] != request_hash:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Idempotency-Key mismatch: payload differs from previous request with identical key."
+                )
             return True, data
 
         return False, None
@@ -84,6 +96,7 @@ async def save_idempotency_result(
     status_code: int,
     body: Dict[str, Any],
     tenant_id: Optional[str] = None,
+    request_hash: Optional[str] = None,
     ttl_seconds: int = DEFAULT_IDEMPOTENCY_TTL_SECONDS
 ) -> None:
     """Stores the final response payload and status code for the idempotency key."""
@@ -102,9 +115,41 @@ async def save_idempotency_result(
             "status_code": status_code,
             "body": body
         }
+        if request_hash:
+            payload["request_hash"] = request_hash
+
         await r.set(redis_key, json.dumps(payload), ex=ttl_seconds)
     except Exception as e:
         logger.warning(f"Failed to cache idempotency result for key {key}: {e}")
+
+
+async def clear_idempotency_key(
+    key: str,
+    tenant_id: Optional[str] = None
+) -> None:
+    """
+    Clears an in-flight idempotency key so failed requests can be safely retried
+    without being locked out for 24 hours.
+    """
+    if not key:
+        return
+
+    redis_key = f"idemp:{tenant_id}:{key}" if tenant_id else f"idemp:{key}"
+
+    try:
+        r = await get_async_redis_client()
+        if not r:
+            return
+
+        val = await r.get(redis_key)
+        if val:
+            data = json.loads(val)
+            # Only remove if still IN_FLIGHT (preserve COMPLETED idempotency cache)
+            if data.get("status") == "IN_FLIGHT":
+                await r.delete(redis_key)
+                logger.debug(f"Cleared in-flight idempotency key: {key}")
+    except Exception as e:
+        logger.warning(f"Failed to clear idempotency key {key}: {e}")
 
 
 async def extract_idempotency_key(request: Optional[Request] = None, body_key: Optional[str] = None) -> Optional[str]:

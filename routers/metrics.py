@@ -66,14 +66,22 @@ class ConnectionManager:
             return
         payload = json.dumps(message)
         target = target_tenant_id or message.get("tenant_id")
+        is_global = message.get("is_system_broadcast", False)
         disconnected = []
 
         for connection, info in list(self.active_connections.items()):
             # Enforce Tenant Isolation:
             # If target tenant is set, only broadcast to connections from that tenant
             # or global compliance overseers (SUPER_ADMIN, GLOBAL_AUDITOR).
-            if target and info["tenant_id"] != str(target) and info["role"] not in ["SUPER_ADMIN", "GLOBAL_AUDITOR"]:
+            # If no target tenant is set and not an explicit global broadcast, do NOT leak to tenant-scoped users.
+            is_overseer = info.get("role") in ["SUPER_ADMIN", "GLOBAL_AUDITOR"]
+            if target:
+                if info.get("tenant_id") != str(target) and not is_overseer:
+                    continue
+            elif not is_global and not is_overseer:
+                # Omitted target tenant on non-system message: fail closed for tenant analysts
                 continue
+
             try:
                 await connection.send_text(payload)
             except Exception:

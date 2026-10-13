@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from services.auth import RoleChecker
+from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
 from services.network_analysis import run_network_analysis
 
@@ -19,7 +19,8 @@ async def get_network_analysis(
     - Intermediary middleman transit accounts (Brandes' Betweenness Centrality).
     """
     try:
-        return await run_network_analysis()
+        tenant_id = enforce_tenant_data_scope(current_user)
+        return await run_network_analysis(tenant_id=str(tenant_id) if tenant_id else None)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Graph network analysis failed: {str(e)}")
 
@@ -32,18 +33,21 @@ async def expand_graph_node(
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
-    Dynamically expands a target graph node by fetching its 2-hop connected sub-network from Neo4j.
+    Dynamically expands a target graph node by fetching its 2-hop connected sub-network from Neo4j,
+    scoped strictly to the authenticated tenant (B4).
     """
     from database.neo4j_db import get_async_neo4j_driver
     try:
+        tenant_id = enforce_tenant_data_scope(current_user)
         driver = await get_async_neo4j_driver()
         query = """
         MATCH (start {id: $entity_id})-[r:TRANSFERS_TO|BELONGS_TO|OWNS_UBO*1..2]-(connected)
+        WHERE ($tenant_id IS NULL OR start.tenant_id = $tenant_id OR connected.tenant_id = $tenant_id)
         RETURN start, r, connected
         LIMIT 50;
         """
         async with driver.session() as session:
-            result = await session.run(query, entity_id=entity_id)
+            result = await session.run(query, entity_id=entity_id, tenant_id=str(tenant_id) if tenant_id else None)
             records = await result.data()
 
         nodes = {}

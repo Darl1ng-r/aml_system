@@ -197,13 +197,15 @@ async def get_alert_graph(
         # Query Neo4j to build network graph surrounding sender/receiver and company structures/UBOs
         query = """
         MATCH (a:Account) WHERE a.account_number IN [$sender, $receiver]
+          AND ($tenant_id IS NULL OR a.tenant_id = $tenant_id)
         OPTIONAL MATCH (a)-[t:TRANSFERS_TO]-(other:Account)
+          WHERE ($tenant_id IS NULL OR other.tenant_id = $tenant_id OR t.tenant_id = $tenant_id)
         OPTIONAL MATCH (a)-[b:BELONGS_TO]->(c:Company)
         OPTIONAL MATCH (p:Person)-[u:OWNS_UBO]->(c)
         RETURN a, t, other, b, c, p, u LIMIT 50;
         """
         async with neo4j_driver.session() as session:
-            result = await session.run(query, sender=sender, receiver=receiver)
+            result = await session.run(query, sender=sender, receiver=receiver, tenant_id=str(tenant_id) if tenant_id else None)
             async for record in result:
                 # Process core account nodes
                 a_node = record.get("a")
@@ -297,10 +299,10 @@ async def resolve_alert(
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            # Check alert exists
+            # Check alert exists and retrieve transaction ID
             alert = await conn.fetchrow(
                 """
-                SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.status,
+                SELECT a.id, a.transaction_id, a.rule_name, a.threat_level, a.ai_risk_score, a.status,
                        t.amount, t.currency, t.timestamp,
                        s.account_number, s.owner_name,
                        r.account_number, r.owner_name
@@ -315,13 +317,53 @@ async def resolve_alert(
             if not alert:
                 raise HTTPException(status_code=404, detail="Alert not found")
 
+            current_status = alert["status"] or "OPEN"
             # Deterministic State Guard: Validate alert transition
-            validate_alert_transition(alert["status"] or "OPEN", status)
+            validate_alert_transition(current_status, status)
 
-            # Update Alert Status and assign the resolving officer
-            await conn.execute(
-                "UPDATE alerts SET status = $1, assigned_officer_id = $2 WHERE id = $3;",
-                status, uuid.UUID(current_user["id"]), uuid.UUID(id)
+            # Optimistic concurrency check (B7)
+            update_result = await conn.execute(
+                """
+                UPDATE alerts
+                SET status = $1, assigned_officer_id = $2
+                WHERE id = $3 AND (status = $4 OR (status IS NULL AND $4 = 'OPEN'));
+                """,
+                status, uuid.UUID(current_user["id"]), uuid.UUID(id), current_status
+            )
+            if update_result == "UPDATE 0":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Conflict: Alert {id} was modified concurrently by another user."
+                )
+
+            # Release or reject underlying HELD transaction (B2)
+            tx_id = alert.get("transaction_id") if hasattr(alert, "get") else None
+            if not tx_id and hasattr(alert, "get"):
+                tx_id = alert.get("txn_id")
+            if tx_id:
+                next_tx_status = "COMPLETED" if payload.action == "CLOSE_FALSE_POSITIVE" else "REJECTED"
+                await conn.execute(
+                    "UPDATE transactions SET status = $1 WHERE id = $2 AND status = 'HELD';",
+                    next_tx_status, tx_id
+                )
+
+            # Persist immutable regulatory audit event (B8)
+            from services.audit import record_audit_event_tx
+            await record_audit_event_tx(
+                conn=conn,
+                action=payload.action,
+                actor_id=current_user["id"],
+                actor_role=current_user["role"],
+                actor_username=current_user.get("username"),
+                resource_type="ALERT",
+                resource_id=id,
+                tenant_id=tenant_id,
+                before_state={"status": current_status},
+                after_state={"status": status},
+                details={
+                    "justification": payload.justification,
+                    "sar_xml_generated": bool(payload.action == "CLOSE_SAR" and payload.sar_xml_generate)
+                }
             )
 
         # Output audit-grade structured log
@@ -341,6 +383,17 @@ async def resolve_alert(
                 "sar_xml_generated": bool(payload.action == "CLOSE_SAR" and payload.sar_xml_generate)
             }
         )
+
+        # Broadcast real-time WebSocket event with strict tenant isolation (B3)
+        from routers.metrics import ws_manager
+        await ws_manager.broadcast({
+            "event": "ALERT_RESOLVED",
+            "tenant_id": str(tenant_id),
+            "alert_id": id,
+            "status": status,
+            "action": payload.action,
+            "resolved_by": current_user["username"]
+        }, target_tenant_id=str(tenant_id))
 
         # Record human active learning feedback sample in background task
         from services.feedback_loop import feedback_service
@@ -398,13 +451,14 @@ async def assign_alert(
             if updated == "UPDATE 0":
                 raise HTTPException(status_code=404, detail="Alert not found.")
 
-            # Broadcast WebSocket update
+            # Broadcast WebSocket update with strict tenant isolation (B3)
             from routers.metrics import ws_manager
             await ws_manager.broadcast({
                 "event": "ALERT_ASSIGNED",
+                "tenant_id": str(tenant_id),
                 "alert_id": id,
                 "assigned_officer": payload.officer_username
-            })
+            }, target_tenant_id=str(tenant_id))
 
             return {"alert_id": id, "assigned_officer": payload.officer_username, "status": "ASSIGNED"}
     except HTTPException:
@@ -501,15 +555,16 @@ async def escalate_alert(
                 }
             )
 
-            # Broadcast WebSocket notification
+            # Broadcast WebSocket notification with strict tenant isolation (B3)
             from routers.metrics import ws_manager
             await ws_manager.broadcast({
                 "event": "ALERT_ESCALATED",
+                "tenant_id": str(tenant_id),
                 "alert_id": id,
                 "status": "ESCALATED",
                 "escalated_by": current_user["username"],
                 "justification": justification
-            })
+            }, target_tenant_id=str(tenant_id))
 
             return {
                 "alert_id": id,
@@ -898,6 +953,34 @@ async def bulk_resolve_alerts(
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            # Fetch alerts to validate deterministic state machine transitions (B7)
+            rows = await conn.fetch(
+                "SELECT id, status, transaction_id FROM alerts WHERE id = ANY($1::uuid[]);",
+                alert_uuids
+            )
+            valid_ids = []
+            held_tx_ids = []
+            for r in rows:
+                c_st = r["status"] or "OPEN"
+                try:
+                    validate_alert_transition(c_st, status)
+                    valid_ids.append(r["id"])
+                    t_id = r.get("transaction_id") if hasattr(r, "get") else None
+                    if not t_id and hasattr(r, "get"):
+                        t_id = r.get("txn_id")
+                    if t_id:
+                        held_tx_ids.append(t_id)
+                except HTTPException as ex_val:
+                    logger.warning(f"Skipping alert {r['id']} during bulk resolve due to illegal transition: {ex_val.detail}")
+
+            if not valid_ids:
+                return {
+                    "processed_count": 0,
+                    "action": payload.action,
+                    "status": status,
+                    "message": "No eligible alerts could be transitioned."
+                }
+
             # Batch update all targeted alert records in PostgreSQL
             result = await conn.execute(
                 """
@@ -905,9 +988,35 @@ async def bulk_resolve_alerts(
                 SET status = $1, assigned_officer_id = $2
                 WHERE id = ANY($3::uuid[]);
                 """,
-                status, uuid.UUID(current_user["id"]), alert_uuids
+                status, uuid.UUID(current_user["id"]), valid_ids
             )
-            count = int(result.split(" ")[1]) if "UPDATE" in result else 0
+            count = len(valid_ids)
+
+            # Release or reject underlying HELD transactions (B2)
+            if held_tx_ids:
+                next_tx_status = "COMPLETED" if payload.action == "CLOSE_FALSE_POSITIVE" else "REJECTED"
+                await conn.execute(
+                    "UPDATE transactions SET status = $1 WHERE id = ANY($2::uuid[]) AND status = 'HELD';",
+                    next_tx_status, held_tx_ids
+                )
+
+            # Persist immutable regulatory audit event (B8)
+            from services.audit import record_audit_event_tx
+            await record_audit_event_tx(
+                conn=conn,
+                action=f"BULK_{payload.action}",
+                actor_id=current_user["id"],
+                actor_role=current_user["role"],
+                actor_username=current_user.get("username"),
+                resource_type="ALERT_BATCH",
+                resource_id=f"batch_{len(valid_ids)}",
+                tenant_id=tenant_id,
+                details={
+                    "count": count,
+                    "alert_ids": [str(x) for x in valid_ids],
+                    "justification": payload.justification
+                }
+            )
 
             # Output audit-grade structured log
             from observability.logging import log_audit_event
@@ -922,19 +1031,20 @@ async def bulk_resolve_alerts(
                 details={
                     "username": current_user["username"],
                     "count": count,
-                    "alert_ids": payload.alert_ids,
+                    "alert_ids": [str(x) for x in valid_ids],
                     "justification": payload.justification
                 }
             )
 
-            # Broadcast WebSocket notification
+            # Broadcast WebSocket notification with strict tenant isolation (B3)
             from routers.metrics import ws_manager
             await ws_manager.broadcast({
                 "event": "BULK_ALERTS_RESOLVED",
+                "tenant_id": str(tenant_id),
                 "count": count,
                 "action": payload.action,
                 "resolved_by": current_user["username"]
-            })
+            }, target_tenant_id=str(tenant_id))
 
             return {
                 "processed_count": count,

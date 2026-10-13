@@ -41,6 +41,7 @@ async def retrain_model_now(
                 from routers.metrics import ws_manager
                 await ws_manager.broadcast({
                     "event": "ML_MODEL_RETRAINED",
+                    "is_system_broadcast": True,
                     "samples_count": result["samples_count"],
                     "false_positives_learned": result["false_positives_learned"],
                     "retrained_by": current_user["username"]
