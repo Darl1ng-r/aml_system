@@ -664,25 +664,38 @@
     });
 
     function decodeUserRole() {
-      // Decode JWT token from cookie if present
+      let token = null;
       const match = document.cookie.match(new RegExp('(^| )access_token=([^;]+)'));
       if (match) {
-        try {
-          const payload = JSON.parse(atob(match[2].split('.')[1]));
-          const username = payload.username || payload.sub || 'Analyst';
-          const role = payload.role || 'ANALYST';
-          document.getElementById('user-chip').innerText = `${username} (${role})`;
+        token = match[2];
+      } else {
+        token = localStorage.getItem('jwt_token') || localStorage.getItem('access_token');
+      }
 
-          // Hide admin links if not ADMIN / SUPER_ADMIN
-          if (!['ADMIN', 'SUPER_ADMIN', 'TENANT_ADMIN'].includes(role)) {
-            const ruleNav = document.getElementById('nav-rule-builder');
-            const userNav = document.getElementById('nav-user-admin');
-            if (ruleNav) ruleNav.style.display = 'none';
-            if (userNav) userNav.style.display = 'none';
-          }
+      let username = localStorage.getItem('username') || 'Analyst';
+      let role = localStorage.getItem('role') || 'ANALYST';
+
+      if (token) {
+        try {
+          const payload = JSON.parse(atob(token.split('.')[1]));
+          username = payload.username || payload.sub || username;
+          role = payload.role || role;
         } catch (e) {
           console.error('Error decoding JWT', e);
         }
+      }
+
+      const userChip = document.getElementById('user-chip');
+      if (userChip) {
+        userChip.innerText = `${username} (${role})`;
+      }
+
+      // Hide admin links if not ADMIN / SUPER_ADMIN
+      if (!['ADMIN', 'SUPER_ADMIN', 'TENANT_ADMIN'].includes(role)) {
+        const ruleNav = document.getElementById('nav-rule-builder');
+        const userNav = document.getElementById('nav-user-admin');
+        if (ruleNav) ruleNav.style.display = 'none';
+        if (userNav) userNav.style.display = 'none';
       }
     }
 
@@ -717,7 +730,10 @@
     async function fetchAlerts() {
       try {
         if (!allAlerts.length) renderSkeletonTable();
-        const res = await fetch('/api/v1/alerts?limit=100');
+        const token = localStorage.getItem('jwt_token') || localStorage.getItem('access_token');
+        const headers = { 'X-CSRF-Protection': '1' };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        const res = await fetch('/api/v1/alerts?limit=100', { headers, credentials: 'include' });
         if (!res.ok) throw new Error('Failed to load alerts');
         const data = await res.json();
         const rawAlerts = Array.isArray(data) ? data : (data.alerts || []);
@@ -1070,6 +1086,11 @@
     function logout() {
       document.cookie = 'access_token=; Max-Age=0; path=/;';
       sessionStorage.clear();
+      localStorage.removeItem('auth_session_active');
+      localStorage.removeItem('jwt_token');
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('username');
+      localStorage.removeItem('role');
       window.location.href = '/login';
     }
 

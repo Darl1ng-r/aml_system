@@ -298,15 +298,17 @@ async function logout() {
     }
     localStorage.removeItem('auth_session_active');
     localStorage.removeItem('jwt_token');
+    localStorage.removeItem('access_token');
     localStorage.removeItem('username');
     localStorage.removeItem('role');
+    sessionStorage.removeItem('auth_active');
     log('Logged out successfully.', 'info');
     window.location.href = '/login';
 }
 
 function getAuthHeaders() {
     const headers = { 'X-CSRF-Protection': '1' };
-    const token = localStorage.getItem('jwt_token');
+    const token = localStorage.getItem('jwt_token') || localStorage.getItem('access_token');
     if (token) {
         headers['Authorization'] = `Bearer ${token}`;
     }
