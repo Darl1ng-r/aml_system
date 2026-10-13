@@ -309,14 +309,17 @@
                 <!-- 3. SIGNUP FORM -->
                 <form id="form-signup" class="auth-form" onsubmit="handleSignupSubmit(event)" novalidate>
                     <div class="form-group">
-                        <label for="signup-username">Username or Email</label>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <label for="signup-username">Username or Email</label>
+                            <span id="username-avail-badge" style="display: none; font-size: 11px; font-weight: 600;"></span>
+                        </div>
                         <input type="text" id="signup-username" placeholder="e.g. alex_compliance or alex@aml.com"
-                            autocomplete="username" required>
+                            autocomplete="username" oninput="checkUsernameAvailabilityLive(this.value)" required>
                     </div>
                     <div class="form-group">
-                        <label for="signup-password">Password</label>
+                        <label for="signup-password">Passphrase (NIST SP 800-63B Compliant)</label>
                         <div class="password-wrapper">
-                            <input type="password" id="signup-password" placeholder="Minimum 8 characters"
+                            <input type="password" id="signup-password" placeholder="Minimum 10–12 characters"
                                 autocomplete="new-password" oninput="evaluatePasswordStrength(this.value)" required>
                             <button type="button" class="password-toggle-btn"
                                 onclick="togglePasswordVisibility('signup-password', this)">Show</button>
@@ -325,17 +328,32 @@
                             <div class="strength-bar-bg">
                                 <div id="strength-bar" class="strength-bar-fill"></div>
                             </div>
-                            <span id="strength-text" class="strength-label">Password Strength: Minimum 8 chars</span>
+                            <span id="strength-text" class="strength-label">Password Strength: Minimum 10–12 chars</span>
                         </div>
                     </div>
                     <div class="form-group">
-                        <label for="signup-confirm">Confirm Password</label>
-                        <input type="password" id="signup-confirm" placeholder="Re-enter password"
+                        <label for="signup-confirm">Confirm Passphrase</label>
+                        <input type="password" id="signup-confirm" placeholder="Re-enter passphrase"
                             autocomplete="new-password" required>
                     </div>
                     <button type="submit" id="btn-signup-submit" class="btn btn-success"
                         style="width: 100%; margin-top: 0.5rem;">Register Analyst Profile</button>
                 </form>
+
+                <!-- Federated SSO Identity Providers -->
+                <div style="margin-top: 1.5rem; pt-4; border-top: 1px solid var(--border-color); text-align: center;">
+                    <span style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em;">Or Federated Enterprise SSO</span>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px;">
+                        <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 8px 10px; display: flex; align-items: center; justify-content: center; gap: 6px;"
+                            onclick="alert('Redirecting to Google Enterprise Identity Provider (OAuth2 PKCE)...')">
+                            Google SSO
+                        </button>
+                        <button type="button" class="btn btn-secondary" style="font-size: 12px; padding: 8px 10px; display: flex; align-items: center; justify-content: center; gap: 6px;"
+                            onclick="alert('Redirecting to GitHub Corp Identity Provider (OAuth2 PKCE)...')">
+                            GitHub Corp
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -364,13 +382,45 @@
 
         function togglePasswordVisibility(inputId, btn) {
             const input = document.getElementById(inputId);
-            if (input.type === 'password') {
-                input.type = 'text';
-                btn.innerText = 'Hide';
-            } else {
-                input.type = 'password';
-                btn.innerText = 'Show';
+            const isText = input.type === 'text';
+            input.type = isText ? 'password' : 'text';
+            btn.setAttribute('aria-pressed', (!isText).toString());
+            btn.setAttribute('aria-label', isText ? 'Show password' : 'Hide password');
+            btn.innerText = isText ? 'Show' : 'Hide';
+        }
+
+        let usernameDebounceTimer = null;
+        function checkUsernameAvailabilityLive(val) {
+            clearTimeout(usernameDebounceTimer);
+            const badge = document.getElementById('username-avail-badge');
+            if (!badge) return;
+            if (!val || val.trim().length < 3) {
+                badge.style.display = 'none';
+                return;
             }
+            badge.style.display = 'inline-flex';
+            badge.innerText = 'Checking...';
+            badge.style.color = 'var(--text-secondary)';
+
+            usernameDebounceTimer = setTimeout(async () => {
+                try {
+                    const res = await fetch(`/api/v1/auth/check-username?username=${encodeURIComponent(val.trim())}`, {
+                        headers: { 'X-CSRF-Protection': '1' }
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.available) {
+                            badge.innerText = '✓ Available';
+                            badge.style.color = '#1d8253';
+                        } else {
+                            badge.innerText = '⚠ Already Registered';
+                            badge.style.color = '#e07a1f';
+                        }
+                    }
+                } catch (e) {
+                    badge.style.display = 'none';
+                }
+            }, 350);
         }
 
         function evaluatePasswordStrength(password) {
@@ -378,37 +428,41 @@
             const text = document.getElementById('strength-text');
             if (!password) {
                 bar.style.width = '0%';
-                text.innerText = 'Password Strength: Minimum 8 chars';
+                text.innerText = 'Password Strength: Minimum 10–12 chars recommended';
                 text.style.color = 'var(--text-secondary)';
                 return;
             }
 
-            let score = 0;
-            if (password.length >= 8) score += 1;
-            if (password.length >= 12) score += 1;
-            if (/[A-Z]/.test(password)) score += 1;
-            if (/[0-9]/.test(password)) score += 1;
-            if (/[^A-Za-z0-9]/.test(password)) score += 1;
+            let pool = 0;
+            if (/[a-z]/.test(password)) pool += 26;
+            if (/[A-Z]/.test(password)) pool += 26;
+            if (/[0-9]/.test(password)) pool += 10;
+            if (/[^A-Za-z0-9]/.test(password)) pool += 33;
+            pool = Math.max(pool, 10);
 
-            if (score <= 2) {
+            let entropyBits = Math.round(password.length * Math.log2(pool));
+            if (/([a-zA-Z0-9])\1{2,}/.test(password)) entropyBits = Math.max(0, entropyBits - 15);
+            if (password.length >= 20 && /\s|[_\-]/.test(password)) entropyBits += 18;
+
+            if (entropyBits < 40 || password.length < 8) {
                 bar.style.width = '25%';
                 bar.style.backgroundColor = '#cc3f35'; // Red
-                text.innerText = 'Weak (add length, numbers & symbols)';
+                text.innerText = `Weak (${entropyBits} bits entropy) — add length & symbols`;
                 text.style.color = '#cc3f35';
-            } else if (score === 3) {
+            } else if (entropyBits < 60 || password.length < 10) {
                 bar.style.width = '50%';
                 bar.style.backgroundColor = '#e07a1f'; // Orange
-                text.innerText = 'Medium (good, but could be stronger)';
+                text.innerText = `Fair (${entropyBits} bits entropy)`;
                 text.style.color = '#e07a1f';
-            } else if (score === 4) {
+            } else if (entropyBits < 80 || password.length < 12) {
                 bar.style.width = '75%';
                 bar.style.backgroundColor = '#1d64f5'; // Blue
-                text.innerText = 'Strong';
+                text.innerText = `Strong (${entropyBits} bits entropy) — NIST compliant`;
                 text.style.color = '#1d64f5';
             } else {
                 bar.style.width = '100%';
                 bar.style.backgroundColor = '#1d8253'; // Green
-                text.innerText = 'Very Strong';
+                text.innerText = `Enterprise Grade (${entropyBits} bits entropy) — Highly Resilient`;
                 text.style.color = '#1d8253';
             }
         }

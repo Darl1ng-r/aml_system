@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from config import settings
 from pydantic import BaseModel, Field, field_validator
@@ -203,8 +203,11 @@ async def login(
             form_data.username
         )
 
-        # ZERO-BYPASS ENFORCEMENT: Never issue token without password verification
+        # ZERO-BYPASS & TIMING ATTACK MITIGATION (NIST SP 800-63B)
         if not local_user or not local_user["password_hash"]:
+            from services.auth import DUMMY_ARGON2_HASH
+            # Execute dummy Argon2id verification so response latency matches existing users exactly
+            verify_password_and_needs_rehash(form_data.password, DUMMY_ARGON2_HASH)
             log_audit_event(
                 event_type="LOGIN_FAILED",
                 actor_id=form_data.username,
@@ -291,6 +294,8 @@ async def login(
             "message": "Two-factor authentication required. Please verify with your 6-digit TOTP code or backup recovery code."
         }
     
+    import uuid
+    family_id = f"fam_{uuid.uuid4().hex}"
     access_token = create_access_token({
         "sub": local_user_id,
         "role": local_role,
@@ -304,7 +309,8 @@ async def login(
         "role": local_role,
         "username": form_data.username,
         "tenant_id": tenant_id,
-        "token_version": token_version
+        "token_version": token_version,
+        "family_id": family_id
     })
 
     await reset_failed_logins(form_data.username)
@@ -330,11 +336,21 @@ async def login(
     }
 
 @router.post("/signup", summary="Register compliance officer (Defaults strictly to ANALYST)")
+@router.post("/register", summary="Register compliance officer (Enterprise registration)")
 async def signup(
+    request: Request,
     response: Response,
     payload: UserSignup,
     _rate_limit=Depends(RateLimiter(limit=10, window=3600))
 ):
+    if request.url.path.endswith("/register"):
+        from services.auth import check_breached_password
+        if await check_breached_password(payload.password):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password has appeared in a known public data breach (NIST SP 800-63B violation). Please choose a different, more secure passphrase."
+            )
+
     email = payload.username
     if "@" not in email:
         email = f"{email}@aml.com"
@@ -703,24 +719,68 @@ async def refresh_access_token(
         if payload.get("type") != "refresh":
             raise credentials_exception
 
-        # Check Redis denylist
+        family_id = payload.get("family_id")
+        sub = payload.get("sub")
+        role = payload.get("role", "ANALYST")
+        username = payload.get("username", "")
+        tenant_id = payload.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+
+        # Check Redis denylist & Token Family Compromise Detection (RFC 6819)
         redis = await get_async_redis_client()
         if redis:
-            is_revoked = await redis.get(f"token:revoked:{token_to_refresh}")
-            if is_revoked:
-                raise credentials_exception
+            is_family_revoked = await redis.get(f"token:family_revoked:{family_id}") if family_id else None
+            is_token_revoked = await redis.get(f"token:revoked:{token_to_refresh}")
+
+            if is_family_revoked:
+                clear_auth_cookies(response)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Compromised session detected: reuse of revoked refresh token. All active sessions have been terminated for security.",
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
+
+            if is_token_revoked:
+                if family_id:
+                    # COMPROMISE DETECTED (RFC 6819): An already consumed refresh token was re-submitted!
+                    # Immediately invalidate the entire token family and bump active user token_version.
+                    await redis.setex(f"token:family_revoked:{family_id}", 30 * 86400, "1")
+                    if sub:
+                        await redis.incr(f"user:token_version:{sub}")
+                        try:
+                            import uuid as _uuid
+                            _uuid.UUID(str(sub))
+                            from database.postgres import get_async_db_conn
+                            async with get_async_db_conn() as conn:
+                                await conn.execute("UPDATE users SET token_version = token_version + 1 WHERE id = $1;", sub)
+                        except Exception as db_err:
+                            logger.warning(f"Failed to bump token_version on compromise: {db_err}")
+
+                    log_audit_event(
+                        event_type="SECURITY_ALERT",
+                        actor_id=str(sub or ""),
+                        actor_role=role,
+                        action="REFRESH_TOKEN_COMPROMISE_DETECTED",
+                        resource_type="SESSION",
+                        resource_id=str(sub or ""),
+                        tenant_id=tenant_id,
+                        details={"family_id": family_id, "username": username, "reason": "Reuse of previously revoked refresh token"}
+                    )
+                    clear_auth_cookies(response)
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Compromised session detected: reuse of revoked refresh token. All active sessions have been terminated for security.",
+                        headers={"WWW-Authenticate": "Bearer"}
+                    )
+                else:
+                    clear_auth_cookies(response)
+                    raise credentials_exception
 
             # Token Rotation: Revoke consumed refresh token immediately
             exp = payload.get("exp", 0)
             ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 1)
             await redis.setex(f"token:revoked:{token_to_refresh}", ttl, "1")
 
-        # Issue fresh access token AND new rotated refresh token
-        sub = payload.get("sub")
-        role = payload.get("role", "ANALYST")
-        username = payload.get("username", "")
-        tenant_id = payload.get("tenant_id", "00000000-0000-0000-0000-000000000001")
-
+        # Issue fresh access token AND new rotated refresh token in the SAME family
         new_access_token = create_access_token({
             "sub": sub,
             "role": role,
@@ -732,6 +792,7 @@ async def refresh_access_token(
             "role": role,
             "username": username,
             "tenant_id": tenant_id,
+            "family_id": family_id
         })
 
         set_auth_cookies(response, new_access_token, new_refresh_token)
@@ -808,9 +869,33 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     }
 
 
+@router.get("/check-username", summary="Debounced username availability check for registration")
+async def check_username_availability(
+    username: str = Query(..., min_length=3, max_length=100),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    """
+    Non-blocking endpoint for real-time username availability validation during sign-up.
+    Rate-limited to prevent automated bulk harvesting.
+    """
+    clean_username = sanitize_text(username.strip())
+    from database.postgres import get_async_db_conn
+    async with get_async_db_conn() as conn:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM users WHERE LOWER(username) = LOWER($1);",
+            clean_username
+        )
+    return {
+        "username": clean_username,
+        "available": not bool(exists),
+        "message": "Username is available" if not exists else "Username is already registered"
+    }
+
+
 @router.delete("/sessions", summary="Revoke all active sessions for current user (RESTful DELETE)")
 @router.delete("/users/me/sessions", summary="Revoke all active sessions (RESTful DELETE)")
 @router.post("/revoke-sessions", summary="Revoke all active sessions for current user")
+@router.post("/sessions/revoke-all", summary="Global logout: Revoke all active sessions across devices")
 async def revoke_sessions(current_user: dict = Depends(get_current_user)):
     """
     Increments token_version for the authenticated user, immediately

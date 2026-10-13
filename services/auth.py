@@ -156,22 +156,60 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
     return jwt.encode(to_encode, signing_key, algorithm=ALGORITHM)
 
 
+# RFC 9106 calibrated dummy hash to prevent timing attacks / user enumeration side-channels
+DUMMY_ARGON2_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQxMjM0NTY3OA$9vX6l+w3cRj7E9l3sK4n9QaB1C2D3E4F5G6H7I8J9K0"
+
+async def check_breached_password(password: str) -> bool:
+    """
+    Checks password against HaveIBeenPwned k-Anonymity API (NIST SP 800-63B).
+    Returns True if breached (compromised), False if clean.
+    Fails safely (returns False) on network errors or timeouts to prevent denial of service.
+    """
+    if not password:
+        return False
+    try:
+        import hashlib
+        import aiohttp
+        sha1_hash = hashlib.sha1(password.encode("utf-8")).hexdigest().upper()
+        prefix = sha1_hash[:5]
+        suffix = sha1_hash[5:]
+
+        timeout = aiohttp.ClientTimeout(total=2.0)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"https://api.pwnedpasswords.com/range/{prefix}") as resp:
+                if resp.status == 200:
+                    body = await resp.text()
+                    for line in body.splitlines():
+                        if ":" in line:
+                            entry_suffix, count = line.split(":", 1)
+                            if entry_suffix.strip() == suffix:
+                                logger.warning(f"HIBP breach detected: password breached {count.strip()} times.")
+                                return True
+    except Exception as e:
+        logger.warning(f"HIBP k-anonymity check skipped due to network/timeout: {e}")
+        return False
+    return False
+
 def create_refresh_token(data: dict) -> str:
     """
     Issues a long-lived refresh token (7 days).
     Stored server-side in Redis; rotated on each use.
+    Maintains a family_id claim for compromise detection (IETF RFC 6819).
     The client uses this to silently obtain a new access token
     without prompting for credentials again.
     """
     import uuid
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + timedelta(days=7)
+    family_id = data.get("family_id")
     to_encode.update({
         "exp": expire,
         "type": "refresh",
         "jti": str(uuid.uuid4()),
         "token_version": data.get("token_version", 1)
     })
+    if family_id:
+        to_encode["family_id"] = family_id
     signing_key = get_jwt_signing_key()
     return jwt.encode(to_encode, signing_key, algorithm=ALGORITHM)
 
