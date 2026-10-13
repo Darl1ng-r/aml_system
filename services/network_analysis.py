@@ -1,5 +1,6 @@
 import logging
 import math
+from datetime import datetime, timezone
 from database.neo4j_db import get_async_neo4j_driver
 
 logger = logging.getLogger(__name__)
@@ -101,22 +102,118 @@ def compute_betweenness_centrality(graph: dict) -> dict:
     # Or keep it as is since it is a directed representation of flows. Let's return raw scores rounded.
     return {node: round(score, 4) for node, score in cb.items()}
 
-async def fetch_transaction_graph(tenant_id: str | None = None, limit: int = 2000) -> dict:
+async def detect_circular_flows_postgres(
+    conn=None,
+    tenant_id: str | None = None,
+    window_hours: int = 48,
+    max_depth: int = 4,
+    limit: int = 50
+) -> list[dict]:
+    """
+    Detects forward-moving circular money flows (layering cycles) directly in PostgreSQL
+    using a recursive CTE with temporal causality constraints (A -> B -> C -> A within window_hours).
+    Provides institutional zero-infrastructure fallback without requiring external graph databases.
+    """
+    query = """
+    WITH RECURSIVE tx_window AS (
+        SELECT 
+            s.account_number AS sender,
+            r.account_number AS receiver,
+            t.amount,
+            t.timestamp
+        FROM transactions t
+        JOIN accounts s ON t.sender_account_id = s.id
+        JOIN accounts r ON t.receiver_account_id = r.id
+        WHERE t.timestamp >= NOW() - ($1 || ' hours')::interval
+          AND ($2::text IS NULL OR t.tenant_id = $2::uuid)
+          AND t.status IN ('COMPLETED', 'PENDING')
+    ),
+    paths AS (
+        -- Anchor: 1-hop path
+        SELECT 
+            sender AS root,
+            receiver AS current_node,
+            ARRAY[sender, receiver]::text[] AS path,
+            1 AS depth,
+            timestamp AS start_time,
+            timestamp AS last_time
+        FROM tx_window
+        
+        UNION ALL
+        
+        -- Recursive step: next hop must occur after previous hop
+        SELECT 
+            p.root,
+            w.receiver AS current_node,
+            p.path || w.receiver,
+            p.depth + 1,
+            p.start_time,
+            w.timestamp AS last_time
+        FROM paths p
+        JOIN tx_window w ON p.current_node = w.sender
+        WHERE p.depth < $3
+          AND w.timestamp >= p.last_time
+          AND (w.receiver = p.root OR NOT (w.receiver = ANY(p.path)))
+    )
+    SELECT DISTINCT path
+    FROM paths
+    WHERE current_node = root AND depth >= 2
+    LIMIT $4;
+    """
+
+    async def _query_exec(db_conn):
+        rows = await db_conn.fetch(query, str(window_hours), tenant_id, max_depth, limit)
+        circular_flows = []
+        seen = set()
+        for row in rows:
+            path = list(row["path"])
+            cycle_nodes = path[:-1] if path and path[0] == path[-1] else path
+            cycle_key = tuple(sorted(cycle_nodes))
+            if len(cycle_nodes) >= 2 and cycle_key not in seen:
+                seen.add(cycle_key)
+                circular_flows.append({
+                    "cycle": cycle_nodes,
+                    "description": f"PostgreSQL detected temporal circular flow of size {len(cycle_nodes)}: " + " -> ".join(cycle_nodes) + f" -> {cycle_nodes[0]}"
+                })
+        return circular_flows
+
+    if conn is not None:
+        return await _query_exec(conn)
+    else:
+        try:
+            from database.postgres import get_async_db_conn
+            async with get_async_db_conn(tenant_id=tenant_id) as db_conn:
+                return await _query_exec(db_conn)
+        except Exception as e:
+            logger.warning(f"PostgreSQL circular flow detection failed: {e}")
+            return []
+
+async def fetch_transaction_graph(
+    tenant_id: str | None = None,
+    limit: int = 2000,
+    window_hours: int | None = 72
+) -> dict:
     """
     Fetches transaction topology from Neo4j up to a safe limit,
-    scoped by tenant_id to prevent cross-tenant data leakage (B4).
+    scoped by tenant_id to prevent cross-tenant data leakage (B4)
+    and bounded by a temporal window (window_hours) to focus on active money movement.
     """
     driver = await get_async_neo4j_driver()
+    min_epoch = None
+    if window_hours is not None:
+        min_epoch = int(datetime.now(timezone.utc).timestamp()) - (window_hours * 3600)
+
     query = """
         MATCH (s:Account)-[t:TRANSFERS_TO]->(r:Account)
         WHERE ($tenant_id IS NULL OR t.tenant_id = $tenant_id OR s.tenant_id = $tenant_id)
+          AND ($min_epoch IS NULL OR t.timestamp IS NULL OR t.timestamp >= $min_epoch)
         RETURN s.account_number AS sender, r.account_number AS receiver
         LIMIT $limit;
     """
     graph = {}
     try:
         async with driver.session() as session:
-            result = await session.run(query, tenant_id=tenant_id, limit=limit)
+            result = await session.run(query, tenant_id=tenant_id, min_epoch=min_epoch, limit=limit)
             async for record in result:
                 sender = record["sender"]
                 receiver = record["receiver"]
@@ -130,9 +227,12 @@ async def fetch_transaction_graph(tenant_id: str | None = None, limit: int = 200
         
     return graph
 
-async def run_network_analysis(tenant_id: str | None = None) -> dict:
+async def run_network_analysis(
+    tenant_id: str | None = None,
+    window_hours: int | None = 72
+) -> dict:
     """
-    Analyzes the transaction graph scoped to tenant_id (B4) to detect:
+    Analyzes the transaction graph scoped to tenant_id (B4) and bounded by window_hours (default 72h) to detect:
     - Circular money flows (Server-side Cypher / GDS SCC / Tarjan's SCC fallback)
     - Fan-In patterns (potential mules via server-side aggregation)
     - Fan-Out patterns (potential layering via server-side aggregation)
@@ -143,6 +243,10 @@ async def run_network_analysis(tenant_id: str | None = None) -> dict:
         driver = await get_async_neo4j_driver()
     except Exception as e:
         logger.warning(f"Neo4j driver unavailable for server-side graph analysis: {e}")
+
+    min_epoch = None
+    if window_hours is not None:
+        min_epoch = int(datetime.now(timezone.utc).timestamp()) - (window_hours * 3600)
 
     # 1. Server-side Fan-In and Fan-Out Detection via Cypher
     fan_in_nodes = []
@@ -156,16 +260,18 @@ async def run_network_analysis(tenant_id: str | None = None) -> dict:
             WHERE ($tenant_id IS NULL OR a.tenant_id = $tenant_id)
             OPTIONAL MATCH (s:Account)-[t1:TRANSFERS_TO]->(a)
             WHERE ($tenant_id IS NULL OR t1.tenant_id = $tenant_id)
+              AND ($min_epoch IS NULL OR t1.timestamp IS NULL OR t1.timestamp >= $min_epoch)
             WITH a, count(DISTINCT s) AS in_degree
             OPTIONAL MATCH (a)-[t2:TRANSFERS_TO]->(r:Account)
             WHERE ($tenant_id IS NULL OR t2.tenant_id = $tenant_id)
+              AND ($min_epoch IS NULL OR t2.timestamp IS NULL OR t2.timestamp >= $min_epoch)
             WITH a, in_degree, count(DISTINCT r) AS out_degree
             WHERE (in_degree >= 3 AND out_degree <= 1) OR (out_degree >= 3 AND in_degree <= 1)
             RETURN a.account_number AS account_number, in_degree, out_degree
             LIMIT 100;
             """
             async with driver.session() as session:
-                res = await session.run(degree_query, tenant_id=tenant_id)
+                res = await session.run(degree_query, tenant_id=tenant_id, min_epoch=min_epoch)
                 async for record in res:
                     acc = record["account_number"]
                     ind = record["in_degree"]
@@ -197,12 +303,13 @@ async def run_network_analysis(tenant_id: str | None = None) -> dict:
             cycle_query = """
             MATCH path = (a:Account)-[t:TRANSFERS_TO*2..5]->(a)
             WHERE ($tenant_id IS NULL OR ALL(rel IN relationships(path) WHERE rel.tenant_id = $tenant_id))
+              AND ($min_epoch IS NULL OR ALL(rel IN relationships(path) WHERE rel.timestamp IS NULL OR rel.timestamp >= $min_epoch))
             WITH [n IN nodes(path) | n.account_number] AS node_list
             RETURN DISTINCT node_list AS cycle
             LIMIT 50;
             """
             async with driver.session() as session:
-                res = await session.run(cycle_query, tenant_id=tenant_id)
+                res = await session.run(cycle_query, tenant_id=tenant_id, min_epoch=min_epoch)
                 seen_cycles = set()
                 async for record in res:
                     cycle = record["cycle"]
@@ -246,7 +353,7 @@ async def run_network_analysis(tenant_id: str | None = None) -> dict:
 
     # If any analytics component failed server-side execution, run bounded in-memory fallback
     if not cypher_degrees_success or not cypher_cycles_success or not gds_success:
-        graph = await fetch_transaction_graph(tenant_id=tenant_id, limit=2000)
+        graph = await fetch_transaction_graph(tenant_id=tenant_id, limit=2000, window_hours=window_hours)
         
         # Fallback for cycles
         if not cypher_cycles_success:

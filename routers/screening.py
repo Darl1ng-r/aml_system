@@ -94,8 +94,9 @@ def levenshtein_ratio(s1: str, s2: str) -> float:
 def name_similarity_score(s1: str, s2: str) -> float:
     """
     Computes comprehensive string and token similarity between two names in [0.0, 1.0]
-    combining homoglyph/diacritic normalization, Levenshtein edit distance,
-    and token-order-independent matching (token_sort_ratio / token_set_ratio) via rapidfuzz.
+    combining homoglyph/diacritic normalization, Jaro-Winkler prefix weighting (LexisNexis standard),
+    Levenshtein edit distance, and token-order-independent matching (token_sort_ratio / token_set_ratio)
+    with asymmetric length-discounting to prevent false-positive inflation on short tokens.
     """
     norm_s1 = normalize_screening_name(s1)
     norm_s2 = normalize_screening_name(s2)
@@ -105,9 +106,13 @@ def name_similarity_score(s1: str, s2: str) -> float:
         return 0.0
 
     lev = levenshtein_ratio(norm_s1, norm_s2)
+    jw = rapidfuzz.distance.JaroWinkler.similarity(norm_s1, norm_s2)
     token_sort = rapidfuzz.fuzz.token_sort_ratio(norm_s1, norm_s2) / 100.0
-    token_set = rapidfuzz.fuzz.token_set_ratio(norm_s1, norm_s2) / 100.0
-    return max(lev, token_sort, token_set)
+    
+    len_ratio = min(len(norm_s1), len(norm_s2)) / max(len(norm_s1), len(norm_s2))
+    token_set = (rapidfuzz.fuzz.token_set_ratio(norm_s1, norm_s2) / 100.0) * (len_ratio ** 0.15)
+    
+    return max(lev, jw, token_sort, token_set)
 
 async def perform_sanctions_search(name: str, threshold: float, es) -> dict:
     """

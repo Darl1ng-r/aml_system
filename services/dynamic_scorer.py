@@ -21,7 +21,8 @@ def compute_dynamic_risk(
     - Customer Risk Rating / CRR (20%): Sender Risk (10%) + Receiver Risk (10%)
     - Dynamic Multipliers: PEP Tier Risk Elevation & Rule Floor Escalation
     """
-    # 1. Z-score calculation for the transaction amount
+    # 1. Input safety & Z-score calculation for transaction amount
+    safe_amount = max(float(amount), 0.0)
     avg_amount = float(baseline.get("avg_amount", 0.0))
     var_amount = float(baseline.get("variance_amount", 0.0))
     if var_amount > 0.0:
@@ -32,12 +33,12 @@ def compute_dynamic_risk(
         std_amount = 0.0
     
     if avg_amount > 0.0:
-        min_std = avg_amount * 0.1
+        min_std = max(avg_amount * 0.1, 1.0)
         effective_std = std_amount if std_amount > 0.0 else min_std
-        z_score = (amount - avg_amount) / effective_std
+        z_score = (safe_amount - avg_amount) / effective_std
         
-        if amount > avg_amount:
-            z_score_prob = min(max((amount - avg_amount) / (3.0 * effective_std), 0.0), 1.0)
+        if safe_amount > avg_amount:
+            z_score_prob = min(max((safe_amount - avg_amount) / (3.0 * effective_std), 0.0), 1.0)
         else:
             z_score_prob = 0.0
     else:
@@ -46,7 +47,7 @@ def compute_dynamic_risk(
 
     # 2. Weighted RBA Score Blend
     # 60% Model Probability + 20% Behavioral/Jurisdiction + 20% Counterparty CRR
-    base_ml_component = (0.30 * ml_score) + (0.30 * iforest_score)
+    base_ml_component = (0.30 * min(max(ml_score, 0.0), 1.0)) + (0.30 * min(max(iforest_score, 0.0), 1.0))
     behavioral_component = (0.10 * z_score_prob) + (0.10 * min(max(jurisdiction_risk, 0.0), 1.0))
     crr_component = (0.10 * min(max(sender_risk, 0.0), 1.0)) + (0.10 * min(max(receiver_risk, 0.0), 1.0))
 
@@ -77,7 +78,20 @@ def compute_dynamic_risk(
         
     dynamic_score = min(max(dynamic_score, 0.0), 1.0)
 
-    # 5. Generate attributions/explainability payload
+    # 5. Institutional Top Drivers for Compliance Examination (Verafin standard)
+    top_drivers = []
+    if rules_triggered:
+        top_drivers.append(f"RULES_TRIGGERED: {', '.join(rules_triggered)}")
+    if z_score >= 2.0:
+        top_drivers.append(f"BEHAVIORAL_AMOUNT_SPIKE (Z={round(z_score, 2)})")
+    if jurisdiction_risk >= 0.70:
+        top_drivers.append(f"HIGH_RISK_JURISDICTION ({round(jurisdiction_risk, 2)})")
+    if ml_score >= 0.70:
+        top_drivers.append(f"AI_ANOMALY_CONFIDENCE ({round(ml_score, 2)})")
+    if pep_tier:
+        top_drivers.append(f"POLITICALLY_EXPOSED_PERSON ({pep_tier})")
+
+    # 6. Generate attributions/explainability payload
     attributions = {
         "ml_model_contribution": round(0.30 * ml_score, 4),
         "isolation_forest_contribution": round(0.30 * iforest_score, 4),
@@ -93,5 +107,6 @@ def compute_dynamic_risk(
 
     return {
         "dynamic_risk_score": round(dynamic_score, 4),
+        "top_drivers": top_drivers,
         "explainability": attributions
     }

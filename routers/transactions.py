@@ -292,7 +292,8 @@ async def ingest_transaction(
                 # Blend standard attributions with dynamic scorer explainability
                 explainability_payload = {
                     "ml_attributions": attributions,
-                    "dynamic_risk": explainability
+                    "dynamic_risk": explainability,
+                    "top_drivers": dynamic_res.get("top_drivers", [])
                 }
                 
                 await conn.execute(

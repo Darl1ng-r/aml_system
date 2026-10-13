@@ -189,3 +189,6 @@ Thumbs.db
 
 # Knowledge graph analysis artifacts
 graphify-out/
+
+# Dynamic evidence uploads from testing
+storage/evidence/

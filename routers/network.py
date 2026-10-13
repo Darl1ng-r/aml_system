@@ -7,20 +7,21 @@ router = APIRouter(prefix="/api/v1/network", tags=["Network Analysis"])
 
 @router.get("/analysis")
 async def get_network_analysis(
+    window_hours: int = 72,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
     Exposes graph network analytics for compliance dashboards.
     Returns:
-    - Circular money flow cycles (Tarjan's SCC).
+    - Circular money flow cycles (Tarjan's SCC / Cypher directed cycles).
     - Fan-In patterns (potential mules).
     - Fan-Out patterns (potential layering).
     - Intermediary middleman transit accounts (Brandes' Betweenness Centrality).
     """
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
-        return await run_network_analysis(tenant_id=str(tenant_id) if tenant_id else None)
+        return await run_network_analysis(tenant_id=str(tenant_id) if tenant_id else None, window_hours=window_hours)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Graph network analysis failed: {str(e)}")
 
