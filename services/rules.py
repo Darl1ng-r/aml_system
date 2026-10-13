@@ -397,6 +397,98 @@ class RulesEngine:
             elif is_vasp and rapid_count >= max_conversions:
                 triggered_rules.append("CRYPTO_FIAT_VASP_STRUCTURING")
 
+        # Extract risk tier discount (FATF RBA)
+        meta = metadata or {}
+        kyc_risk_tier = str(meta.get("kyc_risk_tier", "STANDARD")).upper()
+        tier_discount = 0.50 if kyc_risk_tier in ("HIGH", "CRITICAL") else 1.00
+
+        # 11. STRUCTURING_EXTENDED_7D (Multi-day sub-threshold smurfing)
+        ext_struct_cfg = config.get("rules", {}).get("STRUCTURING_EXTENDED_7D", {})
+        if ext_struct_cfg.get("enabled", True) and sender_id:
+            window_days = ext_struct_cfg.get("window_days", 7)
+            min_sub_amt = ext_struct_cfg.get("min_sub_amount", 2500.0) * tier_discount
+            target_thresh = ext_struct_cfg.get("threshold", 10000.0) * tier_discount
+            min_count = ext_struct_cfg.get("min_count", 3)
+            tx_time = timestamp or datetime.now(timezone.utc)
+            
+            if min_sub_amt <= amount < target_thresh:
+                try:
+                    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                        query_7d = """
+                            SELECT 
+                                COALESCE(SUM(amount), 0.0) AS total_sub_amount,
+                                COUNT(*) AS sub_count
+                            FROM transactions
+                            WHERE sender_account_id = $1::uuid
+                              AND status IN ('COMPLETED', 'PENDING', 'HELD')
+                              AND amount >= $2 AND amount < $3
+                              AND timestamp >= ($4::timestamptz - ($5 || ' days')::interval)
+                              AND timestamp < $4::timestamptz;
+                        """
+                        row_7d = await conn.fetchrow(
+                            query_7d,
+                            sender_id, min_sub_amt, target_thresh, tx_time, str(window_days)
+                        )
+                        if row_7d:
+                            prior_amt = float(row_7d["total_sub_amount"])
+                            prior_cnt = int(row_7d["sub_count"])
+                            if (prior_cnt + 1) >= min_count and (prior_amt + amount) >= target_thresh:
+                                triggered_rules.append("STRUCTURING_EXTENDED_7D")
+                except Exception as e:
+                    logger.debug(f"Extended structuring check error: {e}")
+
+        # 12. CONDUIT_RAPID_PASSTHROUGH (24h Inflow vs Outflow Flow-Through Velocity)
+        conduit_cfg = config.get("rules", {}).get("CONDUIT_RAPID_PASSTHROUGH", {})
+        if conduit_cfg.get("enabled", True) and sender_id:
+            window_hours = conduit_cfg.get("window_hours", 24)
+            min_inflow = conduit_cfg.get("min_inflow", 5000.0) * tier_discount
+            min_ratio = conduit_cfg.get("min_ratio", 0.85)
+            max_ratio = conduit_cfg.get("max_ratio", 1.15)
+            tx_time = timestamp or datetime.now(timezone.utc)
+            
+            try:
+                async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                    query_flow = """
+                        WITH flow_window AS (
+                            SELECT
+                                COALESCE(SUM(CASE WHEN receiver_account_id = $1::uuid THEN amount ELSE 0 END), 0.0) AS total_inflow,
+                                COALESCE(SUM(CASE WHEN sender_account_id = $1::uuid THEN amount ELSE 0 END), 0.0) AS total_outflow
+                            FROM transactions
+                            WHERE (receiver_account_id = $1::uuid OR sender_account_id = $1::uuid)
+                              AND status IN ('COMPLETED', 'PENDING', 'HELD')
+                              AND timestamp >= ($2::timestamptz - ($3 || ' hours')::interval)
+                              AND timestamp < $2::timestamptz
+                        )
+                        SELECT total_inflow, total_outflow FROM flow_window;
+                    """
+                    row_flow = await conn.fetchrow(query_flow, sender_id, tx_time, str(window_hours))
+                    if row_flow:
+                        inflow = float(row_flow["total_inflow"])
+                        prior_out = float(row_flow["total_outflow"])
+                        total_out = prior_out + amount
+                        if inflow >= min_inflow:
+                            flow_ratio = total_out / max(inflow, 1.0)
+                            if min_ratio <= flow_ratio <= max_ratio:
+                                triggered_rules.append("CONDUIT_RAPID_PASSTHROUGH")
+            except Exception as e:
+                logger.debug(f"Conduit flow-through check error: {e}")
+
+        # 13. AMOUNT_ANOMALY_HEURISTICS (Round Numbers & Just-Below-Threshold Smurfing)
+        anom_cfg = config.get("rules", {}).get("AMOUNT_ANOMALY_HEURISTICS", {})
+        if anom_cfg.get("enabled", True):
+            just_below_min = anom_cfg.get("just_below_min", 9000.0)
+            just_below_max = anom_cfg.get("just_below_max", 10000.0)
+            round_min = anom_cfg.get("round_number_min", 3000.0)
+            round_divisor = anom_cfg.get("round_divisor", 1000.0)
+
+            # Just-below-reporting threshold check
+            if just_below_min <= amount < just_below_max:
+                triggered_rules.append("JUST_BELOW_CTR_THRESHOLD")
+
+            # Round number divisibility anomaly
+            if amount >= round_min and (amount % round_divisor == 0.0):
+                triggered_rules.append("ROUND_NUMBER_ANOMALY_1K")
+
         return triggered_rules
 
 

@@ -50,6 +50,27 @@
       "travel_rule_threshold": 1000.0,
       "rapid_conversion_hours": 24,
       "max_consecutive_conversions": 3
+    },
+    "STRUCTURING_EXTENDED_7D": {
+      "enabled": true,
+      "window_days": 7,
+      "min_sub_amount": 2500.0,
+      "threshold": 10000.0,
+      "min_count": 3
+    },
+    "CONDUIT_RAPID_PASSTHROUGH": {
+      "enabled": true,
+      "window_hours": 24,
+      "min_inflow": 5000.0,
+      "min_ratio": 0.85,
+      "max_ratio": 1.15
+    },
+    "AMOUNT_ANOMALY_HEURISTICS": {
+      "enabled": true,
+      "just_below_min": 9000.0,
+      "just_below_max": 10000.0,
+      "round_number_min": 3000.0,
+      "round_divisor": 1000.0
     }
   }
 }

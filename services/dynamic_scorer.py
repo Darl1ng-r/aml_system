@@ -12,7 +12,8 @@ def compute_dynamic_risk(
     sender_risk: float = 0.1,
     receiver_risk: float = 0.1,
     pep_tier: str | None = None,
-    jurisdiction_risk: float = 0.1
+    jurisdiction_risk: float = 0.1,
+    taint_risk: float = 0.0
 ) -> dict:
     """
     Computes a unified dynamic risk score [0.0, 1.0] using FATF Risk-Based Approach (RBA):
@@ -20,6 +21,7 @@ def compute_dynamic_risk(
     - Behavioral & Velocity Deviation (20%): Baseline Z-Score (10%) + Jurisdiction Risk (10%)
     - Customer Risk Rating / CRR (20%): Sender Risk (10%) + Receiver Risk (10%)
     - Dynamic Multipliers: PEP Tier Risk Elevation & Rule Floor Escalation
+    - Non-Compensatory Floors: Prevents low ML scores from suppressing extreme behavioral or taint spikes
     """
     # 1. Input safety & Z-score calculation for transaction amount
     safe_amount = max(float(amount), 0.0)
@@ -75,10 +77,19 @@ def compute_dynamic_risk(
         rule_elevation = 0.25 * len(rules_triggered)
         dynamic_score = max(dynamic_score + rule_elevation, 0.80)
         rule_applied = True
+
+    # 5. Non-Compensatory Floors (Prevent ML-dilution alert suppression)
+    if z_score >= 3.5:
+        dynamic_score = max(dynamic_score, 0.80)
+    if taint_risk >= 0.70:
+        dynamic_score = max(dynamic_score, taint_risk)
+    critical_rules = {"SANCTIONS_HIT", "CONDUIT_RAPID_PASSTHROUGH", "STRUCTURING_EXTENDED_7D"}
+    if any(r in critical_rules for r in rules_triggered):
+        dynamic_score = max(dynamic_score, 0.85)
         
     dynamic_score = min(max(dynamic_score, 0.0), 1.0)
 
-    # 5. Institutional Top Drivers for Compliance Examination (Verafin standard)
+    # 6. Institutional Top Drivers for Compliance Examination (Verafin standard)
     top_drivers = []
     if rules_triggered:
         top_drivers.append(f"RULES_TRIGGERED: {', '.join(rules_triggered)}")
@@ -90,8 +101,16 @@ def compute_dynamic_risk(
         top_drivers.append(f"AI_ANOMALY_CONFIDENCE ({round(ml_score, 2)})")
     if pep_tier:
         top_drivers.append(f"POLITICALLY_EXPOSED_PERSON ({pep_tier})")
+    if taint_risk >= 0.50:
+        top_drivers.append(f"TRANSITIVE_TAINT_PROPAGATION ({round(taint_risk, 2)})")
+    if any("CONDUIT" in r for r in rules_triggered):
+        top_drivers.append("CONDUIT_FUNDS_FLOW_THROUGH")
+    if any("STRUCTURING_EXTENDED" in r for r in rules_triggered):
+        top_drivers.append("EXTENDED_7D_STRUCTURING_CLUSTER")
+    if any("JUST_BELOW" in r for r in rules_triggered):
+        top_drivers.append("JUST_BELOW_CTR_REPORTING_THRESHOLD")
 
-    # 6. Generate attributions/explainability payload
+    # 7. Generate attributions/explainability payload
     attributions = {
         "ml_model_contribution": round(0.30 * ml_score, 4),
         "isolation_forest_contribution": round(0.30 * iforest_score, 4),
@@ -101,6 +120,7 @@ def compute_dynamic_risk(
         "crr_receiver_contribution": round(0.10 * receiver_risk, 4),
         "pep_elevation": round(pep_elevation, 4),
         "rule_elevation": round(rule_elevation, 4),
+        "taint_risk_contribution": round(taint_risk, 4),
         "amount_zscore": round(z_score, 4),
         "rule_escalated": rule_applied
     }

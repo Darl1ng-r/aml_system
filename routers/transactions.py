@@ -172,7 +172,15 @@ async def ingest_transaction(
         logger.error(f"Database lookup failed for account: {e}")
         raise HTTPException(status_code=500, detail="Database lookup failed during transaction validation.")
 
-    # Step 2: Run Rules Engine (asynchronously)
+    # Step 2: Fetch Behavioral Baseline & Run Rules Engine
+    baseline = {}
+    try:
+        baseline = await get_customer_baseline(str(sender_id), tenant_id=str(tenant_id) if tenant_id else None)
+    except Exception as e_base:
+        logger.debug(f"Baseline lookup prior to rules bypassed: {e_base}")
+
+    kyc_risk_tier = baseline.get("kyc_risk_tier", "STANDARD") if baseline else "STANDARD"
+
     triggered_rules = await RulesEngine.evaluate_transaction(
         sender_id=str(sender_id),
         receiver_id=str(receiver_id),
@@ -182,7 +190,15 @@ async def ingest_transaction(
         receiver_name=receiver_name,
         receiver_bic=receiver_bic,
         timestamp=payload.timestamp,
-        tenant_id=str(tenant_id) if tenant_id else None
+        tenant_id=str(tenant_id) if tenant_id else None,
+        metadata={
+            "kyc_risk_tier": kyc_risk_tier,
+            "sender_risk": sender_risk,
+            "receiver_risk": receiver_risk,
+            "channel": payload.channel,
+            "merchant": payload.merchant,
+            "country": payload.country,
+        }
     )
 
     # Step 3: Run AI Anomaly Model (using pre-initialized singleton instance)
@@ -192,8 +208,6 @@ async def ingest_transaction(
 
     # Step 3.5: Run Dynamic Behavioral Risk Scoring
     try:
-        baseline = await get_customer_baseline(str(sender_id), tenant_id=str(tenant_id) if tenant_id else None)
-        
         # Determine if geographic risk is present
         is_geo = 0
         rules_cfg = get_rules_config()
@@ -219,6 +233,17 @@ async def ingest_transaction(
         if is_geo == 1:
             jurisdiction_risk = max(jurisdiction_risk, 0.85)
 
+        # Check transitive counterparty taint from Neo4j (2 hops with decay)
+        taint_risk = 0.0
+        try:
+            from services.network_analysis import compute_transitive_counterparty_taint
+            taint_risk = await compute_transitive_counterparty_taint(
+                account_number=payload.sender_account,
+                tenant_id=str(tenant_id) if tenant_id else None
+            )
+        except Exception:
+            pass
+
         dynamic_res = compute_dynamic_risk(
             rules_triggered=triggered_rules,
             ml_score=ai_score,
@@ -227,7 +252,8 @@ async def ingest_transaction(
             iforest_score=iforest_score,
             sender_risk=sender_risk,
             receiver_risk=receiver_risk,
-            jurisdiction_risk=jurisdiction_risk
+            jurisdiction_risk=jurisdiction_risk,
+            taint_risk=taint_risk
         )
         dynamic_score = dynamic_res["dynamic_risk_score"]
         explainability = dynamic_res["explainability"]

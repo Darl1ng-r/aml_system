@@ -410,3 +410,41 @@ async def run_network_analysis(
         "fan_out_alerts": fan_out_nodes,
         "intermediary_ranking": intermediaries
     }
+
+
+async def compute_transitive_counterparty_taint(
+    account_number: str,
+    tenant_id: str | None = None,
+    max_hops: int = 2,
+    decay_factor: float = 0.65
+) -> float:
+    """
+    Computes upstream illicit taint propagation using graph traversal.
+    If an account received funds from an upstream high-risk entity (risk_score >= 0.75)
+    up to max_hops away, transitive risk propagates decaying with hop distance.
+    Returns taint score in [0.0, 1.0].
+    """
+    try:
+        driver = await get_async_neo4j_driver()
+        cypher_query = """
+        MATCH path = (origin:Account)-[t:TRANSFERS_TO*1..2]->(target:Account {account_number: $acc_num})
+        WHERE ($tenant_id IS NULL OR origin.tenant_id = $tenant_id)
+          AND coalesce(origin.risk_score, 0.0) >= 0.75
+        WITH path, origin.risk_score AS upstream_risk, length(path) AS hops
+        RETURN max(upstream_risk * ($decay ^ hops)) AS taint_score;
+        """
+        async with driver.session() as session:
+            result = await session.run(
+                cypher_query,
+                acc_num=account_number,
+                tenant_id=tenant_id,
+                decay=decay_factor
+            )
+            record = await result.single()
+            if record and record["taint_score"] is not None:
+                return round(float(record["taint_score"]), 4)
+    except Exception as e:
+        logger.debug(f"Transitive counterparty taint calculation bypassed: {e}")
+
+    return 0.0
+
