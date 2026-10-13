@@ -1048,7 +1048,7 @@ export const AmlLandingPage: React.FC = () => {
                 
                 <div className="flex items-center gap-2">
                   <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#4C7A5E]/20 text-[#4C7A5E] text-[10px] font-mono font-bold">
-                    ● LIVE POSTGRES TELEMETRY
+                    ● Live Activity Feed
                   </span>
                   <a href="/dashboard" className="text-xs font-mono text-slate-200 hover:text-white bg-white/10 px-2 py-0.5 rounded flex items-center gap-1">
                     Open Full System →

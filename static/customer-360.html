@@ -10,21 +10,21 @@
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-dark: #080c14;
-      --bg-surface: #0e1524;
-      --bg-card: #131c2e;
-      --bg-elevated: #1a253c;
-      --border-subtle: #1e2d48;
-      --border-focus: #3b82f6;
-      --text-main: #f1f5f9;
-      --text-muted: #94a3b8;
-      --text-dim: #64748b;
-      --accent-cyan: #06b6d4;
-      --accent-blue: #3b82f6;
-      --accent-emerald: #10b981;
-      --accent-amber: #f59e0b;
-      --accent-crimson: #ef4444;
-      --accent-purple: #8b5cf6;
+      --bg-dark: #ECE7DD;
+      --bg-surface: #FFFFFF;
+      --bg-card: #FFFFFF;
+      --bg-elevated: #FAF8F5;
+      --border-subtle: #DAD3C3;
+      --border-focus: #3D5A80;
+      --text-main: #22262E;
+      --text-muted: #4B4F5A;
+      --text-dim: #6B6F7A;
+      --accent-cyan: #3D5A80;
+      --accent-blue: #3D5A80;
+      --accent-emerald: #4C7A5E;
+      --accent-amber: #C98A2E;
+      --accent-crimson: #C1443B;
+      --accent-purple: #3D5A80;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -36,8 +36,8 @@
       flex-direction: column;
     }
     .header-nav {
-      background: var(--bg-surface);
-      border-bottom: 1px solid var(--border-subtle);
+      background: #1B1F2B;
+      border-bottom: 1px solid #2B3040;
       padding: 0 1.5rem;
       height: 56px;
       display: flex;
@@ -55,20 +55,20 @@
       letter-spacing: 0.05em;
       font-size: 0.95rem;
       text-decoration: none;
-      color: #fff;
+      color: #E7E9EF;
     }
     .brand-badge {
-      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      background: linear-gradient(135deg, var(--accent-cyan), #2B3F5A);
       padding: 3px 8px;
       border-radius: 4px;
       font-size: 0.7rem;
       font-family: 'IBM Plex Mono', monospace;
       font-weight: 600;
-      color: #000;
+      color: #FFFFFF;
     }
     .nav-links { display: flex; gap: 0.5rem; }
     .nav-link {
-      color: var(--text-muted);
+      color: #9FA6B8;
       text-decoration: none;
       font-size: 0.825rem;
       padding: 6px 12px;
@@ -77,37 +77,39 @@
       font-weight: 500;
     }
     .nav-link:hover, .nav-link.active {
-      color: #fff;
-      background: var(--bg-card);
+      color: #FFFFFF;
+      background: rgba(255, 255, 255, 0.1);
     }
     .user-pill {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       font-size: 0.8rem;
-      background: var(--bg-card);
+      background: rgba(255, 255, 255, 0.08);
+      color: #E7E9EF;
       padding: 4px 10px;
       border-radius: 20px;
-      border: 1px solid var(--border-subtle);
+      border: 1px solid rgba(255, 255, 255, 0.15);
     }
     .role-badge {
       font-family: 'IBM Plex Mono', monospace;
       font-size: 0.65rem;
-      background: rgba(59, 130, 246, 0.2);
+      background: rgba(61, 90, 128, 0.2);
       color: #93c5fd;
       padding: 2px 6px;
       border-radius: 4px;
-      border: 1px solid rgba(59, 130, 246, 0.3);
+      border: 1px solid rgba(61, 90, 128, 0.4);
     }
     .btn-logout {
       background: transparent;
       border: none;
-      color: var(--text-dim);
+      color: #9FA6B8;
       cursor: pointer;
       font-size: 0.75rem;
       margin-left: 0.25rem;
+      transition: color 0.15s;
     }
-    .btn-logout:hover { color: var(--accent-crimson); }
+    .btn-logout:hover { color: #fca5a5; }
 
     .dossier-layout {
       display: grid;
@@ -117,7 +119,7 @@
       overflow: hidden;
     }
     .customer-sidebar {
-      background: var(--bg-surface);
+      background: #FAF8F5;
       border-right: 1px solid var(--border-subtle);
       display: flex;
       flex-direction: column;
@@ -129,11 +131,11 @@
     }
     .search-input {
       width: 100%;
-      background: var(--bg-card);
+      background: #FFFFFF;
       border: 1px solid var(--border-subtle);
       border-radius: 6px;
       padding: 8px 12px;
-      color: #fff;
+      color: var(--text-main);
       font-size: 0.825rem;
       outline: none;
     }
@@ -143,15 +145,15 @@
     }
     .customer-item {
       padding: 12px 14px;
-      border-bottom: 1px solid rgba(255,255,255,0.03);
+      border-bottom: 1px solid var(--border-subtle);
       cursor: pointer;
       transition: background 0.15s;
     }
     .customer-item:hover, .customer-item.active {
-      background: var(--bg-card);
-      border-left: 3px solid var(--accent-cyan);
+      background: #E7EDF4;
+      border-left: 3px solid var(--accent-blue);
     }
-    .customer-name { font-weight: 600; font-size: 0.85rem; color: #fff; }
+    .customer-name { font-weight: 600; font-size: 0.85rem; color: var(--text-main); }
     .customer-sub { font-size: 0.725rem; color: var(--text-dim); margin-top: 2px; font-family: 'IBM Plex Mono', monospace; }
 
     .dossier-pane {
@@ -244,11 +246,11 @@
     .factor-bar {
       height: 6px;
       border-radius: 3px;
-      background: rgba(255,255,255,0.1);
+      background: var(--border-subtle);
       overflow: hidden;
       margin-top: 3px;
     }
-    .factor-fill { height: 100%; background: var(--accent-cyan); border-radius: 3px; }
+    .factor-fill { height: 100%; background: var(--accent-blue); border-radius: 3px; }
 
     .badge-strip { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     .status-pill {
@@ -259,13 +261,14 @@
       display: inline-flex;
       align-items: center;
       gap: 0.35rem;
+      font-weight: 600;
     }
-    .pill-green { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .pill-amber { background: rgba(245, 158, 11, 0.15); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.3); }
-    .pill-red { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .pill-green { background: #E9F1EC; color: #4C7A5E; border: 1px solid rgba(76, 122, 94, 0.35); }
+    .pill-amber { background: #FBF1DF; color: #C98A2E; border: 1px solid rgba(201, 138, 46, 0.35); }
+    .pill-red { background: #FBEAE8; color: #C1443B; border: 1px solid rgba(193, 68, 59, 0.35); }
 
     .ubo-tree-node {
-      background: var(--bg-card);
+      background: #FAF8F5;
       border: 1px solid var(--border-subtle);
       border-radius: 6px;
       padding: 8px 12px;
@@ -283,16 +286,16 @@
       font-weight: 500;
       cursor: pointer;
       border: 1px solid var(--border-subtle);
-      background: var(--bg-card);
+      background: #FFFFFF;
       color: var(--text-main);
       display: inline-flex;
       align-items: center;
       gap: 0.35rem;
       transition: all 0.15s;
     }
-    .btn:hover { background: var(--bg-elevated); border-color: var(--text-dim); }
-    .btn-danger { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border-color: rgba(239, 68, 68, 0.3); }
-    .btn-danger:hover { background: rgba(239, 68, 68, 0.25); }
+    .btn:hover { background: #FAF8F5; border-color: var(--text-dim); }
+    .btn-danger { background: #FBEAE8; color: #C1443B; border-color: rgba(193, 68, 59, 0.35); }
+    .btn-danger:hover { background: #F5D5D2; }
 
     .toast {
       position: fixed;

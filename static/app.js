@@ -122,10 +122,14 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
         resolveCurrentCase('CLOSE_FALSE_POSITIVE');
     }
-    // Key "b" or "B": Block & Flag SAR
+    // Key "b" or "B": Block & Flag SAR (Opens Confirmation Safeguard Modal)
     else if (e.key === 'b' || e.key === 'B') {
         e.preventDefault();
-        resolveCurrentCase('CLOSE_SAR');
+        if (typeof openSarConfirmationModal === 'function') {
+            openSarConfirmationModal();
+        } else {
+            resolveCurrentCase('CLOSE_SAR');
+        }
     }
     // Key "e" or "E": Escalate
     else if (e.key === 'e' || e.key === 'E') {
@@ -1636,7 +1640,8 @@ async function resolveCurrentCase(action) {
     if (!alert) return;
 
     const noteInput = document.getElementById('inbox-justification');
-    let justification = noteInput ? noteInput.value.trim() : '';
+    const mobileNoteInput = document.getElementById('mobile-inbox-justification');
+    let justification = (noteInput && noteInput.value.trim()) || (mobileNoteInput && mobileNoteInput.value.trim()) || '';
 
     if (!justification) {
         if (action === 'CLOSE_FALSE_POSITIVE') {
@@ -1647,19 +1652,48 @@ async function resolveCurrentCase(action) {
     }
 
     const shortId = alert.short_id || (alert.alert_id.includes('-') ? alert.alert_id.split('-').pop() : alert.alert_id.slice(-4));
-    const actionLabel = action === 'CLOSE_SAR' ? 'BLOCK & SAR' : 'APPROVE (FALSE POSITIVE)';
+    const actionLabel = action === 'CLOSE_SAR' ? 'FLAG SAR & RESTRICT' : 'DISMISS ALERT (FALSE POSITIVE)';
     log(`Submitting resolution: ${actionLabel} for Case #${shortId}...`, 'info');
 
-    if (mockMode) {
-        alert.status = action;
-        log(`Case #${shortId} successfully resolved: ${action}`, 'success');
-        if (noteInput) noteInput.value = '';
-        renderQueueRail();
-        navigateQueue(1);
-        return;
-    }
+    // Double-click protection & loading state (WCAG 2.1 AA)
+    const actionBtns = [
+        document.getElementById('btn-approve-case'),
+        document.getElementById('btn-escalate-case'),
+        document.getElementById('btn-block-case'),
+        document.getElementById('mobile-btn-approve-case'),
+        document.getElementById('mobile-btn-escalate-case'),
+        document.getElementById('mobile-btn-block-case')
+    ].filter(Boolean);
+
+    const targetBtns = (action === 'CLOSE_FALSE_POSITIVE')
+        ? [document.getElementById('btn-approve-case'), document.getElementById('mobile-btn-approve-case')].filter(Boolean)
+        : [document.getElementById('btn-block-case'), document.getElementById('mobile-btn-block-case'), document.getElementById('btn-confirm-sar-submit')].filter(Boolean);
+
+    const originalContents = new Map();
+    targetBtns.forEach(btn => {
+        originalContents.set(btn, btn.innerHTML);
+        btn.innerHTML = `<i data-lucide="loader-2" class="spin" style="width:14px;height:14px;"></i> <span>Processing...</span>`;
+        btn.classList.add('btn-loading');
+    });
+    if (window.lucide) lucide.createIcons();
+
+    actionBtns.forEach(b => {
+        b.disabled = true;
+        b.style.opacity = '0.5';
+        b.style.pointerEvents = 'none';
+    });
 
     try {
+        if (mockMode) {
+            alert.status = action;
+            log(`Case #${shortId} successfully resolved: ${action}`, 'success');
+            if (noteInput) noteInput.value = '';
+            if (mobileNoteInput) mobileNoteInput.value = '';
+            renderQueueRail();
+            navigateQueue(1);
+            return;
+        }
+
         const response = await fetch(`${BASE_URL}/api/v1/alerts/${activeAlertId}/action`, {
             method: 'POST',
             headers: {
@@ -1686,10 +1720,24 @@ async function resolveCurrentCase(action) {
         alert.status = action;
         log(`Case #${shortId} closed: ${res.status || action}`, 'success');
         if (noteInput) noteInput.value = '';
+        if (mobileNoteInput) mobileNoteInput.value = '';
         renderQueueRail();
         navigateQueue(1);
     } catch (e) {
         log(`Failed to resolve case #${shortId} on server: ${e.message}`, 'err');
+    } finally {
+        targetBtns.forEach(btn => {
+            if (originalContents.has(btn)) {
+                btn.innerHTML = originalContents.get(btn);
+            }
+            btn.classList.remove('btn-loading');
+        });
+        if (window.lucide) lucide.createIcons();
+        actionBtns.forEach(b => {
+            b.disabled = false;
+            b.style.opacity = '1';
+            b.style.pointerEvents = 'auto';
+        });
     }
 }
 
@@ -1699,7 +1747,8 @@ async function escalateCurrentCase() {
     if (!alert) return;
 
     const noteInput = document.getElementById('inbox-justification');
-    let justification = noteInput ? noteInput.value.trim() : '';
+    const mobileNoteInput = document.getElementById('mobile-inbox-justification');
+    let justification = (noteInput && noteInput.value.trim()) || (mobileNoteInput && mobileNoteInput.value.trim()) || '';
     if (!justification) {
         justification = "Case escalated to Senior Compliance Committee for enhanced due diligence (EDD).";
     }
@@ -1707,16 +1756,42 @@ async function escalateCurrentCase() {
     const shortId = alert.short_id || (alert.alert_id.includes('-') ? alert.alert_id.split('-').pop() : alert.alert_id.slice(-4));
     log(`Escalating Case #${shortId} to Senior Review Committee...`, 'info');
 
-    if (mockMode) {
-        alert.status = 'ESCALATED';
-        if (noteInput) noteInput.value = '';
-        log(`Case #${shortId} status updated: ESCALATED`, 'success');
-        renderQueueRail();
-        navigateQueue(1);
-        return;
-    }
+    // Double-click protection & loading state (WCAG 2.1 AA)
+    const actionBtns = [
+        document.getElementById('btn-approve-case'),
+        document.getElementById('btn-escalate-case'),
+        document.getElementById('btn-block-case'),
+        document.getElementById('mobile-btn-approve-case'),
+        document.getElementById('mobile-btn-escalate-case'),
+        document.getElementById('mobile-btn-block-case')
+    ].filter(Boolean);
+
+    const targetBtns = [document.getElementById('btn-escalate-case'), document.getElementById('mobile-btn-escalate-case')].filter(Boolean);
+    const originalContents = new Map();
+    targetBtns.forEach(btn => {
+        originalContents.set(btn, btn.innerHTML);
+        btn.innerHTML = `<i data-lucide="loader-2" class="spin" style="width:14px;height:14px;"></i> <span>Escalating...</span>`;
+        btn.classList.add('btn-loading');
+    });
+    if (window.lucide) lucide.createIcons();
+
+    actionBtns.forEach(b => {
+        b.disabled = true;
+        b.style.opacity = '0.5';
+        b.style.pointerEvents = 'none';
+    });
 
     try {
+        if (mockMode) {
+            alert.status = 'ESCALATED';
+            if (noteInput) noteInput.value = '';
+            if (mobileNoteInput) mobileNoteInput.value = '';
+            log(`Case #${shortId} status updated: ESCALATED`, 'success');
+            renderQueueRail();
+            navigateQueue(1);
+            return;
+        }
+
         const response = await fetch(`${BASE_URL}/api/v1/alerts/${activeAlertId}/escalate`, {
             method: 'POST',
             headers: {
@@ -1739,11 +1814,25 @@ async function escalateCurrentCase() {
         const res = await response.json();
         alert.status = 'ESCALATED';
         if (noteInput) noteInput.value = '';
+        if (mobileNoteInput) mobileNoteInput.value = '';
         log(`Case #${shortId} successfully persisted as ESCALATED in PostgreSQL database.`, 'success');
         renderQueueRail();
         navigateQueue(1);
     } catch (e) {
         log(`Failed to escalate case #${shortId}: ${e.message}`, 'err');
+    } finally {
+        targetBtns.forEach(btn => {
+            if (originalContents.has(btn)) {
+                btn.innerHTML = originalContents.get(btn);
+            }
+            btn.classList.remove('btn-loading');
+        });
+        if (window.lucide) lucide.createIcons();
+        actionBtns.forEach(b => {
+            b.disabled = false;
+            b.style.opacity = '1';
+            b.style.pointerEvents = 'auto';
+        });
     }
 }
 

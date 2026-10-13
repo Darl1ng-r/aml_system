@@ -39,13 +39,13 @@
   ══════════════════════════════════════════════════════════════ -->
   <div id="mock-mode-banner" style="display:none; background:#fff3cd; color:#856404; padding:8px 16px; font-size:12px; font-weight:600; text-align:center; border-bottom:1px solid #ffeeba;">
     <i data-lucide="alert-triangle" style="width:14px; height:14px; display:inline-block; vertical-align:middle; margin-right:6px;"></i>
-    SIMULATED EVALUATION MODE: Database connection offline. Actions are evaluating on local mock fixtures.
+    Demo Mode: Operating on sample regulatory records. Real-time sync paused.
   </div>
 
   <div id="case-lock-banner" style="display:none; padding:8px 24px; font-size:12px; font-weight:600; align-items:center; justify-content:space-between; border-bottom:1px solid #FDE68A; background:#FFFBEB; color:#92400E;">
     <div style="display:flex; align-items:center; gap:8px;">
       <i data-lucide="shield-check" style="width:15px; height:15px; color:#10B981;"></i>
-      <span id="case-lock-status-text">Case Edit Lease Acquired</span>
+      <span id="case-lock-status-text">You have exclusive edit lock on this case</span>
     </div>
     <div style="display:flex; align-items:center; gap:8px;">
       <span id="case-lock-timer" style="font-family:var(--font-data); font-size:11px;">Expires in 5:00</span>
@@ -65,63 +65,55 @@
       </div>
 
       <div class="topbar-right">
-        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:var(--panel-edge); margin-right:8px;">
+        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:var(--panel-edge); margin-right:4px;">
           <span class="pulse-dot" style="width:7px; height:7px; border-radius:50%; background:#10b981;"></span>
           <span id="app-status-text">Compliance Engine Online</span>
         </div>
         <span class="queue-pos" id="queue-position-display">Case 1 of 1 in queue</span>
-        <span class="kbd-hint"><kbd>A</kbd> approve <kbd>B</kbd> block <kbd>→</kbd> next</span>
+        <span class="kbd-hint"><kbd>A</kbd> dismiss <kbd>B</kbd> flag SAR <kbd>→</kbd> next</span>
 
-        <!-- System Cross-Module Navigation (5-Tier RBAC) -->
-        <a href="/alerts/triage" class="topbar-btn" title="Alert Triage Inbox" style="text-decoration:none;">
-          <i data-lucide="inbox"></i> Triage
-        </a>
-        <a href="/sar/editor" class="topbar-btn" title="SAR Draft Editor" style="text-decoration:none;">
-          <i data-lucide="file-text"></i> SAR
-        </a>
-        <a href="/sar/queue" class="topbar-btn" data-role="MLRO,ADMIN" title="SAR Filing Queue" style="text-decoration:none;">
-          <i data-lucide="send"></i> Queue
-        </a>
-        <a href="/customers" class="topbar-btn" title="Customer 360 Dossier" style="text-decoration:none;">
-          <i data-lucide="user-check"></i> Customer
-        </a>
-        <a href="/network" class="topbar-btn" title="Network Graph" style="text-decoration:none;">
-          <i data-lucide="share-2"></i> Graph
-        </a>
-        <a href="/dashboard/executive" class="topbar-btn" data-role="MLRO,ADMIN" title="Executive Dashboard" style="text-decoration:none;">
-          <i data-lucide="bar-chart-2"></i> Exec
-        </a>
-        <a href="/audit/logs" class="topbar-btn" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN" title="Audit Log Vault" style="text-decoration:none;">
-          <i data-lucide="shield"></i> Audit
-        </a>
-        <a href="/ml/governance" class="topbar-btn" data-role="ADMIN,MLRO" title="AI & Model Governance" style="text-decoration:none;">
-          <i data-lucide="cpu"></i> AI
-        </a>
-        <a href="/settings/risk-appetite" class="topbar-btn" data-role="MLRO,ADMIN" title="Risk Appetite Settings" style="text-decoration:none;">
-          <i data-lucide="compass"></i> Risk
-        </a>
-        <a href="/admin/rules" class="topbar-btn" id="nav-rule-builder" title="Rule Builder & Tuning" style="text-decoration:none;">
-          <i data-lucide="sliders"></i> Rules
-        </a>
-        <a href="/admin/users" class="topbar-btn" id="nav-user-admin" title="Team & 5-Tier RBAC" style="text-decoration:none;">
-          <i data-lucide="users"></i> Users
-        </a>
-        <a href="/admin/health" class="topbar-btn" data-role="ADMIN" title="System Health" style="text-decoration:none;">
-          <i data-lucide="activity"></i> Health
-        </a>
+        <!-- Streamlined Primary Navigation (3 Core Pills) -->
+        <div class="nav-pills">
+          <a href="/alerts/triage" class="nav-pill" title="Alert Triage Inbox">
+            <i data-lucide="inbox" style="width:14px; height:14px;"></i> Triage
+          </a>
+          <a href="/dashboard" class="nav-pill active" title="Investigation Cockpit">
+            <i data-lucide="crosshair" style="width:14px; height:14px;"></i> Cockpit
+          </a>
+          <a href="/customers" class="nav-pill" title="Customer 360 Dossier">
+            <i data-lucide="user-check" style="width:14px; height:14px;"></i> Customer 360
+          </a>
+        </div>
 
-        <!-- System View Overlays -->
-        <button class="topbar-btn" onclick="openModal('executive-modal')" title="Executive Dashboard">
-          <i data-lucide="layout-dashboard"></i> Overview
-        </button>
-
-        <button class="topbar-btn" onclick="openModal('sandbox-modal')" title="Watchlist Screening">
-          <i data-lucide="scan-search"></i> Screening
-        </button>
-
-        <button class="topbar-btn" onclick="openModal('str-modal')" title="STR Filings">
-          <i data-lucide="package"></i> STR Batches
-        </button>
+        <!-- Unified Modules App Switcher Dropdown -->
+        <div class="app-launcher-dropdown">
+          <button class="topbar-btn" id="btn-app-menu" onclick="toggleAppMenu()" aria-haspopup="true" aria-expanded="false" title="Modules & Administration">
+            <i data-lucide="grid"></i>
+            <span>Modules</span>
+            <i data-lucide="chevron-down" style="width:12px; height:12px; margin-left:2px;"></i>
+          </button>
+          
+          <div class="dropdown-menu" id="app-menu-popover">
+            <div class="dropdown-group-label">Investigations &amp; Regulatory</div>
+            <a href="/sar/editor" class="dropdown-item"><i data-lucide="file-text"></i> SAR Draft Editor</a>
+            <a href="/sar/queue" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="send"></i> SAR Filing Queue</a>
+            <a href="/network" class="dropdown-item"><i data-lucide="share-2"></i> Graph Explorer</a>
+            <button type="button" class="dropdown-item" onclick="openModal('sandbox-modal'); toggleAppMenu(false);"><i data-lucide="scan-search"></i> Watchlist Screening</button>
+            <button type="button" class="dropdown-item" onclick="openModal('str-modal'); toggleAppMenu(false);"><i data-lucide="package"></i> Regulatory STR Batches</button>
+            
+            <div class="dropdown-divider"></div>
+            
+            <div class="dropdown-group-label">Governance &amp; Oversight</div>
+            <a href="/dashboard/executive" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="bar-chart-2"></i> Executive Dashboard</a>
+            <button type="button" class="dropdown-item" onclick="openModal('executive-modal'); toggleAppMenu(false);"><i data-lucide="layout-dashboard"></i> Operational Overview</button>
+            <a href="/audit/logs" class="dropdown-item" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN"><i data-lucide="shield"></i> Immutable Audit Vault</a>
+            <a href="/ml/governance" class="dropdown-item" data-role="ADMIN,MLRO"><i data-lucide="cpu"></i> AI &amp; Model Governance</a>
+            <a href="/settings/risk-appetite" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="compass"></i> Risk Appetite Settings</a>
+            <a href="/admin/rules" class="dropdown-item" id="nav-rule-builder"><i data-lucide="sliders"></i> Rule Tuning &amp; Builder</a>
+            <a href="/admin/users" class="dropdown-item" id="nav-user-admin"><i data-lucide="users"></i> Team &amp; 5-Tier RBAC</a>
+            <a href="/admin/health" class="dropdown-item" data-role="ADMIN"><i data-lucide="activity"></i> System Health</a>
+          </div>
+        </div>
 
         <button class="topbar-btn" onclick="openModal('shortcuts-modal')" title="Keyboard Shortcuts (?)">
           <kbd>?</kbd>
@@ -179,17 +171,17 @@
         <div class="risk-badge high" id="evidence-risk-badge">● Risk 92 / 100</div>
       </div>
 
-      <!-- Evidence Tabs -->
-      <div class="tabs">
-        <div class="tab active" onclick="switchEvidenceTab('overview', this)">Overview</div>
-        <div class="tab" onclick="switchEvidenceTab('network', this)">Network graph</div>
-        <div class="tab" onclick="switchEvidenceTab('rules', this)">Rule logic</div>
-        <div class="tab" onclick="switchEvidenceTab('evidence', this)">Evidence Locker</div>
-        <div class="tab" onclick="switchEvidenceTab('raw', this)">Raw data</div>
+      <!-- Evidence Tabs with Full ARIA Accessibility -->
+      <div class="tabs" role="tablist" aria-label="Investigation Evidence Tabs">
+        <div class="tab active" role="tab" id="tab-tx-details" aria-controls="tab-content-overview" aria-selected="true" tabindex="0" onclick="switchEvidenceTab('overview', this)">Overview</div>
+        <div class="tab" role="tab" id="tab-graph-view" aria-controls="tab-content-network" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('network', this)">Network graph</div>
+        <div class="tab" role="tab" id="tab-rules-fired" aria-controls="tab-content-rules" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('rules', this)">Rule logic</div>
+        <div class="tab" role="tab" id="tab-evidence-locker" aria-controls="tab-content-evidence" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('evidence', this)">Evidence Locker</div>
+        <div class="tab" role="tab" id="tab-raw-telemetry" aria-controls="tab-content-raw" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('raw', this)">Raw data</div>
       </div>
 
       <!-- Section: Overview Tab Content -->
-      <div id="tab-content-overview">
+      <div id="tab-content-overview" role="tabpanel" aria-labelledby="tab-tx-details">
         <!-- 1. Transaction Detail Grid -->
         <div class="panel">
           <div class="panel-title">Transaction detail</div>
@@ -289,7 +281,7 @@
       </div>
 
       <!-- Section: Network Graph Full View -->
-      <div id="tab-content-network" style="display:none;">
+      <div id="tab-content-network" role="tabpanel" aria-labelledby="tab-graph-view" style="display:none;">
         <div class="panel" style="min-height: 480px;">
           <div class="panel-title">Interactive 2-Hop Network Graph Topology
             <button class="btn btn-outline btn-sm" onclick="fitVisGraph()">Fit View</button>
@@ -299,7 +291,7 @@
       </div>
 
       <!-- Section: Rule Logic & Explainability View -->
-      <div id="tab-content-rules" style="display:none;">
+      <div id="tab-content-rules" role="tabpanel" aria-labelledby="tab-rules-fired" style="display:none;">
         <div class="panel">
           <div class="panel-title">Explainable AI (SHAP) Risk Drivers</div>
           <div id="inbox-shap-list" style="display: flex; flex-direction: column; gap: 10px;">
@@ -309,7 +301,7 @@
       </div>
 
       <!-- Section: Case Evidence Locker (Task 1.9 Audit Remediation) -->
-      <div id="tab-content-evidence" style="display:none;">
+      <div id="tab-content-evidence" role="tabpanel" aria-labelledby="tab-evidence-locker" style="display:none;">
         <div class="panel">
           <div class="panel-title" style="display:flex; justify-content:space-between; align-items:center;">
             <span>Case Evidence Locker & Chain of Custody</span>
@@ -349,7 +341,7 @@
       </div>
 
       <!-- Section: Raw Data JSON View -->
-      <div id="tab-content-raw" style="display:none;">
+      <div id="tab-content-raw" role="tabpanel" aria-labelledby="tab-raw-telemetry" style="display:none;">
         <div class="panel">
           <div class="panel-title">Raw Telemetry & Cryptographic Verification</div>
           <pre id="evidence-raw-json" style="background:#F8F6F0; border:1px solid var(--panel-edge); border-radius:8px; padding:12px; font-family:var(--font-data); font-size:11px; max-height:400px; overflow:auto;"></pre>
@@ -451,14 +443,42 @@
 
       <!-- Sticky Decision Console -->
       <div class="decision-footer">
-        <textarea class="notes-field" id="inbox-justification" placeholder="Add investigation notes — required before closing this case…"></textarea>
+        <textarea class="notes-field" id="inbox-justification" placeholder="Document your rationale for this determination (required for audit trail)…"></textarea>
         <div class="decision-btns">
-          <button class="dbtn approve" id="btn-approve-case" onclick="resolveCurrentCase('CLOSE_FALSE_POSITIVE')">Approve</button>
-          <button class="dbtn escalate" id="btn-escalate-case" onclick="escalateCurrentCase()">Escalate</button>
-          <button class="dbtn block" id="btn-block-case" onclick="resolveCurrentCase('CLOSE_SAR')">Block</button>
+          <button class="dbtn approve" id="btn-approve-case" onclick="resolveCurrentCase('CLOSE_FALSE_POSITIVE')" title="Dismiss Alert as False Positive">
+            <i data-lucide="check-circle-2" style="width:14px; height:14px;"></i>
+            <span>Dismiss Alert (False Positive)</span>
+          </button>
+          <button class="dbtn escalate" id="btn-escalate-case" onclick="escalateCurrentCase()" title="Escalate to Senior Compliance MLRO">
+            <i data-lucide="arrow-up-right" style="width:14px; height:14px;"></i>
+            <span>Escalate to Tier 2 (Senior MLRO)</span>
+          </button>
+          <button class="dbtn block" id="btn-block-case" onclick="openSarConfirmationModal()" title="Flag for SAR Filing & Restriction">
+            <i data-lucide="alert-octagon" style="width:14px; height:14px;"></i>
+            <span>Flag for SAR Filing &amp; Restriction…</span>
+          </button>
         </div>
       </div>
     </aside>
+
+    <!-- Mobile & Tablet Docked Decision Bar (Directive 1) -->
+    <div class="mobile-decision-bar">
+      <textarea class="notes-field" id="mobile-inbox-justification" placeholder="Document investigation rationale…"></textarea>
+      <div class="decision-btns">
+        <button class="dbtn approve" id="mobile-btn-approve-case" onclick="resolveCurrentCase('CLOSE_FALSE_POSITIVE')" title="Dismiss Alert">
+          <i data-lucide="check-circle-2" style="width:13px; height:13px;"></i>
+          <span>Dismiss</span>
+        </button>
+        <button class="dbtn escalate" id="mobile-btn-escalate-case" onclick="escalateCurrentCase()" title="Escalate Alert">
+          <i data-lucide="arrow-up-right" style="width:13px; height:13px;"></i>
+          <span>Escalate</span>
+        </button>
+        <button class="dbtn block" id="mobile-btn-block-case" onclick="openSarConfirmationModal()" title="Flag SAR">
+          <i data-lucide="alert-octagon" style="width:13px; height:13px;"></i>
+          <span>Flag SAR…</span>
+        </button>
+      </div>
+    </div>
 
   </div>
 
@@ -480,7 +500,7 @@
           <div class="metric-card">
             <span class="metric-label">Active Cases</span>
             <span class="metric-value" id="metric-active-cases">—</span>
-            <span class="metric-trend">Live Postgres Pool</span>
+            <span class="metric-trend">Live Activity Feed</span>
           </div>
           <div class="metric-card">
             <span class="metric-label">Avg. Resolution Time</span>
@@ -673,6 +693,56 @@
     </div>
   </div>
 
+  <!-- 5. SAR Regulatory Filing Confirmation Modal Safeguard -->
+  <div class="modal-overlay" id="sar-confirm-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="sar-modal-title" onclick="if(event.target===this)closeModal('sar-confirm-modal')">
+    <div class="modal-window" style="max-width: 540px;">
+      <div class="modal-window-header" style="background:#FFF5F5; border-bottom:1px solid #FED7D7;">
+        <div class="modal-window-title" id="sar-modal-title" style="color:var(--risk-high); display:flex; align-items:center; gap:8px;">
+          <i data-lucide="alert-octagon" style="width:20px; height:20px; color:var(--risk-high);"></i>
+          <span>Mandatory Regulatory Action Confirmation</span>
+        </div>
+        <button class="modal-close-btn" onclick="closeModal('sar-confirm-modal')" aria-label="Close dialog">Esc</button>
+      </div>
+      <div class="modal-window-body" style="padding:20px;">
+        <div style="background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; padding:12px 14px; margin-bottom:16px; color:#991B1B; font-size:12.5px; line-height:1.5;">
+          <strong>Regulatory Warning:</strong> This action initiates a mandatory FinCEN Suspicious Activity Report (SAR) electronic transmission, records an immutable audit trail entry, and places an immediate compliance hold on the target account.
+        </div>
+
+        <div style="background:#FBF9F5; border:1px solid var(--panel-edge); border-radius:8px; padding:14px; margin-bottom:16px; font-size:12px; font-family:var(--font-data);">
+          <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+            <span style="color:var(--ink-soft);">Case Reference:</span>
+            <strong id="sar-modal-case-id" style="color:var(--ink);">CASE #AML-2026-04471</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+            <span style="color:var(--ink-soft);">Target Entity:</span>
+            <strong id="sar-modal-entity-name" style="color:var(--ink);">Tobias M. Varga</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between;">
+            <span style="color:var(--ink-soft);">Aggregate Suspicious Flow:</span>
+            <strong id="sar-modal-amount" style="color:var(--risk-high);">$9,480.00 USD</strong>
+          </div>
+        </div>
+
+        <div style="margin-bottom:18px;">
+          <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:12px; color:var(--ink); line-height:1.4;">
+            <input type="checkbox" id="sar-confirm-checkbox" style="margin-top:2px; cursor:pointer;" onchange="toggleSarConfirmButton()">
+            <span>I certify that this investigation was conducted under BSA/AML standards and confirm the justification for federal regulatory submission.</span>
+          </label>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:10px;">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('sar-confirm-modal')" style="padding:8px 16px; font-size:13px; cursor:pointer;">
+            Cancel
+          </button>
+          <button type="button" class="btn btn-danger" id="btn-confirm-sar-submit" onclick="executeConfirmedSarFiling()" disabled style="padding:8px 18px; font-size:13px; background:var(--risk-high); color:#fff; border:none; border-radius:6px; font-weight:600; cursor:not-allowed; opacity:0.5; display:inline-flex; align-items:center; gap:6px;">
+            <i data-lucide="send" style="width:14px; height:14px;"></i>
+            <span>Confirm SAR Submission</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ═══════════════════════════════════════════════════════════
        COMPATIBILITY BRIDGES FOR APP.JS
   ══════════════════════════════════════════════════════════════ -->
@@ -719,8 +789,17 @@
     }
 
     function switchEvidenceTab(tabKey, el) {
-      document.querySelectorAll('.center .tabs .tab').forEach(t => t.classList.remove('active'));
-      if (el) el.classList.add('active');
+      document.querySelectorAll('.center .tabs .tab').forEach(t => {
+        t.classList.remove('active');
+        t.setAttribute('aria-selected', 'false');
+        t.setAttribute('tabindex', '-1');
+      });
+      if (el) {
+        el.classList.add('active');
+        el.setAttribute('aria-selected', 'true');
+        el.setAttribute('tabindex', '0');
+        el.focus();
+      }
 
       const tabs = ['overview', 'network', 'rules', 'evidence', 'raw'];
       tabs.forEach(k => {
@@ -736,6 +815,91 @@
       }
       if (window.lucide) lucide.createIcons();
     }
+
+    // App Switcher Dropdown Controller
+    function toggleAppMenu(force) {
+      const menu = document.getElementById('app-menu-popover');
+      const btn = document.getElementById('btn-app-menu');
+      if (!menu) return;
+      const isOpen = force !== undefined ? force : !menu.classList.contains('show');
+      if (isOpen) {
+        menu.classList.add('show');
+        if (btn) btn.setAttribute('aria-expanded', 'true');
+      } else {
+        menu.classList.remove('show');
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+      }
+    }
+
+    // SAR Confirmation Modal Safeguard Controllers
+    function toggleSarConfirmButton() {
+      const cb = document.getElementById('sar-confirm-checkbox');
+      const btn = document.getElementById('btn-confirm-sar-submit');
+      if (!cb || !btn) return;
+      btn.disabled = !cb.checked;
+      btn.style.opacity = cb.checked ? '1' : '0.5';
+      btn.style.cursor = cb.checked ? 'pointer' : 'not-allowed';
+    }
+
+    function openSarConfirmationModal() {
+      const caseIdEl = document.getElementById('sar-modal-case-id');
+      const entityEl = document.getElementById('sar-modal-entity-name');
+      const amountEl = document.getElementById('sar-modal-amount');
+      const cb = document.getElementById('sar-confirm-checkbox');
+      const btn = document.getElementById('btn-confirm-sar-submit');
+
+      if (caseIdEl) caseIdEl.textContent = document.getElementById('topbar-case-id')?.textContent || 'CASE #AML-2026-04471';
+      if (entityEl) entityEl.textContent = document.getElementById('ctx-kyc-name')?.textContent || 'Target Customer Entity';
+      if (amountEl) amountEl.textContent = document.getElementById('txn-amount')?.textContent || '$9,480.00 USD';
+      if (cb) cb.checked = false;
+      if (btn) {
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+        btn.style.cursor = 'not-allowed';
+      }
+      openModal('sar-confirm-modal');
+    }
+
+    async function executeConfirmedSarFiling() {
+      closeModal('sar-confirm-modal');
+      await resolveCurrentCase('CLOSE_SAR');
+    }
+
+    // Global click-outside & keyboard accessibility
+    document.addEventListener('click', (e) => {
+      const dropdown = document.querySelector('.app-launcher-dropdown');
+      if (dropdown && !dropdown.contains(e.target)) {
+        toggleAppMenu(false);
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        toggleAppMenu(false);
+        const modals = ['executive-modal', 'sandbox-modal', 'str-modal', 'shortcuts-modal', 'sar-confirm-modal'];
+        modals.forEach(m => closeModal(m));
+      }
+    });
+
+    // Evidence tablist arrow-key navigation (WCAG 2.1 AA)
+    document.addEventListener('DOMContentLoaded', () => {
+      const tablist = document.querySelector('.center .tabs[role="tablist"]');
+      if (tablist) {
+        tablist.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+            const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+            const currentIdx = tabs.indexOf(document.activeElement);
+            if (currentIdx !== -1) {
+              e.preventDefault();
+              let nextIdx = e.key === 'ArrowRight' ? currentIdx + 1 : currentIdx - 1;
+              if (nextIdx >= tabs.length) nextIdx = 0;
+              if (nextIdx < 0) nextIdx = tabs.length - 1;
+              tabs[nextIdx].click();
+            }
+          }
+        });
+      }
+    });
 
     async function loadCaseEvidence() {
       const caseId = (typeof activeAlertId !== 'undefined' && activeAlertId) ? activeAlertId : '00000000-0000-0000-0000-000000000001';
