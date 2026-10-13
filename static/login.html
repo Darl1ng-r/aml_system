@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AML Portal - Enterprise Authentication</title>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
     <style>
@@ -15,8 +15,9 @@
             justify-content: center;
             padding: 1.5rem;
             min-height: 100vh;
-            background-color: var(--bg-primary, #0c1017);
-            font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+            background-color: var(--canvas, #ECE7DD);
+            color: var(--ink, #22262E);
+            font-family: var(--font-ui, 'IBM Plex Sans', -apple-system, sans-serif);
         }
 
         .auth-container {
@@ -26,10 +27,10 @@
         }
 
         .auth-card {
-            background-color: var(--bg-secondary, #161b22);
-            border: 1px solid var(--border-color, #30363d);
-            border-radius: 16px;
-            box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+            background-color: var(--panel, #FFFFFF);
+            border: 1px solid var(--panel-edge, #DAD3C3);
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(44, 37, 32, 0.08);
             overflow: hidden;
             display: flex;
             flex-direction: column;
@@ -38,15 +39,15 @@
         .auth-header {
             padding: 2.25rem 2.25rem 1.5rem 2.25rem;
             text-align: center;
-            border-bottom: 1px solid var(--border-color, #30363d);
-            background-color: rgba(255, 255, 255, 0.02);
+            border-bottom: 1px solid var(--panel-edge, #DAD3C3);
+            background-color: rgba(44, 37, 32, 0.02);
         }
 
         .auth-logo {
-            width: 48px;
-            height: 48px;
-            background: linear-gradient(135deg, #1d64f5, #1d8253);
-            border-radius: 14px;
+            width: 46px;
+            height: 46px;
+            background: linear-gradient(135deg, var(--brand, #3D5A80), var(--risk-low, #4C7A5E));
+            border-radius: 12px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -54,59 +55,61 @@
             font-weight: 800;
             font-size: 1.5rem;
             margin: 0 auto 1rem auto;
-            box-shadow: 0 4px 16px rgba(29, 100, 245, 0.3);
+            box-shadow: 0 4px 12px rgba(61, 90, 128, 0.22);
         }
 
         .auth-header h1 {
             font-size: 1.35rem;
-            font-weight: 800;
-            color: var(--text-primary, #f0f6fc);
+            font-weight: 700;
+            color: var(--ink, #22262E);
             letter-spacing: -0.02em;
             margin: 0;
         }
 
         .auth-header p {
             font-size: 0.8rem;
-            color: var(--text-secondary, #8b949e);
+            color: var(--ink-soft, #4B4F5A);
             margin-top: 0.35rem;
             font-weight: 500;
         }
 
         .auth-tabs {
             display: flex;
-            border-bottom: 1px solid var(--border-color, #30363d);
-            background-color: rgba(0, 0, 0, 0.15);
+            border-bottom: 1px solid var(--panel-edge, #DAD3C3);
+            background-color: rgba(44, 37, 32, 0.03);
         }
 
         .auth-tab-btn {
             flex: 1;
             background: none;
             border: none;
-            padding: 1rem;
+            padding: 0.95rem 1rem;
             font-family: inherit;
-            font-size: 0.9rem;
-            font-weight: 700;
-            color: var(--text-secondary, #8b949e);
+            font-size: 0.88rem;
+            font-weight: 600;
+            color: var(--ink-soft, #4B4F5A);
             cursor: pointer;
             text-align: center;
-            transition: all 0.2s ease;
+            transition: all 0.15s ease;
             outline: none;
             border-bottom: 2px solid transparent;
         }
 
         .auth-tab-btn:hover {
-            color: var(--text-primary, #f0f6fc);
-            background-color: rgba(255, 255, 255, 0.03);
+            color: var(--ink, #22262E);
+            background-color: rgba(44, 37, 32, 0.02);
         }
 
         .auth-tab-btn.active {
-            color: #1d64f5;
-            border-bottom: 2px solid #1d64f5;
-            background-color: transparent;
+            color: var(--brand, #3D5A80);
+            border-bottom: 2px solid var(--brand, #3D5A80);
+            background-color: #FFFFFF;
+            font-weight: 700;
         }
 
         .auth-body {
             padding: 2.25rem;
+            background-color: #FFFFFF;
         }
 
         .auth-form {
@@ -128,24 +131,24 @@
         .form-group label {
             font-size: 0.82rem;
             font-weight: 600;
-            color: var(--text-primary, #f0f6fc);
+            color: var(--ink, #22262E);
         }
 
         .form-group input {
             padding: 0.75rem 1rem;
-            border-radius: 8px;
-            border: 1px solid var(--border-color, #30363d);
-            background-color: var(--bg-primary, #0c1017);
-            color: var(--text-primary, #f0f6fc);
+            border-radius: 6px;
+            border: 1px solid var(--panel-edge, #DAD3C3);
+            background-color: #FFFFFF;
+            color: var(--ink, #22262E);
             font-family: inherit;
             font-size: 0.9rem;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
             outline: none;
         }
 
         .form-group input:focus {
-            border-color: #1d64f5;
-            box-shadow: 0 0 0 3px rgba(29, 100, 245, 0.25);
+            border-color: var(--brand, #3D5A80);
+            box-shadow: 0 0 0 3px rgba(61, 90, 128, 0.15);
         }
 
         .password-wrapper {
@@ -165,17 +168,17 @@
             background: none;
             border: none;
             cursor: pointer;
-            color: var(--text-secondary, #8b949e);
+            color: var(--ink-soft, #4B4F5A);
             font-size: 0.8rem;
-            font-weight: 700;
+            font-weight: 600;
             padding: 0.35rem 0.5rem;
             border-radius: 4px;
             transition: color 0.15s ease;
         }
 
         .password-toggle-btn:hover {
-            color: var(--text-primary, #f0f6fc);
-            background-color: rgba(255, 255, 255, 0.05);
+            color: var(--ink, #22262E);
+            background-color: rgba(44, 37, 32, 0.04);
         }
 
         /* Password Strength Meter */
@@ -188,7 +191,7 @@
 
         .strength-bar-bg {
             height: 4px;
-            background-color: var(--border-color, #30363d);
+            background-color: var(--panel-edge, #DAD3C3);
             border-radius: 2px;
             overflow: hidden;
         }
@@ -203,7 +206,7 @@
         .strength-label {
             font-size: 0.75rem;
             font-weight: 600;
-            color: var(--text-secondary, #8b949e);
+            color: var(--ink-soft, #4B4F5A);
         }
 
         /* MFA Challenge Screen */
@@ -234,24 +237,24 @@
 
         .btn {
             padding: 0.8rem 1.25rem;
-            border-radius: 8px;
+            border-radius: 6px;
             border: none;
             font-family: inherit;
             font-size: 0.9rem;
-            font-weight: 700;
+            font-weight: 600;
             cursor: pointer;
-            transition: all 0.2s ease;
+            transition: all 0.15s ease;
             display: inline-flex;
             align-items: center;
             justify-content: center;
             gap: 0.5rem;
-            background-color: #1d64f5;
+            background-color: var(--brand, #3D5A80);
             color: #ffffff;
         }
 
         .btn:hover:not(:disabled) {
-            background-color: #1551c9;
-            box-shadow: 0 4px 12px rgba(29, 100, 245, 0.35);
+            background-color: var(--brand-dark, #2B3F5A);
+            box-shadow: 0 4px 12px rgba(61, 90, 128, 0.25);
         }
 
         .btn:disabled {
@@ -260,30 +263,30 @@
         }
 
         .btn-success {
-            background-color: #1d8253;
+            background-color: var(--risk-low, #4C7A5E);
         }
 
         .btn-success:hover:not(:disabled) {
-            background-color: #166942;
-            box-shadow: 0 4px 12px rgba(29, 130, 83, 0.35);
+            background-color: #3b604a;
+            box-shadow: 0 4px 12px rgba(76, 122, 94, 0.25);
         }
 
         .btn-secondary {
-            background-color: transparent;
-            border: 1px solid var(--border-color, #30363d);
-            color: var(--text-primary, #f0f6fc);
+            background-color: #FFFFFF;
+            border: 1px solid var(--panel-edge, #DAD3C3);
+            color: var(--ink, #22262E);
         }
 
         .btn-secondary:hover:not(:disabled) {
-            background-color: rgba(255, 255, 255, 0.05);
-            border-color: #8b949e;
+            background-color: rgba(44, 37, 32, 0.04);
+            border-color: #B5AD9C;
         }
 
         .error-banner {
-            background-color: rgba(204, 63, 53, 0.12);
-            border: 1px solid rgba(204, 63, 53, 0.35);
-            color: #ff6b6b;
-            border-radius: 8px;
+            background-color: rgba(193, 68, 59, 0.08);
+            border: 1px solid rgba(193, 68, 59, 0.25);
+            color: var(--risk-high, #C1443B);
+            border-radius: 6px;
             padding: 0.75rem 1rem;
             font-size: 0.85rem;
             font-weight: 600;
@@ -292,10 +295,10 @@
         }
 
         .success-banner {
-            background-color: rgba(29, 130, 83, 0.12);
-            border: 1px solid rgba(29, 130, 83, 0.35);
-            color: #4ade80;
-            border-radius: 8px;
+            background-color: rgba(76, 122, 94, 0.08);
+            border: 1px solid rgba(76, 122, 94, 0.25);
+            color: var(--risk-low, #4C7A5E);
+            border-radius: 6px;
             padding: 0.75rem 1rem;
             font-size: 0.85rem;
             font-weight: 600;
@@ -349,10 +352,10 @@
                 <!-- 2. MFA CHALLENGE FORM -->
                 <form id="form-mfa" class="mfa-screen" novalidate>
                     <div class="mfa-icon">
-                        <i data-lucide="key-round" style="width:36px;height:36px;stroke:#f4a261;stroke-width:2;"></i>
+                        <i data-lucide="key-round" style="width:36px;height:36px;stroke:var(--brand, #3D5A80);stroke-width:2;"></i>
                     </div>
-                    <h2 style="font-size: 1.15rem; font-weight: 700; margin: 0; color: var(--text-primary, #f0f6fc);">Two-Factor Verification</h2>
-                    <p style="font-size: 0.8rem; color: var(--text-secondary, #8b949e); margin: 0;">Enter the 6-digit verification code from your authenticator app or an emergency recovery code.</p>
+                    <h2 style="font-size: 1.15rem; font-weight: 700; margin: 0; color: var(--ink, #22262E);">Two-Factor Verification</h2>
+                    <p style="font-size: 0.8rem; color: var(--ink-soft, #4B4F5A); margin: 0;">Enter the 6-digit verification code from your authenticator app or an emergency recovery code.</p>
 
                     <div class="form-group">
                         <input type="text" id="mfa-code" class="otp-input" placeholder="000000" maxlength="15" autocomplete="one-time-code" required>
@@ -392,8 +395,8 @@
                 </form>
 
                 <!-- Federated SSO Identity Providers -->
-                <div style="margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border-color, #30363d); text-align: center;">
-                    <span style="font-size: 11px; color: var(--text-secondary, #8b949e); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Or Federated Enterprise SSO</span>
+                <div style="margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--panel-edge, #DAD3C3); text-align: center;">
+                    <span style="font-size: 11px; color: var(--ink-soft, #4B4F5A); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Or Federated Enterprise SSO</span>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px;">
                         <button type="button" id="btn-sso-google" class="btn btn-secondary" style="font-size: 12px; padding: 8px 10px;">
                             Google SSO

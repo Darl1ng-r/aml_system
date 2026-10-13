@@ -44,8 +44,35 @@ class RateLimiter:
             test_ctx = os.environ.get("PYTEST_CURRENT_TEST", "").split(" ")[0].split("::")[-1]
             client_ip = f"test_{os.getpid()}_{test_ctx}_{client_ip}"
 
+        # Tiered Rate Limiting (Prevent Corporate NAT/VPN Starvation)
+        user_id = None
+        tenant_id = None
+        auth_header = ""
+        if hasattr(request, "headers") and request.headers is not None:
+            try:
+                val = request.headers.get("Authorization", "")
+                if isinstance(val, str):
+                    auth_header = val
+            except Exception:
+                pass
+
+        if auth_header and auth_header.startswith("Bearer "):
+            try:
+                from services.secrets_manager import decode_jwt_with_rotation
+                from config import settings
+                token_str = auth_header.split(" ")[1]
+                payload = decode_jwt_with_rotation(token_str, algorithm=settings.jwt_algorithm)
+                if isinstance(payload, dict):
+                    user_id = str(payload.get("id") or payload.get("sub") or "")
+                    tenant_id = str(payload.get("tenant_id") or "")
+            except Exception:
+                pass
+
         normalized_path = request.url.path.rstrip("/") or "/"
-        key = f"rate_limit:{normalized_path}:{client_ip}"
+        if user_id or tenant_id:
+            key = f"rate_limit:{tenant_id or 'global'}:{user_id or 'anon'}:{normalized_path}:{client_ip}"
+        else:
+            key = f"rate_limit:{normalized_path}:{client_ip}"
 
         try:
             redis = await get_async_redis_client()

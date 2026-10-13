@@ -359,6 +359,9 @@ function scheduleLiveRefresh() {
     }, 2500);
 }
 
+let wsHeartbeatTimer = null;
+let wsReconnectAttempts = 0;
+
 function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const token = localStorage.getItem('jwt_token');
@@ -367,15 +370,28 @@ function initWebSocket() {
         : `${protocol}//${window.location.host}/ws/live-stream`;
 
     try {
+        if (liveWebSocket) {
+            liveWebSocket.onclose = null;
+            try { liveWebSocket.close(); } catch (_) {}
+        }
         liveWebSocket = new WebSocket(wsUrl);
 
         liveWebSocket.onopen = () => {
+            wsReconnectAttempts = 0;
             log('Established live WebSocket connection for event feeds.', 'success');
+            // 30-second periodic heartbeat ping to prevent proxy idle timeouts
+            if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
+            wsHeartbeatTimer = setInterval(() => {
+                if (liveWebSocket && liveWebSocket.readyState === WebSocket.OPEN) {
+                    liveWebSocket.send('ping');
+                }
+            }, 30000);
         };
 
         liveWebSocket.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
+                if (data.event === 'pong') return; // Heartbeat response
                 if (data.event === 'NEW_ALERT') {
                     log(`⚡ REAL-TIME EVENT: New Alert Triggered! Rule: ${data.rule_name}, Threat: ${data.threat_level}`, 'err');
                     scheduleLiveRefresh();
@@ -411,11 +427,18 @@ function initWebSocket() {
         };
 
         liveWebSocket.onclose = () => {
-            log('WebSocket feed disconnected. Attempting auto-reconnect in 5s...', 'warn');
-            setTimeout(initWebSocket, 5000);
+            if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
+            // Full Jitter Exponential Backoff (1s -> 2s -> 4s -> max 30s + jitter)
+            const baseDelay = Math.min(30000, 1000 * Math.pow(2, wsReconnectAttempts));
+            const jitter = Math.random() * 1000;
+            const retryDelay = Math.round(baseDelay + jitter);
+            wsReconnectAttempts++;
+            log(`WebSocket feed disconnected. Reconnecting in ${(retryDelay / 1000).toFixed(1)}s...`, 'warn');
+            setTimeout(initWebSocket, retryDelay);
         };
     } catch (e) {
-        logger.warning('WebSocket initialization failed.');
+        if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
+        setTimeout(initWebSocket, 5000);
     }
 }
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Response, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, Depends, Response, BackgroundTasks, Query, status
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from database.postgres import get_async_db_conn, get_async_db_read_conn
@@ -622,6 +622,7 @@ async def claim_alert(
     """
     Claims an alert for investigation, binding assigned_officer_id to current user
     and transitioning status to IN_REVIEW.
+    Enforces atomic Compare-and-Swap (CAS) to prevent concurrent claim collisions.
     """
     try:
         alert_uuid = uuid.UUID(id)
@@ -639,24 +640,43 @@ async def claim_alert(
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             alert_row = await conn.fetchrow(
-                "SELECT id, status FROM alerts WHERE id = $1;",
+                "SELECT id, status, assigned_officer_id FROM alerts WHERE id = $1;",
                 alert_uuid
             )
             if not alert_row:
                 raise HTTPException(status_code=404, detail="Alert not found")
 
-            target_status = "IN_REVIEW" if alert_row["status"] in ("NEW", "OPEN") else alert_row["status"]
-            validate_alert_transition(alert_row["status"] or "OPEN", target_status)
+            # Check if alert is already claimed by a DIFFERENT officer
+            assigned_officer = alert_row.get("assigned_officer_id") if hasattr(alert_row, "get") else (alert_row["assigned_officer_id"] if "assigned_officer_id" in alert_row else None)
+            if isinstance(assigned_officer, (uuid.UUID, str)):
+                officer_str = str(assigned_officer)
+                if officer_str and officer_str != str(user_uuid) and officer_str != str(current_user.get("id")):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Conflict: Alert {id} is already claimed by another investigator."
+                    )
 
+            raw_status = alert_row.get("status") if hasattr(alert_row, "get") else (alert_row["status"] if "status" in alert_row else "OPEN")
+            current_status = raw_status if isinstance(raw_status, str) else "OPEN"
+            target_status = "IN_REVIEW" if current_status in ("NEW", "OPEN") else current_status
+            validate_alert_transition(current_status, target_status)
+
+            # Atomic Compare-and-Swap: Update only if unassigned or already assigned to requesting user
             updated = await conn.execute(
                 """
                 UPDATE alerts
                 SET assigned_officer_id = $1,
                     status = CASE WHEN status IN ('NEW', 'OPEN') THEN 'IN_REVIEW' ELSE status END
-                WHERE id = $2;
+                WHERE id = $2
+                  AND (assigned_officer_id IS NULL OR assigned_officer_id = $1);
                 """,
                 user_uuid, alert_uuid
             )
+            if updated == "UPDATE 0":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Conflict: Alert {id} was claimed concurrently by another user."
+                )
 
             from observability.logging import log_audit_event
             log_audit_event(
@@ -669,6 +689,15 @@ async def claim_alert(
                 tenant_id=tenant_id,
                 details={"username": current_user.get("username")}
             )
+
+            # Broadcast real-time WebSocket update upon claim
+            from routers.metrics import ws_manager
+            await ws_manager.broadcast({
+                "event": "ALERT_ASSIGNED",
+                "tenant_id": str(tenant_id),
+                "alert_id": id,
+                "assigned_officer": current_user.get("username")
+            }, target_tenant_id=str(tenant_id))
 
             return {
                 "status": "CLAIMED",

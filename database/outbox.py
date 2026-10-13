@@ -163,7 +163,14 @@ class OutboxRelayEngine:
             try:
                 pool = await get_db_pool()
                 if not pool:
-                    await asyncio.sleep(self.poll_interval)
+                    if shutdown_event:
+                        try:
+                            await asyncio.wait_for(shutdown_event.wait(), timeout=self.poll_interval)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(self.poll_interval)
                     continue
 
                 # 1. Fetch pending batch inside a brief, isolated read transaction
@@ -211,7 +218,14 @@ class OutboxRelayEngine:
             # If we processed a full batch, check immediately again; otherwise sleep
             if processed_count < self.batch_size:
                 try:
-                    await asyncio.sleep(self.poll_interval)
+                    if shutdown_event:
+                        try:
+                            await asyncio.wait_for(shutdown_event.wait(), timeout=self.poll_interval)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(self.poll_interval)
                 except asyncio.CancelledError:
                     break
 

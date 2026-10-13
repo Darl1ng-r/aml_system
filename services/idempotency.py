@@ -123,6 +123,9 @@ async def save_idempotency_result(
         logger.warning(f"Failed to cache idempotency result for key {key}: {e}")
 
 
+store_idempotency_result = save_idempotency_result
+
+
 async def clear_idempotency_key(
     key: str,
     tenant_id: Optional[str] = None

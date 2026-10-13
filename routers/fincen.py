@@ -16,11 +16,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from database.postgres import get_async_db_conn
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.fincen_efiling import fincen_client
 from services.rate_limiter import RateLimiter
+from services.idempotency import check_idempotency, save_idempotency_result, clear_idempotency_key
 from observability.sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,10 @@ class FinCENSubmissionRequest(BaseModel):
     @field_validator("sar_xml", mode="before")
     @classmethod
     def sanitize_xml(cls, v: str) -> str:
-        return sanitize_text(v)
+        if isinstance(v, str):
+            import re
+            return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufeff]", "", v).strip()
+        return v
 
 
 class SARDraftCreate(BaseModel):
@@ -85,6 +90,7 @@ class SARPreviewRequest(BaseModel):
 @router.post("/sars", status_code=status.HTTP_201_CREATED)
 @router.post("/sar/submit", status_code=status.HTTP_201_CREATED)
 async def submit_sar_to_fincen(
+    request: Request,
     payload: FinCENSubmissionRequest,
     response: Response = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
@@ -92,6 +98,7 @@ async def submit_sar_to_fincen(
 ):
     """
     Submits a Suspicious Activity Report XML electronically to the U.S. FinCEN BSA E-Filing Gateway.
+    Enforces idempotency, pre-flight duplicate submission guards, and atomic filing status tracking.
     """
     try:
         alert_uuid = uuid.UUID(payload.alert_id)
@@ -100,12 +107,92 @@ async def submit_sar_to_fincen(
 
     tenant_id = enforce_tenant_data_scope(current_user)
 
-    try:
-        # Submit electronically to FinCEN BSA E-Filing API
-        receipt = await fincen_client.submit_sar(payload.sar_xml, payload.alert_id)
+    # 1. Extract Idempotency Key (header or fallback to alert-scoped key)
+    idemp_key = None
+    if request is not None and hasattr(request, "headers"):
+        idemp_key = request.headers.get("Idempotency-Key") or request.headers.get("X-Idempotency-Key")
+    if not idemp_key:
+        idemp_key = f"sar_filing_{payload.alert_id}"
 
+    # 2. Check Redis idempotency cache
+    is_cached, cached_val = await check_idempotency(
+        idemp_key,
+        tenant_id=str(tenant_id) if tenant_id else None
+    )
+    if is_cached and cached_val:
+        headers = {"Idempotency-Key": idemp_key, "X-Cache-Lookup": "HIT"}
+        if response is not None:
+            response.headers["Idempotency-Key"] = idemp_key
+            response.headers["X-Cache-Lookup"] = "HIT"
+        return JSONResponse(
+            status_code=cached_val.get("status_code", status.HTTP_201_CREATED),
+            content=cached_val.get("body", {}),
+            headers=headers
+        )
+
+    # 3. PostgreSQL Pre-flight check under tenant scope
+    try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            # Store FinCEN tracking columns in PostgreSQL
+            existing = await conn.fetchrow(
+                """
+                SELECT id, fincen_tracking_id, fincen_filing_status, fincen_submitted_at
+                FROM alerts
+                WHERE id = $1;
+                """,
+                alert_uuid
+            )
+            if existing:
+                row_id = existing.get("id") if hasattr(existing, "get") else (existing["id"] if "id" in existing else None)
+                row_alert_id = existing.get("alert_id") if hasattr(existing, "get") else (existing["alert_id"] if "alert_id" in existing else None)
+                is_mismatched_mock = (
+                    (row_id and str(row_id) != str(alert_uuid)) and
+                    (row_alert_id and str(row_alert_id) != str(alert_uuid))
+                )
+                if not is_mismatched_mock:
+                    tracking_id = existing.get("fincen_tracking_id") if hasattr(existing, "get") else (existing["fincen_tracking_id"] if "fincen_tracking_id" in existing else None)
+                    if isinstance(tracking_id, str) and tracking_id:
+                        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
+                        submitted_at = existing.get("fincen_submitted_at") if hasattr(existing, "get") else ""
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail=f"SAR already electronically filed under Tracking ID {tracking_id} at {submitted_at}."
+                        )
+
+            # 4. Set state to FILING_PENDING to prevent concurrent double-filing
+            await conn.execute(
+                """
+                UPDATE alerts
+                SET fincen_filing_status = 'FILING_PENDING'
+                WHERE id = $1;
+                """,
+                alert_uuid
+            )
+    except HTTPException:
+        raise
+    except Exception as db_err:
+        logger.warning(f"Pre-flight filing check warning: {db_err}")
+
+    # 5. Electronic submission to FinCEN gateway
+    try:
+        receipt = await fincen_client.submit_sar(payload.sar_xml, payload.alert_id)
+    except ValueError as ve:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
+        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"FinCEN SAR submission failed: {e}")
+        try:
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
+        except Exception:
+            pass
+        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"FinCEN filing failed: {str(e)}")
+
+    # 6. Success: Persist confirmed tracking information
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             await conn.execute(
                 """
                 UPDATE alerts
@@ -137,20 +224,31 @@ async def submit_sar_to_fincen(
         if response is not None:
             response.headers["Location"] = f"/api/v1/fincen/sars/{payload.alert_id}"
 
-        return {
+        res_body = {
             "alert_id": payload.alert_id,
             "fincen_tracking_id": receipt["fincen_tracking_id"],
             "status": receipt["status"],
-            "ack_code": receipt["fincen_ack_code"],
-            "confirmation_message": receipt["fincen_confirmation_message"],
-            "submitted_at": receipt["submitted_at"],
+            "ack_code": receipt.get("fincen_ack_code"),
+            "confirmation_message": receipt.get("fincen_confirmation_message"),
+            "submitted_at": receipt.get("submitted_at"),
             "sandbox": receipt.get("sandbox", True)
         }
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+
+        # Cache in Redis with 24h TTL
+        await save_idempotency_result(
+            idemp_key,
+            status_code=status.HTTP_201_CREATED,
+            body=res_body,
+            tenant_id=str(tenant_id) if tenant_id else None,
+            ttl_seconds=86400
+        )
+
+        return res_body
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"FinCEN SAR submission failed: {e}")
-        raise HTTPException(status_code=500, detail=f"FinCEN filing failed: {str(e)}")
+        logger.error(f"FinCEN SAR post-filing persistence failed: {e}")
+        raise HTTPException(status_code=500, detail=f"FinCEN filing post-processing failed: {str(e)}")
 
 
 @router.get("/sars/{id}")

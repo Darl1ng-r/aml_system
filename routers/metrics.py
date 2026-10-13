@@ -433,12 +433,18 @@ async def websocket_live_stream(websocket: WebSocket, token: str | None = None):
     await ws_manager.connect(websocket, tenant_id=tenant_id, role=role)
     try:
         while True:
-            # Keep-alive loop reading client heartbeats
-            data = await websocket.receive_text()
-            if data == "ping":
-                await websocket.send_text(json.dumps({"event": "pong"}))
+            # Keep-alive loop reading client heartbeats with 65s idle timeout
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=65.0)
+                if data == "ping":
+                    await websocket.send_text(json.dumps({"event": "pong"}))
+            except asyncio.TimeoutError:
+                logger.info("WebSocket idle timeout exceeded (65s); closing connection cleanly.")
+                await websocket.close(code=1000, reason="Idle timeout")
+                break
     except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
+        pass
     except Exception as e:
         logger.warning(f"WebSocket connection error: {e}")
+    finally:
         ws_manager.disconnect(websocket)

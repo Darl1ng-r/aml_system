@@ -232,10 +232,43 @@ async def shutdown_db_clients():
         pass
 
 
+_outbox_shutdown_event = asyncio.Event()
+_outbox_relay_task: Optional[asyncio.Task] = None
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
+    global _outbox_relay_task
     await startup_db_clients(app_instance)
+
+    # Instantiate and start Transactional Outbox Relay Engine as supervised task
+    from database.outbox import OutboxRelayEngine
+    _outbox_shutdown_event.clear()
+    relay_engine = OutboxRelayEngine(poll_interval_seconds=1.0, batch_size=50)
+    _outbox_relay_task = asyncio.create_task(
+        relay_engine.run(shutdown_event=_outbox_shutdown_event),
+        name="outbox-relay-engine"
+    )
+    logger.info("Transactional Outbox Relay Engine started in background task.")
+
     yield
+
+    # Shutdown Outbox Relay Engine gracefully
+    logger.info("Signaling Outbox Relay Engine shutdown...")
+    _outbox_shutdown_event.set()
+    if _outbox_relay_task:
+        try:
+            await asyncio.wait_for(_outbox_relay_task, timeout=5.0)
+            logger.info("Outbox Relay Engine stopped gracefully.")
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            logger.warning("Outbox Relay shutdown timed out (5s); cancelling task.")
+            _outbox_relay_task.cancel()
+            try:
+                await _outbox_relay_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        _outbox_relay_task = None
+
     await shutdown_db_clients()
 
 
