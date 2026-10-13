@@ -113,3 +113,18 @@ def test_migration_007_upgrade_skips_adding_tenant_id_when_already_present():
         mock_create_index.assert_not_called()
         # RLS policies are still enforced
         mock_execute.assert_called_once()
+
+
+def test_migration_024_whitelisted_entities_module_importable():
+    """Verify revision 024 whitelisted entities and entity aggregation schema migration."""
+    mod_024 = importlib.import_module("migrations.versions.024_create_whitelisted_entities_and_customer_id")
+    assert mod_024.revision == "024"
+    assert mod_024.down_revision == "023"
+
+    with patch.object(mod_024.op, "execute") as mock_execute:
+        mod_024.upgrade()
+        mock_execute.assert_called_once()
+        sql = mock_execute.call_args[0][0]
+        assert "CREATE TABLE IF NOT EXISTS whitelisted_entities" in sql
+        assert "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS customer_id" in sql
+

@@ -406,16 +406,51 @@ async def resolve_alert(
             justification=payload.justification
         )
 
-        # Generate SAR XML if requested
+        # Generate SAR XML and 5-Part Narrative if escalating to SAR
         sar_xml = None
-        if payload.action == "CLOSE_SAR" and payload.sar_xml_generate:
-            sar_xml = generate_sar_xml(alert, payload.justification)
+        sar_narrative = None
+        if payload.action == "CLOSE_SAR":
+            from services.sar_narrative import generate_sar_narrative
+            narrative_obj = await generate_sar_narrative(
+                alert_id=id,
+                tenant_id=str(tenant_id),
+                analyst_id=current_user.get("username"),
+                justification_notes=payload.justification
+            )
+            sar_narrative = narrative_obj.get("narrative_text")
+            if payload.sar_xml_generate:
+                sar_xml = generate_sar_xml(alert, payload.justification)
 
-        return {"status": status, "sar_xml": sar_xml}
+        return {"status": status, "sar_xml": sar_xml, "sar_narrative": sar_narrative}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to resolve alert: {str(e)}")
+
+
+@router.get("/{id}/narrative")
+async def get_alert_sar_narrative(
+    id: str,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "MLRO", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+):
+    """
+    Synthesizes and returns an industry-standard 5-part FinCEN SAR narrative text block
+    for regulatory filing preparation (Parts I through V).
+    """
+    tenant_id = enforce_tenant_data_scope(current_user)
+    try:
+        from services.sar_narrative import generate_sar_narrative
+        narrative_res = await generate_sar_narrative(
+            alert_id=id,
+            tenant_id=str(tenant_id),
+            analyst_id=current_user.get("username", "ANALYST")
+        )
+        return narrative_res
+    except Exception as e:
+        logger.error(f"Failed to generate SAR narrative for alert {id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate SAR narrative: {str(e)}")
+
 
 class AlertAssignment(BaseModel):
     officer_username: str = Field(..., min_length=1, max_length=100)

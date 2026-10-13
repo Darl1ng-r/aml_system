@@ -1,4 +1,5 @@
 import time
+import inspect
 import json
 import os
 import uuid
@@ -81,6 +82,32 @@ class RulesEngine:
         triggered_rules = []
         config = get_rules_config()
         
+        # Extract metadata and resolve customer entity ID (TIN / Beneficial Ownership scoping)
+        meta = metadata or {}
+        entity_id = meta.get("customer_id") or meta.get("tax_id") or meta.get("entity_id")
+        if not entity_id and sender_id:
+            try:
+                async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                    if hasattr(conn, "fetchrow"):
+                        acc_row = await conn.fetchrow(
+                            """
+                            SELECT customer_id, tax_id, owner_name 
+                            FROM accounts 
+                            WHERE id = $1::uuid;
+                            """,
+                            sender_id
+                        )
+                        if acc_row:
+                            entity_id = (
+                                str(acc_row.get("customer_id") or "") or
+                                str(acc_row.get("tax_id") or "") or
+                                str(acc_row.get("owner_name") or "")
+                            )
+            except Exception as e_ent:
+                logger.debug(f"Entity resolution fallback: {e_ent}")
+        if not entity_id:
+            entity_id = sender_name or str(sender_id)
+
         # 1. LARGE_TRANSACTION Rule
         large_config = config.get("rules", {}).get("LARGE_TRANSACTION", {})
         if large_config.get("enabled", True):
@@ -88,7 +115,9 @@ class RulesEngine:
             if amount > threshold:
                 triggered_rules.append("LARGE_TRANSACTION_THRESHOLD")
                 
-        # 2. STRUCTURING_SMURFING Rule (Redis-based 24h sliding window)
+        # 2. STRUCTURING_SMURFING Rule (Dual Account & Entity 24h Redis Sliding Window)
+        total_entity_amount = amount
+        entity_below = [amount] if amount < 10000.0 else []
         structuring_config = config.get("rules", {}).get("STRUCTURING_SMURFING", {})
         if structuring_config.get("enabled", True):
             threshold = structuring_config.get("threshold", 10000.0)
@@ -98,27 +127,53 @@ class RulesEngine:
                 now = time.time()
                 window_ago = now - (window_hours * 3600)
                 redis_key = f"acc:velocity:{tenant_id}:{sender_id}" if tenant_id else f"acc:velocity:{sender_id}"
-                
-                async with r.pipeline(transaction=True) as pipe:
+                entity_redis_key = f"acc:velocity:{tenant_id}:entity:{entity_id}" if tenant_id else f"acc:velocity:entity:{entity_id}"
+                tx_entry = f"{amount}:{now}:{uuid.uuid4().hex[:6]}"
+
+                pipe_ctx = r.pipeline(transaction=True)
+                if inspect.isawaitable(pipe_ctx):
+                    pipe_ctx = await pipe_ctx
+                async with pipe_ctx as pipe:
+                    # Account-level sliding window
                     pipe.zremrangebyscore(redis_key, "-inf", window_ago)
                     pipe.zrange(redis_key, 0, -1, withscores=True)
-                    pipe.zadd(redis_key, {f"{amount}:{now}": now})
+                    pipe.zadd(redis_key, {tx_entry: now})
                     pipe.expire(redis_key, 90000)
+
+                    # Entity-level sliding window (aggregates across ALL accounts under same TIN / customer entity)
+                    if entity_redis_key != redis_key:
+                        pipe.zremrangebyscore(entity_redis_key, "-inf", window_ago)
+                        pipe.zrange(entity_redis_key, 0, -1, withscores=True)
+                        pipe.zadd(entity_redis_key, {tx_entry: now})
+                        pipe.expire(entity_redis_key, 90000)
+
                     results = await pipe.execute()
                 
-                recent_txs = results[1]
-                
-                tx_amounts = [amount]
-                for tx_val, _ in recent_txs:
-                    try:
-                        val_amt = float(tx_val.split(":")[0])
-                        tx_amounts.append(val_amt)
-                    except (ValueError, IndexError):
-                        pass
-                
-                below_threshold_txs = [amt for amt in tx_amounts if amt < threshold]
-                total_amount = sum(below_threshold_txs)
-                if total_amount > threshold and len(below_threshold_txs) >= 2:
+                account_recent_txs = results[1]
+                entity_recent_txs = results[5] if (entity_redis_key != redis_key and len(results) > 5) else account_recent_txs
+
+                def _parse_txs(records):
+                    amts = []
+                    for tx_val, _ in records:
+                        try:
+                            val_amt = float(str(tx_val).split(":")[0])
+                            amts.append(val_amt)
+                        except (ValueError, IndexError):
+                            pass
+                    return amts
+
+                account_amts = [amount] + _parse_txs(account_recent_txs)
+                entity_amts = [amount] + _parse_txs(entity_recent_txs)
+
+                account_below = [amt for amt in account_amts if amt < threshold]
+                entity_below = [amt for amt in entity_amts if amt < threshold]
+
+                total_account_amount = sum(account_below)
+                total_entity_amount = sum(entity_below)
+
+                # Structuring triggers if EITHER individual account OR entity aggregate smurfs across accounts
+                if (total_entity_amount > threshold and len(entity_below) >= 2) or \
+                   (total_account_amount > threshold and len(account_below) >= 2):
                     triggered_rules.append("STRUCTURING_VELOCITY_24H")
             except Exception as e:
                 logger.error(f"Structuring check Redis error: {e}")
@@ -283,23 +338,34 @@ class RulesEngine:
                 if bic and len(bic) >= 6:
                     country = bic[4:6].upper()
                     if country in high_risk_countries:
-                        triggered_rules.append("GEOGRAPHIC_RISK")
+                        from services.whitelisting import is_entity_whitelisted
+                        if not await is_entity_whitelisted(tenant_id, sender_name or bic, "GEOGRAPHIC_RISK", customer_id=entity_id):
+                            triggered_rules.append("GEOGRAPHIC_RISK")
+                        else:
+                            logger.info(f"Alert suppressed via active whitelist disposition for entity '{sender_name or bic}' (GEOGRAPHIC_RISK)")
                         break
                         
-            # Sanctions Risk fuzzy search
+            # Sanctions Risk fuzzy search with Entity Whitelist Suppression
             try:
                 from routers.screening import perform_sanctions_search
+                from services.whitelisting import is_entity_whitelisted
                 es = await get_async_elasticsearch_client()
                 
                 if sender_name:
                     sender_screen = await perform_sanctions_search(sender_name, sanctions_threshold, es)
                     if sender_screen.get("match_found", False):
-                        triggered_rules.append("SANCTIONS_HIT")
+                        if not await is_entity_whitelisted(tenant_id, sender_name, "SANCTIONS_HIT", customer_id=entity_id):
+                            triggered_rules.append("SANCTIONS_HIT")
+                        else:
+                            logger.info(f"Alert suppressed via active whitelist disposition for sender '{sender_name}' (SANCTIONS_HIT)")
                         
                 if receiver_name and receiver_name != sender_name and "SANCTIONS_HIT" not in triggered_rules:
                     receiver_screen = await perform_sanctions_search(receiver_name, sanctions_threshold, es)
                     if receiver_screen.get("match_found", False):
-                        triggered_rules.append("SANCTIONS_HIT")
+                        if not await is_entity_whitelisted(tenant_id, receiver_name, "SANCTIONS_HIT", customer_id=None):
+                            triggered_rules.append("SANCTIONS_HIT")
+                        else:
+                            logger.info(f"Alert suppressed via active whitelist disposition for receiver '{receiver_name}' (SANCTIONS_HIT)")
             except Exception as e:
                 logger.error(f"Sanctions check within rules engine error: {e}")
 
@@ -416,18 +482,27 @@ class RulesEngine:
                     async with get_async_db_conn(tenant_id=tenant_id) as conn:
                         query_7d = """
                             SELECT 
-                                COALESCE(SUM(amount), 0.0) AS total_sub_amount,
+                                COALESCE(SUM(t.amount), 0.0) AS total_sub_amount,
                                 COUNT(*) AS sub_count
-                            FROM transactions
-                            WHERE sender_account_id = $1::uuid
-                              AND status IN ('COMPLETED', 'PENDING', 'HELD')
-                              AND amount >= $2 AND amount < $3
-                              AND timestamp >= ($4::timestamptz - ($5 || ' days')::interval)
-                              AND timestamp < $4::timestamptz;
+                            FROM transactions t
+                            WHERE (
+                                t.sender_account_id = $1::uuid
+                                OR t.sender_account_id IN (
+                                    SELECT a.id FROM accounts a
+                                    WHERE (a.customer_id IS NOT NULL AND a.customer_id = $6::text)
+                                       OR (a.tax_id IS NOT NULL AND a.tax_id = $7::text)
+                                       OR (a.owner_name = $8::text AND a.owner_name != '')
+                                )
+                            )
+                              AND t.status IN ('COMPLETED', 'PENDING', 'HELD')
+                              AND t.amount >= $2 AND t.amount < $3
+                              AND t.timestamp >= ($4::timestamptz - ($5 || ' days')::interval)
+                              AND t.timestamp < $4::timestamptz;
                         """
                         row_7d = await conn.fetchrow(
                             query_7d,
-                            sender_id, min_sub_amt, target_thresh, tx_time, str(window_days)
+                            sender_id, min_sub_amt, target_thresh, tx_time, str(window_days),
+                            str(entity_id), str(meta.get("tax_id") or ""), str(sender_name or "")
                         )
                         if row_7d:
                             prior_amt = float(row_7d["total_sub_amount"])
@@ -481,8 +556,12 @@ class RulesEngine:
             round_min = anom_cfg.get("round_number_min", 3000.0)
             round_divisor = anom_cfg.get("round_divisor", 1000.0)
 
-            # Just-below-reporting threshold check
-            if just_below_min <= amount < just_below_max:
+            # Just-below-reporting threshold check on transaction OR 24h entity aggregate
+            is_just_below = (just_below_min <= amount < just_below_max)
+            if not is_just_below and (just_below_min <= total_entity_amount < just_below_max) and len(entity_below) >= 2:
+                is_just_below = True
+
+            if is_just_below:
                 triggered_rules.append("JUST_BELOW_CTR_THRESHOLD")
 
             # Round number divisibility anomaly

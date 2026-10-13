@@ -269,10 +269,16 @@ async def ingest_transaction(
             "rule_escalated": len(triggered_rules) > 0
         }
 
-    # Determine Compliance Decision based on Dynamic Score
+    # Decouple In-Flight Interception from Post-Clearing Surveillance (UCC 4A / Reg CC)
+    # Only direct Hard Sanctions Hits or Legally Frozen Accounts freeze the payment in-flight.
+    # All behavioral anomalies (structuring, velocity spikes, ML risk scores) settle as APPROVED/COMPLETED,
+    # while raising an investigative alert in the investigator queue (preventing federal tipping-off).
+    hard_hold_triggers = {"SANCTIONS_HIT", "ACCOUNT_FROZEN", "OFAC_SANCTIONS_MATCH"}
+    is_hard_hold = any(r in hard_hold_triggers for r in triggered_rules)
     alert_triggered = dynamic_score >= 0.75 or len(triggered_rules) > 0
-    decision = "HELD" if alert_triggered else "APPROVED"
-    tx_status = "HELD" if alert_triggered else "COMPLETED"
+    decision = "HELD" if is_hard_hold else "APPROVED"
+    tx_status = "HELD" if is_hard_hold else "COMPLETED"
+    threat_level = ("CRITICAL" if dynamic_score >= 0.90 else ("HIGH" if dynamic_score >= 0.75 else "MEDIUM")) if alert_triggered else "NONE"
 
     # Step 4: Write transaction to PostgreSQL
     tx_id = str(uuid.uuid4())

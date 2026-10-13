@@ -446,6 +446,23 @@ async def trigger_ongoing_cdd_rescreening(tenant_id: str | None = None) -> dict:
                 try:
                     search_res = await perform_sanctions_search(owner, 0.85, es)
                     if search_res.get("match_found", False):
+                        # Entity-Level False Positive Whitelist check (Four-Eyes resolution)
+                        from services.whitelisting import is_entity_whitelisted
+                        t_id = str(acc.get("tenant_id") or tenant_id or "00000000-0000-0000-0000-000000000001")
+                        c_id = str(acc.get("customer_id") or "") or None
+                        if await is_entity_whitelisted(tenant_id=t_id, entity_name=owner, rule_name="SANCTIONS_HIT", customer_id=c_id, conn=conn):
+                            logger.info(f"Alert suppressed via active whitelist disposition for entity '{owner}'")
+                            await record_audit_event_async(
+                                action="WHITELIST_ALERT_SUPPRESSED",
+                                actor_id="SYSTEM_CRON",
+                                actor_role="SYSTEM",
+                                resource_type="ACCOUNT",
+                                resource_id=str(acc["id"]),
+                                tenant_id=t_id,
+                                details={"matched_entity": search_res.get("matched_name"), "reason": "Alert suppressed via active whitelist disposition"}
+                            )
+                            continue
+
                         hits_detected += 1
                         acc_id = str(acc["id"])
                         escalated_accounts.append({
@@ -464,7 +481,7 @@ async def trigger_ongoing_cdd_rescreening(tenant_id: str | None = None) -> dict:
                             actor_role="SYSTEM",
                             resource_type="ACCOUNT",
                             resource_id=acc_id,
-                            tenant_id=str(acc.get("tenant_id") or tenant_id or "00000000-0000-0000-0000-000000000001"),
+                            tenant_id=t_id,
                             details={"matched_entity": search_res.get("matched_name"), "source_list": search_res.get("source_list")}
                         )
                 except Exception as se:

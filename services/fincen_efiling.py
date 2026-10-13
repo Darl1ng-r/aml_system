@@ -136,5 +136,24 @@ class FinCENEfilingClient:
             logger.error(f"FinCEN HTTP connection failed: {e}")
             raise RuntimeError(f"FinCEN connection error: {str(e)}")
 
+    async def generate_sar_narrative(
+        self,
+        alert_id: str,
+        tenant_id: Optional[str] = None,
+        conn=None,
+        analyst_id: Optional[str] = None,
+        justification_notes: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Generates standardized 5-part FinCEN SAR narrative for the alert."""
+        from services.sar_narrative import generate_sar_narrative
+        return await generate_sar_narrative(
+            alert_id=alert_id,
+            tenant_id=tenant_id,
+            conn=conn,
+            analyst_id=analyst_id,
+            justification_notes=justification_notes
+        )
+
 
 fincen_client = FinCENEfilingClient()
+

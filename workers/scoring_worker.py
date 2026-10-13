@@ -135,10 +135,12 @@ async def score_transaction(event: dict):
     dynamic_score = dynamic_res["dynamic_risk_score"]
     explainability = dynamic_res["explainability"]
 
-    # 4. Compliance determination
+    # 4. Compliance determination (UCC 4A / Reg CC decoupled hold logic)
+    hard_hold_triggers = {"SANCTIONS_HIT", "ACCOUNT_FROZEN", "OFAC_SANCTIONS_MATCH"}
+    is_hard_hold = any(r in hard_hold_triggers for r in triggered_rules)
     alert_triggered = dynamic_score >= 0.75 or len(triggered_rules) > 0
-    decision = "HELD" if alert_triggered else "APPROVED"
-    new_status = "HELD" if alert_triggered else "COMPLETED"
+    decision = "HELD" if is_hard_hold else "APPROVED"
+    new_status = "HELD" if is_hard_hold else "COMPLETED"
 
     # 5. Persist updates to PostgreSQL
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
