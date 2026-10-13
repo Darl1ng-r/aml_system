@@ -16,7 +16,7 @@ from starlette.responses import Response
 
 DEFAULT_CSP = (
     "default-src 'self'; "
-    "script-src 'self' cdn.jsdelivr.net unpkg.com; "
+    "script-src 'self' 'unsafe-inline' cdn.jsdelivr.net unpkg.com; "
     "style-src 'self' 'unsafe-inline' fonts.googleapis.com unpkg.com; "
     "font-src 'self' fonts.gstatic.com; "
     "connect-src 'self' ws: wss:; "
