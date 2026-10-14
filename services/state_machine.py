@@ -74,8 +74,6 @@ ALERT_TRANSITIONS: Dict[AlertStatus, Set[AlertStatus]] = {
         AlertStatus.CLAIMED,
         AlertStatus.IN_REVIEW,
         AlertStatus.ESCALATED,
-        AlertStatus.CLOSED_SAR,
-        AlertStatus.CLOSED_FALSE_POSITIVE,
     },
     AlertStatus.OPEN: {
         AlertStatus.CLAIMED,
