@@ -306,7 +306,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
             </span>
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Zero-Trust Institutional Access & Investigation Cockpit
+            Sign in to access your compliance investigation queue
           </p>
         </div>
 
@@ -445,7 +445,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
             <div className="flex justify-between items-center mb-1.5">
               <label htmlFor={passwordId} className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
                 <Lock className="w-3.5 h-3.5 text-slate-400" />
-                Passphrase
+                {mode === 'register' ? 'Create Passphrase (12+ characters)' : 'Passphrase'}
               </label>
               {mode === 'login' && (
                 <a
@@ -593,7 +593,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
                 <div className="w-full border-t border-slate-800" />
               </div>
               <span className="relative px-2 bg-slate-900 text-[11px] text-slate-500 uppercase tracking-wider">
-                Or Federated SSO
+                Or sign in with your enterprise provider
               </span>
             </div>
 

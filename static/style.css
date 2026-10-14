@@ -49,6 +49,15 @@
   --r-lg:                 10px;
   --r-pill:               9999px;
   --dur-f:                140ms;
+
+  /* 8-point spatial system (Pillar 1.2) */
+  --space-1:              4px;
+  --space-2:              8px;
+  --space-3:              12px;
+  --space-4:              16px;
+  --space-5:              20px;
+  --space-6:              24px;
+  --space-8:              32px;
 }
 
 :focus-visible {
@@ -346,10 +355,11 @@ body {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  border: 1px solid transparent;
 }
-.risk-badge.high { background: var(--risk-high-bg); color: var(--risk-high); }
-.risk-badge.med  { background: var(--risk-med-bg);  color: var(--risk-med); }
-.risk-badge.low  { background: var(--risk-low-bg);  color: var(--risk-low); }
+.risk-badge.high { background: var(--risk-high-bg); color: var(--risk-high); border-color: rgba(193, 68, 59, 0.25); }
+.risk-badge.med  { background: var(--risk-med-bg);  color: var(--risk-med);  border-color: rgba(201, 138, 46, 0.25); }
+.risk-badge.low  { background: var(--risk-low-bg);  color: var(--risk-low);  border-color: rgba(76, 122, 94, 0.25); }
 
 /* Tabs */
 .tabs {
@@ -753,27 +763,34 @@ body {
   cursor: not-allowed;
 }
 .dbtn.approve {
-  background: var(--risk-low);
-  color: #fff;
+  background: #EBF3EE;
+  color: #2D583F;
+  border: 1.5px solid #C4D9CC;
 }
 .dbtn.approve:hover:not(:disabled) {
-  background: #3c634c;
+  background: var(--risk-low);
+  color: #FFFFFF;
+  border-color: var(--risk-low);
+}
+.dbtn.escalate {
+  background: #FEF8EC;
+  color: #92580C;
+  border: 1.5px solid #F5DCB0;
+}
+.dbtn.escalate:hover:not(:disabled) {
+  background: var(--risk-med);
+  color: #FFFFFF;
+  border-color: var(--risk-med);
 }
 .dbtn.block {
   background: var(--risk-high);
-  color: #fff;
+  color: #FFFFFF;
+  border: 1.5px solid var(--risk-high);
+  box-shadow: 0 1px 3px rgba(193, 68, 59, 0.2);
 }
 .dbtn.block:hover:not(:disabled) {
-  background: #aa3931;
-}
-.dbtn.escalate {
-  background: #fff;
-  color: var(--ink);
-  border: 1.5px solid var(--panel-edge);
-}
-.dbtn.escalate:hover:not(:disabled) {
-  background: #f7f5ef;
-  border-color: #B5AD9A;
+  background: #AA3931;
+  border-color: #AA3931;
 }
 .dbtn:focus-visible {
   outline: 2px solid var(--active);

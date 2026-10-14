@@ -1031,8 +1031,8 @@ async function acquireCaseLock(caseId) {
                 banner.style.borderColor = '#FDE68A';
                 banner.style.color = '#92400E';
             }
-            if (textEl) textEl.innerHTML = `🔒 <strong>Pessimistic Lease Active</strong> — Collision protection enabled.`;
-            if (timerEl) timerEl.innerText = 'Lease Active (300s)';
+            if (textEl) textEl.innerHTML = `🔒 <strong>You have exclusive edit lock on this case</strong> — Collision protection enabled.`;
+            if (timerEl) timerEl.innerText = 'Session lock renews in 5:00 (active)';
             if (forceBtn) forceBtn.style.display = 'none';
 
             caseLockHeartbeat = setInterval(() => {
