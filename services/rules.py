@@ -232,8 +232,9 @@ class RulesEngine:
                         today_count = int(today_row["today_count"]) + 1
                         today_amount = float(today_row["today_amount"]) + amount
                         
-                        stddev_count = stddev_count if stddev_count > 0 else 1.0
-                        stddev_amount = stddev_amount if stddev_amount > 0 else (avg_amount if avg_amount > 0 else 1.0)
+                        stddev_count = max(stddev_count, 1.0)
+                        min_std_amount = max(avg_amount * 0.10, 1.0)
+                        stddev_amount = max(stddev_amount, min_std_amount)
                         
                         count_z = (today_count - avg_count) / stddev_count
                         amount_z = (today_amount - avg_amount) / stddev_amount

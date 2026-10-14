@@ -616,19 +616,24 @@
         freezeBtn.innerText = isFrozen ? 'Unfreeze Account' : 'Freeze Account';
         freezeBtn.className = isFrozen ? 'btn' : 'btn btn-danger';
 
-        // Risk Gauge
-        const scorePct = Math.round(d.risk_score * 100);
+        // Risk Gauge with safe percentage clamping [0, 100]
+        const rawScore = (typeof d.risk_score === 'number' && !isNaN(d.risk_score)) ? d.risk_score : 0.8;
+        const scorePct = Math.min(Math.max(Math.round(rawScore * 100), 0), 100);
         document.getElementById('riskScoreVal').innerText = `${scorePct}%`;
         const gaugeColor = scorePct >= 80 ? 'var(--accent-crimson)' : (scorePct >= 50 ? 'var(--accent-amber)' : 'var(--accent-emerald)');
         document.getElementById('riskGaugeCircle').style.background = `conic-gradient(${gaugeColor} 0% ${scorePct}%, rgba(255,255,255,0.08) ${scorePct}% 100%)`;
 
         const rb = d.risk_breakdown || {};
-        document.getElementById('fGeo').innerText = `${Math.round((rb.jurisdiction_risk || 0.2) * 100)}%`;
-        document.getElementById('fGeoBar').style.width = `${Math.round((rb.jurisdiction_risk || 0.2) * 100)}%`;
-        document.getElementById('fVel').innerText = `${Math.round((rb.velocity_risk || 0.4) * 100)}%`;
-        document.getElementById('fVelBar').style.width = `${Math.round((rb.velocity_risk || 0.4) * 100)}%`;
-        document.getElementById('fPep').innerText = `${Math.round((rb.pep_risk || 0.1) * 100)}%`;
-        document.getElementById('fPepBar').style.width = `${Math.round((rb.pep_risk || 0.1) * 100)}%`;
+        const safeBarPct = (val, def) => Math.min(Math.max(Math.round((val !== undefined && val !== null ? val : def) * 100), 0), 100);
+        const geoPct = safeBarPct(rb.jurisdiction_risk, 0.2);
+        document.getElementById('fGeo').innerText = `${geoPct}%`;
+        document.getElementById('fGeoBar').style.width = `${geoPct}%`;
+        const velPct = safeBarPct(rb.velocity_risk, 0.4);
+        document.getElementById('fVel').innerText = `${velPct}%`;
+        document.getElementById('fVelBar').style.width = `${velPct}%`;
+        const pepPct = safeBarPct(rb.pep_risk, 0.1);
+        document.getElementById('fPep').innerText = `${pepPct}%`;
+        document.getElementById('fPepBar').style.width = `${pepPct}%`;
 
         // UBO list
         const uboContainer = document.getElementById('uboContainer');

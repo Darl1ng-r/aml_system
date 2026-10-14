@@ -97,7 +97,6 @@ ALERT_TRANSITIONS: Dict[AlertStatus, Set[AlertStatus]] = {
         AlertStatus.CLOSED_FALSE_POSITIVE,
     },
     AlertStatus.ESCALATED: {
-        AlertStatus.IN_REVIEW,
         AlertStatus.PENDING_SAR,
         AlertStatus.CLOSED_SAR,
         AlertStatus.CLOSED_FALSE_POSITIVE,

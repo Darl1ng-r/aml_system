@@ -392,10 +392,21 @@ function initWebSocket() {
             }, 30000);
         };
 
+        const _seenWsEvents = new Set();
         liveWebSocket.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
                 if (data.event === 'pong') return; // Heartbeat response
+
+                // Client-side message deduplication window
+                const eventFingerprint = data.event_id || `${data.event}:${data.transaction_id || data.alert_id || ''}:${data.timestamp || ''}`;
+                if (_seenWsEvents.has(eventFingerprint)) return;
+                _seenWsEvents.add(eventFingerprint);
+                if (_seenWsEvents.size > 2000) {
+                    const first = _seenWsEvents.values().next().value;
+                    _seenWsEvents.delete(first);
+                }
+
                 if (data.event === 'NEW_ALERT') {
                     log(`⚡ REAL-TIME EVENT: New Alert Triggered! Rule: ${data.rule_name}, Threat: ${data.threat_level}`, 'err');
                     scheduleLiveRefresh();
@@ -1001,7 +1012,7 @@ async function acquireCaseLock(caseId) {
     const forceBtn = document.getElementById('btn-force-unlock');
 
     try {
-        const res = await fetch(`${BASE_URL}/api/v1/locks/CASE/${caseId}`, {
+        const res = await fetch(`${BASE_URL}/api/v1/locks/ALERT/${caseId}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ ttl_seconds: 300 })
@@ -1036,7 +1047,7 @@ async function acquireCaseLock(caseId) {
             if (forceBtn) forceBtn.style.display = 'none';
 
             caseLockHeartbeat = setInterval(() => {
-                fetch(`${BASE_URL}/api/v1/locks/CASE/${caseId}`, {
+                fetch(`${BASE_URL}/api/v1/locks/ALERT/${caseId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                     body: JSON.stringify({ lock_token: currentCaseLockToken, ttl_seconds: 300 })
@@ -1052,7 +1063,7 @@ async function forceUnlockCurrentCase() {
     if (!activeAlertId) return;
     if (!confirm('Force break lock on this case? This action is recorded in the permanent audit trail.')) return;
     try {
-        const res = await fetch(`${BASE_URL}/api/v1/locks/CASE/${activeAlertId}?force=true`, {
+        const res = await fetch(`${BASE_URL}/api/v1/locks/ALERT/${activeAlertId}?force=true`, {
             method: 'DELETE',
             headers: getAuthHeaders()
         });
@@ -1119,9 +1130,10 @@ function selectCase(id) {
     }
 
     const riskBadge = document.getElementById('evidence-risk-badge');
-    const riskScore = Math.round((alert.ai_risk_score || 0.8) * 100);
-    const riskClass = (alert.threat_level === 'CRITICAL' || alert.ai_risk_score >= 0.85) ? 'high' : 
-                      ((alert.threat_level === 'HIGH' || alert.ai_risk_score >= 0.6) ? 'med' : 'low');
+    const rawAiScore = (alert.ai_risk_score !== undefined && alert.ai_risk_score !== null && !isNaN(alert.ai_risk_score)) ? Number(alert.ai_risk_score) : 0.8;
+    const riskScore = Math.min(Math.max(Math.round(rawAiScore * 100), 0), 100);
+    const riskClass = (alert.threat_level === 'CRITICAL' || rawAiScore >= 0.85) ? 'high' : 
+                      ((alert.threat_level === 'HIGH' || rawAiScore >= 0.6) ? 'med' : 'low');
     if (riskBadge) {
         riskBadge.className = `risk-badge ${riskClass}`;
         riskBadge.innerText = `● Risk ${riskScore} / 100`;
@@ -1148,7 +1160,7 @@ function selectCase(id) {
     if (tenureEl) tenureEl.innerText = alert.account_tenure || '14 mo';
 
     const rulesCountEl = document.getElementById('txn-rules-count');
-    const firedRulesCount = alert.rules_triggered ? alert.rules_triggered.length : (alert.rules_triggered_count || 3);
+    const firedRulesCount = alert.rules_triggered ? alert.rules_triggered.length : (alert.rules_triggered_count !== undefined && alert.rules_triggered_count !== null ? alert.rules_triggered_count : 0);
     if (rulesCountEl) rulesCountEl.innerText = firedRulesCount;
 
     const modelEl = document.getElementById('txn-model');

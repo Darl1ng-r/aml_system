@@ -303,8 +303,12 @@ async def ingest_transaction(
                 except Exception as ex_lock:
                     logger.debug(f"Row lock check bypassed or non-fatal: {ex_lock}")
 
-            # Pydantic validates payload.timestamp is a valid datetime object
+            # Ensure timestamp is timezone-aware UTC
             dt = payload.timestamp
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
             
             await conn.execute(
                 """
@@ -344,13 +348,20 @@ async def ingest_transaction(
                 try:
                     rolling_cash_row = await conn.fetchrow(
                         """
-                        SELECT COALESCE(SUM(amount), 0) AS total_cash_24h, COUNT(*) AS cash_count_24h
-                        FROM transactions
-                        WHERE sender_account_id = $1
-                          AND id != $2::uuid
-                          AND (UPPER(COALESCE(channel, '')) = 'CASH' OR UPPER(COALESCE(merchant, '')) = 'CASH')
-                          AND timestamp >= ($3::timestamptz - INTERVAL '24 hours')
-                          AND timestamp <= $3::timestamptz;
+                        WITH customer_scope AS (
+                            SELECT customer_id FROM accounts WHERE id = $1
+                        )
+                        SELECT COALESCE(SUM(t.amount), 0) AS total_cash_24h, COUNT(t.id) AS cash_count_24h
+                        FROM transactions t
+                        JOIN accounts a ON t.sender_account_id = a.id
+                        WHERE (
+                            ((SELECT customer_id FROM customer_scope) IS NOT NULL AND a.customer_id = (SELECT customer_id FROM customer_scope))
+                            OR ((SELECT customer_id FROM customer_scope) IS NULL AND t.sender_account_id = $1)
+                        )
+                          AND t.id != $2::uuid
+                          AND (UPPER(COALESCE(t.channel, '')) = 'CASH' OR UPPER(COALESCE(t.merchant, '')) = 'CASH')
+                          AND t.timestamp >= ($3::timestamptz - INTERVAL '24 hours')
+                          AND t.timestamp <= $3::timestamptz;
                         """,
                         sender_id, uuid.UUID(tx_id), dt
                     )

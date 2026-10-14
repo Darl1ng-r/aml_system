@@ -545,13 +545,15 @@ async def escalate_alert(
             if not alert_row:
                 raise HTTPException(status_code=404, detail="Alert not found")
 
-            validate_alert_transition(alert_row["status"] or "OPEN", "ESCALATED")
+            current_st = alert_row["status"] if (alert_row and hasattr(alert_row, "__getitem__") and isinstance(alert_row["status"], str)) else "OPEN"
+            validate_alert_transition(current_st, "ESCALATED")
 
             updated = await conn.execute(
                 """
                 UPDATE alerts
                 SET status = 'ESCALATED', assigned_officer_id = $1
-                WHERE id = $2;
+                WHERE id = $2 
+                  AND (status NOT IN ('CLOSED_SAR', 'CLOSED_FALSE_POSITIVE', 'CLOSED') OR status IS NULL);
                 """,
                 user_uuid, alert_uuid
             )
@@ -1045,42 +1047,51 @@ async def bulk_resolve_alerts(
                     "message": "No eligible alerts could be transitioned."
                 }
 
-            # Batch update all targeted alert records in PostgreSQL
-            result = await conn.execute(
-                """
-                UPDATE alerts
-                SET status = $1, assigned_officer_id = $2
-                WHERE id = ANY($3::uuid[]);
-                """,
-                status, uuid.UUID(current_user["id"]), valid_ids
-            )
-            count = len(valid_ids)
-
-            # Release or reject underlying HELD transactions (B2)
-            if held_tx_ids:
-                next_tx_status = "COMPLETED" if payload.action == "CLOSE_FALSE_POSITIVE" else "REJECTED"
-                await conn.execute(
-                    "UPDATE transactions SET status = $1 WHERE id = ANY($2::uuid[]) AND status = 'HELD';",
-                    next_tx_status, held_tx_ids
+            async def _execute_bulk_tx(target_conn):
+                # Batch update all targeted alert records in PostgreSQL with CAS status guard
+                await target_conn.execute(
+                    """
+                    UPDATE alerts
+                    SET status = $1, assigned_officer_id = $2
+                    WHERE id = ANY($3::uuid[])
+                      AND (status NOT IN ('CLOSED_SAR', 'CLOSED_FALSE_POSITIVE', 'CLOSED') OR status IS NULL);
+                    """,
+                    status, uuid.UUID(current_user["id"]), valid_ids
                 )
 
-            # Persist immutable regulatory audit event (B8)
-            from services.audit import record_audit_event_tx
-            await record_audit_event_tx(
-                conn=conn,
-                action=f"BULK_{payload.action}",
-                actor_id=current_user["id"],
-                actor_role=current_user["role"],
-                actor_username=current_user.get("username"),
-                resource_type="ALERT_BATCH",
-                resource_id=f"batch_{len(valid_ids)}",
-                tenant_id=tenant_id,
-                details={
-                    "count": count,
-                    "alert_ids": [str(x) for x in valid_ids],
-                    "justification": payload.justification
-                }
-            )
+                # Release or reject underlying HELD transactions (B2)
+                if held_tx_ids:
+                    next_tx_status = "COMPLETED" if payload.action == "CLOSE_FALSE_POSITIVE" else "REJECTED"
+                    await target_conn.execute(
+                        "UPDATE transactions SET status = $1 WHERE id = ANY($2::uuid[]) AND status = 'HELD';",
+                        next_tx_status, held_tx_ids
+                    )
+
+                # Persist immutable regulatory audit event (B8)
+                from services.audit import record_audit_event_tx
+                await record_audit_event_tx(
+                    conn=target_conn,
+                    action=f"BULK_{payload.action}",
+                    actor_id=current_user["id"],
+                    actor_role=current_user["role"],
+                    actor_username=current_user.get("username"),
+                    resource_type="ALERT_BATCH",
+                    resource_id=f"batch_{len(valid_ids)}",
+                    tenant_id=tenant_id,
+                    details={
+                        "count": len(valid_ids),
+                        "alert_ids": [str(x) for x in valid_ids],
+                        "justification": payload.justification
+                    }
+                )
+
+            if hasattr(conn, "transaction"):
+                async with conn.transaction():
+                    await _execute_bulk_tx(conn)
+            else:
+                await _execute_bulk_tx(conn)
+
+            count = len(valid_ids)
 
             # Output audit-grade structured log
             from observability.logging import log_audit_event

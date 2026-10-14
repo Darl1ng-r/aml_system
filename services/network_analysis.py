@@ -358,13 +358,33 @@ async def run_network_analysis(
         # Fallback for cycles
         if not cypher_cycles_success:
             cycles = tarjan_scc(graph)
-            circular_flows = [
-                {
-                    "cycle": scc,
-                    "description": f"Circular flow cycle of size {len(scc)} detected: " + " -> ".join(scc) + f" -> {scc[0]}"
-                }
-                for scc in cycles
-            ]
+            circular_flows = []
+            for scc in cycles:
+                # Find an actual simple directed cycle path within the SCC
+                scc_set = set(scc)
+                start = scc[0]
+                detected_cycle = None
+                queue = [(start, [start])]
+                while queue and not detected_cycle:
+                    curr, path = queue.pop(0)
+                    for nxt in graph.get(curr, []):
+                        if nxt not in scc_set:
+                            continue
+                        if nxt == start and len(path) >= 2:
+                            detected_cycle = path
+                            break
+                        if nxt not in path and len(path) < min(len(scc) + 1, 6):
+                            queue.append((nxt, path + [nxt]))
+                
+                cycle_nodes = detected_cycle if detected_cycle else scc
+                if detected_cycle:
+                    desc = f"Circular flow cycle of size {len(detected_cycle)} detected: " + " -> ".join(detected_cycle) + f" -> {detected_cycle[0]}"
+                else:
+                    desc = f"Strongly connected circular flow cluster of {len(scc)} accounts: {', '.join(scc)}"
+                circular_flows.append({
+                    "cycle": cycle_nodes,
+                    "description": desc
+                })
 
         # Fallback for Fan-In / Fan-Out
         if not cypher_degrees_success:
