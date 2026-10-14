@@ -12,8 +12,123 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
-  <!-- Core Stylesheet -->
-  <link rel="stylesheet" href="/static/style.css">
+  <!-- Core Stylesheet with Cache Busting -->
+  <link rel="stylesheet" href="/static/style.css?v=20261014.5">
+
+  <!-- Critical Layout Style Fallbacks (Guarantees no FOUC or cache drift) -->
+  <style>
+    .topbar {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: space-between !important;
+      background: #1B1F2B !important;
+      height: 52px !important;
+      padding: 0 16px !important;
+      border-bottom: 1px solid #2B3040 !important;
+      position: relative !important;
+      z-index: 100 !important;
+    }
+    .topbar-left {
+      display: flex !important;
+      align-items: center !important;
+      gap: 12px !important;
+      flex: 1 !important;
+      min-width: 0 !important;
+    }
+    .topbar-center {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      flex-shrink: 0 !important;
+    }
+    .topbar-right {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: flex-end !important;
+      gap: 10px !important;
+      flex: 1 !important;
+    }
+    .nav-pills {
+      display: inline-flex !important;
+      align-items: center !important;
+      background: rgba(255, 255, 255, 0.06) !important;
+      padding: 3px !important;
+      border-radius: 9999px !important;
+      border: 1px solid rgba(255, 255, 255, 0.1) !important;
+      gap: 2px !important;
+    }
+    .nav-pill {
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 6px !important;
+      padding: 5px 14px !important;
+      border-radius: 9999px !important;
+      font-size: 12px !important;
+      font-weight: 500 !important;
+      color: #9FA6B8 !important;
+      text-decoration: none !important;
+      transition: all 0.15s ease !important;
+      line-height: 1 !important;
+      white-space: nowrap !important;
+    }
+    .nav-pill:hover {
+      color: #FFFFFF !important;
+      background: rgba(255, 255, 255, 0.08) !important;
+    }
+    .nav-pill.active {
+      background: #3D5A80 !important;
+      color: #FFFFFF !important;
+      font-weight: 600 !important;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.25) !important;
+    }
+    .app-launcher-dropdown {
+      position: relative !important;
+      display: inline-block !important;
+    }
+    .dropdown-menu {
+      display: none;
+      position: absolute !important;
+      top: calc(100% + 8px) !important;
+      right: 0 !important;
+      width: 290px !important;
+      background: #1B1F2B !important;
+      border: 1px solid #2B3040 !important;
+      border-radius: 8px !important;
+      padding: 8px !important;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5) !important;
+      z-index: 9999 !important;
+    }
+    .dropdown-menu.show {
+      display: block !important;
+    }
+    .mobile-decision-bar {
+      display: none !important;
+    }
+    @media (max-width: 1024px) {
+      .mobile-decision-bar {
+        display: flex !important;
+      }
+    }
+    .decision-btns {
+      display: flex !important;
+      flex-direction: column !important;
+      gap: 8px !important;
+      width: 100% !important;
+    }
+    .dbtn {
+      width: 100% !important;
+      padding: 10px 14px !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: flex-start !important;
+      gap: 10px !important;
+      font-size: 12.5px !important;
+      font-weight: 600 !important;
+      border-radius: 6px !important;
+      box-sizing: border-box !important;
+      text-align: left !important;
+    }
+  </style>
 
   <!-- Visualization Libraries (Pinned with Subresource Integrity) -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4" crossorigin="anonymous" defer></script>
@@ -59,21 +174,15 @@
 
     <!-- ── TOP BAR ─────────────────────────────────────────── -->
     <header class="topbar">
+      <!-- 1. Left: Brand & Case Context -->
       <div class="topbar-left">
         <span class="case-id" id="topbar-case-id">CASE #AML-2026-04471</span>
         <span class="case-crumb" id="topbar-case-crumb">Structuring · Wire Transfer · Opened 09:14 today</span>
       </div>
 
-      <div class="topbar-right">
-        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:var(--panel-edge); margin-right:4px;">
-          <span class="pulse-dot" style="width:7px; height:7px; border-radius:50%; background:#10b981;"></span>
-          <span id="app-status-text">Compliance Engine Online</span>
-        </div>
-        <span class="queue-pos" id="queue-position-display">Case 1 of 1 in queue</span>
-        <span class="kbd-hint"><kbd>A</kbd> dismiss <kbd>B</kbd> flag SAR <kbd>→</kbd> next</span>
-
-        <!-- Streamlined Primary Navigation (3 Core Pills) -->
-        <div class="nav-pills">
+      <!-- 2. Center: Centered Primary Navigation Pills -->
+      <div class="topbar-center">
+        <nav class="nav-pills" role="navigation" aria-label="Primary Platform Navigation">
           <a href="/alerts/triage" class="nav-pill" title="Alert Triage Inbox">
             <i data-lucide="inbox" style="width:14px; height:14px;"></i> Triage
           </a>
@@ -83,7 +192,16 @@
           <a href="/customers" class="nav-pill" title="Customer 360 Dossier">
             <i data-lucide="user-check" style="width:14px; height:14px;"></i> Customer 360
           </a>
+        </nav>
+      </div>
+
+      <!-- 3. Right: Status, Modules Dropdown, Shortcuts & Profile -->
+      <div class="topbar-right">
+        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:rgba(255,255,255,0.08); color:#A3E635;">
+          <span class="pulse-dot" style="width:7px; height:7px; border-radius:50%; background:#10b981;"></span>
+          <span id="app-status-text">Compliance Engine Online</span>
         </div>
+        <span class="queue-pos" id="queue-position-display">Queue 1 of 1</span>
 
         <!-- Unified Modules App Switcher Dropdown -->
         <div class="app-launcher-dropdown">
@@ -93,7 +211,7 @@
             <i data-lucide="chevron-down" style="width:12px; height:12px; margin-left:2px;"></i>
           </button>
           
-          <div class="dropdown-menu" id="app-menu-popover">
+          <div class="dropdown-menu" id="app-menu-popover" style="display:none;">
             <div class="dropdown-group-label">Investigations &amp; Regulatory</div>
             <a href="/sar/editor" class="dropdown-item"><i data-lucide="file-text"></i> SAR Draft Editor</a>
             <a href="/sar/queue" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="send"></i> SAR Filing Queue</a>
@@ -463,7 +581,7 @@
     </aside>
 
     <!-- Mobile & Tablet Docked Decision Bar (Directive 1) -->
-    <div class="mobile-decision-bar">
+    <div class="mobile-decision-bar" id="mobile-decision-dock" style="display: none !important;">
       <label for="mobile-inbox-justification" class="sr-only">Investigation Determination Rationale</label>
       <textarea class="notes-field" id="mobile-inbox-justification" aria-required="true" placeholder="Document your rationale for this determination (required for audit trail)…"></textarea>
       <div class="decision-btns">
@@ -823,11 +941,13 @@
       const menu = document.getElementById('app-menu-popover');
       const btn = document.getElementById('btn-app-menu');
       if (!menu) return;
-      const isOpen = force !== undefined ? force : !menu.classList.contains('show');
+      const isOpen = force !== undefined ? force : menu.style.display !== 'block';
       if (isOpen) {
+        menu.style.display = 'block';
         menu.classList.add('show');
         if (btn) btn.setAttribute('aria-expanded', 'true');
       } else {
+        menu.style.display = 'none';
         menu.classList.remove('show');
         if (btn) btn.setAttribute('aria-expanded', 'false');
       }

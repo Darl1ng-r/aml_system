@@ -1423,6 +1423,11 @@ function renderVisNetworkGraph(graphData, alert) {
     const container = document.getElementById('vis-graph-container');
     if (!container) return;
 
+    if (typeof vis === 'undefined' || !vis.DataSet || !vis.Network) {
+        setTimeout(() => renderVisNetworkGraph(graphData, alert), 150);
+        return;
+    }
+
     const rawNodes = graphData.nodes || [];
     const rawEdges = graphData.edges || [];
 
@@ -1431,8 +1436,8 @@ function renderVisNetworkGraph(graphData, alert) {
         return;
     }
 
-    const senderAcc = alert.transaction.sender;
-    const receiverAcc = alert.transaction.receiver;
+    const senderAcc = (alert && alert.transaction && alert.transaction.sender) || 'ACC-4821-S';
+    const receiverAcc = (alert && alert.transaction && alert.transaction.receiver) || 'ACC-9901-R';
 
     const visNodes = rawNodes.map(n => {
         let color = '#3d6b99';
@@ -1592,15 +1597,21 @@ function showNodeDetails(node) {
 }
 
 function renderMockGraph(alert) {
+    const sender = (alert && alert.transaction && alert.transaction.sender) || "ACC-4821-S";
+    const receiver = (alert && alert.transaction && alert.transaction.receiver) || "ACC-9901-R";
+    const connected = (alert && alert.entity && alert.entity.connected) || "Harlow Kane Ltd";
+    const name = (alert && alert.entity && alert.entity.name) || "Tobias M. Varga";
+    const amount = (alert && alert.transaction && alert.transaction.amount) || "$9,480.00";
+
     const mockData = {
         nodes: [
-            { id: "s", label: alert.transaction.sender, type: "Account", properties: { risk_score: 0.10, status: "ACTIVE" } },
-            { id: "r", label: alert.transaction.receiver, type: "Account", properties: { risk_score: 0.90, status: "ACTIVE" } },
-            { id: "c", label: alert.entity.connected || "Holding Gmbh", type: "Company", properties: { registration_number: "REG-999000" } },
-            { id: "p1", label: alert.entity.name, type: "Person", properties: { tax_id: "TAX-ALICE" } }
+            { id: "s", label: sender, type: "Account", properties: { risk_score: 0.10, status: "ACTIVE" } },
+            { id: "r", label: receiver, type: "Account", properties: { risk_score: 0.92, status: "ACTIVE" } },
+            { id: "c", label: connected, type: "Company", properties: { registration_number: "KY-77291-OFFSHORE" } },
+            { id: "p1", label: name, type: "Person", properties: { tax_id: "KYC-VERIFIED-7881" } }
         ],
         edges: [
-            { source: "s", target: "r", type: "TRANSFERS_TO", properties: { amount: alert.transaction.amount } },
+            { source: "s", target: "r", type: "TRANSFERS_TO", properties: { amount: amount } },
             { source: "s", target: "c", type: "BELONGS_TO" },
             { source: "p1", target: "c", type: "OWNS_UBO", properties: { percentage: 60.0 } }
         ]

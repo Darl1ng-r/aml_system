@@ -104,15 +104,23 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px 0 16px;
+  padding: 0 16px;
   border-bottom: 1px solid var(--sidebar-line);
   z-index: 100;
+  height: 52px;
+}
+
+.topbar a {
+  text-decoration: none;
+  color: inherit;
 }
 
 .topbar-left {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
+  flex: 1;
+  min-width: 0;
 }
 
 .case-id {
@@ -121,17 +129,49 @@ body {
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.3px;
+  white-space: nowrap;
 }
 
 .case-crumb {
   color: var(--sidebar-text);
-  font-size: 12.5px;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 16px;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: 1;
+}
+
+.topbar-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--sidebar-text-bright);
+  padding: 5px 10px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--dur-f) ease;
+}
+.topbar-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #FFFFFF;
 }
 
 .queue-pos {
@@ -738,25 +778,27 @@ body {
 }
 
 .decision-btns {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  width: 100% !important;
 }
 
 .dbtn {
-  width: 100%;
-  padding: 8px 12px;
-  border-radius: 7px;
-  border: none;
-  font-family: var(--font-ui);
-  font-weight: 600;
-  font-size: 12px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  transition: all var(--dur-f);
+  width: 100% !important;
+  padding: 10px 14px !important;
+  border-radius: 6px !important;
+  font-family: var(--font-ui) !important;
+  font-weight: 600 !important;
+  font-size: 12.5px !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 10px !important;
+  box-sizing: border-box !important;
+  text-align: left !important;
+  transition: all var(--dur-f) ease !important;
 }
 .dbtn:disabled {
   opacity: 0.6;
@@ -799,36 +841,41 @@ body {
 
 /* ─── APP SWITCHER & TOPBAR NAVIGATION PILLS ───────────────── */
 .nav-pills {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 3px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  gap: 2px;
 }
 
 .nav-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 12px;
+  padding: 5px 14px;
   border-radius: var(--r-pill);
   font-size: 12px;
   font-weight: 500;
   text-decoration: none;
-  color: var(--sidebar-text);
+  color: #9FA6B8;
   background: transparent;
-  border: 1px solid transparent;
   transition: all var(--dur-f) ease;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .nav-pill:hover {
   background: rgba(255, 255, 255, 0.08);
-  color: var(--sidebar-text-bright);
+  color: #FFFFFF;
 }
 
 .nav-pill.active {
   background: var(--brand);
-  color: #ffffff;
+  color: #FFFFFF;
   font-weight: 600;
-  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
 .app-launcher-dropdown {
@@ -841,13 +888,13 @@ body {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
-  width: 280px;
-  background: var(--sidebar);
-  border: 1px solid var(--sidebar-line);
+  width: 290px;
+  background: #1B1F2B;
+  border: 1px solid #2B3040;
   border-radius: var(--r-md);
   padding: 8px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-  z-index: 250;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
   max-height: 480px;
   overflow-y: auto;
 }
@@ -1171,7 +1218,7 @@ svg.lucide, i[data-lucide] {
 
 /* ─── MOBILE & TABLET RESPONSIVE PASS (Directive 1) ─────────── */
 .mobile-decision-bar {
-  display: none;
+  display: none !important;
 }
 
 @media (max-width: 1024px) {

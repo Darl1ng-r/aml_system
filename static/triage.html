@@ -12,8 +12,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
-  <!-- Core Stylesheet -->
-  <link rel="stylesheet" href="/static/style.css">
+  <!-- Core Stylesheet with Cache Busting -->
+  <link rel="stylesheet" href="/static/style.css?v=20261014.5">
 
   <!-- Lucide Icon Library -->
   <script src="/static/lucide.min.js" defer></script>
@@ -503,7 +503,7 @@
             <i data-lucide="chevron-down" style="width:12px; height:12px; margin-left:2px;"></i>
           </button>
           
-          <div class="dropdown-menu" id="triage-app-menu-popover">
+          <div class="dropdown-menu" id="triage-app-menu-popover" style="display:none;">
             <div class="dropdown-group-label">Investigations &amp; Regulatory</div>
             <a href="/sar/editor" class="dropdown-item"><i data-lucide="file-text"></i> SAR Draft Editor</a>
             <a href="/sar/queue" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="send"></i> SAR Filing Queue</a>
@@ -1122,11 +1122,13 @@
       const menu = document.getElementById('triage-app-menu-popover');
       const btn = document.getElementById('btn-triage-app-menu');
       if (!menu) return;
-      const isOpen = force !== undefined ? force : !menu.classList.contains('show');
+      const isOpen = force !== undefined ? force : menu.style.display !== 'block';
       if (isOpen) {
+        menu.style.display = 'block';
         menu.classList.add('show');
         if (btn) btn.setAttribute('aria-expanded', 'true');
       } else {
+        menu.style.display = 'none';
         menu.classList.remove('show');
         if (btn) btn.setAttribute('aria-expanded', 'false');
       }
