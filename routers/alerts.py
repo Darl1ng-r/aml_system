@@ -943,6 +943,36 @@ async def get_alert_details(
                     "created_at": pa["created_at"].isoformat()
                 })
 
+            # 5. Fetch authentic direct counterparties from transactions & accounts
+            counterparty_rows = []
+            try:
+                counterparty_rows = await conn.fetch(
+                    """
+                    SELECT a.id, a.account_number, a.owner_name, a.risk_category, COUNT(t.id) as txn_count
+                    FROM transactions t
+                    JOIN accounts a ON (CASE WHEN t.sender_account_id = $1 THEN t.receiver_account_id ELSE t.sender_account_id END) = a.id
+                    WHERE (t.sender_account_id = $1 OR t.receiver_account_id = $1)
+                      AND a.id != $1
+                    GROUP BY a.id, a.account_number, a.owner_name, a.risk_category
+                    ORDER BY txn_count DESC
+                    LIMIT 5;
+                    """,
+                    sender_id
+                )
+            except Exception as e_cp:
+                logger.warning(f"Could not load linked counterparties for alert details: {e_cp}")
+
+            linked_entities = []
+            for cp in counterparty_rows:
+                cp_name = cp["owner_name"] or cp["account_number"] or "Counterparty"
+                linked_entities.append({
+                    "id": str(cp["id"]),
+                    "name": cp_name,
+                    "relation": f"Counterparty · {cp['txn_count']} transfers",
+                    "avatar": cp_name[:2].upper(),
+                    "high_risk": (cp["risk_category"] or "").upper() in ("CRITICAL", "HIGH") if cp.get("risk_category") else False
+                })
+
             explain = json.loads(row["explainability_payload"]) if row["explainability_payload"] else {}
 
             return {
@@ -980,7 +1010,8 @@ async def get_alert_details(
                     "jurisdiction_risk": float(profile["jurisdiction_risk_score"]) if profile and profile["jurisdiction_risk_score"] else 0.1
                 },
                 "timeline_30d": history,
-                "prior_alerts": prior_alerts
+                "prior_alerts": prior_alerts,
+                "linked_entities": linked_entities
             }
     except HTTPException:
         raise

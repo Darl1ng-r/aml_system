@@ -334,27 +334,16 @@
             </div>
             <div class="field">
               <div class="flabel">Reviewed by model</div>
-              <div class="fval" id="txn-model">v4.2.1</div>
+              <div class="fval" id="txn-model">Production RBA</div>
             </div>
           </div>
         </div>
 
         <!-- 2. Triggered Rules Panel -->
         <div class="panel">
-          <div class="panel-title">Triggered rules <span class="hint" id="rules-count-hint">3 of 41 active rules fired</span></div>
+          <div class="panel-title">Triggered rules <span class="hint" id="rules-count-hint">Evaluating active detection rules…</span></div>
           <div class="rule-list" id="evidence-rule-list">
-            <div class="rule-row critical">
-              <span class="rname">Structuring Detection</span>
-              <span class="rdesc">— Wire of $9,480 sits 5.2% below CTR reporting threshold ($10,000)</span>
-            </div>
-            <div class="rule-row">
-              <span class="rname">Velocity Spike</span>
-              <span class="rdesc">— 6 similar-value transfers to related accounts in trailing 30 days</span>
-            </div>
-            <div class="rule-row">
-              <span class="rname">High-Risk Geography</span>
-              <span class="rdesc">— Destination jurisdiction flagged high-risk per current watchlist</span>
-            </div>
+            <div style="font-size:12px; color:var(--ink-soft); padding:8px 0;">Evaluating case typologies…</div>
           </div>
         </div>
 
@@ -477,7 +466,7 @@
           <div class="ctx-heading">Composite risk score</div>
           <div class="risk-gauge" id="ctx-risk-gauge">
             <div class="gauge-num" id="ctx-risk-score">92</div>
-            <div class="gauge-label" id="ctx-risk-label">Up from 61 last review.<br>Driven by velocity + jurisdiction.</div>
+            <div class="gauge-label" id="ctx-risk-label">FATF Risk-Based Composite<br>Dynamic model evaluation.</div>
           </div>
         </div>
 
@@ -485,7 +474,7 @@
         <div class="ctx-section">
           <div class="ctx-heading">
             KYC snapshot
-            <a href="javascript:void(0)" onclick="openModal('sandbox-modal')">Full profile →</a>
+            <a href="javascript:void(0)" onclick="navigateToCustomer360()">Full profile →</a>
           </div>
           <div class="kyc-row">
             <span class="k">Legal name</span>
@@ -497,11 +486,11 @@
           </div>
           <div class="kyc-row">
             <span class="k">Occupation</span>
-            <span class="v" id="ctx-kyc-occupation">Import/export, self-empl.</span>
+            <span class="v" id="ctx-kyc-occupation">Commercial Account</span>
           </div>
           <div class="kyc-row">
             <span class="k">PEP status</span>
-            <span class="v" id="ctx-kyc-pep">No</span>
+            <span class="v" id="ctx-kyc-pep">Screened Clean</span>
           </div>
           <div class="kyc-row">
             <span class="k">Sanctions match</span>
@@ -509,30 +498,17 @@
           </div>
           <div class="kyc-row">
             <span class="k">Adverse media</span>
-            <span class="v" id="ctx-kyc-media">1 low-conf. hit</span>
+            <span class="v" id="ctx-kyc-media">Clean</span>
           </div>
         </div>
 
         <!-- 3. Linked Entities -->
         <div class="ctx-section">
           <div class="ctx-heading">
-            Linked entities <span id="ctx-entities-count" style="font-weight:400; color:#6B6F7A;">4</span>
+            Linked entities <span id="ctx-entities-count" style="font-weight:400; color:#6B6F7A;">0</span>
           </div>
           <div id="ctx-entities-list">
-            <div class="entity-card">
-              <div class="entity-avatar">RV</div>
-              <div>
-                <div class="entity-name">Renata Varga</div>
-                <div class="entity-meta">Shared address · sibling</div>
-              </div>
-            </div>
-            <div class="entity-card">
-              <div class="entity-avatar" style="background:var(--risk-high-bg); color:var(--risk-high);">HK</div>
-              <div>
-                <div class="entity-name">Harlow Kane Ltd</div>
-                <div class="entity-meta">KY registered · high risk</div>
-              </div>
-            </div>
+            <div style="font-size:12px; color:var(--ink-soft); padding:8px 0;">Loading counterparties…</div>
           </div>
         </div>
 
@@ -1024,11 +1000,19 @@
     });
 
     async function loadCaseEvidence() {
-      const caseId = (typeof activeAlertId !== 'undefined' && activeAlertId) ? activeAlertId : '00000000-0000-0000-0000-000000000001';
+      const caseId = (typeof activeAlertId !== 'undefined' && activeAlertId) ? activeAlertId : null;
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(caseId);
       const container = document.getElementById('case-evidence-list');
       if (!container) return;
+
+      if (!isUUID || (typeof mockMode !== 'undefined' && mockMode)) {
+        container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--ink-soft); font-size:12px;">Evidence Locker active. Operating in simulated evaluation mode.</div>';
+        return;
+      }
+
       try {
-        const res = await fetch(`/api/v1/cases/${caseId}/evidence`);
+        const headers = typeof getAuthHeaders === 'function' ? getAuthHeaders() : { 'X-CSRF-Protection': '1' };
+        const res = await fetch(`/api/v1/cases/${caseId}/evidence`, { headers });
         if (!res.ok) {
           container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--ink-soft); font-size:12px;">No evidence files attached to this case.</div>';
           return;
@@ -1065,15 +1049,31 @@
         alert('Please select a file to upload');
         return;
       }
-      const caseId = (typeof activeAlertId !== 'undefined' && activeAlertId) ? activeAlertId : '00000000-0000-0000-0000-000000000001';
+      const caseId = (typeof activeAlertId !== 'undefined' && activeAlertId) ? activeAlertId : null;
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(caseId);
+
+      if (!isUUID || (typeof mockMode !== 'undefined' && mockMode)) {
+        alert('Evidence artifact attached in simulated evaluation mode!');
+        fileInput.value = '';
+        document.getElementById('evidence-desc-input').value = '';
+        document.getElementById('evidence-tags-input').value = '';
+        return;
+      }
+
       const formData = new FormData();
       formData.append('file', fileInput.files[0]);
       formData.append('description', document.getElementById('evidence-desc-input').value);
       formData.append('tags', document.getElementById('evidence-tags-input').value);
 
       try {
+        const headers = typeof getAuthHeaders === 'function' ? getAuthHeaders() : { 'X-CSRF-Protection': '1' };
+        // Omit Content-Type from headers so browser assigns boundary
+        const uploadHeaders = { ...headers };
+        delete uploadHeaders['Content-Type'];
+
         const res = await fetch(`/api/v1/cases/${caseId}/evidence`, {
           method: 'POST',
+          headers: uploadHeaders,
           body: formData
         });
         if (res.ok) {
@@ -1093,7 +1093,11 @@
     async function deleteEvidence(caseId, evId) {
       if (!confirm('Remove this evidence attachment?')) return;
       try {
-        const res = await fetch(`/api/v1/cases/${caseId}/evidence/${evId}`, {method: 'DELETE'});
+        const headers = typeof getAuthHeaders === 'function' ? getAuthHeaders() : { 'X-CSRF-Protection': '1' };
+        const res = await fetch(`/api/v1/cases/${caseId}/evidence/${evId}`, {
+          method: 'DELETE',
+          headers
+        });
         if (res.ok) loadCaseEvidence();
       } catch (e) {
         alert('Failed to delete evidence');

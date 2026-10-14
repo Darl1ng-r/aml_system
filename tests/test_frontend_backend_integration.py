@@ -147,14 +147,25 @@ async def test_get_alert_details_success(mock_analyst):
         }
     ]
 
+    mock_counterparties = [
+        {
+            "id": str(uuid.uuid4()),
+            "account_number": "ACC-9921",
+            "owner_name": "Harlow Kane Ltd",
+            "risk_category": "HIGH",
+            "txn_count": 8
+        }
+    ]
+
     mock_conn = AsyncMock()
     mock_conn.fetchrow.side_effect = [
         mock_row,  # main alert query
         {"kyc_risk_tier": "HIGH", "jurisdiction_risk_score": 0.88, "avg_amount": 8000.0, "monthly_frequency": 5} # profile
     ]
     mock_conn.fetch.side_effect = [
-        mock_tx_history,   # trailing 30-day txns
-        mock_prior_alerts  # prior alerts
+        mock_tx_history,       # trailing 30-day txns
+        mock_prior_alerts,     # prior alerts
+        mock_counterparties    # linked counterparties
     ]
 
     with patch("routers.alerts.get_async_db_read_conn") as mock_get_conn:
@@ -170,6 +181,10 @@ async def test_get_alert_details_success(mock_analyst):
         assert details["timeline_30d"][0]["is_flagged"] is True
         assert len(details["prior_alerts"]) == 1
         assert details["prior_alerts"][0]["rule_name"] == "RAPID_MOVEMENT"
+        assert "linked_entities" in details
+        assert len(details["linked_entities"]) == 1
+        assert details["linked_entities"][0]["name"] == "Harlow Kane Ltd"
+        assert details["linked_entities"][0]["high_risk"] is True
 
 
 # ── 3. List Alerts Filter & Search Tests ───────────────────────────────────────

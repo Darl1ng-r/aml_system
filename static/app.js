@@ -260,8 +260,8 @@ async function initAuth() {
             localStorage.setItem('role', user.role);
             setProfileUI(user.username);
             applyRoleBasedVisibility(user.role);
-            checkServerStatus();
-            loadAlerts();
+            await checkServerStatus();
+            await loadAlerts();
             return;
         }
     } catch (e) {
@@ -271,8 +271,8 @@ async function initAuth() {
     const username = localStorage.getItem('username') || 'rama.tubeh';
     setProfileUI(username);
     applyRoleBasedVisibility();
-    checkServerStatus();
-    loadAlerts();
+    await checkServerStatus();
+    await loadAlerts();
 }
 
 function applyRoleBasedVisibility(role) {
@@ -338,17 +338,24 @@ function setMockMode(enabled) {
 
 async function checkServerStatus() {
     try {
-        const response = await fetch(`${BASE_URL}/`);
+        const response = await fetch(`${BASE_URL}/`, {
+            headers: {
+                'Accept': 'application/json',
+                ...getAuthHeaders()
+            }
+        });
         if (response.ok) {
             const data = await response.json();
             setMockMode(false);
             log(`Connected to ingestion scoring core: ${data.service}`, 'success');
+            return true;
         } else {
-            throw new Error();
+            throw new Error(`Server returned HTTP ${response.status}`);
         }
     } catch (e) {
         setMockMode(true);
-        log('Database Gateway offline. Simulated mock evaluation activated.', 'warn');
+        log('Database Gateway offline or non-JSON response. Simulated mock evaluation activated.', 'warn');
+        return false;
     }
 }
 
@@ -1164,18 +1171,21 @@ function selectCase(id) {
     if (rulesCountEl) rulesCountEl.innerText = firedRulesCount;
 
     const modelEl = document.getElementById('txn-model');
-    if (modelEl) modelEl.innerText = alert.model_version || 'v4.2.1';
+    if (modelEl) modelEl.innerText = alert.model_version || 'Production RBA';
 
     // 5. Triggered Rules List
     const rulesHint = document.getElementById('rules-count-hint');
-    if (rulesHint) rulesHint.innerText = `${firedRulesCount} of 41 active rules fired`;
+    if (rulesHint) rulesHint.innerText = `${firedRulesCount} rule${firedRulesCount === 1 ? '' : 's'} evaluated`;
 
     const rulesList = document.getElementById('evidence-rule-list');
-    if (rulesList && alert.rules_triggered) {
-        rulesList.innerHTML = alert.rules_triggered.map(r => `
-            <div class="rule-row">
-                <span class="rname">${r.code}</span>
-                <span class="rdesc">${r.desc}</span>
+    if (rulesList) {
+        const rules = (alert.rules_triggered && alert.rules_triggered.length > 0)
+            ? alert.rules_triggered
+            : [{ code: (alert.rule_name || 'COMPLIANCE_ALERT').replace(/_/g, ' '), desc: `— Flagged by transaction monitoring engine (${alert.threat_level || 'STANDARD'})` }];
+        rulesList.innerHTML = rules.map(r => `
+            <div class="rule-row ${r.critical ? 'critical' : ''}">
+                <span class="rname">${r.code || r.name || 'RULE'}</span>
+                <span class="rdesc">${r.desc || r.description || ''}</span>
             </div>
         `).join('');
     }
@@ -1222,7 +1232,9 @@ function selectCase(id) {
 
     const gaugeLabel = document.getElementById('ctx-risk-label');
     if (gaugeLabel) {
-        gaugeLabel.innerHTML = `${alert.threat_level || 'HIGH'} Priority.<br>Triggered by ${(alert.rule_name || 'RULES').replace(/_/g, ' ')}.`;
+        const threat = alert.threat_level || 'HIGH';
+        const ruleFormatted = (alert.rule_name || 'RULES').replace(/_/g, ' ');
+        gaugeLabel.innerHTML = `FATF Risk-Based Composite<br><span style="font-weight:600;">${threat}</span> Priority · ${ruleFormatted}`;
     }
 
     // 10. Context Pane: KYC Snapshot
@@ -1234,10 +1246,10 @@ function selectCase(id) {
         if (kycTenure) kycTenure.innerText = alert.entity.customer_since || 'Jul 2025';
 
         const kycOcc = document.getElementById('ctx-kyc-occupation');
-        if (kycOcc) kycOcc.innerText = alert.entity.occupation || 'Private Client';
+        if (kycOcc) kycOcc.innerText = alert.entity.occupation || 'Commercial Account';
 
         const kycPep = document.getElementById('ctx-kyc-pep');
-        if (kycPep) kycPep.innerText = alert.entity.pep || 'No';
+        if (kycPep) kycPep.innerText = alert.entity.pep || 'Screened Clean';
 
         const kycSanc = document.getElementById('ctx-kyc-sanctions');
         if (kycSanc) kycSanc.innerText = alert.entity.sanctions || 'None';
@@ -1249,10 +1261,13 @@ function selectCase(id) {
     // 11. Context Pane: Linked Entities
     const entitiesCount = document.getElementById('ctx-entities-count');
     const entitiesList = document.getElementById('ctx-entities-list');
-    if (alert.linked_entities) {
-        if (entitiesCount) entitiesCount.innerText = alert.linked_entities.length;
-        if (entitiesList) {
-            entitiesList.innerHTML = alert.linked_entities.map(e => `
+    const linkedList = alert.linked_entities || [];
+    if (entitiesCount) entitiesCount.innerText = linkedList.length;
+    if (entitiesList) {
+        if (linkedList.length === 0) {
+            entitiesList.innerHTML = '<div style="font-size:12px; color:var(--ink-soft); padding:8px 0;">No direct counterparties recorded.</div>';
+        } else {
+            entitiesList.innerHTML = linkedList.map(e => `
                 <div class="entity-card">
                     <div class="entity-avatar" style="${e.high_risk ? 'background:var(--risk-high-bg); color:var(--risk-high);' : ''}">${e.avatar || e.name.slice(0, 2).toUpperCase()}</div>
                     <div>
@@ -1347,10 +1362,45 @@ async function fetchAndRenderAlertDetails(id, alert) {
                 }
             }
         }
+
+        // Render authentic linked counterparties from PostgreSQL / Neo4j
+        if (details.linked_entities) {
+            alert.linked_entities = details.linked_entities;
+            const entitiesCount = document.getElementById('ctx-entities-count');
+            const entitiesList = document.getElementById('ctx-entities-list');
+            if (entitiesCount) entitiesCount.innerText = details.linked_entities.length;
+            if (entitiesList) {
+                if (details.linked_entities.length === 0) {
+                    entitiesList.innerHTML = '<div style="font-size:12px; color:var(--ink-soft); padding:8px 0;">No direct counterparties recorded.</div>';
+                } else {
+                    entitiesList.innerHTML = details.linked_entities.map(e => `
+                        <div class="entity-card">
+                            <div class="entity-avatar" style="${e.high_risk ? 'background:var(--risk-high-bg); color:var(--risk-high);' : ''}">${e.avatar || e.name.slice(0, 2).toUpperCase()}</div>
+                            <div>
+                                <div class="entity-name">${e.name}</div>
+                                <div class="entity-meta">${e.relation}</div>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            }
+        }
     } catch (e) {
         console.warn("Could not load enhanced alert details:", e);
     }
 }
+
+function navigateToCustomer360() {
+    const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
+    let customerId = '';
+    if (alert && alert.entity && (alert.entity.account_id || alert.entity.id)) {
+        customerId = alert.entity.account_id || alert.entity.id;
+    } else if (alert && alert.transaction && (alert.transaction.sender_account || alert.transaction.sender)) {
+        customerId = alert.transaction.sender_account || alert.transaction.sender;
+    }
+    window.location.href = customerId ? `/customers/${encodeURIComponent(customerId)}` : '/customers';
+}
+window.navigateToCustomer360 = navigateToCustomer360;
 
 function renderTransactionTimeline(history, currentTxnId) {
     const track = document.getElementById('evidence-timeline-track');
@@ -1431,14 +1481,39 @@ async function loadGraphData(alertId, alert) {
 }
 
 // ── Interactive Vis.js Force-Directed Graph Rendering ─────────────────────────
+let _visRetryCount = 0;
 function renderVisNetworkGraph(graphData, alert) {
     const container = document.getElementById('vis-graph-container');
     if (!container) return;
 
     if (typeof vis === 'undefined' || !vis.DataSet || !vis.Network) {
-        setTimeout(() => renderVisNetworkGraph(graphData, alert), 150);
+        if (_visRetryCount < 10) {
+            _visRetryCount++;
+            setTimeout(() => renderVisNetworkGraph(graphData, alert), 200);
+            return;
+        }
+        // Fallback: Render informative SVG state when external library fails or is delayed
+        container.innerHTML = `
+            <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; color:var(--ink-soft); font-size:12px; text-align:center; padding:16px;">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6; margin-bottom:8px;">
+                    <circle cx="18" cy="5" r="3"></circle>
+                    <circle cx="6" cy="12" r="3"></circle>
+                    <circle cx="18" cy="19" r="3"></circle>
+                    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+                    <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+                </svg>
+                <div style="font-weight:600; color:var(--ink); margin-bottom:4px;">Network Topology Canvas Standby</div>
+                <div style="font-size:11px; max-width:280px; margin-bottom:10px;">Graph rendering engine connecting or delayed by network filter.</div>
+                <button class="topbar-btn" onclick="_visRetryCount=0; renderVisNetworkGraph(window._lastGraphData || {}, null);" style="border:1px solid var(--panel-edge); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer;">
+                    Retry Connection
+                </button>
+            </div>
+        `;
+        if (window.lucide) lucide.createIcons();
         return;
     }
+    _visRetryCount = 0;
+    window._lastGraphData = graphData;
 
     const rawNodes = graphData.nodes || [];
     const rawEdges = graphData.edges || [];
