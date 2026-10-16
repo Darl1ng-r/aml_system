@@ -93,3 +93,57 @@ async def test_run_network_analysis_binds_temporal_window():
         assert call_kwargs["tenant_id"] == "tenant-abc"
 
 
+@pytest.mark.anyio
+async def test_fetch_transaction_graph_postgres_fallback():
+    """Verify fetch_transaction_graph queries PostgreSQL transactions when Neo4j driver fails."""
+    from unittest.mock import AsyncMock, patch
+    from services.network_analysis import fetch_transaction_graph
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = [
+        {"sender": "ACC-100", "receiver": "ACC-200"},
+        {"sender": "ACC-200", "receiver": "ACC-300"},
+    ]
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__.return_value = mock_conn
+    mock_ctx.__aexit__.return_value = None
+
+    with patch("services.network_analysis.get_async_neo4j_driver", AsyncMock(side_effect=Exception("Neo4j offline"))), \
+         patch("database.postgres.get_async_db_read_conn", return_value=mock_ctx) as mock_get_db:
+
+        graph = await fetch_transaction_graph(tenant_id="ten-123", limit=100, window_hours=24)
+        assert "ACC-100" in graph
+        assert graph["ACC-100"] == ["ACC-200"]
+        assert "ACC-200" in graph
+        assert graph["ACC-200"] == ["ACC-300"]
+        assert mock_get_db.called
+
+
+@pytest.mark.anyio
+async def test_compute_transitive_counterparty_taint_postgres_fallback():
+    """Verify compute_transitive_counterparty_taint evaluates 2-hop CTE on PostgreSQL when Neo4j fails."""
+    from unittest.mock import AsyncMock, patch
+    from services.network_analysis import compute_transitive_counterparty_taint
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {"taint_score": 0.585}
+    mock_ctx = AsyncMock()
+    mock_ctx.__aenter__.return_value = mock_conn
+    mock_ctx.__aexit__.return_value = None
+
+    with patch("services.network_analysis.get_async_neo4j_driver", AsyncMock(side_effect=Exception("Neo4j offline"))), \
+         patch("database.postgres.get_async_db_read_conn", return_value=mock_ctx):
+
+        taint = await compute_transitive_counterparty_taint(
+            account_number="ACC-TARGET",
+            tenant_id="ten-123",
+            max_hops=2,
+            decay_factor=0.65
+        )
+        assert taint == 0.585
+        mock_conn.fetchrow.assert_called_once()
+        args = mock_conn.fetchrow.call_args[0]
+        assert "ACC-TARGET" in args
+
+
+

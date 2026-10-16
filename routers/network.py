@@ -87,5 +87,77 @@ async def expand_graph_node(
                         })
 
         return {"nodes": list(nodes.values()), "edges": edges}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Graph node expansion failed: {str(e)}")
+    except Exception as neo_err:
+        # Pruned Datastore / Resilient Fallback: Query PostgreSQL 16 directly
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Neo4j expansion unavailable ({neo_err}); executing in-engine PostgreSQL fallback...")
+        try:
+            from database.postgres import get_async_db_read_conn
+            async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+                rows = await conn.fetch(
+                    """
+                    WITH target_account AS (
+                        SELECT id, account_number, owner_name 
+                        FROM accounts 
+                        WHERE id::text = $1 OR account_number = $1
+                        LIMIT 1
+                    ),
+                    direct_txs AS (
+                        SELECT 
+                            t.id as tx_id,
+                            t.amount,
+                            t.timestamp,
+                            s.id as sender_id,
+                            s.account_number as sender_acc,
+                            s.owner_name as sender_name,
+                            r.id as receiver_id,
+                            r.account_number as receiver_acc,
+                            r.owner_name as receiver_name
+                        FROM transactions t
+                        JOIN accounts s ON t.sender_account_id = s.id
+                        JOIN accounts r ON t.receiver_account_id = r.id
+                        WHERE (t.sender_account_id IN (SELECT id FROM target_account)
+                           OR t.receiver_account_id IN (SELECT id FROM target_account))
+                          AND ($2::text IS NULL OR t.tenant_id = $2::uuid)
+                        ORDER BY t.timestamp DESC
+                        LIMIT 50
+                    )
+                    SELECT * FROM direct_txs;
+                    """,
+                    str(entity_id), str(tenant_id) if tenant_id else None
+                )
+
+                pg_nodes = {}
+                pg_edges = []
+                for row in rows:
+                    s_id = str(row["sender_id"])
+                    r_id = str(row["receiver_id"])
+                    if s_id not in pg_nodes:
+                        pg_nodes[s_id] = {
+                            "id": s_id,
+                            "label": row["sender_name"] or row["sender_acc"],
+                            "type": "Account",
+                            "properties": {"account_number": row["sender_acc"], "owner_name": row["sender_name"]}
+                        }
+                    if r_id not in pg_nodes:
+                        pg_nodes[r_id] = {
+                            "id": r_id,
+                            "label": row["receiver_name"] or row["receiver_acc"],
+                            "type": "Account",
+                            "properties": {"account_number": row["receiver_acc"], "owner_name": row["receiver_name"]}
+                        }
+                    pg_edges.append({
+                        "id": str(row["tx_id"]),
+                        "source": s_id,
+                        "target": r_id,
+                        "type": "TRANSFERS_TO",
+                        "properties": {"amount": float(row["amount"]), "timestamp": str(row["timestamp"])}
+                    })
+
+                return {"nodes": list(pg_nodes.values()), "edges": pg_edges}
+        except Exception as pg_err:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Graph node expansion failed on both Neo4j ({neo_err}) and PostgreSQL ({pg_err})"
+            )

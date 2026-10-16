@@ -199,7 +199,6 @@ async def fetch_transaction_graph(
     scoped by tenant_id to prevent cross-tenant data leakage (B4)
     and bounded by a temporal window (window_hours) to focus on active money movement.
     """
-    driver = await get_async_neo4j_driver()
     min_epoch = None
     if window_hours is not None:
         min_epoch = int(datetime.now(timezone.utc).timestamp()) - (window_hours * 3600)
@@ -211,21 +210,57 @@ async def fetch_transaction_graph(
         RETURN s.account_number AS sender, r.account_number AS receiver
         LIMIT $limit;
     """
+
     graph = {}
+    neo4j_success = False
     try:
-        async with driver.session() as session:
-            result = await session.run(query, tenant_id=tenant_id, min_epoch=min_epoch, limit=limit)
-            async for record in result:
-                sender = record["sender"]
-                receiver = record["receiver"]
-                if sender not in graph:
-                    graph[sender] = []
-                if receiver not in graph:
-                    graph[receiver] = []
-                graph[sender].append(receiver)
+        driver = await get_async_neo4j_driver()
+        if driver:
+            async with driver.session() as session:
+                result = await session.run(query, tenant_id=tenant_id, min_epoch=min_epoch, limit=limit)
+                async for record in result:
+                    sender = record["sender"]
+                    receiver = record["receiver"]
+                    if sender not in graph:
+                        graph[sender] = []
+                    if receiver not in graph:
+                        graph[receiver] = []
+                    graph[sender].append(receiver)
+            neo4j_success = True
     except Exception as e:
-        logger.error(f"Failed to query Neo4j transaction graph: {e}")
-        
+        logger.info(f"Neo4j transaction graph unavailable ({e}); executing native PostgreSQL fallback...")
+
+    # Native PostgreSQL 16 Pruned Datastore Fallback
+    if not neo4j_success or not graph:
+        try:
+            from database.postgres import get_async_db_read_conn
+            async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT s.account_number AS sender, r.account_number AS receiver
+                    FROM transactions t
+                    JOIN accounts s ON t.sender_account_id = s.id
+                    JOIN accounts r ON t.receiver_account_id = r.id
+                    WHERE ($1::text IS NULL OR t.tenant_id = $1::uuid)
+                      AND ($2::int IS NULL OR t.timestamp >= NOW() - ($2 || ' hours')::interval)
+                      AND t.status IN ('COMPLETED', 'PENDING')
+                    LIMIT $3;
+                    """,
+                    str(tenant_id) if tenant_id else None,
+                    window_hours,
+                    limit
+                )
+                for row in rows:
+                    sender = row["sender"]
+                    receiver = row["receiver"]
+                    if sender not in graph:
+                        graph[sender] = []
+                    if receiver not in graph:
+                        graph[receiver] = []
+                    graph[sender].append(receiver)
+        except Exception as pg_err:
+            logger.warning(f"PostgreSQL graph topology query fallback warning: {pg_err}")
+
     return graph
 
 async def run_network_analysis(
@@ -465,7 +500,51 @@ async def compute_transitive_counterparty_taint(
             if record and record["taint_score"] is not None:
                 return round(float(record["taint_score"]), 4)
     except Exception as e:
-        logger.debug(f"Transitive counterparty taint calculation bypassed: {e}")
+        logger.debug(f"Neo4j transitive taint bypassed ({e}); querying PostgreSQL 16 recursive CTE directly...")
+        try:
+            from database.postgres import get_async_db_read_conn
+            async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+                row = await conn.fetchrow(
+                    """
+                    WITH RECURSIVE upstream AS (
+                        SELECT 
+                            s.id AS origin_id, 
+                            s.risk_score, 
+                            1 AS hops
+                        FROM transactions t
+                        JOIN accounts target ON t.receiver_account_id = target.id
+                        JOIN accounts s ON t.sender_account_id = s.id
+                        WHERE target.account_number = $1
+                          AND ($2::text IS NULL OR t.tenant_id = $2::uuid)
+                          AND t.status IN ('COMPLETED', 'PENDING')
+                          
+                        UNION ALL
+                        
+                        SELECT 
+                            s.id AS origin_id, 
+                            s.risk_score, 
+                            u.hops + 1 AS hops
+                        FROM upstream u
+                        JOIN transactions t ON t.receiver_account_id = u.origin_id
+                        JOIN accounts s ON t.sender_account_id = s.id
+                        WHERE u.hops < $4
+                          AND ($2::text IS NULL OR t.tenant_id = $2::uuid)
+                          AND t.status IN ('COMPLETED', 'PENDING')
+                    )
+                    SELECT COALESCE(MAX(risk_score * power($3::float, hops)), 0.0) as taint_score
+                    FROM upstream
+                    WHERE risk_score >= 0.75;
+                    """,
+                    account_number,
+                    str(tenant_id) if tenant_id else None,
+                    decay_factor,
+                    max_hops
+                )
+                if row and row["taint_score"] is not None:
+                    return round(float(row["taint_score"]), 4)
+        except Exception as pg_err:
+            logger.warning(f"PostgreSQL transitive taint fallback warning: {pg_err}")
 
     return 0.0
+
 

@@ -1,9 +1,13 @@
 """
-IAM Microservice Application
-=============================
-Standalone FastAPI microservice for Identity and Access Management (IAM).
-Handles tenant provisioning, user registration/login, MFA, password rotation,
-API keys, and public JWKS distribution for edge API gateways (Envoy/Kong).
+IAM Microservice Application (Consolidated Monolith Adapter)
+=============================================================
+Architecture Notice:
+The standalone microservice execution (port 8001) has been unified into the
+core AML monolithic application (port 8000 via main.py) to eliminate microservice theater,
+HTTP serialization, port coordination, and dual lifespans.
+
+This module is maintained as an in-process compatibility layer for isolated testing,
+contract verification, and optional standalone edge deployment if desired.
 """
 
 import asyncio

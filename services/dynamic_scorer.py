@@ -71,7 +71,7 @@ def compute_dynamic_risk(
     behavioral_component = (0.10 * z_score_prob) + (0.10 * c_jurisdiction)
     crr_component = (0.10 * c_sender) + (0.10 * c_receiver)
 
-    dynamic_score = base_ml_component + behavioral_component + crr_component
+    base_score = base_ml_component + behavioral_component + crr_component
 
     # 4. PEP Tier Multiplier / Risk Elevation
     pep_elevation = 0.0
@@ -85,16 +85,21 @@ def compute_dynamic_risk(
             pep_elevation = 0.10
         else:
             pep_elevation = 0.05
-    dynamic_score += pep_elevation
     
     # 5. Rule trigger scaling / escalations (M4)
-    # Scale proportionally with triggered rules while enforcing the regulatory >= 0.80 floor
     rule_applied = False
     rule_elevation = 0.0
     if rules_triggered:
         rule_elevation = 0.25 * len(rules_triggered)
-        dynamic_score = max(dynamic_score + rule_elevation, 0.80)
         rule_applied = True
+
+    # Pre-floor additive score
+    unclamped_score = base_score + pep_elevation + rule_elevation
+    dynamic_score = unclamped_score
+
+    # Rule minimum floor
+    if rules_triggered:
+        dynamic_score = max(dynamic_score, 0.80)
 
     # 6. Non-Compensatory Floors (Prevent ML-dilution alert suppression)
     if z_score >= 3.5:
@@ -104,8 +109,8 @@ def compute_dynamic_risk(
     critical_rules = {"SANCTIONS_HIT", "CONDUIT_RAPID_PASSTHROUGH", "STRUCTURING_EXTENDED_7D"}
     if any(r in critical_rules for r in rules_triggered):
         dynamic_score = max(dynamic_score, 0.85)
-        
-    dynamic_score = min(max(dynamic_score, 0.0), 1.0)
+
+    final_score = round(min(max(dynamic_score, 0.0), 1.0), 4)
 
     # 7. Institutional Top Drivers for Compliance Examination (Verafin standard)
     top_drivers = []
@@ -128,8 +133,9 @@ def compute_dynamic_risk(
     if any("JUST_BELOW" in r for r in rules_triggered):
         top_drivers.append("JUST_BELOW_CTR_REPORTING_THRESHOLD")
 
-    # 8. Generate attributions/explainability payload (strictly using clamped components)
-    attributions = {
+    # 8. Reconciled Attributions satisfying the Efficiency Axiom (OCC / Federal Reserve SR 11-7)
+    # The sum of all additive factor contributions strictly equals final_score.
+    base_contributions = {
         "ml_model_contribution": round(0.30 * c_ml, 4),
         "isolation_forest_contribution": round(0.30 * c_iforest, 4),
         "baseline_zscore_contribution": round(0.10 * z_score_prob, 4),
@@ -138,13 +144,31 @@ def compute_dynamic_risk(
         "crr_receiver_contribution": round(0.10 * c_receiver, 4),
         "pep_elevation": round(pep_elevation, 4),
         "rule_elevation": round(rule_elevation, 4),
+    }
+
+    reconciled_contributions = dict(base_contributions)
+    raw_sum = round(sum(base_contributions.values()), 4)
+
+    # Reconcile floor elevation or clamp damping
+    if final_score > raw_sum:
+        reconciled_contributions["regulatory_floor_elevation"] = round(final_score - raw_sum, 4)
+    elif final_score < raw_sum:
+        reconciled_contributions["saturation_clamp_damping"] = round(final_score - raw_sum, 4)
+
+    attribution_sum = round(sum(reconciled_contributions.values()), 4)
+
+    attributions = {
+        **base_contributions,
         "taint_risk_contribution": round(c_taint, 4),
         "amount_zscore": round(z_score, 4),
-        "rule_escalated": rule_applied
+        "rule_escalated": rule_applied,
+        "reconciled_contributions": reconciled_contributions,
+        "attribution_sum": attribution_sum,
+        "efficiency_axiom_verified": (attribution_sum == final_score),
     }
 
     return {
-        "dynamic_risk_score": round(dynamic_score, 4),
+        "dynamic_risk_score": final_score,
         "top_drivers": top_drivers,
         "explainability": attributions
     }

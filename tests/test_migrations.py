@@ -138,10 +138,25 @@ def test_migration_026_force_rls_module_importable():
     with patch.object(mod_026.op, "execute") as mock_execute:
         mod_026.upgrade()
         assert mock_execute.called
-        # Check that FORCE ROW LEVEL SECURITY is executed for accounts and transactions
         executed_sqls = [call[0][0] for call in mock_execute.call_args_list]
         combined = " ".join(executed_sqls)
         assert "FORCE ROW LEVEL SECURITY" in combined
         assert "idx_outbox_pending_processing" in combined
+
+
+def test_migration_027_pg_trgm_module_importable():
+    """Verify revision 027 pg_trgm and GIN index migration imports and applies successfully."""
+    mod_027 = importlib.import_module("migrations.versions.027_enable_pg_trgm_and_sanctions_indexes")
+    assert mod_027.revision == "027"
+    assert mod_027.down_revision == "026"
+
+    with patch.object(mod_027.op, "execute") as mock_execute:
+        mod_027.upgrade()
+        assert mock_execute.called
+        executed_sqls = [call[0][0] for call in mock_execute.call_args_list]
+        combined = " ".join(executed_sqls)
+        assert "CREATE EXTENSION IF NOT EXISTS pg_trgm" in combined
+        assert "idx_pep_entities_name_trgm" in combined
+
 
 
