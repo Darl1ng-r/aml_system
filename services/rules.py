@@ -108,19 +108,19 @@ class RulesEngine:
         if not entity_id:
             entity_id = sender_name or str(sender_id)
 
-        # 1. LARGE_TRANSACTION Rule
+        # 1. LARGE_TRANSACTION Rule (BSA / FinCEN 31 CFR 1010.311: >= 10,000 threshold)
         large_config = config.get("rules", {}).get("LARGE_TRANSACTION", {})
         if large_config.get("enabled", True):
             threshold = large_config.get("threshold", 10000.0)
-            if amount > threshold:
+            if amount >= threshold:
                 triggered_rules.append("LARGE_TRANSACTION_THRESHOLD")
                 
         # 2. STRUCTURING_SMURFING Rule (Dual Account & Entity 24h Redis Sliding Window)
-        total_entity_amount = amount
-        entity_below = [amount] if amount < 10000.0 else []
         structuring_config = config.get("rules", {}).get("STRUCTURING_SMURFING", {})
+        threshold = structuring_config.get("threshold", 10000.0)
+        total_entity_amount = amount
+        entity_below = [amount] if amount < threshold else []
         if structuring_config.get("enabled", True):
-            threshold = structuring_config.get("threshold", 10000.0)
             window_hours = structuring_config.get("window_hours", 24)
             try:
                 r = await get_async_redis_client()
@@ -171,9 +171,9 @@ class RulesEngine:
                 total_account_amount = sum(account_below)
                 total_entity_amount = sum(entity_below)
 
-                # Structuring triggers if EITHER individual account OR entity aggregate smurfs across accounts
-                if (total_entity_amount > threshold and len(entity_below) >= 2) or \
-                   (total_account_amount > threshold and len(account_below) >= 2):
+                # Structuring triggers if EITHER individual account OR entity aggregate smurfs across accounts (>= threshold)
+                if (total_entity_amount >= threshold and len(entity_below) >= 2) or \
+                   (total_account_amount >= threshold and len(account_below) >= 2):
                     triggered_rules.append("STRUCTURING_VELOCITY_24H")
             except Exception as e:
                 logger.error(f"Structuring check Redis error: {e}")
@@ -565,8 +565,8 @@ class RulesEngine:
             if is_just_below:
                 triggered_rules.append("JUST_BELOW_CTR_THRESHOLD")
 
-            # Round number divisibility anomaly
-            if amount >= round_min and (amount % round_divisor == 0.0):
+            # Round number divisibility anomaly (integer cents arithmetic prevents IEEE-754 precision leakage)
+            if amount >= round_min and (int(round(amount * 100)) % int(round(round_divisor * 100)) == 0):
                 triggered_rules.append("ROUND_NUMBER_ANOMALY_1K")
 
         return triggered_rules

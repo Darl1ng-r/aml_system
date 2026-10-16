@@ -98,9 +98,10 @@ def compute_betweenness_centrality(graph: dict) -> dict:
             if w != s:
                 cb[w] += delta[w]
 
-    # Divide by 2 because the graph is directed but betweenness is accumulated on undirected paths
-    # Or keep it as is since it is a directed representation of flows. Let's return raw scores rounded.
-    return {node: round(score, 4) for node, score in cb.items()}
+    # Standard directed normalization constant: 1 / ((n - 1) * (n - 2)) for n > 2
+    n = len(all_nodes)
+    scale = (n - 1) * (n - 2) if n > 2 else 1.0
+    return {node: round(score / scale, 4) for node, score in cb.items()}
 
 async def detect_circular_flows_postgres(
     conn=None,

@@ -224,9 +224,25 @@ async def generate_sar_narrative(
         "Transaction exhibits severe deviation from established historical operating parameters."
     )
 
+    sender_id = row.get("sender_id")
+    avg_baseline = None
+    if sender_id:
+        try:
+            from services.behavioral import get_customer_baseline
+            cust_base = await get_customer_baseline(str(sender_id), tenant_id=tenant_id)
+            if cust_base and "avg_amount" in cust_base and float(cust_base["avg_amount"]) > 0.0:
+                avg_baseline = float(cust_base["avg_amount"])
+        except Exception:
+            pass
+
+    if avg_baseline is not None and avg_baseline > 0.0:
+        empirical_delta_pct = round(abs(amount - avg_baseline) / avg_baseline * 100.0, 1)
+    else:
+        empirical_delta_pct = round(max(abs(zscore) * 25.0, 10.0), 1)
+
     suspicious_rationale = {
         "narrative_rationale": justification_notes or "Transaction identified by automated neural behavioral monitoring.",
-        "baseline_delta_pct": max(zscore * 35.0, 50.0),
+        "baseline_delta_pct": empirical_delta_pct,
         "amount_zscore": zscore,
         "pattern_description": pattern_desc,
         "drivers": top_drivers

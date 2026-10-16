@@ -82,7 +82,7 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                 daily_freq = count_30 / span_days
                 weekly_freq = daily_freq * 7.0
                 
-                # Circular mean for 24-hour cycle
+                # Circular mean and circular dispersion for 24-hour periodic cycle
                 if hours:
                     import math
                     angles = [2.0 * math.pi * h / 24.0 for h in hours]
@@ -90,13 +90,17 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                     cos_mean = float(np.mean([math.cos(a) for a in angles]))
                     circ_hour = (math.atan2(sin_mean, cos_mean) * 24.0 / (2.0 * math.pi)) % 24.0
                     avg_hour_val = round(circ_hour, 2)
-                    var_hour_val = float(np.var(hours))
+                    # Circular variance derived from mean resultant vector length R in [0, 1]
+                    R = min(math.sqrt(sin_mean**2 + cos_mean**2), 1.0)
+                    # Circular dispersion mapped to squared-hour units: Var_circ = 2 * (1 - R) * (24 / 2pi)^2
+                    circ_dispersion = 2.0 * (1.0 - R) * ((24.0 / (2.0 * math.pi)) ** 2)
+                    var_hour_val = round(float(circ_dispersion), 2)
                 else:
                     avg_hour_val = 0.0
                     var_hour_val = 0.0
 
-                # Cap variance to prevent numeric(15,2) database overflow
-                raw_variance = float(np.var(amounts)) if len(amounts) > 1 else 0.0
+                # Unbiased sample variance with Bessel's correction (ddof=1) capped for numeric(15,2) safety
+                raw_variance = float(np.var(amounts, ddof=1)) if len(amounts) > 1 else 0.0
                 safe_variance = min(raw_variance, 999_999_999_999.0)
 
                 # Compute Jurisdiction Risk Score based on top countries

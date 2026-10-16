@@ -140,10 +140,13 @@ class AMLAnomalyModel:
         Constructs the 10-feature vector used during training.
         Default values for optional args keep backward compatibility.
         """
-        amount_log = math.log1p(amount) / math.log1p(AMOUNT_NORM_CAP)
+        safe_amount = max(amount, 0.0)
+        amount_log = math.log1p(safe_amount) / math.log1p(AMOUNT_NORM_CAP)
         amount_log = min(max(amount_log, 0.0), 1.0)
 
-        amount_ratio = min(amount / max(amount, 1.0), 5.0) / 5.0  # defaults to 1.0 for same-currency
+        # Feature 2: Amount ratio (amt_received / amt_paid) / 5.0 from training data schema.
+        # For domestic/same-currency (where amt_recv == amt_paid), this is exactly 1.0 / 5.0 = 0.20.
+        amount_ratio = min(amount / max(amount, 1.0), 5.0) / 5.0 if amount > 0 else 0.0
 
         hour_norm = min(max(hour, 0), 23) / 23.0
 
@@ -262,7 +265,8 @@ class AMLAnomalyModel:
             + self._coefficients["receiver_risk"] * norm_receiver
             + self._coefficients["velocity"] * norm_velocity
         )
-        score = 1.0 / (1.0 + math.exp(-z))
+        z_clamped = min(max(z, -50.0), 50.0)
+        score = 1.0 / (1.0 + math.exp(-z_clamped))
 
         # Linear SHAP (exact for logistic regression in log-odds space)
         attributions = {

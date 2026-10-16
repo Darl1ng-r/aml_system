@@ -89,6 +89,7 @@ class IsolationForestScratch:
     def __init__(self, n_estimators: int = 100, max_samples: int = 256):
         self.n_estimators = n_estimators
         self.max_samples = max_samples
+        self.actual_subsample_size = max_samples
         self.trees = []
         self.fitted = False
 
@@ -100,6 +101,7 @@ class IsolationForestScratch:
             return self
             
         subsample_size = min(self.max_samples, n_samples)
+        self.actual_subsample_size = subsample_size
         max_depth = int(math.ceil(math.log2(max(subsample_size, 2))))
         
         self.trees = []
@@ -123,7 +125,7 @@ class IsolationForestScratch:
         if not self.fitted or not self.trees:
             return 0.5
             
-        subsample_size = min(self.max_samples, 256)
+        subsample_size = getattr(self, "actual_subsample_size", min(self.max_samples, 256))
         c_denom = c_factor(subsample_size)
         if c_denom == 0.0:
             return 0.5
