@@ -156,7 +156,8 @@ class RulesEngine:
                     amts = []
                     for tx_val, _ in records:
                         try:
-                            val_amt = float(str(tx_val).split(":")[0])
+                            raw_str = tx_val.decode("utf-8") if isinstance(tx_val, (bytes, bytearray)) else str(tx_val)
+                            val_amt = float(raw_str.split(":")[0])
                             amts.append(val_amt)
                         except (ValueError, IndexError):
                             pass

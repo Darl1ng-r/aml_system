@@ -135,10 +135,13 @@ class AMLAnomalyModel:
         currency_paid: str = "US Dollar",
         currency_recv: str = "US Dollar",
         pay_format: str = "Wire",
+        amount_received: float | None = None,
+        amount_ratio: float | None = None,
     ) -> np.ndarray:
         """
         Constructs the 10-feature vector used during training.
-        Default values for optional args keep backward compatibility.
+        Supports explicit received amount (for FX / cross-currency layering detection)
+        while maintaining strict backward-compatibility with domestic 1:1 transactions.
         """
         safe_amount = max(amount, 0.0)
         amount_log = math.log1p(safe_amount) / math.log1p(AMOUNT_NORM_CAP)
@@ -146,7 +149,14 @@ class AMLAnomalyModel:
 
         # Feature 2: Amount ratio (amt_received / amt_paid) / 5.0 from training data schema.
         # For domestic/same-currency (where amt_recv == amt_paid), this is exactly 1.0 / 5.0 = 0.20.
-        amount_ratio = min(amount / max(amount, 1.0), 5.0) / 5.0 if amount > 0 else 0.0
+        if amount_ratio is not None:
+            norm_amount_ratio = min(max(float(amount_ratio), 0.0), 1.0)
+        elif amount_received is not None and safe_amount > 0:
+            norm_amount_ratio = min(max(float(amount_received), 0.0) / max(safe_amount, 1e-6), 5.0) / 5.0
+        elif safe_amount > 0:
+            norm_amount_ratio = 1.0 / 5.0
+        else:
+            norm_amount_ratio = 0.0
 
         hour_norm = min(max(hour, 0), 23) / 23.0
 
@@ -157,10 +167,10 @@ class AMLAnomalyModel:
         is_crypto = 1.0 if pay_format == "Bitcoin" else 0.0
         is_cash = 1.0 if pay_format == "Cash" else 0.0
         is_reinvestment = 1.0 if pay_format == "Reinvestment" else 0.0
-        is_round = 1.0 if (amount > 0 and amount % 1000 == 0) else 0.0
+        is_round = 1.0 if (safe_amount > 0 and int(round(safe_amount * 100)) % 100000 == 0) else 0.0
 
         return np.array([[
-            amount_log, amount_ratio, hour_norm, is_geo_risk,
+            amount_log, norm_amount_ratio, hour_norm, is_geo_risk,
             currency_mismatch, pay_fmt_code, is_crypto, is_cash,
             is_reinvestment, is_round,
         ]], dtype=np.float32)
@@ -178,6 +188,8 @@ class AMLAnomalyModel:
         currency_recv: str = "US Dollar",
         pay_format: str = "Wire",
         explain: bool = False,
+        amount_received: float | None = None,
+        amount_ratio: float | None = None,
     ) -> dict:
         """
         Computes the AI risk score and returns SHAP feature attributions.
@@ -195,13 +207,16 @@ class AMLAnomalyModel:
         if self._mode == "xgboost":
             return self._predict_xgboost(
                 amount, sender_risk, receiver_risk, velocity_count,
-                hour, currency_paid, currency_recv, pay_format, explain=explain
+                hour, currency_paid, currency_recv, pay_format, explain=explain,
+                amount_received=amount_received, amount_ratio=amount_ratio
             )
         else:
             return self._predict_fallback(amount, sender_risk, receiver_risk, velocity_count)
 
     def predict(self, features: dict) -> tuple[float, dict]:
         """Convenience method accepting a feature dict, returning (risk_score, attributions)."""
+        amt_recv = features.get("amount_received", features.get("amt_received", None))
+        amt_ratio_val = features.get("amount_ratio", None)
         res = self.predict_risk(
             amount=float(features.get("amount", 0.0)),
             sender_risk=float(features.get("sender_risk", 0.2)),
@@ -211,18 +226,22 @@ class AMLAnomalyModel:
             currency_paid=features.get("currency", "US Dollar"),
             currency_recv=features.get("currency", "US Dollar"),
             pay_format=features.get("channel", "Wire"),
-            explain=True
+            explain=True,
+            amount_received=float(amt_recv) if amt_recv is not None else None,
+            amount_ratio=float(amt_ratio_val) if amt_ratio_val is not None else None
         )
         return res["risk_score"], res["attributions"]
 
     def _predict_xgboost(
         self, amount, sender_risk, receiver_risk, velocity_count,
-        hour, currency_paid, currency_recv, pay_format, explain: bool = False
+        hour, currency_paid, currency_recv, pay_format, explain: bool = False,
+        amount_received: float | None = None, amount_ratio: float | None = None
     ) -> dict:
         try:
             X = self._build_feature_vector(
                 amount, sender_risk, receiver_risk, velocity_count,
-                hour, currency_paid, currency_recv, pay_format
+                hour, currency_paid, currency_recv, pay_format,
+                amount_received=amount_received, amount_ratio=amount_ratio
             )
             # Pipeline applies StandardScaler then XGBoost
             risk_score = float(self._pipeline.predict_proba(X)[0][1])
