@@ -173,6 +173,12 @@ async def warm_soft_dependencies(allow_offline: bool):
         logger.info("Starting distributed Redis rules cache invalidation listener task...")
         asyncio.create_task(start_redis_rules_listener(shutdown_event=_worker_shutdown_event))
 
+    # 10. Start Distributed Redis Whitelist Invalidation Listener
+    if not allow_offline:
+        from services.whitelisting import start_redis_whitelist_listener
+        logger.info("Starting distributed Redis whitelist cache invalidation listener task...")
+        asyncio.create_task(start_redis_whitelist_listener(shutdown_event=_worker_shutdown_event))
+
 
 
 async def shutdown_db_clients():

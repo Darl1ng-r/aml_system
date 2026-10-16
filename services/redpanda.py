@@ -74,10 +74,15 @@ async def _get_producer():
     return _producer
 
 
-async def publish_transaction_async(transaction_payload: dict) -> bool:
+async def publish_transaction_async(
+    transaction_payload: dict,
+    key: Optional[str] = None,
+    topic: Optional[str] = None
+) -> bool:
     """
-    Async version: publishes a scored transaction to Redpanda.
-    Returns True on success, False on failure.
+    Async version: publishes an event to Redpanda/Kafka.
+    Enforces tenant-keyed partition hashing to guarantee fair-queuing and eliminate
+    Head-of-Line (HoL) blocking between different tenants.
     """
     producer = await _get_producer()
     if producer is None:
@@ -87,17 +92,25 @@ async def publish_transaction_async(transaction_payload: dict) -> bool:
         )
         return False
 
+    # Partition key resolution: prioritize explicit key -> tenant_id for fair-queuing -> transaction_id
+    partition_key = (
+        key
+        or (str(transaction_payload["tenant_id"]) if transaction_payload.get("tenant_id") else None)
+        or transaction_payload.get("transaction_id", "")
+    )
+    target_topic = topic or TRANSACTIONS_TOPIC
+
     try:
         headers = _inject_trace_headers()
         await producer.send_and_wait(
-            topic=TRANSACTIONS_TOPIC,
-            key=transaction_payload.get("transaction_id", ""),
+            topic=target_topic,
+            key=partition_key,
             value=transaction_payload,
             headers=headers,
         )
         logger.info(
-            f"Published tx {transaction_payload.get('transaction_id')} "
-            f"→ {TRANSACTIONS_TOPIC}"
+            f"Published tx {transaction_payload.get('transaction_id')} (partition_key={partition_key}) "
+            f"→ {target_topic}"
         )
         return True
     except Exception as e:
@@ -108,17 +121,21 @@ async def publish_transaction_async(transaction_payload: dict) -> bool:
         return False
 
 
-def publish_transaction(transaction_payload: dict):
+def publish_transaction(
+    transaction_payload: dict,
+    key: Optional[str] = None,
+    topic: Optional[str] = None
+):
     """
     Sync wrapper — called by FastAPI BackgroundTasks (which run in the event loop).
-    Creates a coroutine and schedules it onto the running loop.
+    Creates a coroutine with tenant-keyed partitioning and schedules it onto the running loop.
     """
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            asyncio.ensure_future(publish_transaction_async(transaction_payload))
+            asyncio.ensure_future(publish_transaction_async(transaction_payload, key=key, topic=topic))
         else:
-            loop.run_until_complete(publish_transaction_async(transaction_payload))
+            loop.run_until_complete(publish_transaction_async(transaction_payload, key=key, topic=topic))
     except Exception as e:
         logger.error(f"publish_transaction wrapper error: {e}")
         logger.warning(

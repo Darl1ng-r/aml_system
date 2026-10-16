@@ -136,6 +136,33 @@ async def mark_outbox_event_failed(
         )
 
 
+async def prune_published_outbox_events(
+    conn, retention_hours: int = 24, batch_size: int = 1000
+) -> int:
+    """
+    Safely prunes historical outbox records that have already been confirmed PUBLISHED
+    older than `retention_hours`. Uses chunked deletion to avoid table-level locks.
+    """
+    query = """
+        WITH deleted_batch AS (
+            SELECT id FROM transactional_outbox
+            WHERE status = 'PUBLISHED'
+              AND published_at < NOW() - ($1 || ' hours')::interval
+            LIMIT $2
+        )
+        DELETE FROM transactional_outbox
+        WHERE id IN (SELECT id FROM deleted_batch)
+        RETURNING id;
+    """
+    rows = await conn.fetch(query, str(retention_hours), batch_size)
+    pruned_count = len(rows)
+    if pruned_count > 0:
+        logger.info(
+            f"[OUTBOX-PRUNER] Purged {pruned_count} published events older than {retention_hours}h."
+        )
+    return pruned_count
+
+
 class OutboxRelayEngine:
     """
     Background worker that continuously processes unpublished events from
@@ -143,10 +170,19 @@ class OutboxRelayEngine:
     Decouples database locks from network I/O to prevent connection pool starvation.
     """
 
-    def __init__(self, poll_interval_seconds: float = 1.0, batch_size: int = 50):
+    def __init__(
+        self,
+        poll_interval_seconds: float = 1.0,
+        batch_size: int = 50,
+        retention_hours: int = 24,
+        prune_interval_seconds: float = 300.0,
+    ):
         self.poll_interval = poll_interval_seconds
         self.batch_size = batch_size
+        self.retention_hours = retention_hours
+        self.prune_interval = prune_interval_seconds
         self._running = False
+        self._last_prune_time = 0.0
 
     async def run(self, shutdown_event: Optional[asyncio.Event] = None):
         self._running = True
@@ -187,7 +223,22 @@ class OutboxRelayEngine:
 
                     for event in events:
                         try:
-                            success = await publish_transaction_async(event["payload"])
+                            payload = event["payload"]
+                            tenant_key = (
+                                event.get("tenant_id")
+                                or payload.get("tenant_id")
+                                or event.get("aggregate_id")
+                            )
+                            headers = event.get("headers") or {}
+                            topic = headers.get("topic")
+                            if not topic and event.get("event_type") == "aml.core.transaction.buffered.v1":
+                                topic = "aml.transactions.raw"
+
+                            success = await publish_transaction_async(
+                                payload,
+                                key=str(tenant_key) if tenant_key else None,
+                                topic=topic,
+                            )
                             if success:
                                 published_ids.append(event["id"])
                                 processed_count += 1
@@ -211,6 +262,18 @@ class OutboxRelayEngine:
                                 )
                             for eid, err in failed_records:
                                 await mark_outbox_event_failed(conn, eid, err)
+
+                # 4. Periodic background retention pruning
+                loop_time = asyncio.get_running_loop().time()
+                if loop_time - self._last_prune_time >= self.prune_interval:
+                    self._last_prune_time = loop_time
+                    try:
+                        async with pool.acquire() as conn:
+                            await prune_published_outbox_events(
+                                conn, retention_hours=self.retention_hours
+                            )
+                    except Exception as prune_exc:
+                        logger.warning(f"Error during periodic outbox pruning: {prune_exc}")
 
             except Exception as loop_exc:
                 logger.error(f"Outbox relay loop encounter error: {loop_exc}")

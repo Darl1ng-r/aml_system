@@ -570,8 +570,13 @@ async def ingest_transaction_async(
         "ingested_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    # Asynchronous publish to event stream
-    background_tasks.add_task(publish_transaction, buffer_payload)
+    # Asynchronous publish to event stream with tenant-keyed partitioning
+    background_tasks.add_task(
+        publish_transaction,
+        buffer_payload,
+        key=str(user_tenant_id) if user_tenant_id else tx_id,
+        topic="aml.transactions.raw",
+    )
 
     # Persist to transactional outbox for durable streaming
     try:
@@ -584,6 +589,7 @@ async def ingest_transaction_async(
                 event_type="aml.core.transaction.buffered.v1",
                 payload=buffer_payload,
                 tenant_id=str(user_tenant_id) if user_tenant_id else None,
+                headers={"topic": "aml.transactions.raw"},
             )
     except Exception as ex_buf:
         logger.warning(f"Async ingestion outbox buffering warning: {ex_buf}")

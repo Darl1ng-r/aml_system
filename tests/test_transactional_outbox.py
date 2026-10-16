@@ -121,3 +121,84 @@ async def test_mark_outbox_event_failed_triggers_dlq():
         assert "[OUTBOX-DLQ]" in log_msg
         assert event_id in log_msg
 
+
+@pytest.mark.asyncio
+async def test_prune_published_outbox_events():
+    """Verifies that prune_published_outbox_events deletes old published records."""
+    from database.outbox import prune_published_outbox_events
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = [{"id": uuid.uuid4()}, {"id": uuid.uuid4()}]
+
+    pruned = await prune_published_outbox_events(mock_conn, retention_hours=48, batch_size=500)
+    assert pruned == 2
+    assert mock_conn.fetch.called
+    call_args = mock_conn.fetch.call_args[0]
+    sql = call_args[0]
+    assert "DELETE FROM transactional_outbox" in sql
+    assert "WHERE status = 'PUBLISHED'" in sql
+    assert call_args[1] == "48"
+    assert call_args[2] == 500
+
+
+@pytest.mark.asyncio
+async def test_outbox_relay_engine_publishes_with_tenant_partition_key():
+    """Verifies that OutboxRelayEngine passes tenant_id as partition key to eliminate HoL blocking."""
+    from database.outbox import OutboxRelayEngine
+
+    engine = OutboxRelayEngine(poll_interval_seconds=0.01, batch_size=5)
+    shutdown = asyncio.Event()
+
+    test_tenant_id = str(uuid.uuid4())
+    event_id = str(uuid.uuid4())
+    mock_events = [
+        {
+            "id": event_id,
+            "tenant_id": test_tenant_id,
+            "aggregate_type": "TRANSACTION_BUFFER",
+            "aggregate_id": "tx-abc",
+            "event_type": "aml.core.transaction.buffered.v1",
+            "payload": {"amount": 5000.0, "tenant_id": test_tenant_id},
+            "headers": {"topic": "aml.transactions.raw"},
+            "retry_count": 0,
+        }
+    ]
+
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock()
+    # First fetch returns our event, subsequent fetch returns empty to avoid infinite loop
+    mock_conn.transaction = MagicMock()
+    mock_conn.transaction.return_value.__aenter__ = AsyncMock()
+    mock_conn.transaction.return_value.__aexit__ = AsyncMock()
+
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock()
+
+    fetch_call_count = 0
+
+    async def mock_fetch_pending(conn, limit):
+        nonlocal fetch_call_count
+        fetch_call_count += 1
+        if fetch_call_count == 1:
+            return mock_events
+        return []
+
+    with patch("database.postgres.get_db_pool", new_callable=AsyncMock) as mock_pool_fn, \
+         patch("database.outbox.fetch_pending_outbox_events", side_effect=mock_fetch_pending), \
+         patch("services.redpanda.publish_transaction_async", new_callable=AsyncMock) as mock_publish:
+
+        mock_pool_fn.return_value = mock_pool
+        mock_publish.return_value = True
+
+        task = asyncio.create_task(engine.run(shutdown_event=shutdown))
+        await asyncio.sleep(0.05)
+        shutdown.set()
+        await task
+
+        assert mock_publish.called
+        pub_kwargs = mock_publish.call_args[1]
+        assert pub_kwargs.get("key") == test_tenant_id
+        assert pub_kwargs.get("topic") == "aml.transactions.raw"
+
+
