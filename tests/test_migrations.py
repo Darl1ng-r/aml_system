@@ -128,3 +128,20 @@ def test_migration_024_whitelisted_entities_module_importable():
         assert "CREATE TABLE IF NOT EXISTS whitelisted_entities" in sql
         assert "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS customer_id" in sql
 
+
+def test_migration_026_force_rls_module_importable():
+    """Verify revision 026 FORCE ROW LEVEL SECURITY migration imports and applies successfully."""
+    mod_026 = importlib.import_module("migrations.versions.026_force_rls_on_all_tables")
+    assert mod_026.revision == "026"
+    assert mod_026.down_revision == "025"
+
+    with patch.object(mod_026.op, "execute") as mock_execute:
+        mod_026.upgrade()
+        assert mock_execute.called
+        # Check that FORCE ROW LEVEL SECURITY is executed for accounts and transactions
+        executed_sqls = [call[0][0] for call in mock_execute.call_args_list]
+        combined = " ".join(executed_sqls)
+        assert "FORCE ROW LEVEL SECURITY" in combined
+        assert "idx_outbox_pending_processing" in combined
+
+

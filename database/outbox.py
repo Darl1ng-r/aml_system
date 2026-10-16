@@ -77,20 +77,40 @@ async def record_outbox_event(
     return event_id
 
 
-async def fetch_pending_outbox_events(conn, limit: int = 50) -> List[Dict[str, Any]]:
+async def fetch_pending_outbox_events(
+    conn, limit: int = 50, lease_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
-    Fetches up to `limit` pending outbox events using SKIP LOCKED concurrency protection.
+    Fetches up to `limit` pending outbox events using SKIP LOCKED concurrency protection
+    and atomically transitions them to 'PROCESSING' with a lease_id and timestamp inside
+    the transaction. This prevents multi-pod relays from picking up the same batch.
+    Recovers expired processing leases (> 300 seconds).
     """
+    worker_lease = lease_id or str(uuid.uuid4())
     query = """
-        SELECT id, tenant_id, aggregate_type, aggregate_id, 
-               event_type, payload, headers, retry_count
-        FROM transactional_outbox
-        WHERE status = 'PENDING'
-        ORDER BY created_at ASC
-        LIMIT $1
-        FOR UPDATE SKIP LOCKED;
+        WITH selected AS (
+            SELECT id
+            FROM transactional_outbox
+            WHERE status = 'PENDING'
+               OR (status = 'PROCESSING' AND (
+                   headers->>'leased_at' IS NULL 
+                   OR (headers->>'leased_at')::timestamptz < NOW() - INTERVAL '300 seconds'
+               ))
+            ORDER BY created_at ASC
+            LIMIT $1
+            FOR UPDATE SKIP LOCKED
+        )
+        UPDATE transactional_outbox
+        SET status = 'PROCESSING',
+            headers = jsonb_set(
+                jsonb_set(COALESCE(headers, '{}'::jsonb), '{lease_id}', to_jsonb($2::text)),
+                '{leased_at}', to_jsonb(NOW()::text)
+            )
+        WHERE id IN (SELECT id FROM selected)
+        RETURNING id, tenant_id, aggregate_type, aggregate_id, 
+                  event_type, payload, headers, retry_count;
     """
-    rows = await conn.fetch(query, limit)
+    rows = await conn.fetch(query, limit, worker_lease)
     results = []
     for r in rows:
         results.append({
@@ -181,12 +201,13 @@ class OutboxRelayEngine:
         self.batch_size = batch_size
         self.retention_hours = retention_hours
         self.prune_interval = prune_interval_seconds
+        self.worker_id = f"relay_{uuid.uuid4().hex[:8]}"
         self._running = False
         self._last_prune_time = 0.0
 
     async def run(self, shutdown_event: Optional[asyncio.Event] = None):
         self._running = True
-        logger.info("Starting Transactional Outbox Relay Engine...")
+        logger.info(f"Starting Transactional Outbox Relay Engine ({self.worker_id})...")
 
         from database.postgres import get_db_pool
 
@@ -209,11 +230,13 @@ class OutboxRelayEngine:
                         await asyncio.sleep(self.poll_interval)
                     continue
 
-                # 1. Fetch pending batch inside a brief, isolated read transaction
+                # 1. Fetch pending batch inside an isolated transaction; atomically marks rows as PROCESSING with lease
                 events = []
                 async with pool.acquire() as conn:
                     async with conn.transaction():
-                        events = await fetch_pending_outbox_events(conn, limit=self.batch_size)
+                        events = await fetch_pending_outbox_events(
+                            conn, limit=self.batch_size, lease_id=self.worker_id
+                        )
 
                 # 2. Publish to Kafka outside of any database transaction (Zero DB Lock Contention)
                 if events:

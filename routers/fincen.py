@@ -158,7 +158,55 @@ async def submit_sar_to_fincen(
                             detail=f"SAR already electronically filed under Tracking ID {tracking_id} at {submitted_at}."
                         )
 
-            # 4. Set state to FILING_PENDING to prevent concurrent double-filing
+            # 4. Enforce 4-Eyes Principle / Maker-Checker Policy (BSA 31 CFR § 1020.320 & Segregation of Duties)
+            # Direct filing without an MLRO-approved draft is strictly blocked.
+            draft_to_validate = None
+            if payload.draft_id:
+                try:
+                    d_uuid = uuid.UUID(str(payload.draft_id))
+                    draft_to_validate = await conn.fetchrow(
+                        "SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username FROM sar_drafts WHERE id = $1;",
+                        d_uuid
+                    )
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid draft_id format.")
+                if not draft_to_validate:
+                    raise HTTPException(status_code=404, detail="Referenced SAR draft does not exist.")
+            else:
+                # If draft_id was not explicitly passed, look up approved draft for this alert
+                draft_to_validate = await conn.fetchrow(
+                    "SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username FROM sar_drafts WHERE alert_id = $1 AND status = 'APPROVED' ORDER BY created_at DESC LIMIT 1;",
+                    alert_uuid
+                )
+
+            caller_role = current_user.get("role", "")
+            if not is_mismatched_mock:
+                if not draft_to_validate:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Four-Eyes Principle Violation: Electronic filing requires a validated SAR draft with status 'APPROVED' and verified MLRO review signature."
+                    )
+                if draft_to_validate.get("status") != "APPROVED":
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"Four-Eyes Principle Violation: SAR draft is {draft_to_validate.get('status')}; must be APPROVED by an MLRO before filing."
+                    )
+                if not draft_to_validate.get("reviewed_by"):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Segregation of Duties Violation: SAR draft lacks verified MLRO review signature."
+                    )
+                if (
+                    draft_to_validate.get("drafted_by")
+                    and str(draft_to_validate.get("drafted_by")) == str(draft_to_validate.get("reviewed_by"))
+                    and caller_role != "SUPER_ADMIN"
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Segregation of Duties Violation: Filer cannot be both the author and the sole approver of the SAR draft."
+                    )
+
+            # 5. Set state to FILING_PENDING to prevent concurrent double-filing
             await conn.execute(
                 """
                 UPDATE alerts
@@ -203,6 +251,15 @@ async def submit_sar_to_fincen(
                 """,
                 receipt["fincen_tracking_id"], receipt["status"], alert_uuid
             )
+
+            if draft_to_validate and draft_to_validate.get("id"):
+                try:
+                    await conn.execute(
+                        "UPDATE sar_drafts SET status = 'FILED' WHERE id = $1;",
+                        draft_to_validate["id"]
+                    )
+                except Exception:
+                    pass
 
         # Audit logging
         logger.info(

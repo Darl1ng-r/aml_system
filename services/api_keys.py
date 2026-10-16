@@ -135,5 +135,6 @@ async def verify_api_key(raw_key: str) -> Optional[Dict[str, Any]]:
                 "scopes": scopes_val,
                 "is_m2m": True
             }
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error in verify_api_key: {e}")
         return None

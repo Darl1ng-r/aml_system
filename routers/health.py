@@ -275,15 +275,20 @@ async def get_queue_health():
     from database.postgres import get_async_db_conn
     from config import TRANSACTIONS_TOPIC
 
-    # Check pending outbox messages in PostgreSQL
+    # Check pending & in-flight outbox messages in PostgreSQL
     pending_outbox = 0
+    outbox_error = None
     try:
         async with get_async_db_conn() as conn:
             pending_outbox = await conn.fetchval(
-                "SELECT COUNT(*) FROM outbox_events WHERE status = 'PENDING';"
-            ) or 0
-    except Exception:
-        pending_outbox = 0
+                "SELECT COUNT(*) FROM transactional_outbox WHERE status IN ('PENDING', 'PROCESSING');"
+            )
+            if pending_outbox is None:
+                pending_outbox = 0
+    except Exception as e:
+        logger.error(f"Failed to query queue health from transactional_outbox: {e}")
+        outbox_error = str(e)
+        pending_outbox = -1
 
     topics = [
         {
@@ -314,10 +319,20 @@ async def get_queue_health():
         }
     ]
 
-    return {
-        "status": "HEALTHY" if pending_outbox < 1000 else "BACKPRESSURE_DETECTED",
-        "pending_outbox_events": pending_outbox,
+    if outbox_error:
+        system_status = "DEGRADED"
+    elif pending_outbox >= 1000:
+        system_status = "BACKPRESSURE_DETECTED"
+    else:
+        system_status = "HEALTHY"
+
+    res = {
+        "status": system_status,
+        "pending_outbox_events": pending_outbox if pending_outbox >= 0 else None,
         "kafka_topics": topics,
         "checked_at": datetime.now(timezone.utc).isoformat()
     }
+    if outbox_error:
+        res["error"] = outbox_error
+    return res
 

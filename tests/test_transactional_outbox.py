@@ -177,7 +177,7 @@ async def test_outbox_relay_engine_publishes_with_tenant_partition_key():
 
     fetch_call_count = 0
 
-    async def mock_fetch_pending(conn, limit):
+    async def mock_fetch_pending(conn, limit, *args, **kwargs):
         nonlocal fetch_call_count
         fetch_call_count += 1
         if fetch_call_count == 1:

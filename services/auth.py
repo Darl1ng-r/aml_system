@@ -239,7 +239,7 @@ async def get_current_user(
     # 1. Attempt Local JWT Verification with key rotation fallback support
     try:
         payload = decode_jwt_with_rotation(resolved_token, algorithm=ALGORITHM)
-        user_id = payload.get("id") or payload.get("sub")
+        user_id = payload.get("id") or payload.get("user_id") or payload.get("sub")
         role = payload.get("role", "ANALYST")
         username = payload.get("username", "anonymous")
         email = payload.get("email", f"{username}@aml.com")
@@ -265,17 +265,6 @@ async def get_current_user(
             user_id_var.set(str(user_id))
             tenant_id_var.set(str(tenant_id))
 
-            # Idempotent sync to PostgreSQL database (cluster-safe, no local in-memory cache)
-            try:
-                from database.postgres import get_async_db_conn
-                async with get_async_db_conn() as conn:
-                    await conn.execute(
-                        "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
-                        "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
-                        user_id, username, role, tenant_id
-                    )
-            except Exception:
-                pass  # Non-fatal if DB is temporarily unreachable for user replication
             return {
                 "id": user_id,
                 "username": username,
@@ -311,18 +300,6 @@ async def get_current_user(
                     from observability.middleware import user_id_var, tenant_id_var
                     user_id_var.set(str(user_id))
                     tenant_id_var.set(str(tenant_id))
-                    
-                    # Replicate user to local PostgreSQL database if not present
-                    from database.postgres import get_async_db_conn
-                    async with get_async_db_conn() as conn:
-                        await conn.execute(
-                            "INSERT INTO users (id, username, role, tenant_id) VALUES ($1, $2, $3, $4) "
-                            "ON CONFLICT (id) DO UPDATE SET role = EXCLUDED.role, username = EXCLUDED.username, tenant_id = EXCLUDED.tenant_id;",
-                            user_id,
-                            username,
-                            role,
-                            tenant_id
-                        )
                     
                     return {
                         "id": user_id,
