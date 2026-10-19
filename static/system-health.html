@@ -93,11 +93,11 @@
     .role-badge {
       font-family: 'IBM Plex Mono', monospace;
       font-size: 0.65rem;
-      background: rgba(59, 130, 246, 0.2);
-      color: #93c5fd;
+      background: #1E3A8A;
+      color: #DBEAFE;
       padding: 2px 6px;
       border-radius: 4px;
-      border: 1px solid rgba(59, 130, 246, 0.3);
+      border: 1px solid #3B82F6;
     }
     .btn-logout {
       background: transparent;
@@ -163,8 +163,8 @@
       padding: 2px 8px;
       border-radius: 4px;
     }
-    .dot-up { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .dot-down { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .dot-up { background: #064E3B; color: #ECFDF5; border: 1px solid #059669; }
+    .dot-down { background: #7F1D1D; color: #FEF2F2; border: 1px solid #DC2626; }
 
     .metric-row {
       display: flex;
@@ -367,6 +367,50 @@
       setTimeout(() => { t.style.display = 'none'; }, 3000);
     }
 
+    function renderServiceTelemetry(services = {}) {
+      if (services.postgres) {
+        document.getElementById('pgStatus').innerText = `● ${services.postgres.status}`;
+        document.getElementById('pgLatency').innerText = `${services.postgres.latency_ms || 1.2} ms`;
+        document.getElementById('pgPool').innerText = `${services.postgres.pool_size || 10} conns`;
+        document.getElementById('pgFree').innerText = `${services.postgres.free_connections || 8} conns`;
+      }
+      if (services.redis) {
+        document.getElementById('redisStatus').innerText = `● ${services.redis.status}`;
+        document.getElementById('redisLatency').innerText = `${services.redis.latency_ms || 0.8} ms`;
+      }
+      if (services.neo4j) {
+        document.getElementById('neo4jStatus').innerText = `● ${services.neo4j.status}`;
+        document.getElementById('neo4jLatency').innerText = `${services.neo4j.latency_ms || 2.4} ms`;
+      }
+      if (services.elasticsearch) {
+        document.getElementById('esStatus').innerText = `● ${services.elasticsearch.status}`;
+        document.getElementById('esLatency').innerText = `${services.elasticsearch.latency_ms || 3.0} ms`;
+      }
+    }
+
+    function renderKafkaTelemetry(q) {
+      document.getElementById('outboxCount').innerText = q.pending_outbox_events || 0;
+      const tbody = document.getElementById('topicsTableBody');
+      const topics = q.kafka_topics || [];
+      if (!topics.length) return;
+
+      tbody.innerHTML = topics.map(t => {
+        const cg = (t.consumer_groups && t.consumer_groups[0]) || {};
+        const lag = cg.total_lag || 0;
+        const lagColor = lag > 10 ? 'var(--accent-crimson)' : 'var(--accent-emerald)';
+        return `
+          <tr>
+            <td class="mono" style="font-weight:600; color:#fff;">${t.topic}</td>
+            <td class="mono">${t.partitions}</td>
+            <td class="mono">${cg.group_id || 'default_workers'}</td>
+            <td class="mono" style="color:${lagColor}; font-weight:600;">${lag}</td>
+            <td class="mono">${cg.messages_per_sec || 120} msg/s</td>
+            <td><span class="status-dot dot-up">● ${cg.status || 'HEALTHY'}</span></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
     async function loadHealthData() {
       applyRoleBasedVisibility();
 
@@ -379,50 +423,16 @@
         if (sysRes.ok) {
           const sys = await sysRes.json();
           document.getElementById('lastCheckTime').innerText = new Date(sys.timestamp).toLocaleTimeString();
-          document.getElementById('clusterStatusText').innerText = sys.system_status === 'OPERATIONAL' ? 'ALL CORE SERVICES OPERATIONAL' : 'SYSTEM DEGRADED';
-          document.getElementById('statusIndicatorLight').style.background = sys.system_status === 'OPERATIONAL' ? 'var(--accent-emerald)' : 'var(--accent-amber)';
+          const isOperational = sys.system_status === 'OPERATIONAL';
+          document.getElementById('clusterStatusText').innerText = isOperational ? 'ALL CORE SERVICES OPERATIONAL' : 'SYSTEM DEGRADED';
+          document.getElementById('statusIndicatorLight').style.background = isOperational ? 'var(--accent-emerald)' : 'var(--accent-amber)';
 
-          const s = sys.services || {};
-          if (s.postgres) {
-            document.getElementById('pgStatus').innerText = `● ${s.postgres.status}`;
-            document.getElementById('pgLatency').innerText = `${s.postgres.latency_ms || 1.2} ms`;
-            document.getElementById('pgPool').innerText = `${s.postgres.pool_size || 10} conns`;
-            document.getElementById('pgFree').innerText = `${s.postgres.free_connections || 8} conns`;
-          }
-          if (s.redis) {
-            document.getElementById('redisStatus').innerText = `● ${s.redis.status}`;
-            document.getElementById('redisLatency').innerText = `${s.redis.latency_ms || 0.8} ms`;
-          }
-          if (s.neo4j) {
-            document.getElementById('neo4jStatus').innerText = `● ${s.neo4j.status}`;
-            document.getElementById('neo4jLatency').innerText = `${s.neo4j.latency_ms || 2.4} ms`;
-          }
-          if (s.elasticsearch) {
-            document.getElementById('esStatus').innerText = `● ${s.elasticsearch.status}`;
-            document.getElementById('esLatency').innerText = `${s.elasticsearch.latency_ms || 3.0} ms`;
-          }
+          renderServiceTelemetry(sys.services);
         }
 
         if (queueRes.ok) {
           const q = await queueRes.json();
-          document.getElementById('outboxCount').innerText = q.pending_outbox_events || 0;
-          const tbody = document.getElementById('topicsTableBody');
-          const topics = q.kafka_topics || [];
-          if (topics.length) {
-            tbody.innerHTML = topics.map(t => {
-              const cg = (t.consumer_groups && t.consumer_groups[0]) || {};
-              return `
-                <tr>
-                  <td class="mono" style="font-weight:600; color:#fff;">${t.topic}</td>
-                  <td class="mono">${t.partitions}</td>
-                  <td class="mono">${cg.group_id || 'default_workers'}</td>
-                  <td class="mono" style="color:${cg.total_lag > 10 ? 'var(--accent-crimson)' : 'var(--accent-emerald)'}; font-weight:600;">${cg.total_lag || 0}</td>
-                  <td class="mono">${cg.messages_per_sec || 120} msg/s</td>
-                  <td><span class="status-dot dot-up">● ${cg.status || 'HEALTHY'}</span></td>
-                </tr>
-              `;
-            }).join('');
-          }
+          renderKafkaTelemetry(q);
         }
       } catch (err) {
         showToast('Error refreshing telemetry: ' + err.message);

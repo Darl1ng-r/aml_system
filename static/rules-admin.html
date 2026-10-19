@@ -327,33 +327,33 @@
       </div>
 
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px;">
-        <div>
+        <form id="rule-simulator-form" onsubmit="event.preventDefault(); runSimulation();">
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:10px;">
             <div>
-              <label style="font-size:11px; font-weight:600;">Sender Account</label>
-              <input type="text" id="sim-sender-id" value="ACC-TEST-9921" class="param-input" style="width:100%; text-align:left;">
+              <label for="sim-sender-id" style="font-size:11px; font-weight:600; display:block; margin-bottom:4px;">Sender Account</label>
+              <input type="text" id="sim-sender-id" name="sim-sender-id" aria-label="Sender Account" value="ACC-TEST-9921" class="param-input" style="width:100%; text-align:left;">
             </div>
             <div>
-              <label style="font-size:11px; font-weight:600;">Receiver Account</label>
-              <input type="text" id="sim-receiver-id" value="ACC-RCVR-1104" class="param-input" style="width:100%; text-align:left;">
+              <label for="sim-receiver-id" style="font-size:11px; font-weight:600; display:block; margin-bottom:4px;">Receiver Account</label>
+              <input type="text" id="sim-receiver-id" name="sim-receiver-id" aria-label="Receiver Account" value="ACC-RCVR-1104" class="param-input" style="width:100%; text-align:left;">
             </div>
           </div>
 
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:10px;">
             <div>
-              <label style="font-size:11px; font-weight:600;">Transaction Amount ($)</label>
-              <input type="number" id="sim-amount" value="15000.00" class="param-input" style="width:100%; text-align:left;">
+              <label for="sim-amount" style="font-size:11px; font-weight:600; display:block; margin-bottom:4px;">Transaction Amount (USD)</label>
+              <input type="number" id="sim-amount" name="sim-amount" aria-label="Transaction Amount in USD" value="15000.00" class="param-input" style="width:100%; text-align:left;">
             </div>
             <div>
-              <label style="font-size:11px; font-weight:600;">Receiver BIC / Swift</label>
-              <input type="text" id="sim-receiver-bic" value="SABRRUMM" class="param-input" style="width:100%; text-align:left;">
+              <label for="sim-receiver-bic" style="font-size:11px; font-weight:600; display:block; margin-bottom:4px;">Receiver BIC / Swift</label>
+              <input type="text" id="sim-receiver-bic" name="sim-receiver-bic" aria-label="Receiver BIC or Swift" value="SABRRUMM" class="param-input" style="width:100%; text-align:left;">
             </div>
           </div>
 
-          <button class="btn-save" onclick="runSimulation()" style="width:100%; padding:10px;">
+          <button type="submit" class="btn-save" style="width:100%; padding:10px;">
             Evaluate Against Rules Engine
           </button>
-        </div>
+        </form>
 
         <div style="background:#FAF8F5; border:1px solid var(--panel-edge); border-radius:var(--r-md); padding:14px;">
           <div style="font-size:12px; font-weight:700; text-transform:uppercase; margin-bottom:8px;">Evaluation Result</div>
@@ -401,7 +401,7 @@
           if (Array.isArray(val)) val = val.join(', ');
           return `
             <div class="param-row">
-              <span class="param-label">${k}</span>
+              <label for="input-${r.rule_name}-${k}" class="param-label">${k}</label>
               <input type="text" class="param-input" id="input-${r.rule_name}-${k}" value="${val}">
             </div>
           `;
@@ -412,7 +412,7 @@
             <div class="rule-card-header">
               <div class="rule-name-tag">${r.rule_name}</div>
               <label class="switch">
-                <input type="checkbox" id="toggle-${r.rule_name}" ${r.enabled ? 'checked' : ''} onchange="toggleRuleState('${r.rule_name}', this.checked)">
+                <input type="checkbox" id="toggle-${r.rule_name}" aria-label="Toggle rule ${r.rule_name}" ${r.enabled ? 'checked' : ''} onchange="toggleRuleState('${r.rule_name}', this.checked)">
                 <span class="slider"></span>
               </label>
             </div>
@@ -445,7 +445,8 @@
         });
         if (!res.ok) alert('Failed to toggle rule state');
       } catch (e) {
-        alert('Network error updating rule');
+        console.error('Network error updating rule:', e);
+        alert('Network error updating rule: ' + (e.message || e));
       }
     }
 
@@ -463,7 +464,7 @@
           let v = input.value.trim();
           if (Array.isArray(rule.config[k])) {
             newConfig[k] = v.split(',').map(s => s.trim());
-          } else if (!isNaN(Number(v))) {
+          } else if (!Number.isNaN(Number(v))) {
             newConfig[k] = Number(v);
           } else {
             newConfig[k] = v;
@@ -484,7 +485,8 @@
           alert('Failed to save rule configuration.');
         }
       } catch (e) {
-        alert('Error saving rule');
+        console.error('Error saving rule:', e);
+        alert('Error saving rule: ' + (e.message || e));
       }
     }
 
@@ -492,7 +494,7 @@
       const payload = {
         sender_id: document.getElementById('sim-sender-id').value,
         receiver_id: document.getElementById('sim-receiver-id').value,
-        amount: parseFloat(document.getElementById('sim-amount').value),
+        amount: Number.parseFloat(document.getElementById('sim-amount').value),
         receiver_bic: document.getElementById('sim-receiver-bic').value
       };
 
@@ -522,7 +524,8 @@
           `;
         }
       } catch (e) {
-        alert('Failed to run simulation');
+        console.error('Failed to run simulation:', e);
+        alert('Failed to run simulation: ' + (e.message || e));
       }
     }
 

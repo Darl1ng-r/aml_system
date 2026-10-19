@@ -23,23 +23,23 @@ body {
   box-shadow: 0 8px 24px -4px rgba(61, 90, 128, 0.12);
 }
 .badge-high {
-  background-color: rgba(193, 68, 59, 0.12);
-  color: #C1443B;
+  background-color: #FBEAE8;
+  color: #7F1D1D;
   border: 1px solid rgba(193, 68, 59, 0.3);
 }
 .badge-med {
-  background-color: rgba(201, 138, 46, 0.12);
-  color: #C98A2E;
+  background-color: #FBF1DF;
+  color: #78350F;
   border: 1px solid rgba(201, 138, 46, 0.3);
 }
 .badge-low {
-  background-color: rgba(76, 122, 94, 0.12);
-  color: #4C7A5E;
+  background-color: #E9F1EC;
+  color: #14532D;
   border: 1px solid rgba(76, 122, 94, 0.3);
 }
 .badge-blue {
-  background-color: rgba(61, 90, 128, 0.12);
-  color: #3D5A80;
+  background-color: #E8EEF5;
+  color: #1E3A8A;
   border: 1px solid rgba(61, 90, 128, 0.3);
 }
 /* Custom Scrollbars */

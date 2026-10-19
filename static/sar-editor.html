@@ -78,27 +78,27 @@
     }
     .nav-link:hover, .nav-link.active {
       color: #FFFFFF;
-      background: rgba(255, 255, 255, 0.1);
+      background: #2D3345;
     }
     .user-pill {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       font-size: 0.8rem;
-      background: rgba(255, 255, 255, 0.08);
-      color: #E7E9EF;
+      background: #252B3B;
+      color: #F1F3F9;
       padding: 4px 10px;
       border-radius: 20px;
-      border: 1px solid rgba(255, 255, 255, 0.15);
+      border: 1px solid #3A4259;
     }
     .role-badge {
       font-family: 'IBM Plex Mono', monospace;
       font-size: 0.65rem;
-      background: rgba(61, 90, 128, 0.2);
-      color: #93c5fd;
+      background: #1E3A8A;
+      color: #DBEAFE;
       padding: 2px 6px;
       border-radius: 4px;
-      border: 1px solid rgba(61, 90, 128, 0.4);
+      border: 1px solid #3B82F6;
     }
     .btn-logout {
       background: transparent;
@@ -159,9 +159,9 @@
       border-radius: 4px;
       font-size: 0.7rem;
       font-family: 'IBM Plex Mono', monospace;
-      background: rgba(61, 90, 128, 0.12);
-      color: #3D5A80;
-      border: 1px solid rgba(61, 90, 128, 0.25);
+      background: #E8EEF5;
+      color: #1E3A8A;
+      border: 1px solid #93C5FD;
       margin-top: 0.25rem;
     }
 
@@ -422,7 +422,8 @@
         </div>
       </div>
 
-      <textarea id="narrativeText" class="narrative-textarea" placeholder="Enter exhaustive narrative of suspicious transactions, unusual velocity spikes, structuring patterns, or counterparty connections..."></textarea>
+      <label for="narrativeText" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">Suspicious Activity Narrative Text</label>
+      <textarea id="narrativeText" class="narrative-textarea" placeholder="Enter exhaustive narrative of suspicious transactions, unusual velocity spikes, structuring patterns, or counterparty connections..." aria-label="Suspicious Activity Narrative Text"></textarea>
 
       <div class="btn-row">
         <button class="btn btn-secondary" onclick="generateAiNarrative()" style="border-color:rgba(125,211,252,0.4); color:#7dd3fc;">✨ AI Generate Narrative</button>
@@ -574,7 +575,7 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
           alert_id: activeAlertId,
           subject_name: document.getElementById('ctxSubject').innerText !== 'Loading...' ? document.getElementById('ctxSubject').innerText : null,
           account_number: document.getElementById('ctxAccount').innerText !== 'Loading...' ? document.getElementById('ctxAccount').innerText : null,
-          amount: parseFloat((document.getElementById('ctxAmount').innerText || '0').replace(/[^0-9.]/g, '')) || 45000.0,
+          amount: Number.parseFloat((document.getElementById('ctxAmount').innerText || '0').replace(/[^0-9.]/g, '')) || 45000.0,
           currency: 'USD',
           typologies: [document.getElementById('ctxRule').innerText]
         };

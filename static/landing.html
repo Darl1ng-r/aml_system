@@ -60,8 +60,8 @@
   <script src="/static/lucide.min.js"></script>
 
   <!-- Three.js & OrbitControls from CSP-whitelisted CDN (cdn.jsdelivr.net) -->
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js" integrity="sha384-CI3ELBVUz9XQO+97x6nwMDPosPR5XvsxW2ua7N1Xeygeh1IxtgqtCkGfQY9WWdHu" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js" integrity="sha384-wagZhIFgY4hD+7awjQjR4e2E294y6J2HSnd8eTNc15ZubTeQeVRZwhQJ+W6hnBsf" crossorigin="anonymous"></script>
 
   <!-- Sentinel Landing Interactive Logic -->
   <script src="/static/landing.js" defer></script>
@@ -82,10 +82,7 @@
       <!-- Brand & Logo -->
       <a href="/" class="flex items-center gap-3 group focus:outline-none rounded p-1">
         
-        <!-- ============================================================== -->
-        <!-- [LOGO PLACEHOLDER]: Replace the container below with your Logo -->
-        <!-- Example: <img src="/static/images/logo.svg" alt="Sentinel Logo" class="h-8 w-auto" /> -->
-        <!-- ============================================================== -->
+        <!-- Logo container: placeholder can be replaced with custom brand mark -->
         <div class="w-8 h-8 rounded bg-[#2B3040] border border-white/10 flex items-center justify-center text-[#ECE7DD] group-hover:bg-activeBlue transition-colors">
           <i data-lucide="shield-alert" class="w-4 h-4 text-risk-med"></i>
         </div>
@@ -435,10 +432,10 @@
 
           <div class="mt-6 pt-4 border-t border-edge space-y-2">
             <div class="flex justify-between text-xs font-mono">
-              <span class="text-inkMuted">Fuzzy Sensitivity:</span>
+              <label for="demo-thresh-slider" class="text-inkMuted">Fuzzy Sensitivity:</label>
               <span id="demo-thresh-label" class="text-risk-med font-bold">85% Match Limit</span>
             </div>
-            <input type="range" id="demo-thresh-slider" min="70" max="95" value="85" class="w-full accent-risk-med h-1.5 bg-[#DAD3C3] rounded cursor-pointer">
+            <input type="range" id="demo-thresh-slider" aria-label="Fuzzy Sensitivity Match Limit" min="70" max="95" value="85" class="w-full accent-risk-med h-1.5 bg-[#DAD3C3] rounded cursor-pointer">
             <div class="p-2 rounded bg-[#F8F6F0] border border-edge text-xs font-mono">
               <span class="font-bold text-sidebar">Wladimir Smirnow</span>
               <span class="text-risk-high block font-semibold">→ OFAC SDN Blocklist Hit (92%)</span>
@@ -774,7 +771,7 @@
   <!-- ═════════════════════════════════════════════════════════════
        VIDEO WALKTHROUGH MODAL
   ════════════════════════════════════════════════════════════════ -->
-  <div id="video-walkthrough-modal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-sidebar/80 backdrop-blur-md hidden">
+  <div id="video-walkthrough-modal" class="fixed inset-0 z-50 items-center justify-center p-4 bg-sidebar/80 backdrop-blur-md hidden">
     <div class="relative w-full max-w-3xl bg-panel rounded-xl overflow-hidden border-2 border-edge shadow-2xl">
       <div class="flex items-center justify-between px-4 py-3 bg-sidebar border-b border-sidebarLine text-white">
         <div class="flex items-center gap-2 text-xs font-mono">

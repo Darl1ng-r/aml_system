@@ -285,8 +285,8 @@
 
     .score-badge.high {
       background: #FDF1E8;
-      color: #C05621;
-      border: 1px solid rgba(192, 86, 33, 0.25);
+      color: #9A3412;
+      border: 1px solid rgba(154, 52, 18, 0.25);
     }
 
     .score-badge.med {
@@ -424,10 +424,10 @@
     .btn-claim:hover { background: var(--brand-dark); }
 
     .btn-escalate {
-      background: #D97706;
+      background: #B45309;
       color: #fff;
     }
-    .btn-escalate:hover { background: #B45309; }
+    .btn-escalate:hover { background: #92400E; }
 
     .btn-dismiss {
       background: transparent;
@@ -589,7 +589,7 @@
       <div style="display:flex; align-items:center; gap:8px;">
         <div class="search-box">
           <i data-lucide="search"></i>
-          <input type="text" id="triage-search-input" placeholder="Search account, rule, alert ID..." oninput="handleSearch(this.value)">
+          <input type="text" id="triage-search-input" aria-label="Search alerts by account, rule, or alert ID" placeholder="Search account, rule, alert ID..." oninput="handleSearch(this.value)">
         </div>
         <button class="btn-action btn-dismiss" onclick="fetchAlerts()" title="Refresh alerts list">
           <i data-lucide="refresh-cw" style="width:14px; height:14px;"></i> Refresh
@@ -689,7 +689,7 @@
 
     function decodeUserRole() {
       let token = null;
-      const match = document.cookie.match(new RegExp('(^| )access_token=([^;]+)'));
+      const match = document.cookie.match(/(^| )access_token=([^;]+)/);
       if (match) {
         token = match[2];
       } else {
@@ -734,7 +734,7 @@
     function renderSkeletonTable() {
       const tbody = document.getElementById('alerts-table-body');
       if (!tbody) return;
-      tbody.innerHTML = Array(6).fill(0).map(() => `
+      tbody.innerHTML = new Array(6).fill(0).map(() => `
         <tr>
           <td><span class="skeleton-box" style="width:70px;"></span></td>
           <td><span class="skeleton-box" style="width:140px;"></span></td>
@@ -815,12 +815,18 @@
       tbody.innerHTML = filtered.map(a => {
         const sevClass = (a.threat_level || 'LOW').toLowerCase();
         const score = Math.round(Number(a.ai_risk_score || 0) * 100);
+        let scoreClass = 'low';
+        if (score > 80) {
+          scoreClass = 'critical';
+        } else if (score > 50) {
+          scoreClass = 'med';
+        }
         const isSelected = selectedAlert && selectedAlert.id === a.id;
         const dateStr = a.created_at ? new Date(a.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--';
 
         return `
           <tr class="${isSelected ? 'selected' : ''}" onclick="selectAlert('${a.id}')">
-            <td><input type="checkbox" onclick="event.stopPropagation()"></td>
+            <td><input type="checkbox" aria-label="Select alert #${a.id.substring(0,8)}" onclick="event.stopPropagation()"></td>
             <td style="font-family:var(--font-data); font-weight:600;">#${a.id.substring(0,8)}</td>
             <td><span class="rule-tag">${a.rule_name || 'MONITORING_HIT'}</span></td>
             <td>
@@ -829,7 +835,7 @@
             </td>
             <td style="font-family:var(--font-data); font-weight:600;">$${Number(a.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
             <td><span class="score-badge ${sevClass}">● ${a.threat_level || 'LOW'}</span></td>
-            <td><span class="score-badge ${score > 80 ? 'critical' : score > 50 ? 'med' : 'low'}">${score}%</span></td>
+            <td><span class="score-badge ${scoreClass}">${score}%</span></td>
             <td><span style="font-size:11px; font-weight:600; text-transform:uppercase;">${a.status || 'OPEN'}</span></td>
             <td><span style="font-size:12px; color:var(--ink-soft);">${a.assigned_officer_id ? 'Assigned' : '<span style="color:#D97706;">Unclaimed</span>'}</span></td>
             <td id="lock-col-${a.id}">--</td>
@@ -994,7 +1000,8 @@
           alert(`Could not claim: ${err.detail || 'Error'}`);
         }
       } catch (e) {
-        alert('Network error claiming alert');
+        console.error('Network error claiming alert:', e);
+        alert('Network error claiming alert: ' + (e.message || e));
       }
     }
 
@@ -1021,7 +1028,8 @@
           alert('Error dismissing alert');
         }
       } catch (e) {
-        alert('Failed to dismiss alert');
+        console.error('Failed to dismiss alert:', e);
+        alert('Failed to dismiss alert: ' + (e.message || e));
       }
     }
 
@@ -1044,7 +1052,8 @@
           alert('Failed to escalate alert.');
         }
       } catch (e) {
-        alert('Escalation failed');
+        console.error('Escalation failed:', e);
+        alert('Escalation failed: ' + (e.message || e));
       }
     }
 
@@ -1103,7 +1112,10 @@
           if (msg.event === 'ALERT_CREATED' || msg.event === 'ALERT_ESCALATED') {
             fetchAlerts();
           }
-        } catch (e) {}
+        } catch (e) {
+          // Ignore non-JSON heartbeat or malformed socket frames
+          console.debug('Ignoring non-JSON or invalid WebSocket payload:', e);
+        }
       };
     }
 

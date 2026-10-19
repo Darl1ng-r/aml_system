@@ -259,22 +259,22 @@
       </div>
       <div class="form-grid">
         <div class="form-group">
-          <label class="label">Jurisdiction Risk Multiplier</label>
+          <label for="jurisdictionMultiplier" class="label">Jurisdiction Risk Multiplier</label>
           <span class="sublabel">Elevation factor applied to transactions involving FATF grey/black listed countries.</span>
           <input type="number" id="jurisdictionMultiplier" class="input" step="0.1" min="1.0" max="5.0" value="1.5">
         </div>
         <div class="form-group">
-          <label class="label">High-Risk Jurisdictions (ISO Codes)</label>
+          <label for="highRiskCountries" class="label">High-Risk Jurisdictions (ISO Codes)</label>
           <span class="sublabel">Comma-separated country codes subject to enhanced sanctions checks.</span>
           <input type="text" id="highRiskCountries" class="input" value="RU, IR, KP, SY, MM, YE, VE">
         </div>
       </div>
       <div class="switch-row">
         <div>
-          <div class="label">Auto-Escalate Sanctions & PEP Hits to MLRO</div>
+          <label for="pepAutoEscalate" class="label" style="cursor:pointer;">Auto-Escalate Sanctions & PEP Hits to MLRO</label>
           <div class="sublabel">Directly bypass Tier 1 triage and route matches to Senior Compliance Investigators.</div>
         </div>
-        <input type="checkbox" id="pepAutoEscalate" checked style="width:18px; height:18px; cursor:pointer;">
+        <input type="checkbox" id="pepAutoEscalate" aria-label="Auto-Escalate Sanctions & PEP Hits to MLRO" checked style="width:18px; height:18px; cursor:pointer;">
       </div>
     </div>
 
@@ -288,22 +288,22 @@
       </div>
       <div class="form-grid">
         <div class="form-group">
-          <label class="label">Cash Structuring Threshold (USD)</label>
+          <label for="cashThreshold" class="label">Cash Structuring Threshold (USD)</label>
           <span class="sublabel">FinCEN BSA mandatory reporting baseline.</span>
           <input type="number" id="cashThreshold" class="input" step="500" value="10000">
         </div>
         <div class="form-group">
-          <label class="label">Crypto VASP Travel Rule Threshold (USD)</label>
+          <label for="travelRuleThreshold" class="label">Crypto VASP Travel Rule Threshold (USD)</label>
           <span class="sublabel">FATF R.16 / EU MiCA threshold requiring originator/beneficiary verification.</span>
           <input type="number" id="travelRuleThreshold" class="input" step="100" value="1000">
         </div>
         <div class="form-group">
-          <label class="label">Max Velocity Deviation (Z-Score)</label>
+          <label for="maxZScore" class="label">Max Velocity Deviation (Z-Score)</label>
           <span class="sublabel">Standard deviations above 30-day baseline to trigger velocity alerts.</span>
           <input type="number" id="maxZScore" class="input" step="0.5" value="3.0">
         </div>
         <div class="form-group">
-          <label class="label">Round-Trip Detection Window (Hours)</label>
+          <label for="roundTripHours" class="label">Round-Trip Detection Window (Hours)</label>
           <span class="sublabel">Lookback timeframe for circular fund flows returning to sender.</span>
           <input type="number" id="roundTripHours" class="input" step="12" value="72">
         </div>
@@ -320,12 +320,12 @@
       </div>
       <div class="form-grid">
         <div class="form-group">
-          <label class="label">SAR Filing SLA Deadline (Hours)</label>
+          <label for="slaHours" class="label">SAR Filing SLA Deadline (Hours)</label>
           <span class="sublabel">Time from alert escalation to regulatory submission before marking SLA breach.</span>
           <input type="number" id="slaHours" class="input" step="6" value="72">
         </div>
         <div class="form-group">
-          <label class="label">Mandatory EDD Score Threshold</label>
+          <label for="eddThreshold" class="label">Mandatory EDD Score Threshold</label>
           <span class="sublabel">AI risk probability that automatically locks transactions pending EDD review.</span>
           <input type="number" id="eddThreshold" class="input" step="0.05" min="0.50" max="0.99" value="0.85">
         </div>
@@ -371,15 +371,15 @@
 
     async function saveRiskAppetite() {
       const payload = {
-        jurisdiction_risk_multiplier: parseFloat(document.getElementById('jurisdictionMultiplier').value),
+        jurisdiction_risk_multiplier: Number.parseFloat(document.getElementById('jurisdictionMultiplier').value),
         high_risk_jurisdictions: document.getElementById('highRiskCountries').value.split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
         pep_sanctions_auto_escalate: document.getElementById('pepAutoEscalate').checked,
-        cash_structuring_threshold: parseFloat(document.getElementById('cashThreshold').value),
-        crypto_travel_rule_threshold: parseFloat(document.getElementById('travelRuleThreshold').value),
-        max_velocity_deviation_zscore: parseFloat(document.getElementById('maxZScore').value),
-        round_trip_window_hours: parseInt(document.getElementById('roundTripHours').value, 10),
-        sar_filing_sla_hours: parseInt(document.getElementById('slaHours').value, 10),
-        edd_mandatory_score_threshold: parseFloat(document.getElementById('eddThreshold').value)
+        cash_structuring_threshold: Number.parseFloat(document.getElementById('cashThreshold').value),
+        crypto_travel_rule_threshold: Number.parseFloat(document.getElementById('travelRuleThreshold').value),
+        max_velocity_deviation_zscore: Number.parseFloat(document.getElementById('maxZScore').value),
+        round_trip_window_hours: Number.parseInt(document.getElementById('roundTripHours').value, 10),
+        sar_filing_sla_hours: Number.parseInt(document.getElementById('slaHours').value, 10),
+        edd_mandatory_score_threshold: Number.parseFloat(document.getElementById('eddThreshold').value)
       };
 
       try {
@@ -390,7 +390,7 @@
           body: JSON.stringify(payload)
         });
         if (!res.ok) throw new Error('Save failed');
-        const data = await res.json();
+        await res.json();
         showToast('Institutional Risk Appetite settings saved & audit-logged.');
         loadRiskAppetite();
       } catch (err) {

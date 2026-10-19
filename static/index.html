@@ -18,115 +18,131 @@
   <!-- Critical Layout Style Fallbacks (Guarantees no FOUC or cache drift) -->
   <style>
     .topbar {
-      display: flex !important;
-      align-items: center !important;
-      justify-content: space-between !important;
-      background: #1B1F2B !important;
-      height: 52px !important;
-      padding: 0 16px !important;
-      border-bottom: 1px solid #2B3040 !important;
-      position: relative !important;
-      z-index: 100 !important;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #1B1F2B;
+      height: 52px;
+      padding: 0 16px;
+      border-bottom: 1px solid #2B3040;
+      position: relative;
+      z-index: 100;
     }
     .topbar-left {
-      display: flex !important;
-      align-items: center !important;
-      gap: 12px !important;
-      flex: 1 !important;
-      min-width: 0 !important;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex: 1;
+      min-width: 0;
     }
     .topbar-center {
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      flex-shrink: 0 !important;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
     }
     .topbar-right {
-      display: flex !important;
-      align-items: center !important;
-      justify-content: flex-end !important;
-      gap: 10px !important;
-      flex: 1 !important;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      flex: 1;
     }
     .nav-pills {
-      display: inline-flex !important;
-      align-items: center !important;
-      background: rgba(255, 255, 255, 0.06) !important;
-      padding: 3px !important;
-      border-radius: 9999px !important;
-      border: 1px solid rgba(255, 255, 255, 0.1) !important;
-      gap: 2px !important;
+      display: inline-flex;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 3px;
+      border-radius: 9999px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      gap: 2px;
     }
     .nav-pill {
-      display: inline-flex !important;
-      align-items: center !important;
-      gap: 6px !important;
-      padding: 5px 14px !important;
-      border-radius: 9999px !important;
-      font-size: 12px !important;
-      font-weight: 500 !important;
-      color: #9FA6B8 !important;
-      text-decoration: none !important;
-      transition: all 0.15s ease !important;
-      line-height: 1 !important;
-      white-space: nowrap !important;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 14px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 500;
+      color: #9FA6B8;
+      text-decoration: none;
+      transition: all 0.15s ease;
+      line-height: 1;
+      white-space: nowrap;
     }
     .nav-pill:hover {
-      color: #FFFFFF !important;
-      background: rgba(255, 255, 255, 0.08) !important;
+      color: #FFFFFF;
+      background: #2D3345;
     }
     .nav-pill.active {
-      background: #3D5A80 !important;
-      color: #FFFFFF !important;
-      font-weight: 600 !important;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.25) !important;
+      background: #3D5A80;
+      color: #FFFFFF;
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.25);
     }
     .app-launcher-dropdown {
-      position: relative !important;
-      display: inline-block !important;
+      position: relative;
+      display: inline-block;
     }
     .dropdown-menu {
       display: none;
-      position: absolute !important;
-      top: calc(100% + 8px) !important;
-      right: 0 !important;
-      width: 290px !important;
-      background: #1B1F2B !important;
-      border: 1px solid #2B3040 !important;
-      border-radius: 8px !important;
-      padding: 8px !important;
-      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5) !important;
-      z-index: 9999 !important;
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      width: 290px;
+      background: #1B1F2B;
+      border: 1px solid #2B3040;
+      border-radius: 8px;
+      padding: 8px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+      z-index: 9999;
     }
     .dropdown-menu.show {
-      display: block !important;
+      display: block;
     }
     .mobile-decision-bar {
-      display: none !important;
+      display: none;
     }
     @media (max-width: 1024px) {
       .mobile-decision-bar {
-        display: flex !important;
+        display: flex;
       }
     }
     .decision-btns {
-      display: flex !important;
-      flex-direction: column !important;
-      gap: 8px !important;
-      width: 100% !important;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
     }
     .dbtn {
-      width: 100% !important;
-      padding: 10px 14px !important;
-      display: flex !important;
-      align-items: center !important;
-      justify-content: flex-start !important;
-      gap: 10px !important;
-      font-size: 12.5px !important;
-      font-weight: 600 !important;
-      border-radius: 6px !important;
-      box-sizing: border-box !important;
-      text-align: left !important;
+      width: 100%;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 10px;
+      font-size: 12.5px;
+      font-weight: 600;
+      border-radius: 6px;
+      box-sizing: border-box;
+      text-align: left;
+    }
+    button.tab {
+      background: transparent;
+      border-top: none;
+      border-left: none;
+      border-right: none;
+      font-family: inherit;
+    }
+    .link-btn {
+      background: none;
+      border: none;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: underline;
     }
   </style>
 
@@ -197,7 +213,7 @@
 
       <!-- 3. Right: Status, Modules Dropdown, Shortcuts & Profile -->
       <div class="topbar-right">
-        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:rgba(255,255,255,0.08); color:#A3E635;">
+        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:#232936; border:1px solid #2B3040; color:#A3E635;">
           <span class="pulse-dot" style="width:7px; height:7px; border-radius:50%; background:#10b981;"></span>
           <span id="app-status-text">Compliance Engine Online</span>
         </div>
@@ -250,8 +266,8 @@
     </header>
 
     <!-- ── LEFT RAIL: QUEUE NAV ────────────────────────────── -->
-    <aside class="rail">
-      <div class="queue-nav-btn" onclick="navigateQueue(-1)" title="Previous case (K or ↑)">↑</div>
+    <aside class="rail" aria-label="Queue navigation rail">
+      <button type="button" class="queue-nav-btn" onclick="navigateQueue(-1)" aria-label="Previous case" title="Previous case (K or ↑)">↑</button>
 
       <div class="queue-list" id="queue-rail-items">
         <!-- Dynamically injected queue items -->
@@ -261,7 +277,7 @@
         </div>
       </div>
 
-      <div class="queue-nav-btn" onclick="navigateQueue(1)" title="Next case (J or ↓)" style="margin-top:auto;">↓</div>
+      <button type="button" class="queue-nav-btn" onclick="navigateQueue(1)" aria-label="Next case" title="Next case (J or ↓)" style="margin-top:auto;">↓</button>
 
       <!-- Quick mode links -->
       <div class="rail-footer-tools">
@@ -291,11 +307,11 @@
 
       <!-- Evidence Tabs with Full ARIA Accessibility -->
       <div class="tabs" role="tablist" aria-label="Investigation Evidence Tabs">
-        <div class="tab active" role="tab" id="tab-tx-details" aria-controls="tab-content-overview" aria-selected="true" tabindex="0" onclick="switchEvidenceTab('overview', this)">Overview</div>
-        <div class="tab" role="tab" id="tab-graph-view" aria-controls="tab-content-network" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('network', this)">Network graph</div>
-        <div class="tab" role="tab" id="tab-rules-fired" aria-controls="tab-content-rules" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('rules', this)">Rule logic</div>
-        <div class="tab" role="tab" id="tab-evidence-locker" aria-controls="tab-content-evidence" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('evidence', this)">Evidence Locker</div>
-        <div class="tab" role="tab" id="tab-raw-telemetry" aria-controls="tab-content-raw" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('raw', this)">Raw data</div>
+        <button type="button" class="tab active" role="tab" id="tab-tx-details" aria-controls="tab-content-overview" aria-selected="true" tabindex="0" onclick="switchEvidenceTab('overview', this)">Overview</button>
+        <button type="button" class="tab" role="tab" id="tab-graph-view" aria-controls="tab-content-network" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('network', this)">Network graph</button>
+        <button type="button" class="tab" role="tab" id="tab-rules-fired" aria-controls="tab-content-rules" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('rules', this)">Rule logic</button>
+        <button type="button" class="tab" role="tab" id="tab-evidence-locker" aria-controls="tab-content-evidence" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('evidence', this)">Evidence Locker</button>
+        <button type="button" class="tab" role="tab" id="tab-raw-telemetry" aria-controls="tab-content-raw" aria-selected="false" tabindex="-1" onclick="switchEvidenceTab('raw', this)">Raw data</button>
       </div>
 
       <!-- Section: Overview Tab Content -->
@@ -419,16 +435,16 @@
           <div style="background:#FAF8F5; border:1px dashed var(--border-strong); border-radius:var(--r-md); padding:16px; margin-bottom:16px;">
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:10px;">
               <div>
-                <label style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Attach Document / Screenshot</label>
+                <label for="evidence-file-input" style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Attach Document / Screenshot</label>
                 <input type="file" id="evidence-file-input" style="font-size:12px; width:100%;">
               </div>
               <div>
-                <label style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Tags / Classification</label>
+                <label for="evidence-tags-input" style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Tags / Classification</label>
                 <input type="text" id="evidence-tags-input" placeholder="e.g. OFAC_SEARCH, BANK_STATEMENT" style="width:100%; padding:6px 10px; font-size:12px; border:1px solid var(--panel-edge); border-radius:var(--r-sm);">
               </div>
             </div>
             <div style="margin-bottom:10px;">
-              <label style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Investigative Rationale & Description</label>
+              <label for="evidence-desc-input" style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Investigative Rationale & Description</label>
               <input type="text" id="evidence-desc-input" placeholder="Document source and relevance to case..." style="width:100%; padding:6px 10px; font-size:12px; border:1px solid var(--panel-edge); border-radius:var(--r-sm);">
             </div>
             <div style="display:flex; justify-content:flex-end;">
@@ -458,7 +474,7 @@
     </main>
 
     <!-- ── RIGHT: CONTEXT PANE ──────────────────────────────── -->
-    <aside class="context">
+    <aside class="context" aria-label="Investigation context and actions">
       <div class="context-scroll">
 
         <!-- 1. Composite Risk Score -->
@@ -474,7 +490,7 @@
         <div class="ctx-section">
           <div class="ctx-heading">
             KYC snapshot
-            <a href="javascript:void(0)" onclick="navigateToCustomer360()">Full profile →</a>
+            <button type="button" class="link-btn" onclick="navigateToCustomer360()">Full profile →</button>
           </div>
           <div class="kyc-row">
             <span class="k">Legal name</span>
@@ -557,7 +573,7 @@
     </aside>
 
     <!-- Mobile & Tablet Docked Decision Bar (Directive 1) -->
-    <div class="mobile-decision-bar" id="mobile-decision-dock" style="display: none !important;">
+    <div class="mobile-decision-bar" id="mobile-decision-dock">
       <label for="mobile-inbox-justification" class="sr-only">Investigation Determination Rationale</label>
       <textarea class="notes-field" id="mobile-inbox-justification" aria-required="true" placeholder="Document your rationale for this determination (required for audit trail)…"></textarea>
       <div class="decision-btns">
@@ -583,7 +599,7 @@
   ══════════════════════════════════════════════════════════════ -->
 
   <!-- 1. Executive Metrics & Workload Modal -->
-  <div class="modal-overlay" id="executive-modal" style="display:none;" onclick="if(event.target===this)closeModal('executive-modal')">
+  <div class="modal-overlay" id="executive-modal" style="display:none;">
     <div class="modal-window">
       <div class="modal-window-header">
         <div class="modal-window-title">
@@ -652,7 +668,7 @@
   </div>
 
   <!-- 2. Watchlist & PEP Screening Modal -->
-  <div class="modal-overlay" id="sandbox-modal" style="display:none;" onclick="if(event.target===this)closeModal('sandbox-modal')">
+  <div class="modal-overlay" id="sandbox-modal" style="display:none;">
     <div class="modal-window">
       <div class="modal-window-header">
         <div class="modal-window-title">
@@ -711,7 +727,7 @@
   </div>
 
   <!-- 3. STR Batch Filings Modal -->
-  <div class="modal-overlay" id="str-modal" style="display:none;" onclick="if(event.target===this)closeModal('str-modal')">
+  <div class="modal-overlay" id="str-modal" style="display:none;">
     <div class="modal-window">
       <div class="modal-window-header">
         <div class="modal-window-title">
@@ -752,7 +768,7 @@
   </div>
 
   <!-- 4. Keyboard Shortcuts Modal -->
-  <div class="modal-overlay" id="shortcuts-modal" style="display:none;" onclick="if(event.target===this)closeModal('shortcuts-modal')">
+  <div class="modal-overlay" id="shortcuts-modal" style="display:none;">
     <div class="modal-window" style="max-width:480px;">
       <div class="modal-window-header">
         <div class="modal-window-title">
@@ -790,7 +806,7 @@
   </div>
 
   <!-- 5. SAR Regulatory Filing Confirmation Modal Safeguard -->
-  <div class="modal-overlay" id="sar-confirm-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="sar-modal-title" onclick="if(event.target===this)closeModal('sar-confirm-modal')">
+  <div class="modal-overlay" id="sar-confirm-modal" style="display:none;">
     <div class="modal-window" style="max-width: 540px;">
       <div class="modal-window-header" style="background:#FFF5F5; border-bottom:1px solid #FED7D7;">
         <div class="modal-window-title" id="sar-modal-title" style="color:var(--risk-high); display:flex; align-items:center; gap:8px;">
@@ -843,8 +859,8 @@
        COMPATIBILITY BRIDGES FOR APP.JS
   ══════════════════════════════════════════════════════════════ -->
   <div style="display:none;" aria-hidden="true">
-    <input type="text" id="inbox-search">
-    <select id="inbox-filter-severity"><option value="ALL">ALL</option></select>
+    <input type="text" id="inbox-search" aria-label="Legacy inbox search">
+    <select id="inbox-filter-severity" aria-label="Legacy inbox filter severity"><option value="ALL">ALL</option></select>
     <div id="pagination-start"></div>
     <div id="pagination-end"></div>
     <div id="pagination-total"></div>
@@ -1038,6 +1054,7 @@
           </div>
         `).join('');
       } catch (e) {
+        console.error('Failed to load evidence files:', e);
         container.innerHTML = '<div style="color:var(--ink-soft); font-size:12px; padding:10px;">Error loading evidence files.</div>';
       }
       if (window.lucide) lucide.createIcons();
@@ -1086,6 +1103,7 @@
           alert('Failed to upload evidence');
         }
       } catch (e) {
+        console.error('Failed to upload evidence file:', e);
         alert('Error uploading evidence file');
       }
     }
@@ -1100,12 +1118,20 @@
         });
         if (res.ok) loadCaseEvidence();
       } catch (e) {
+        console.error('Failed to delete evidence attachment:', e);
         alert('Failed to delete evidence');
       }
     }
 
     document.addEventListener('DOMContentLoaded', () => {
       if (window.lucide) lucide.createIcons();
+
+      // Delegate modal backdrop dismiss clicks
+      document.addEventListener('click', (event) => {
+        if (event.target && event.target.classList && event.target.classList.contains('modal-overlay')) {
+          closeModal(event.target.id);
+        }
+      });
     });
   </script>
 

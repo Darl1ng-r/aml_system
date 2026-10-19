@@ -93,8 +93,8 @@
     .role-badge {
       font-family: 'IBM Plex Mono', monospace;
       font-size: 0.65rem;
-      background: rgba(16, 185, 129, 0.2);
-      color: #6ee7b7;
+      background: #064E3B;
+      color: #6EE7B7;
       padding: 2px 6px;
       border-radius: 4px;
       border: 1px solid rgba(16, 185, 129, 0.3);
@@ -199,10 +199,10 @@
       font-family: 'IBM Plex Mono', monospace;
       font-weight: 500;
     }
-    .status-pending { background: rgba(245, 158, 11, 0.15); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.3); }
-    .status-approved { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }
-    .status-rejected { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
-    .status-draft { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+    .status-pending { background: #2D2415; color: #FCD34D; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .status-approved { background: #064E3B; color: #6EE7B7; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .status-rejected { background: #3D1A1A; color: #FCA5A5; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .status-draft { background: #1E293B; color: #CBD5E1; border: 1px solid rgba(148, 163, 184, 0.3); }
 
     .btn-action {
       background: var(--bg-card);
@@ -218,10 +218,10 @@
       gap: 0.25rem;
     }
     .btn-action:hover { background: var(--bg-elevated); border-color: var(--accent-blue); }
-    .btn-approve { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border-color: rgba(16, 185, 129, 0.4); }
-    .btn-approve:hover { background: rgba(16, 185, 129, 0.3); }
-    .btn-reject { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); }
-    .btn-reject:hover { background: rgba(239, 68, 68, 0.3); }
+    .btn-approve { background: #064E3B; color: #6EE7B7; border-color: rgba(16, 185, 129, 0.4); }
+    .btn-approve:hover { background: #0F5E48; }
+    .btn-reject { background: #3D1A1A; color: #FCA5A5; border-color: rgba(239, 68, 68, 0.4); }
+    .btn-reject:hover { background: #4D2020; }
 
     /* Modal */
     .modal-overlay {
@@ -359,8 +359,8 @@
       <p style="font-size:0.8rem; color:var(--text-muted); margin-bottom:1rem;" id="modalSubtitle">Segregation of duties enforced: Reviewers cannot sign off on drafts they authored.</p>
       
       <div style="margin-bottom:1rem;" id="rejectReasonBlock">
-        <label style="display:block; font-size:0.75rem; color:var(--text-dim); text-transform:uppercase; margin-bottom:4px;">Rejection Justification</label>
-        <textarea id="rejectionReason" style="width:100%; min-height:80px; background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:6px; color:#fff; padding:8px; font-size:0.85rem;" placeholder="Explain reason for returning draft to investigator..."></textarea>
+        <label for="rejectionReason" style="display:block; font-size:0.75rem; color:var(--text-dim); text-transform:uppercase; margin-bottom:4px;">Rejection Justification</label>
+        <textarea id="rejectionReason" aria-label="Rejection Justification" style="width:100%; min-height:80px; background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:6px; color:#fff; padding:8px; font-size:0.85rem;" placeholder="Explain reason for returning draft to investigator..."></textarea>
       </div>
 
       <div style="display:flex; justify-content:flex-end; gap:0.5rem;">
@@ -399,6 +399,26 @@
       }
     }
 
+    function getStatusClass(status) {
+      if (status === 'PENDING_MLRO_REVIEW') return 'status-pending';
+      if (status === 'APPROVED') return 'status-approved';
+      if (status === 'REJECTED') return 'status-rejected';
+      return 'status-draft';
+    }
+
+    function formatNarrativeExcerpt(narrative) {
+      if (!narrative) return '-';
+      if (narrative.length > 55) {
+        return narrative.slice(0, 55) + '...';
+      }
+      return narrative;
+    }
+
+    function getQueueReferenceId(d) {
+      const refId = d.alert_id || d.case_id;
+      return refId ? refId.slice(0, 8) : '-';
+    }
+
     function renderQueue() {
       let pending = 0, approved = 0, rejected = 0;
       allDrafts.forEach(d => {
@@ -420,15 +440,16 @@
       }
 
       tbody.innerHTML = allDrafts.map(d => {
-        const statusClass = d.status === 'PENDING_MLRO_REVIEW' ? 'status-pending' : (d.status === 'APPROVED' ? 'status-approved' : (d.status === 'REJECTED' ? 'status-rejected' : 'status-draft'));
-        const excerpt = d.narrative ? (d.narrative.length > 55 ? d.narrative.slice(0, 55) + '...' : d.narrative) : '-';
+        const statusClass = getStatusClass(d.status);
+        const excerpt = formatNarrativeExcerpt(d.narrative);
         const dateStr = d.created_at ? d.created_at.slice(0, 16).replace('T', ' ') : '-';
         const isPending = d.status === 'PENDING_MLRO_REVIEW';
+        const referenceId = getQueueReferenceId(d);
 
         return `
           <tr>
             <td class="mono"><a href="/sar/draft/${d.draft_id}" style="color:var(--accent-blue); text-decoration:none;">${d.draft_id.slice(0, 8)}</a></td>
-            <td class="mono">${d.alert_id ? d.alert_id.slice(0, 8) : (d.case_id ? d.case_id.slice(0, 8) : '-')}</td>
+            <td class="mono">${referenceId}</td>
             <td>${d.drafted_by_username || 'Analyst'}</td>
             <td><span class="status-badge ${statusClass}">${d.status}</span></td>
             <td style="color:var(--text-muted); max-width:240px;">${excerpt}</td>

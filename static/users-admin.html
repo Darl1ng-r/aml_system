@@ -134,12 +134,12 @@
       letter-spacing: 0.04em;
     }
 
-    .role-L1_ANALYST { background: #E0F2FE; color: #0284C7; }
-    .role-L2_INVESTIGATOR { background: #DBEAFE; color: #2563EB; }
+    .role-L1_ANALYST { background: #E0F2FE; color: #0369A1; }
+    .role-L2_INVESTIGATOR { background: #DBEAFE; color: #1D4ED8; }
     .role-MLRO { background: #F3E8FF; color: #7E22CE; }
-    .role-ADMIN { background: #FEE2E2; color: #DC2626; }
-    .role-AUDITOR { background: #DCFCE7; color: #16A34A; }
-    .role-ANALYST { background: #E0F2FE; color: #0284C7; }
+    .role-ADMIN { background: #FEE2E2; color: #B91C1C; }
+    .role-AUDITOR { background: #DCFCE7; color: #166534; }
+    .role-ANALYST { background: #E0F2FE; color: #0369A1; }
 
     .role-select {
       font-family: var(--font-ui);
@@ -278,24 +278,24 @@
     <div class="modal-card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h2 style="font-size:16px; font-weight:700;">Provision Compliance User</h2>
-        <button onclick="closeProvisionModal()" style="background:none; border:none; cursor:pointer;">
+        <button onclick="closeProvisionModal()" style="background:none; border:none; cursor:pointer;" aria-label="Close modal">
           <i data-lucide="x" style="width:16px; height:16px;"></i>
         </button>
       </div>
 
       <form id="provision-form" onsubmit="handleProvision(event)">
         <div class="form-group">
-          <label>Username / Email</label>
+          <label for="prov-username">Username / Email</label>
           <input type="text" id="prov-username" required class="form-input" placeholder="e.g. sarah.k@bank.com">
         </div>
 
         <div class="form-group">
-          <label>Temporary Password (min 8 chars)</label>
+          <label for="prov-password">Temporary Password (min 8 chars)</label>
           <input type="password" id="prov-password" required minlength="8" class="form-input" placeholder="••••••••••••">
         </div>
 
         <div class="form-group">
-          <label>Assigned 5-Tier Role</label>
+          <label for="prov-role">Assigned 5-Tier Role</label>
           <select id="prov-role" class="form-input" style="cursor:pointer;">
             <option value="L1_ANALYST">Tier 1 Analyst (L1_ANALYST) — Triage & Dismissal</option>
             <option value="L2_INVESTIGATOR">Tier 2 Investigator (L2_INVESTIGATOR) — Full Case & SAR Draft</option>
@@ -348,7 +348,7 @@
             <td style="font-weight:600;">${u.username}</td>
             <td><span class="role-badge role-${role}">${role}</span></td>
             <td>
-              <select class="role-select" onchange="changeUserRole('${u.id}', this.value)">
+              <select class="role-select" aria-label="Change role for ${u.username}" onchange="changeUserRole('${u.id}', this.value)">
                 <option value="L1_ANALYST" ${role === 'L1_ANALYST' ? 'selected' : ''}>L1_ANALYST</option>
                 <option value="L2_INVESTIGATOR" ${role === 'L2_INVESTIGATOR' ? 'selected' : ''}>L2_INVESTIGATOR</option>
                 <option value="MLRO" ${role === 'MLRO' ? 'selected' : ''}>MLRO</option>
@@ -392,7 +392,8 @@
           alert('Failed to update user role.');
         }
       } catch (e) {
-        alert('Error updating user role');
+        console.error('Error updating user role:', e);
+        alert('Error updating user role: ' + (e.message || e));
       }
     }
 
@@ -444,7 +445,8 @@
           alert(`Failed to provision: ${err.detail || 'Error'}`);
         }
       } catch (e) {
-        alert('Network error provisioning user');
+        console.error('Network error provisioning user:', e);
+        alert('Network error provisioning user: ' + (e.message || e));
       }
     }
 

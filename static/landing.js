@@ -11,6 +11,7 @@
     const modal = document.getElementById('video-walkthrough-modal');
     if (modal) {
       modal.classList.remove('hidden');
+      modal.classList.add('flex');
     }
   }
 
@@ -18,6 +19,7 @@
     const modal = document.getElementById('video-walkthrough-modal');
     if (modal) {
       modal.classList.add('hidden');
+      modal.classList.remove('flex');
     }
   }
 

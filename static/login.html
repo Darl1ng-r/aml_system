@@ -295,9 +295,9 @@
         }
 
         .success-banner {
-            background-color: rgba(76, 122, 94, 0.08);
-            border: 1px solid rgba(76, 122, 94, 0.25);
-            color: var(--risk-low, #4C7A5E);
+            background-color: #E9F1EC;
+            border: 1px solid rgba(76, 122, 94, 0.35);
+            color: #14532D;
             border-radius: 6px;
             padding: 0.75rem 1rem;
             font-size: 0.85rem;
@@ -331,7 +331,7 @@
 
             <div class="auth-body">
                 <div id="auth-error" class="error-banner" style="margin-bottom: 1.25rem;" role="alert"></div>
-                <div id="auth-success" class="success-banner" style="margin-bottom: 1.25rem;" role="status"></div>
+                <output id="auth-success" class="success-banner" style="margin-bottom: 1.25rem;"></output>
 
                 <!-- 1. LOGIN FORM -->
                 <form id="form-login" class="auth-form active" role="tabpanel" novalidate>
@@ -358,7 +358,8 @@
                     <p style="font-size: 0.8rem; color: var(--ink-soft, #4B4F5A); margin: 0;">Enter the 6-digit verification code from your authenticator app or an emergency recovery code.</p>
 
                     <div class="form-group">
-                        <input type="text" id="mfa-code" class="otp-input" placeholder="000000" maxlength="15" autocomplete="one-time-code" required>
+                        <label for="mfa-code">Verification Code</label>
+                        <input type="text" id="mfa-code" class="otp-input" placeholder="000000" maxlength="15" autocomplete="one-time-code" aria-label="Two-factor verification code" required>
                     </div>
 
                     <button type="submit" id="btn-mfa-submit" class="btn" style="width: 100%;">Verify & Proceed</button>

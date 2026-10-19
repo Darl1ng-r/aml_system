@@ -156,12 +156,13 @@ body {
 }
 
 .topbar-btn {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: var(--sidebar-text-bright);
+  background: transparent;
+  border: 1px solid var(--sidebar-line);
+  color: var(--sidebar-text);
   padding: 5px 10px;
   border-radius: var(--r-sm);
   font-size: 12px;
+  font-family: var(--font-ui);
   font-weight: 500;
   display: inline-flex;
   align-items: center;
@@ -170,8 +171,9 @@ body {
   transition: all var(--dur-f) ease;
 }
 .topbar-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: #242938;
   color: #FFFFFF;
+  border-color: #3D5A80;
 }
 
 .queue-pos {
@@ -220,25 +222,6 @@ body {
   justify-content: center;
 }
 
-.topbar-btn {
-  background: transparent;
-  border: 1px solid var(--sidebar-line);
-  color: var(--sidebar-text);
-  padding: 4px 10px;
-  border-radius: var(--r-sm);
-  font-size: 11.5px;
-  font-family: var(--font-ui);
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  transition: all var(--dur-f);
-}
-.topbar-btn:hover {
-  background: #242938;
-  color: var(--sidebar-text-bright);
-  border-color: #3D5A80;
-}
 
 /* ─── LEFT RAIL: QUEUE NAV ───────────────────────────────── */
 .rail {
@@ -778,27 +761,27 @@ body {
 }
 
 .decision-btns {
-  display: flex !important;
-  flex-direction: column !important;
-  gap: 8px !important;
-  width: 100% !important;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
 }
 
 .dbtn {
-  width: 100% !important;
-  padding: 10px 14px !important;
-  border-radius: 6px !important;
-  font-family: var(--font-ui) !important;
-  font-weight: 600 !important;
-  font-size: 12.5px !important;
-  cursor: pointer !important;
-  display: flex !important;
-  align-items: center !important;
-  justify-content: flex-start !important;
-  gap: 10px !important;
-  box-sizing: border-box !important;
-  text-align: left !important;
-  transition: all var(--dur-f) ease !important;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  box-sizing: border-box;
+  text-align: left;
+  transition: all var(--dur-f) ease;
 }
 .dbtn:disabled {
   opacity: 0.6;
@@ -867,7 +850,7 @@ body {
 }
 
 .nav-pill:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: #2D3345;
   color: #FFFFFF;
 }
 
@@ -940,7 +923,7 @@ body {
 }
 
 .dropdown-item:hover, .dropdown-item:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
+  background: #2D3345;
   color: #ffffff;
   outline: none;
 }
@@ -1207,33 +1190,33 @@ svg.lucide, i[data-lucide] {
   to { transform: rotate(360deg); }
 }
 .spin {
-  animation: spin 0.8s linear infinite !important;
-  display: inline-block !important;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
 }
 .btn-loading {
-  position: relative !important;
-  pointer-events: none !important;
-  opacity: 0.7 !important;
+  position: relative;
+  pointer-events: none;
+  opacity: 0.7;
 }
 
 /* ─── MOBILE & TABLET RESPONSIVE PASS (Directive 1) ─────────── */
 .mobile-decision-bar {
-  display: none !important;
+  display: none;
 }
 
 @media (max-width: 1024px) {
   .shell {
-    grid-template-columns: 56px 1fr !important;
-    grid-template-rows: 52px 1fr auto !important;
+    grid-template-columns: 56px 1fr;
+    grid-template-rows: 52px 1fr auto;
     grid-template-areas:
       "topbar topbar"
       "rail center"
-      "footer footer" !important;
-    height: 100vh !important;
-    overflow: hidden !important;
+      "footer footer";
+    height: 100vh;
+    overflow: hidden;
   }
-  aside.context, .context-pane {
-    display: none !important;
+  aside.context, .context-pane, .context {
+    display: none;
   }
   .mobile-decision-bar {
     grid-area: footer;
@@ -1279,48 +1262,48 @@ svg.lucide, i[data-lucide] {
     width: auto;
   }
   .grid-3 {
-    grid-template-columns: repeat(2, 1fr) !important;
+    grid-template-columns: repeat(2, 1fr);
   }
 }
 
 @media (max-width: 768px) {
   .shell {
-    grid-template-columns: 1fr !important;
-    grid-template-rows: 52px 48px 1fr auto !important;
+    grid-template-columns: 1fr;
+    grid-template-rows: 52px 48px 1fr auto;
     grid-template-areas:
       "topbar"
       "rail"
       "center"
-      "footer" !important;
-    overflow-y: hidden !important;
-    height: 100vh !important;
+      "footer";
+    overflow-y: hidden;
+    height: 100vh;
   }
   .rail, .nav-rail {
-    flex-direction: row !important;
-    width: 100% !important;
-    height: 48px !important;
-    padding: 0 10px !important;
-    justify-content: flex-start !important;
-    align-items: center !important;
-    border-right: none !important;
-    border-bottom: 1px solid var(--sidebar-line) !important;
-    overflow-x: auto !important;
-    overflow-y: hidden !important;
+    flex-direction: row;
+    width: 100%;
+    height: 48px;
+    padding: 0 10px;
+    justify-content: flex-start;
+    align-items: center;
+    border-right: none;
+    border-bottom: 1px solid var(--sidebar-line);
+    overflow-x: auto;
+    overflow-y: hidden;
   }
   .rail-footer-tools {
-    display: none !important;
+    display: none;
   }
   .queue-list {
-    flex-direction: row !important;
-    overflow-x: auto !important;
-    overflow-y: hidden !important;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
   }
   .center {
-    padding: 12px !important;
-    overflow-y: auto !important;
+    padding: 12px;
+    overflow-y: auto;
   }
   .topbar {
-    padding: 0 12px !important;
+    padding: 0 12px;
   }
   .mobile-decision-bar {
     flex-direction: column;
@@ -1335,13 +1318,13 @@ svg.lucide, i[data-lucide] {
     justify-content: space-between;
   }
   .editor-container, .grid-2, .grid-3, .form-grid {
-    grid-template-columns: 1fr !important;
+    grid-template-columns: 1fr;
   }
   .preview-pane {
-    height: 400px !important;
+    height: 400px;
   }
   .modal-content, .drawer {
-    width: 95vw !important;
+    width: 95vw;
   }
 }
 

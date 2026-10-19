@@ -78,14 +78,14 @@
     }
     .nav-link:hover, .nav-link.active {
       color: #FFFFFF;
-      background: rgba(255, 255, 255, 0.1);
+      background: #2D3345;
     }
     .user-pill {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       font-size: 0.8rem;
-      background: rgba(255, 255, 255, 0.08);
+      background: #252A38;
       color: #E7E9EF;
       padding: 4px 10px;
       border-radius: 20px;
@@ -94,8 +94,8 @@
     .role-badge {
       font-family: 'IBM Plex Mono', monospace;
       font-size: 0.65rem;
-      background: rgba(61, 90, 128, 0.2);
-      color: #93c5fd;
+      background: #172554;
+      color: #93C5FD;
       padding: 2px 6px;
       border-radius: 4px;
       border: 1px solid rgba(61, 90, 128, 0.4);
@@ -242,6 +242,16 @@
     .gauge-lbl { font-size: 0.6rem; color: var(--text-dim); text-transform: uppercase; }
 
     .factor-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+    .factor-table th {
+      padding: 4px 0 6px 0;
+      text-align: left;
+      font-size: 0.65rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border-subtle);
+    }
     .factor-table td { padding: 5px 0; }
     .factor-bar {
       height: 6px;
@@ -263,9 +273,9 @@
       gap: 0.35rem;
       font-weight: 600;
     }
-    .pill-green { background: #E9F1EC; color: #4C7A5E; border: 1px solid rgba(76, 122, 94, 0.35); }
-    .pill-amber { background: #FBF1DF; color: #C98A2E; border: 1px solid rgba(201, 138, 46, 0.35); }
-    .pill-red { background: #FBEAE8; color: #C1443B; border: 1px solid rgba(193, 68, 59, 0.35); }
+    .pill-green { background: #E9F1EC; color: #2D6343; border: 1px solid rgba(76, 122, 94, 0.35); }
+    .pill-amber { background: #FBF1DF; color: #8A5816; border: 1px solid rgba(201, 138, 46, 0.35); }
+    .pill-red { background: #FBEAE8; color: #A8322A; border: 1px solid rgba(193, 68, 59, 0.35); }
 
     .ubo-tree-node {
       background: #FAF8F5;
@@ -294,7 +304,18 @@
       transition: all 0.15s;
     }
     .btn:hover { background: #FAF8F5; border-color: var(--text-dim); }
-    .btn-danger { background: #FBEAE8; color: #C1443B; border-color: rgba(193, 68, 59, 0.35); }
+    .btn-danger { background: #FBEAE8; color: #A8322A; border-color: rgba(193, 68, 59, 0.35); }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
     .btn-danger:hover { background: #F5D5D2; }
 
     .toast {
@@ -362,7 +383,8 @@
     <!-- Customer List Sidebar -->
     <div class="customer-sidebar">
       <div class="search-box">
-        <input type="text" id="customerSearch" class="search-input" placeholder="Search name, account, BIC..." oninput="handleSearch()">
+        <label for="customerSearch" class="sr-only">Search accounts by name, account number, or BIC</label>
+        <input type="text" id="customerSearch" class="search-input" placeholder="Search name, account, BIC..." aria-label="Search name, account, BIC" oninput="handleSearch()">
       </div>
       <div class="customer-list" id="customerList">
         <div style="padding:1.5rem; text-align:center; color:var(--text-dim); font-size:0.8rem;">Loading accounts...</div>
@@ -414,21 +436,29 @@
             </div>
             <div style="flex:1;">
               <table class="factor-table">
-                <tr>
-                  <td>Geographic Risk (BIC)</td>
-                  <td style="text-align:right;" id="fGeo">65%</td>
-                </tr>
-                <tr><td colspan="2"><div class="factor-bar"><div class="factor-fill" id="fGeoBar" style="width:65%"></div></div></td></tr>
-                <tr>
-                  <td>Velocity & Turnover</td>
-                  <td style="text-align:right;" id="fVel">78%</td>
-                </tr>
-                <tr><td colspan="2"><div class="factor-bar"><div class="factor-fill" id="fVelBar" style="width:78%; background:var(--accent-amber)"></div></div></td></tr>
-                <tr>
-                  <td>Sanctions & PEP Proximity</td>
-                  <td style="text-align:right;" id="fPep">85%</td>
-                </tr>
-                <tr><td colspan="2"><div class="factor-bar"><div class="factor-fill" id="fPepBar" style="width:85%; background:var(--accent-crimson)"></div></div></td></tr>
+                <thead>
+                  <tr>
+                    <th scope="col">Risk Dimension</th>
+                    <th scope="col" style="text-align:right;">Score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Geographic Risk (BIC)</td>
+                    <td style="text-align:right;" id="fGeo">65%</td>
+                  </tr>
+                  <tr><td colspan="2"><div class="factor-bar"><div class="factor-fill" id="fGeoBar" style="width:65%"></div></div></td></tr>
+                  <tr>
+                    <td>Velocity & Turnover</td>
+                    <td style="text-align:right;" id="fVel">78%</td>
+                  </tr>
+                  <tr><td colspan="2"><div class="factor-bar"><div class="factor-fill" id="fVelBar" style="width:78%; background:var(--accent-amber)"></div></div></td></tr>
+                  <tr>
+                    <td>Sanctions & PEP Proximity</td>
+                    <td style="text-align:right;" id="fPep">85%</td>
+                  </tr>
+                  <tr><td colspan="2"><div class="factor-bar"><div class="factor-fill" id="fPepBar" style="width:85%; background:var(--accent-crimson)"></div></div></td></tr>
+                </tbody>
               </table>
             </div>
           </div>
@@ -544,7 +574,7 @@
     function renderSkeletonCustomerList() {
       const listEl = document.getElementById('customerList');
       if (!listEl) return;
-      listEl.innerHTML = Array(5).fill(0).map(() => `
+      listEl.innerHTML = new Array(5).fill(0).map(() => `
         <div class="customer-item" style="pointer-events:none;">
           <div class="skeleton-box" style="width:120px; height:14px; margin-bottom:6px;"></div>
           <div class="skeleton-box" style="width:160px; height:10px;"></div>
@@ -574,7 +604,6 @@
       }
 
       listEl.innerHTML = customerListCache.map(c => {
-        const initials = c.owner_name ? c.owner_name.split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase() : 'CU';
         const isActive = c.id === activeCustomerId;
         return `
           <div class="customer-item ${isActive ? 'active' : ''}" onclick="selectCustomer('${c.id}')">
@@ -594,6 +623,93 @@
       activeCustomerId = id;
       renderCustomerList();
       loadDossier(id);
+    }
+
+    function getRiskGaugeColor(scorePct) {
+      if (scorePct >= 80) return 'var(--accent-crimson)';
+      if (scorePct >= 50) return 'var(--accent-amber)';
+      return 'var(--accent-emerald)';
+    }
+
+    function safeScorePercentage(score) {
+      const isValidNumber = typeof score === 'number' && !Number.isNaN(score);
+      const rawScore = isValidNumber ? score : 0.8;
+      return Math.min(Math.max(Math.round(rawScore * 100), 0), 100);
+    }
+
+    function safeBarPct(val, def) {
+      const resolved = val !== undefined && val !== null ? val : def;
+      return Math.min(Math.max(Math.round(resolved * 100), 0), 100);
+    }
+
+    function updateRiskGauge(d) {
+      const scorePct = safeScorePercentage(d.risk_score);
+      document.getElementById('riskScoreVal').innerText = `${scorePct}%`;
+      const gaugeColor = getRiskGaugeColor(scorePct);
+      document.getElementById('riskGaugeCircle').style.background = `conic-gradient(${gaugeColor} 0% ${scorePct}%, rgba(255,255,255,0.08) ${scorePct}% 100%)`;
+
+      const rb = d.risk_breakdown || {};
+      const geoPct = safeBarPct(rb.jurisdiction_risk, 0.2);
+      document.getElementById('fGeo').innerText = `${geoPct}%`;
+      document.getElementById('fGeoBar').style.width = `${geoPct}%`;
+
+      const velPct = safeBarPct(rb.velocity_risk, 0.4);
+      document.getElementById('fVel').innerText = `${velPct}%`;
+      document.getElementById('fVelBar').style.width = `${velPct}%`;
+
+      const pepPct = safeBarPct(rb.pep_risk, 0.1);
+      document.getElementById('fPep').innerText = `${pepPct}%`;
+      document.getElementById('fPepBar').style.width = `${pepPct}%`;
+    }
+
+    function renderUbos(ubos) {
+      const uboContainer = document.getElementById('uboContainer');
+      if (!ubos || ubos.length === 0) {
+        uboContainer.innerHTML = '<div style="font-size:0.8rem; color:var(--text-dim); padding:0.5rem 0;">No corporate UBO tree recorded for this individual account.</div>';
+        return;
+      }
+      uboContainer.innerHTML = ubos.map(u => `
+        <div class="ubo-tree-node">
+          <div>
+            <strong style="color:#fff;">${u.name}</strong>
+            <div style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;">TAX-ID: ${u.tax_id} &bull; Beneficial Owner</div>
+          </div>
+          <span class="status-pill pill-amber">${u.percentage}% UBO</span>
+        </div>
+      `).join('');
+    }
+
+    function renderAlerts(alerts) {
+      const alertHistoryList = document.getElementById('alertHistoryList');
+      if (!alerts || alerts.length === 0) {
+        alertHistoryList.innerHTML = '<div style="font-size:0.8rem; color:var(--text-dim); padding:0.5rem 0;">No active alerts on this account.</div>';
+        return;
+      }
+      alertHistoryList.innerHTML = alerts.map(a => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); font-size:0.75rem;">
+          <div>
+            <span class="status-pill ${a.threat_level === 'CRITICAL' ? 'pill-red' : 'pill-amber'}">${a.threat_level}</span>
+            <span style="color:#fff; margin-left:6px;">${a.rule_name}</span>
+          </div>
+          <span style="font-family:'IBM Plex Mono',monospace; color:var(--text-dim);">${a.created_at.slice(0,10)}</span>
+        </div>
+      `).join('');
+    }
+
+    function renderTransactions(transactions) {
+      const txHistoryBody = document.getElementById('txHistoryBody');
+      if (!transactions || transactions.length === 0) {
+        txHistoryBody.innerHTML = '<tr><td colspan="4" style="padding:1rem 0; color:var(--text-dim);">No recent transaction history recorded.</td></tr>';
+        return;
+      }
+      txHistoryBody.innerHTML = transactions.map(t => `
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
+          <td style="padding:6px 0;"><span class="status-pill ${t.type === 'INBOUND' ? 'pill-green' : 'pill-amber'}">${t.type}</span></td>
+          <td class="mono" style="font-size:0.75rem;">${t.counterparty}</td>
+          <td class="mono" style="font-weight:600; color:#fff;">$${t.amount.toLocaleString()} ${t.currency}</td>
+          <td class="mono" style="font-size:0.7rem; color:var(--text-dim);">${t.timestamp.slice(0,16).replace('T', ' ')}</td>
+        </tr>
+      `).join('');
     }
 
     async function loadDossier(id) {
@@ -616,71 +732,10 @@
         freezeBtn.innerText = isFrozen ? 'Unfreeze Account' : 'Freeze Account';
         freezeBtn.className = isFrozen ? 'btn' : 'btn btn-danger';
 
-        // Risk Gauge with safe percentage clamping [0, 100]
-        const rawScore = (typeof d.risk_score === 'number' && !isNaN(d.risk_score)) ? d.risk_score : 0.8;
-        const scorePct = Math.min(Math.max(Math.round(rawScore * 100), 0), 100);
-        document.getElementById('riskScoreVal').innerText = `${scorePct}%`;
-        const gaugeColor = scorePct >= 80 ? 'var(--accent-crimson)' : (scorePct >= 50 ? 'var(--accent-amber)' : 'var(--accent-emerald)');
-        document.getElementById('riskGaugeCircle').style.background = `conic-gradient(${gaugeColor} 0% ${scorePct}%, rgba(255,255,255,0.08) ${scorePct}% 100%)`;
-
-        const rb = d.risk_breakdown || {};
-        const safeBarPct = (val, def) => Math.min(Math.max(Math.round((val !== undefined && val !== null ? val : def) * 100), 0), 100);
-        const geoPct = safeBarPct(rb.jurisdiction_risk, 0.2);
-        document.getElementById('fGeo').innerText = `${geoPct}%`;
-        document.getElementById('fGeoBar').style.width = `${geoPct}%`;
-        const velPct = safeBarPct(rb.velocity_risk, 0.4);
-        document.getElementById('fVel').innerText = `${velPct}%`;
-        document.getElementById('fVelBar').style.width = `${velPct}%`;
-        const pepPct = safeBarPct(rb.pep_risk, 0.1);
-        document.getElementById('fPep').innerText = `${pepPct}%`;
-        document.getElementById('fPepBar').style.width = `${pepPct}%`;
-
-        // UBO list
-        const uboContainer = document.getElementById('uboContainer');
-        if (d.ubos && d.ubos.length > 0) {
-          uboContainer.innerHTML = d.ubos.map(u => `
-            <div class="ubo-tree-node">
-              <div>
-                <strong style="color:#fff;">${u.name}</strong>
-                <div style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;">TAX-ID: ${u.tax_id} &bull; Beneficial Owner</div>
-              </div>
-              <span class="status-pill pill-amber">${u.percentage}% UBO</span>
-            </div>
-          `).join('');
-        } else {
-          uboContainer.innerHTML = '<div style="font-size:0.8rem; color:var(--text-dim); padding:0.5rem 0;">No corporate UBO tree recorded for this individual account.</div>';
-        }
-
-        // Linked Alerts
-        const alertHistoryList = document.getElementById('alertHistoryList');
-        if (d.alerts && d.alerts.length > 0) {
-          alertHistoryList.innerHTML = d.alerts.map(a => `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); font-size:0.75rem;">
-              <div>
-                <span class="status-pill ${a.threat_level === 'CRITICAL' ? 'pill-red' : 'pill-amber'}">${a.threat_level}</span>
-                <span style="color:#fff; margin-left:6px;">${a.rule_name}</span>
-              </div>
-              <span style="font-family:'IBM Plex Mono',monospace; color:var(--text-dim);">${a.created_at.slice(0,10)}</span>
-            </div>
-          `).join('');
-        } else {
-          alertHistoryList.innerHTML = '<div style="font-size:0.8rem; color:var(--text-dim); padding:0.5rem 0;">No active alerts on this account.</div>';
-        }
-
-        // Transactions
-        const txHistoryBody = document.getElementById('txHistoryBody');
-        if (d.recent_transactions && d.recent_transactions.length > 0) {
-          txHistoryBody.innerHTML = d.recent_transactions.map(t => `
-            <tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
-              <td style="padding:6px 0;"><span class="status-pill ${t.type === 'INBOUND' ? 'pill-green' : 'pill-amber'}">${t.type}</span></td>
-              <td class="mono" style="font-size:0.75rem;">${t.counterparty}</td>
-              <td class="mono" style="font-weight:600; color:#fff;">$${t.amount.toLocaleString()} ${t.currency}</td>
-              <td class="mono" style="font-size:0.7rem; color:var(--text-dim);">${t.timestamp.slice(0,16).replace('T', ' ')}</td>
-            </tr>
-          `).join('');
-        } else {
-          txHistoryBody.innerHTML = '<tr><td colspan="4" style="padding:1rem 0; color:var(--text-dim);">No recent transaction history recorded.</td></tr>';
-        }
+        updateRiskGauge(d);
+        renderUbos(d.ubos);
+        renderAlerts(d.alerts);
+        renderTransactions(d.recent_transactions);
 
         document.getElementById('networkGraphLink').href = `/network/${d.account_number}`;
       } catch (err) {
