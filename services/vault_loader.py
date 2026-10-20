@@ -39,6 +39,7 @@ _VAULT_MOUNT = os.getenv("VAULT_MOUNT", "secret")
 # How often the background task re-fetches secrets (seconds).
 # Set to half the token TTL to ensure we never expire between renewals.
 _RENEWAL_INTERVAL = int(os.getenv("VAULT_LEASE_RENEWAL_SECONDS", "3600"))
+_background_tasks: set[asyncio.Task] = set()
 
 # All KV-v2 paths relative to the mount that we must fetch at startup.
 _SECRET_PATHS = [
@@ -130,6 +131,7 @@ class VaultSecretsLoader:
     """
 
     _client: Optional[VaultClient] = None
+    _renewal_task: Optional[asyncio.Task] = None
 
     @classmethod
     async def bootstrap(cls) -> None:
@@ -188,7 +190,10 @@ class VaultSecretsLoader:
         )
 
         # ── Schedule background renewal ──────────────────────────────────
-        asyncio.create_task(cls._renewal_loop(), name="vault-secret-renewal")
+        task = asyncio.create_task(cls._renewal_loop(), name="vault-secret-renewal")
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+        cls._renewal_task = task
         logger.info(
             f"VaultSecretsLoader: background renewal scheduled "
             f"(interval: {_RENEWAL_INTERVAL}s)."
@@ -228,8 +233,5 @@ class VaultSecretsLoader:
                 await cls._client.renew_token()
                 await cls._fetch_all(cls._client)
                 logger.info("VaultSecretsLoader: secret renewal complete.")
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    f"VaultSecretsLoader: renewal failed ({exc}). "
-                    "Cached values remain active until next cycle."
-                )
+            except Exception:
+                logger.exception("VaultSecretsLoader: renewal failed. Cached values remain active until next cycle.")

@@ -251,14 +251,14 @@ class AMLAnomalyModel:
             should_compute_shap = explain or (risk_score >= self._recommended_threshold * 0.85)
             if should_compute_shap and self._explainer:
                 scaler = self._pipeline.named_steps["scaler"]
-                X_scaled = scaler.transform(X)
-                shap_vals = self._explainer.shap_values(X_scaled)[0]
+                x_scaled = scaler.transform(X)
+                shap_vals = self._explainer.shap_values(x_scaled)[0]
                 attributions = {
                     name: round(float(val), 6)
                     for name, val in zip(FEATURE_NAMES, shap_vals)
                 }
             else:
-                attributions = {name: 0.0 for name in FEATURE_NAMES}
+                attributions = dict.fromkeys(FEATURE_NAMES, 0.0)
 
             return {
                 "risk_score": round(risk_score, 4),

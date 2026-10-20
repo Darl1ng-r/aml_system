@@ -145,7 +145,7 @@ async def release_legal_hold(
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        res = await conn.execute(
+        await conn.execute(
             """
             UPDATE legal_holds
             SET is_active = false, released_at = NOW()

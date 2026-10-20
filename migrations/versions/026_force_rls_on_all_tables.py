@@ -9,14 +9,14 @@ Changes:
      Guarantees that even table owners and superusers cannot bypass tenant isolation policies.
   2. Creates partial index on transactional_outbox for status IN ('PENDING', 'PROCESSING').
 """
-from typing import Sequence, Union
+from typing import Sequence
 from alembic import op
 import sqlalchemy as sa
 
 revision: str = '026'
-down_revision: Union[str, None] = '025'
-branch_labels: Union[Sequence[str], None] = None
-depends_on: Union[Sequence[str], None] = None
+down_revision: str | None = '025'
+branch_labels: Sequence[str] | None = None
+depends_on: Sequence[str] | None = None
 
 
 def upgrade() -> None:

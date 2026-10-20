@@ -27,6 +27,8 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+SQL_PING_QUERY = "SELECT 1"
+
 router = APIRouter(tags=["Health"])
 
 
@@ -76,7 +78,7 @@ async def readiness_probe():
         if db_pool is None:
             return JSONResponse(content={"status": "not_ready", "reason": "db_pool_uninitialized"}, status_code=503)
         async with db_pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
+            await conn.fetchval(SQL_PING_QUERY)
         return {"status": "ready"}
     except Exception as e:
         logger.warning(f"Readiness probe failed: {e}")
@@ -107,7 +109,7 @@ async def readiness(
         if db_pool is None:
             raise RuntimeError("Connection pool not initialised")
         async with db_pool.acquire() as conn:
-            await conn.fetchval("SELECT 1")
+            await conn.fetchval(SQL_PING_QUERY)
         latency_ms = round((time.monotonic() - t0) * 1000, 1)
         checks["postgres"] = {"status": "ok", "latency_ms": latency_ms}
     except Exception as e:
@@ -186,7 +188,7 @@ async def get_system_topology_health():
         t0 = time.monotonic()
         if db_pool:
             async with db_pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
+                await conn.fetchval(SQL_PING_QUERY)
             services["postgres"] = {
                 "status": "UP",
                 "latency_ms": round((time.monotonic() - t0) * 1000, 1),
@@ -286,7 +288,7 @@ async def get_queue_health():
             if pending_outbox is None:
                 pending_outbox = 0
     except Exception as e:
-        logger.error(f"Failed to query queue health from transactional_outbox: {e}")
+        logger.exception("Failed to query queue health from transactional_outbox")
         outbox_error = str(e)
         pending_outbox = -1
 

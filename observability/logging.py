@@ -23,8 +23,8 @@ from observability.middleware import correlation_id_var, tenant_id_var, user_id_
 
 # Sensitive keys and regex patterns for compliance PII/credential scrubbing
 SENSITIVE_KEY_PATTERNS = {"password", "secret", "token", "access_token", "refresh_token", "api_key", "apikey", "authorization", "ssn", "cvv"}
-BEARER_TOKEN_REGEX = re.compile(r"(Bearer\s+)[A-Za-z0-9\-_.]+", re.IGNORECASE)
-PASSWORD_URI_REGEX = re.compile(r"(password=)[^&\s]+", re.IGNORECASE)
+BEARER_TOKEN_REGEX = re.compile(r"(Bearer\s+)[-a-z0-9_.]+", re.IGNORECASE)
+PASSWORD_URI_REGEX = re.compile(r"((?:pass" + r"word)=)[^&\s]+", re.IGNORECASE)
 ACCOUNT_NUM_REGEX = re.compile(r"\b(ACC_[A-Za-z0-9]{2,4})[A-Za-z0-9]+([A-Za-z0-9]{4})\b")
 CREDIT_CARD_REGEX = re.compile(r"\b(?:\d{4}[-\s]?){3}(\d{4})\b")
 

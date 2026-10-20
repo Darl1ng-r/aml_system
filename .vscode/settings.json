@@ -11,5 +11,8 @@
     ],
     "python.autoComplete.extraPaths": [
         "${workspaceFolder}"
-    ]
+    ],
+    "yaml.schemas": {
+        "https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/monitoring.coreos.com/prometheusrule_v1.json": "deployments/monitoring/prometheus-rules.yaml"
+    }
 }

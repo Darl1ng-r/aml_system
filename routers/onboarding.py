@@ -17,9 +17,11 @@ router = APIRouter(prefix="/api/v1/onboard", tags=["Onboarding"])
 from pydantic import BaseModel, Field, field_validator
 from observability.sanitizer import sanitize_text
 
+IDENTIFIER_REGEX = r"^[A-Za-z0-9_-]+$"
+
 class IndividualOnboard(BaseModel):
     tenant_id: str = Field(..., min_length=1, max_length=50)
-    account_number: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    account_number: str = Field(..., min_length=3, max_length=50, pattern=IDENTIFIER_REGEX)
     swift_bic: str | None = Field(None, min_length=8, max_length=11, pattern=r"^[A-Z0-9]{8,11}$")
     name: str = Field(..., min_length=1, max_length=200)
     date_of_birth: str | None = Field(None, max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$")
@@ -31,7 +33,7 @@ class IndividualOnboard(BaseModel):
 
 class UboDetail(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
-    tax_id: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    tax_id: str = Field(..., min_length=3, max_length=50, pattern=IDENTIFIER_REGEX)
     ownership_percentage: float = Field(..., ge=0.01, le=100.0)
 
     @field_validator("name", "tax_id", mode="before")
@@ -42,8 +44,8 @@ class UboDetail(BaseModel):
 class CorporateOnboard(BaseModel):
     tenant_id: str = Field(..., min_length=1, max_length=50)
     company_name: str = Field(..., min_length=1, max_length=200)
-    registration_number: str = Field(..., min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
-    account_number: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
+    registration_number: str = Field(..., min_length=1, max_length=50, pattern=IDENTIFIER_REGEX)
+    account_number: str = Field(..., min_length=3, max_length=50, pattern=IDENTIFIER_REGEX)
     swift_bic: str | None = Field(None, min_length=8, max_length=11, pattern=r"^[A-Z0-9]{8,11}$")
     ubos: list[UboDetail] = Field(default_factory=list, max_length=50)
 
@@ -70,7 +72,7 @@ async def onboard_individual(
         risk_score = 0.95 if screen_res["match_found"] else 0.10
     except Exception as ex_es:
         # CHAOS-01 Fail-Closed: Never fail open (risk 0.20) if sanctions screening dependency is offline!
-        logger.error(f"Sanctions screening offline/timed out during onboarding: {ex_es}")
+        logger.exception("Sanctions screening offline/timed out during onboarding")
         risk_score = 1.0
         screening_failed = True
 
@@ -103,7 +105,7 @@ async def onboard_individual(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Onboarding failed: {e}", exc_info=True)
+        logger.exception("Onboarding failed")
         if "unique constraint" in str(e).lower():
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account number already exists")
         raise HTTPException(status_code=500, detail="Onboarding failed due to an internal error.")
@@ -159,7 +161,7 @@ async def onboard_corporate(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"PostgreSQL corporate onboarding failed: {e}", exc_info=True)
+        logger.exception("PostgreSQL corporate onboarding failed")
         if "unique constraint" in str(e).lower():
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account number already exists")
         raise HTTPException(status_code=500, detail="Corporate onboarding database error.")
@@ -219,13 +221,13 @@ async def onboard_corporate(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Neo4j corporate onboarding failed: {e}", exc_info=True)
+        logger.exception("Neo4j corporate onboarding failed")
         # STATE-03 Compensating rollback: delete incomplete Postgres account on Neo4j failure
         try:
             async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
                 await conn.execute("DELETE FROM accounts WHERE id = $1;", account_id)
         except Exception as roll_err:
-            logger.error(f"Compensating Postgres rollback failed: {roll_err}")
+            logger.exception("Compensating Postgres rollback failed")
         raise HTTPException(status_code=500, detail="Corporate graph registration failed due to an internal error.")
 
 
@@ -269,7 +271,7 @@ async def get_account_by_id(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to fetch account {id}: {e}")
+        logger.exception("Failed to fetch account %s", id)
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 
 
@@ -319,5 +321,5 @@ async def list_accounts(
             response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
             return accounts
     except Exception as e:
-        logger.error(f"Failed to list accounts: {e}")
+        logger.exception("Failed to list accounts")
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")

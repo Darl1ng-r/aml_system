@@ -20,6 +20,8 @@ from services.rate_limiter import RateLimiter
 
 router = APIRouter(prefix="/api/v1/locks", tags=["Pessimistic Locking"])
 
+INVALID_RESOURCE_TYPE_DETAIL = "Invalid resource_type. Must be 'ALERT' or 'CASE'."
+
 
 class LockAcquireRequest(BaseModel):
     ttl_seconds: Optional[int] = Field(DEFAULT_LOCK_TTL_SECONDS, ge=30, le=1800)
@@ -44,7 +46,7 @@ async def acquire_lock(
     """
     res_type = resource_type.upper()
     if res_type not in ("ALERT", "CASE"):
-        raise HTTPException(status_code=400, detail="Invalid resource_type. Must be 'ALERT' or 'CASE'.")
+        raise HTTPException(status_code=400, detail=INVALID_RESOURCE_TYPE_DETAIL)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     user_id = str(current_user.get("id", ""))
@@ -86,7 +88,7 @@ async def check_lock_status(
     """
     res_type = resource_type.upper()
     if res_type not in ("ALERT", "CASE"):
-        raise HTTPException(status_code=400, detail="Invalid resource_type. Must be 'ALERT' or 'CASE'.")
+        raise HTTPException(status_code=400, detail=INVALID_RESOURCE_TYPE_DETAIL)
 
     return await get_resource_lock_status(res_type, resource_id)
 
@@ -104,7 +106,7 @@ async def refresh_lock(
     """
     res_type = resource_type.upper()
     if res_type not in ("ALERT", "CASE"):
-        raise HTTPException(status_code=400, detail="Invalid resource_type. Must be 'ALERT' or 'CASE'.")
+        raise HTTPException(status_code=400, detail=INVALID_RESOURCE_TYPE_DETAIL)
 
     user_id = str(current_user.get("id", ""))
     ttl = payload.ttl_seconds if payload and payload.ttl_seconds else DEFAULT_LOCK_TTL_SECONDS
@@ -142,7 +144,7 @@ async def release_lock(
     """
     res_type = resource_type.upper()
     if res_type not in ("ALERT", "CASE"):
-        raise HTTPException(status_code=400, detail="Invalid resource_type. Must be 'ALERT' or 'CASE'.")
+        raise HTTPException(status_code=400, detail=INVALID_RESOURCE_TYPE_DETAIL)
 
     user_id = str(current_user.get("id", ""))
     user_role = current_user.get("role", "ANALYST")

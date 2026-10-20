@@ -172,7 +172,6 @@ FEATURE_NAMES = [
 def load_dataset(path: str, max_rows: int = MAX_ROWS) -> tuple[np.ndarray, np.ndarray]:
     logger.info(f"Loading up to {max_rows:,} rows from {path}...")
     X, y = [], []
-    n_total = 0
     n_errors = 0
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -180,7 +179,6 @@ def load_dataset(path: str, max_rows: int = MAX_ROWS) -> tuple[np.ndarray, np.nd
         next(reader)  # skip header
         for row in reader:
             result = extract_features(row)
-            n_total += 1
             if result is None:
                 n_errors += 1
                 continue
@@ -321,9 +319,9 @@ def main():
     t3 = time.time()
     xgb_model = pipeline.named_steps["classifier"]
     scaler = pipeline.named_steps["scaler"]
-    X_test_scaled = scaler.transform(X_test[:2000])
+    x_test_scaled = scaler.transform(X_test[:2000])
     explainer = shap.TreeExplainer(xgb_model)
-    shap_values = explainer.shap_values(X_test_scaled)
+    shap_values = explainer.shap_values(x_test_scaled)
     mean_abs_shap = np.abs(shap_values).mean(axis=0)
     feature_importances = dict(zip(FEATURE_NAMES, [round(float(v), 6) for v in mean_abs_shap]))
     sorted_importances = dict(sorted(feature_importances.items(), key=lambda x: x[1], reverse=True))

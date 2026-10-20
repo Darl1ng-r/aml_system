@@ -39,7 +39,7 @@ def mask_account_number(acc: str) -> str:
     return ("*" * (len(s) - 4)) + s[-4:]
 
 
-def mask_pii_data(data: Union[Dict[str, Any], List[Any], Any], role: str = "AUDITOR") -> Any:
+def mask_pii_data(data: dict[str, Any] | list[Any] | Any, role: str = "AUDITOR") -> Any:
     """
     Recursively scans and masks PII fields if user role is AUDITOR or GLOBAL_AUDITOR.
     """

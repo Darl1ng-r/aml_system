@@ -46,7 +46,7 @@ async def sync_watchlists(
 
         return result
     except Exception as e:
-        logger.error(f"Watchlist synchronization failed: {e}")
+        logger.exception("Watchlist synchronization failed")
         raise HTTPException(status_code=500, detail=f"Watchlist sync failed: {str(e)}")
 
 
@@ -66,7 +66,7 @@ async def trigger_cdd_rescreen(
         res = await trigger_ongoing_cdd_rescreening(tenant_id=str(tenant_id))
         return res
     except Exception as e:
-        logger.error(f"CDD re-screening invocation failed: {e}")
+        logger.exception("CDD re-screening invocation failed")
         raise HTTPException(status_code=500, detail=f"CDD re-screening failed: {str(e)}")
 
 
@@ -89,5 +89,5 @@ async def get_watchlist_status(
             "last_synced_at": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
-        logger.error(f"Failed to query watchlist status: {e}")
+        logger.exception("Failed to query watchlist status")
         raise HTTPException(status_code=500, detail=f"Failed to query status: {str(e)}")

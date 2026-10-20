@@ -20,6 +20,10 @@ from observability.sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
 
+INVALID_CASE_ID = "Invalid case ID format."
+CASE_NOT_FOUND = "Case not found."
+SELECT_CASE_BY_ID_AND_TENANT = "SELECT * FROM cases WHERE id = $1 AND tenant_id = $2;"
+
 router = APIRouter(prefix="/api/v1/cases", tags=["Case Management"])
 
 
@@ -202,16 +206,16 @@ async def get_case_detail(
     try:
         case_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid case ID format.")
+        raise HTTPException(status_code=400, detail=INVALID_CASE_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
         case_row = await conn.fetchrow(
-            "SELECT * FROM cases WHERE id = $1 AND tenant_id = $2;",
+            SELECT_CASE_BY_ID_AND_TENANT,
             case_uuid, uuid.UUID(str(tenant_id))
         )
         if not case_row:
-            raise HTTPException(status_code=404, detail="Case not found.")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
 
         # Fetch linked alerts
         alert_rows = await conn.fetch(
@@ -273,7 +277,7 @@ async def add_case_note(
     try:
         case_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid case ID format.")
+        raise HTTPException(status_code=400, detail=INVALID_CASE_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -282,7 +286,7 @@ async def add_case_note(
             case_uuid, uuid.UUID(str(tenant_id))
         )
         if not case_row:
-            raise HTTPException(status_code=404, detail="Case not found.")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
 
         # State transition check (STATE-01): cannot add notes to closed case without elevated privileges
         if case_row["status"] == "CLOSED" and current_user.get("role") not in ("ADMIN", "MLRO"):
@@ -319,16 +323,16 @@ async def update_case(
     try:
         case_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid case ID format.")
+        raise HTTPException(status_code=400, detail=INVALID_CASE_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         case_row = await conn.fetchrow(
-            "SELECT * FROM cases WHERE id = $1 AND tenant_id = $2;",
+            SELECT_CASE_BY_ID_AND_TENANT,
             case_uuid, uuid.UUID(str(tenant_id))
         )
         if not case_row:
-            raise HTTPException(status_code=404, detail="Case not found.")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
 
         if payload.status:
             validate_case_transition(case_row["status"], payload.status)
@@ -388,16 +392,16 @@ async def close_case(
     try:
         case_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid case ID format.")
+        raise HTTPException(status_code=400, detail=INVALID_CASE_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         case_row = await conn.fetchrow(
-            "SELECT * FROM cases WHERE id = $1 AND tenant_id = $2;",
+            SELECT_CASE_BY_ID_AND_TENANT,
             case_uuid, uuid.UUID(str(tenant_id))
         )
         if not case_row:
-            raise HTTPException(status_code=404, detail="Case not found.")
+            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
 
         # State machine validation (STATE-01): Deterministic FSM transition guard
         validate_case_transition(case_row["status"], "CLOSED")

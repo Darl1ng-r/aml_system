@@ -35,7 +35,7 @@ def run_evaluation(sample_rows=50000):
     
     with open(TRANS_PATH, "r", encoding="utf-8", errors="ignore") as f:
         reader = csv.reader(f)
-        header = next(reader)
+        next(reader, None)
         
         # Header: Timestamp,From Bank,Account,To Bank,Account,Amount Received,Receiving Currency,Amount Paid,Payment Currency,Payment Format,Is Laundering
         for row in reader:
@@ -47,8 +47,6 @@ def run_evaluation(sample_rows=50000):
                 from_acc = row[2]
                 to_bank = row[3]
                 to_acc = row[4]
-                amt_received = float(row[5])
-                currency_rec = row[6]
                 amt_paid = float(row[7])
                 currency_paid = row[8]
                 pay_format = row[9]
@@ -68,7 +66,7 @@ def run_evaluation(sample_rows=50000):
                 
                 if len(transactions) >= sample_rows:
                     break
-            except Exception as e:
+            except Exception:
                 pass
                 
     print(f"Loaded {len(transactions)} transactions.")

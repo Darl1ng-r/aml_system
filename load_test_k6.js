@@ -20,7 +20,7 @@ const accounts = [
   "RU11223344556677889900"
 ];
 
-export default function () {
+export default function runLoadTest() {
   const url = 'http://localhost:8000/api/v1/transactions';
   const sender = accounts[Math.floor(Math.random() * accounts.length)];
   const receiver = accounts[Math.floor(Math.random() * accounts.length)];
@@ -28,7 +28,7 @@ export default function () {
   const payload = JSON.stringify({
     sender_account_id: sender,
     receiver_account_id: receiver,
-    amount: parseFloat((Math.random() * 12000 + 20).toFixed(2)),
+    amount: Number.parseFloat((Math.random() * 12000 + 20).toFixed(2)),
     currency: 'USD',
     country: 'US',
     merchant: 'Global Settlement Core',

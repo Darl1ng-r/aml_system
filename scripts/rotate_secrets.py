@@ -24,7 +24,7 @@ def main():
     parser.add_argument("--set-jwt-keys", type=str, help="Set comma-separated JWT secret keys (active_key,old_key1,...)")
     args = parser.parse_args()
 
-    if args.generate-jwt-key if hasattr(args, "generate-jwt-key") else args.generate_jwt_key:
+    if getattr(args, "generate_jwt_key", False):
         new_key = secrets.token_hex(32)
         current_active = get_jwt_signing_key()
         print("\n🔑 Generated New 256-bit JWT Secret Key:")

@@ -67,7 +67,7 @@ def compute_betweenness_centrality(graph: dict) -> dict:
     for targets in graph.values():
         all_nodes.update(targets)
 
-    cb = {node: 0.0 for node in all_nodes}
+    cb = dict.fromkeys(all_nodes, 0.0)
 
     for s in all_nodes:
         # Stack S, path list P, sigma (path count) g, distance d, delta (dependency)
@@ -90,7 +90,7 @@ def compute_betweenness_centrality(graph: dict) -> dict:
                     g[w] += g[v]
                     P[w].append(v)
 
-        delta = {w: 0.0 for w in all_nodes}
+        delta = dict.fromkeys(all_nodes, 0.0)
         while S:
             w = S.pop()
             for v in P[w]:
@@ -427,8 +427,8 @@ async def run_network_analysis(
             all_nodes = set(graph.keys())
             for targets in graph.values():
                 all_nodes.update(targets)
-            in_degrees = {node: 0 for node in all_nodes}
-            out_degrees = {node: 0 for node in all_nodes}
+            in_degrees = dict.fromkeys(all_nodes, 0)
+            out_degrees = dict.fromkeys(all_nodes, 0)
             for u, neighbors in graph.items():
                 out_degrees[u] = len(neighbors)
                 for v in neighbors:

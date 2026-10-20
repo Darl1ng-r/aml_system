@@ -29,14 +29,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/install/bin:$PATH" \
     PYTHONPATH="/install/lib/python3.11/site-packages:$PYTHONPATH"
 
+# Runtime dependencies and unprivileged user
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Security: Run as unprivileged non-root user
-RUN groupadd -g 10001 appgroup && \
-    useradd -u 10001 -g appgroup -s /bin/bash -m appuser
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 10001 appgroup \
+    && useradd -u 10001 -g appgroup -s /bin/bash -m appuser
 
 COPY --from=builder /install /install
 COPY --chown=appuser:appgroup . /app

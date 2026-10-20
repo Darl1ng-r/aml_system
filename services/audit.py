@@ -30,13 +30,14 @@ async def record_audit_event_tx(
     session_id: Optional[str] = None,
     before_state: Optional[Dict[str, Any]] = None,
     after_state: Optional[Dict[str, Any]] = None,
-    details: Optional[Dict[str, Any]] = None
+    **kwargs: Any
 ) -> None:
     """
     Synchronously persists an immutable record into the append-only audit_log table
     within the caller's active database transaction/connection (conn).
     Guarantees zero dropped audit records on process crash or container SIGTERM eviction (AUDIT-01).
     """
+    details: Optional[Dict[str, Any]] = kwargs.get("details")
     t_uuid = None
     if tenant_id:
         try:

@@ -126,7 +126,7 @@ async def list_audit_logs(
                 "limit": limit
             }
     except Exception as e:
-        logger.error(f"Failed to query audit logs: {e}")
+        logger.exception("Failed to query audit logs")
         raise HTTPException(status_code=500, detail=f"Audit query failed: {str(e)}")
 
 
@@ -183,7 +183,7 @@ async def verify_audit_hash_chain(
             "verified_at": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
-        logger.error(f"Audit hash chain verification failed: {e}")
+        logger.exception("Audit hash chain verification failed")
         raise HTTPException(status_code=500, detail=f"Chain verification failed: {str(e)}")
 
 
@@ -351,5 +351,5 @@ async def get_audit_log_detail(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to fetch audit log detail: {e}")
+        logger.exception("Failed to fetch audit log detail")
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")

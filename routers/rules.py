@@ -12,6 +12,7 @@ import json
 import os
 import uuid
 import logging
+import asyncio
 from datetime import datetime, timezone
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from database.postgres import get_async_db_conn
@@ -20,6 +21,10 @@ from observability.logging import log_audit_event
 from services.rules import RulesEngine, get_rules_config
 
 logger = logging.getLogger(__name__)
+
+def _write_config_sync(path: str, data: dict) -> None:
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
 router = APIRouter(prefix="/api/v1/rules", tags=["Rules Configuration & Builder"])
 
@@ -132,7 +137,12 @@ async def patch_rule(
                 tenant_uuid, rule_name
             )
 
-            new_enabled = payload.enabled if payload.enabled is not None else (current_row["enabled"] if current_row else True)
+            if payload.enabled is not None:
+                new_enabled = payload.enabled
+            elif current_row:
+                new_enabled = current_row["enabled"]
+            else:
+                new_enabled = True
             
             existing_config = {}
             if current_row and current_row["config"]:
@@ -214,7 +224,7 @@ async def patch_rule(
             "config": new_config
         }
     except Exception as e:
-        logger.error(f"Failed to update rule {rule_name}: {e}")
+        logger.exception("Failed to update rule %s", rule_name)
         raise HTTPException(status_code=500, detail=f"Failed to update rule {rule_name}: {e}")
 
 
@@ -323,8 +333,7 @@ async def update_legacy_rules_config(
 
         # 2. Persist to local disk file for node cache / offline mode
         try:
-            with open(CONFIG_PATH, "w") as f:
-                json.dump(payload, f, indent=2)
+            await asyncio.to_thread(_write_config_sync, CONFIG_PATH, payload)
         except Exception as fe:
             logger.warning(f"Failed to write local rules file: {fe}")
 

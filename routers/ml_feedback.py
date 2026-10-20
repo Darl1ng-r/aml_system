@@ -47,7 +47,7 @@ async def retrain_model_now(
                     "retrained_by": current_user["username"]
                 })
         except Exception as e:
-            logger.error(f"Async model retraining failed: {e}")
+            logger.exception("Async model retraining failed")
 
     background_tasks.add_task(_async_retrain_and_broadcast)
 
@@ -82,7 +82,7 @@ async def get_feedback_stats(
                 "active_learning_status": "ACTIVE_ONLINE_RETRAINING"
             }
     except Exception as e:
-        logger.error(f"Failed to query feedback stats: {e}")
+        logger.exception("Failed to query feedback stats")
         raise HTTPException(status_code=500, detail=f"Failed to fetch feedback stats: {str(e)}")
 
 
@@ -178,7 +178,7 @@ async def get_alert_explainability(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Explainability lookup error: {e}")
+        logger.exception("Explainability lookup error")
         raise HTTPException(status_code=500, detail=f"Explainability lookup failed: {str(e)}")
 
 

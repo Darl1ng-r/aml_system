@@ -12,7 +12,7 @@ from typing import Any, Dict, Tuple, Union, List
 
 
 def generate_goaml_xml(
-    data: Union[Tuple, List, Dict[str, Any]],
+    data: tuple | list | dict[str, Any],
     narrative: str,
     reporting_entity: str = "AML-SENTINEL-FIU",
     report_code: str = "STR",

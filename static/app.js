@@ -223,12 +223,6 @@ function navigateQueue(direction) {
     selectCase(list[nextIdx].alert_id);
 }
 
-function fitVisGraph() {
-    if (visNetworkInstance) {
-        visNetworkInstance.fit();
-    }
-}
-
 async function initAuth() {
     const sessionActive = localStorage.getItem('auth_session_active') === 'true' || localStorage.getItem('jwt_token');
     if (!sessionActive) {

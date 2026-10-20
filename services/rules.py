@@ -77,7 +77,10 @@ class RulesEngine:
         receiver_bic: str = None,
         timestamp: datetime = None,
         tenant_id: str = None,
-        metadata: dict = None
+        metadata: dict = None,
+        sender_account_number: str = None,
+        receiver_account_number: str = None,
+        **kwargs
     ) -> list[str]:
         triggered_rules = []
         config = get_rules_config()
@@ -460,9 +463,10 @@ class RulesEngine:
             rapid_count = int(meta.get("rapid_conversion_count", 0))
             max_conversions = crypto_config.get("max_consecutive_conversions", 3)
             
-            if is_vasp and amount >= travel_rule_thresh and not travel_rule_complete:
-                triggered_rules.append("CRYPTO_FIAT_VASP_STRUCTURING")
-            elif is_vasp and rapid_count >= max_conversions:
+            if is_vasp and (
+                (amount >= travel_rule_thresh and not travel_rule_complete) or
+                (rapid_count >= max_conversions)
+            ):
                 triggered_rules.append("CRYPTO_FIAT_VASP_STRUCTURING")
 
         # Extract risk tier discount (FATF RBA)

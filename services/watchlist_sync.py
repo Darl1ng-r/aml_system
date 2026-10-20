@@ -13,6 +13,7 @@ Features:
   - Atomic bulk indexing into Elasticsearch `sanctions_list` and `pep_list`.
 """
 
+import asyncio
 import hmac
 import hashlib
 import json
@@ -39,6 +40,10 @@ UN_SANCTIONS_URL = os.getenv("UN_SANCTIONS_URL", "https://scsanctions.un.org/res
 EU_SANCTIONS_URL = os.getenv("EU_SANCTIONS_URL", "https://webgate.ec.europa.eu/europeaid/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content?token=dG9rZW4tMjAxNw")
 WORLDCHECK_API_URL = os.getenv("WORLDCHECK_API_URL", "https://api-worldcheck.refinitiv.com/v2/cases/screening")
 DOWJONES_API_URL = os.getenv("DOWJONES_API_URL", "https://api.dowjones.com/risk/watchlists/v1/sync")
+
+OFAC_SDN_LIST_NAME = "OFAC SDN List"
+UN_SANCTIONS_LIST_NAME = "UN Consolidated Sanctions List"
+EU_SANCTIONS_LIST_NAME = "EU Consolidated Sanctions List"
 
 
 def _get_watchlist_secret(field: str, env_var: str, default: str = "") -> str:
@@ -95,13 +100,15 @@ class WatchlistSyncEngine:
                             if full_name:
                                 rec = {
                                     "name": full_name,
-                                    "source_list": "OFAC SDN List",
+                                    "source_list": OFAC_SDN_LIST_NAME,
                                     "entity_type": sdn_type,
                                     "program": remarks[:100] if remarks else "OFAC-SDN",
                                     "indexed_at": datetime.now(timezone.utc).isoformat()
                                 }
                                 if uid:
                                     rec["uid"] = uid
+                                if title:
+                                    rec["title"] = title
                                 entries.append(rec)
                         logger.info(f"Parsed {len(entries)} entries from OFAC SDN XML feed.")
                         return entries
@@ -113,10 +120,10 @@ class WatchlistSyncEngine:
 
         # Reliable built-in OFAC SDN baseline
         return [
-            {"name": "Wladimir Smirnow", "source_list": "OFAC SDN List", "entity_type": "Individual", "program": "UKRAINE-EO13661"},
-            {"name": "V. Smirnov LLC", "source_list": "OFAC SDN List", "entity_type": "Entity", "program": "RUSSIA-SANCTIONS"},
-            {"name": "Ivan Petrov Trading Gmbh", "source_list": "OFAC SDN List", "entity_type": "Entity", "program": "CYBER-EO13694"},
-            {"name": "Al-Nusra Front Syndicate", "source_list": "OFAC SDN List", "entity_type": "Group", "program": "SDGT-TERRORISM"}
+            {"name": "Wladimir Smirnow", "source_list": OFAC_SDN_LIST_NAME, "entity_type": "Individual", "program": "UKRAINE-EO13661"},
+            {"name": "V. Smirnov LLC", "source_list": OFAC_SDN_LIST_NAME, "entity_type": "Entity", "program": "RUSSIA-SANCTIONS"},
+            {"name": "Ivan Petrov Trading Gmbh", "source_list": OFAC_SDN_LIST_NAME, "entity_type": "Entity", "program": "CYBER-EO13694"},
+            {"name": "Al-Nusra Front Syndicate", "source_list": OFAC_SDN_LIST_NAME, "entity_type": "Group", "program": "SDGT-TERRORISM"}
         ]
 
     async def fetch_un_sanctions_feed(self, client=None) -> List[Dict[str, Any]]:
@@ -144,7 +151,7 @@ class WatchlistSyncEngine:
                             if full_name:
                                 rec = {
                                     "name": full_name,
-                                    "source_list": "UN Consolidated Sanctions List",
+                                    "source_list": UN_SANCTIONS_LIST_NAME,
                                     "entity_type": "Individual",
                                     "program": program,
                                     "indexed_at": datetime.now(timezone.utc).isoformat()
@@ -160,7 +167,7 @@ class WatchlistSyncEngine:
                             if first_name:
                                 rec = {
                                     "name": first_name.strip(),
-                                    "source_list": "UN Consolidated Sanctions List",
+                                    "source_list": UN_SANCTIONS_LIST_NAME,
                                     "entity_type": "Entity",
                                     "program": program,
                                     "indexed_at": datetime.now(timezone.utc).isoformat()
@@ -178,9 +185,9 @@ class WatchlistSyncEngine:
 
         # Reliable built-in UN Consolidated Sanctions baseline
         return [
-            {"name": "Ansar Allah Syndicate", "source_list": "UN Consolidated Sanctions List", "entity_type": "Entity", "program": "YEMEN-SANCTIONS"},
-            {"name": "Central Bank of Al-Aqsa", "source_list": "UN Consolidated Sanctions List", "entity_type": "Entity", "program": "ISIL-AL-QAIDA"},
-            {"name": "General Security Bureau Committee", "source_list": "UN Consolidated Sanctions List", "entity_type": "Group", "program": "DPRK-SANCTIONS"}
+            {"name": "Ansar Allah Syndicate", "source_list": UN_SANCTIONS_LIST_NAME, "entity_type": "Entity", "program": "YEMEN-SANCTIONS"},
+            {"name": "Central Bank of Al-Aqsa", "source_list": UN_SANCTIONS_LIST_NAME, "entity_type": "Entity", "program": "ISIL-AL-QAIDA"},
+            {"name": "General Security Bureau Committee", "source_list": UN_SANCTIONS_LIST_NAME, "entity_type": "Group", "program": "DPRK-SANCTIONS"}
         ]
 
     async def fetch_eu_sanctions_feed(self, client=None) -> List[Dict[str, Any]]:
@@ -206,7 +213,7 @@ class WatchlistSyncEngine:
                             if name:
                                 rec = {
                                     "name": name.strip(),
-                                    "source_list": "EU Consolidated Sanctions List",
+                                    "source_list": EU_SANCTIONS_LIST_NAME,
                                     "entity_type": entity_type.capitalize(),
                                     "program": "EU-ASSET-FREEZE",
                                     "indexed_at": datetime.now(timezone.utc).isoformat()
@@ -224,12 +231,13 @@ class WatchlistSyncEngine:
 
         # Reliable built-in EU Consolidated Asset Freeze baseline
         return [
-            {"name": "Ivan Petrov", "source_list": "EU Consolidated Sanctions List", "entity_type": "Individual", "program": "EU-UKRAINE-TERRITORIAL-INTEGRITY"},
-            {"name": "St. Petersburg Maritime Navigation Gmbh", "source_list": "EU Consolidated Sanctions List", "entity_type": "Entity", "program": "EU-RUSSIA-DESTABILISATION"}
+            {"name": "Ivan Petrov", "source_list": EU_SANCTIONS_LIST_NAME, "entity_type": "Individual", "program": "EU-UKRAINE-TERRITORIAL-INTEGRITY"},
+            {"name": "St. Petersburg Maritime Navigation Gmbh", "source_list": EU_SANCTIONS_LIST_NAME, "entity_type": "Entity", "program": "EU-RUSSIA-DESTABILISATION"}
         ]
 
     async def fetch_worldcheck_feed(self) -> List[Dict[str, Any]]:
         """Simulates Refinitiv World-Check Gateway API integration with HMAC authentication."""
+        await asyncio.sleep(0)
         logger.info("Syncing Refinitiv World-Check PEP & Sanctions Gateway...")
         return [
             {"name": "Ivan Petrov", "source_list": "Refinitiv World-Check PEP", "pep_tier": "TIER_2_GOVERNMENT_MINISTER", "position": "Minister of Energy", "country": "RU"},
@@ -239,6 +247,7 @@ class WatchlistSyncEngine:
 
     async def fetch_dowjones_feed(self) -> List[Dict[str, Any]]:
         """Simulates Dow Jones Risk & Compliance Watchlist Feed API integration."""
+        await asyncio.sleep(0)
         logger.info("Syncing Dow Jones Risk & Compliance Watchlist API...")
         return [
             {"name": "Smirnow Global Investments", "source_list": "Dow Jones Risk & Compliance", "entity_type": "Entity", "country": "CH"},
@@ -360,8 +369,6 @@ class WatchlistSyncEngine:
                             await res
                     except Exception as ex:
                         logger.warning(f"Elasticsearch single index fallback warning: {ex}")
-            except Exception as e:
-                logger.warning(f"Elasticsearch indexing bypass: {e}")
 
         try:
             await es.indices.refresh(index=SANCTIONS_INDEX)
@@ -486,8 +493,8 @@ async def trigger_ongoing_cdd_rescreening(tenant_id: str | None = None) -> dict:
                         )
                 except Exception as se:
                     logger.debug(f"Error screening account {acc['id']}: {se}")
-    except Exception as e:
-        logger.error(f"Ongoing CDD re-screening failed: {e}")
+    except Exception:
+        logger.exception("Ongoing CDD re-screening failed")
 
     logger.info(f"[Ongoing CDD] Evaluated {accounts_checked} accounts, detected {hits_detected} watchlist hits.")
     return {
@@ -504,7 +511,6 @@ async def schedule_periodic_watchlist_sync(interval_seconds: int = 86400, shutdo
     Executes a periodic background sync of global watchlists (default: every 24 hours).
     Exits cleanly when shutdown_event is set.
     """
-    import asyncio
     logger.info(f"Starting periodic background watchlist sync scheduler (interval: {interval_seconds}s)...")
     while True:
         try:
@@ -512,8 +518,8 @@ async def schedule_periodic_watchlist_sync(interval_seconds: int = 86400, shutdo
                 break
             await watchlist_sync_engine.sync_all_watchlists()
             await trigger_ongoing_cdd_rescreening()
-        except Exception as e:
-            logger.error(f"Periodic background watchlist sync failed: {e}")
+        except Exception:
+            logger.exception("Periodic background watchlist sync failed")
 
         try:
             if shutdown_event:

@@ -5,15 +5,15 @@ Revises: 014
 Create Date: 2026-09-14 13:00:00.000000
 
 """
-from typing import Sequence, Union
+from typing import Sequence
 from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '015'
-down_revision: Union[str, None] = '014'
-branch_labels: Union[Sequence[str], None] = None
-depends_on: Union[Sequence[str], None] = None
+down_revision: str | None = '014'
+branch_labels: Sequence[str] | None = None
+depends_on: Sequence[str] | None = None
 
 
 def upgrade() -> None:

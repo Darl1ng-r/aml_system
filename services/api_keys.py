@@ -7,12 +7,15 @@ for automated transaction ingestion and batch screening consumers (GAP-21).
 
 import hashlib
 import hmac
+import logging
 import secrets
 import uuid
 from typing import Optional, Tuple, List, Dict, Any
 from datetime import datetime, timezone
 from fastapi import Request, HTTPException, status
 from database.postgres import get_async_db_conn
+
+logger = logging.getLogger("aml.api_keys")
 
 KEY_PREFIX_LENGTH = 8
 SECRET_LENGTH = 32
@@ -90,7 +93,7 @@ async def verify_api_key(raw_key: str) -> Optional[Dict[str, Any]]:
     if len(parts) != 4:
         return None
 
-    _, env, prefix, secret = parts
+    _, _, prefix, secret = parts
     hashed_input = hash_api_secret(secret)
 
     from database.postgres import get_async_db_read_conn
@@ -135,6 +138,6 @@ async def verify_api_key(raw_key: str) -> Optional[Dict[str, Any]]:
                 "scopes": scopes_val,
                 "is_m2m": True
             }
-    except Exception as e:
-        logger.error(f"Error in verify_api_key: {e}")
+    except Exception:
+        logger.exception("Error in verify_api_key")
         return None

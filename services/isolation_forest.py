@@ -60,11 +60,11 @@ class IsolationTree:
             
         # Partition data below and above the split value
         left_mask = X[:, split_feature] < split_value
-        X_left = X[left_mask]
-        X_right = X[~left_mask]
+        x_left = X[left_mask]
+        x_right = X[~left_mask]
         
-        left_node = self.fit(X_left, current_depth + 1)
-        right_node = self.fit(X_right, current_depth + 1)
+        left_node = self.fit(x_left, current_depth + 1)
+        right_node = self.fit(x_right, current_depth + 1)
         
         return Node(
             left=left_node,
@@ -104,14 +104,15 @@ class IsolationForestScratch:
         self.actual_subsample_size = subsample_size
         max_depth = int(math.ceil(math.log2(max(subsample_size, 2))))
         
+        rng = np.random.default_rng(42)
         self.trees = []
         for _ in range(self.n_estimators):
             # Select random subsample of indices without replacement
-            indices = np.random.choice(n_samples, size=subsample_size, replace=False)
-            X_sub = X[indices]
+            indices = rng.choice(n_samples, size=subsample_size, replace=False)
+            x_sub = X[indices]
             
             tree = IsolationTree(max_depth=max_depth)
-            tree.root = tree.fit(X_sub)
+            tree.root = tree.fit(x_sub)
             self.trees.append(tree)
             
         self.fitted = True
@@ -127,7 +128,7 @@ class IsolationForestScratch:
             
         subsample_size = getattr(self, "actual_subsample_size", min(self.max_samples, 256))
         c_denom = c_factor(subsample_size)
-        if c_denom == 0.0:
+        if abs(c_denom) < 1e-9:
             return 0.5
             
         paths = [tree.path_length(x, tree.root, 0) for tree in self.trees]
@@ -176,13 +177,13 @@ async def retrain_system_iforest():
         # If there are not enough transactions, seed synthetic samples
         if len(rows) < 10:
             logger.info("Not enough transactions in DB to train Isolation Forest. Seeding synthetic data for training.")
-            np.random.seed(42)
+            rng = np.random.default_rng(42)
             n_samples = 100
-            amounts = np.random.exponential(scale=3000, size=n_samples)
-            sender_risks = np.random.beta(a=2, b=5, size=n_samples)
-            receiver_risks = np.random.beta(a=2, b=5, size=n_samples)
-            hours = np.random.randint(0, 24, size=n_samples)
-            is_geo_risks = np.random.choice([0, 1], size=n_samples, p=[0.95, 0.05])
+            amounts = rng.exponential(scale=3000, size=n_samples)
+            sender_risks = rng.beta(a=2, b=5, size=n_samples)
+            receiver_risks = rng.beta(a=2, b=5, size=n_samples)
+            hours = rng.integers(0, 24, size=n_samples)
+            is_geo_risks = rng.choice([0, 1], size=n_samples, p=[0.95, 0.05])
             
             X_train = np.stack([amounts, sender_risks, receiver_risks, hours, is_geo_risks], axis=1)
         else:
@@ -213,8 +214,8 @@ async def retrain_system_iforest():
 
         _iforest_model = model
         logger.info(f"System-wide Isolation Forest trained successfully on {X_train.shape[0]} samples.")
-    except Exception as e:
-        logger.error(f"Failed to retrain Isolation Forest: {e}")
+    except Exception:
+        logger.exception("Failed to retrain Isolation Forest")
 
 async def get_iforest_score(amount: float, sender_risk: float, receiver_risk: float, hour: int, is_geo: int) -> float:
     global _iforest_model

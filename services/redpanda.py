@@ -20,6 +20,8 @@ from config import KAFKA_BOOTSTRAP_SERVERS, TRANSACTIONS_TOPIC
 
 logger = logging.getLogger(__name__)
 
+_background_tasks: set[asyncio.Future] = set()
+
 
 # ── OpenTelemetry trace-context helpers ────────────────────────────────────────
 def _inject_trace_headers() -> list[tuple[str, bytes]]:
@@ -60,7 +62,6 @@ async def _get_producer():
                 key_serializer=lambda k: k.encode("utf-8") if isinstance(k, str) else k,
                 # Reliability settings
                 acks="all",            # wait for all in-sync replicas to confirm
-                retries=3,
                 retry_backoff_ms=500,
                 request_timeout_ms=10_000,
                 compression_type="snappy",   # reduce wire size for high-volume topics
@@ -133,7 +134,9 @@ def publish_transaction(
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            asyncio.ensure_future(publish_transaction_async(transaction_payload, key=key, topic=topic))
+            task = asyncio.ensure_future(publish_transaction_async(transaction_payload, key=key, topic=topic))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
         else:
             loop.run_until_complete(publish_transaction_async(transaction_payload, key=key, topic=topic))
     except Exception as e:
@@ -161,7 +164,9 @@ def flush_producer():
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            asyncio.ensure_future(close_producer())
+            task = asyncio.ensure_future(close_producer())
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
         else:
             loop.run_until_complete(close_producer())
     except Exception:

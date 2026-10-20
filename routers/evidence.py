@@ -7,6 +7,7 @@ screenshots, and dossiers attached to AML cases.
 
 import os
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Response
@@ -16,6 +17,12 @@ from services.rate_limiter import RateLimiter
 from database.postgres import get_async_db_conn
 from observability.logging import log_audit_event
 from observability.sanitizer import sanitize_text
+
+DEFAULT_CONTENT_TYPE = "application/octet-stream"
+
+def _write_file_bytes(path: str, data: bytes) -> None:
+    with open(path, "wb") as f:
+        f.write(data)
 
 router = APIRouter(prefix="/api/v1/cases/{case_id}/evidence", tags=["Case Evidence Locker"])
 
@@ -41,7 +48,7 @@ class EvidenceCreatePayload(BaseModel):
     filename: str = Field(..., max_length=500)
     description: Optional[str] = Field(None, max_length=2000)
     tags: Optional[List[str]] = []
-    content_type: Optional[str] = "application/octet-stream"
+    content_type: Optional[str] = DEFAULT_CONTENT_TYPE
 
 
 @router.get("", response_model=List[EvidenceMetadata])
@@ -76,7 +83,7 @@ async def list_case_evidence(
                     id=str(r["id"]),
                     case_id=str(r["case_id"]),
                     filename=r["filename"],
-                    content_type=r["content_type"] or "application/octet-stream",
+                    content_type=r["content_type"] or DEFAULT_CONTENT_TYPE,
                     file_size=r["file_size"] or 0,
                     storage_key=r["storage_key"],
                     uploaded_by=str(r["uploaded_by"]) if r["uploaded_by"] else None,
@@ -132,8 +139,7 @@ async def upload_case_evidence(
     content = await file.read()
     file_size = len(content)
 
-    with open(stored_path, "wb") as f:
-        f.write(content)
+    await asyncio.to_thread(_write_file_bytes, stored_path, content)
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -146,7 +152,7 @@ async def upload_case_evidence(
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
                 """,
                 evidence_id, case_uuid, uuid.UUID(str(tenant_id)),
-                safe_filename, file.content_type or "application/octet-stream",
+                safe_filename, file.content_type or DEFAULT_CONTENT_TYPE,
                 file_size, stored_path, user_uuid, username, safe_description, parsed_tags
             )
 

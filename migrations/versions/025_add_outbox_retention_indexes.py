@@ -8,14 +8,14 @@ Changes:
   1. Creates idx_outbox_published_prune partial index on transactional_outbox(published_at)
      WHERE status = 'PUBLISHED' for high-throughput retention pruning without table lock contention.
 """
-from typing import Sequence, Union
+from typing import Sequence
 from alembic import op
 import sqlalchemy as sa
 
 revision: str = '025'
-down_revision: Union[str, None] = '024'
-branch_labels: Union[Sequence[str], None] = None
-depends_on: Union[Sequence[str], None] = None
+down_revision: str | None = '024'
+branch_labels: Sequence[str] | None = None
+depends_on: Sequence[str] | None = None
 
 
 def upgrade() -> None:

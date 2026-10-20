@@ -20,6 +20,9 @@ from observability.sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
 
+INVALID_ACCOUNT_ID = "Invalid account ID format."
+ACCOUNT_NOT_FOUND = "Account not found."
+
 router = APIRouter(prefix="/api/v1/accounts", tags=["Account Governance & EDD"])
 edd_router = APIRouter(prefix="/api/v1/edd", tags=["Enhanced Due Diligence"])
 
@@ -81,7 +84,7 @@ async def verify_account_cip(
     try:
         acc_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid account ID format.")
+        raise HTTPException(status_code=400, detail=INVALID_ACCOUNT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -90,7 +93,7 @@ async def verify_account_cip(
             acc_uuid, uuid.UUID(str(tenant_id))
         )
         if not acc:
-            raise HTTPException(status_code=404, detail="Account not found.")
+            raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
         await conn.execute(
             """
@@ -144,7 +147,7 @@ async def freeze_account(
     try:
         acc_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid account ID format.")
+        raise HTTPException(status_code=400, detail=INVALID_ACCOUNT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -153,7 +156,7 @@ async def freeze_account(
             acc_uuid, uuid.UUID(str(tenant_id))
         )
         if not acc:
-            raise HTTPException(status_code=404, detail="Account not found.")
+            raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
         await conn.execute(
             """
@@ -208,7 +211,7 @@ async def unfreeze_account(
     try:
         acc_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid account ID format.")
+        raise HTTPException(status_code=400, detail=INVALID_ACCOUNT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -217,7 +220,7 @@ async def unfreeze_account(
             acc_uuid, uuid.UUID(str(tenant_id))
         )
         if not acc:
-            raise HTTPException(status_code=404, detail="Account not found.")
+            raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
         await conn.execute(
             """
@@ -277,7 +280,7 @@ async def create_edd_request(
             acc_uuid, uuid.UUID(str(tenant_id))
         )
         if not acc:
-            raise HTTPException(status_code=404, detail="Account not found.")
+            raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
         user_uuid = uuid.UUID(str(current_user["id"])) if current_user.get("id") else None
 
@@ -362,7 +365,12 @@ async def decide_edd_request(
         if not edd_row:
             raise HTTPException(status_code=404, detail="EDD request not found.")
 
-        new_account_status = "ACTIVE" if payload.decision == "APPROVED" else ("CLOSED" if payload.decision == "EXIT_RELATIONSHIP" else "HELD_FOR_REVIEW")
+        if payload.decision == "APPROVED":
+            new_account_status = "ACTIVE"
+        elif payload.decision == "EXIT_RELATIONSHIP":
+            new_account_status = "CLOSED"
+        else:
+            new_account_status = "HELD_FOR_REVIEW"
         reviewer_uuid = uuid.UUID(str(current_user["id"])) if current_user.get("id") else None
 
         await conn.execute(

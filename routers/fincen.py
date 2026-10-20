@@ -27,6 +27,9 @@ from observability.sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
 
+INVALID_DRAFT_ID = "Invalid draft ID."
+SAR_DRAFT_NOT_FOUND = "SAR draft not found."
+
 router = APIRouter(prefix="/api/v1/fincen", tags=["FinCEN E-Filing"])
 
 
@@ -142,14 +145,24 @@ async def submit_sar_to_fincen(
                 alert_uuid
             )
             if existing:
-                row_id = existing.get("id") if hasattr(existing, "get") else (existing["id"] if "id" in existing else None)
-                row_alert_id = existing.get("alert_id") if hasattr(existing, "get") else (existing["alert_id"] if "alert_id" in existing else None)
+                if hasattr(existing, "get"):
+                    row_id = existing.get("id")
+                    row_alert_id = existing.get("alert_id")
+                else:
+                    row_id = existing["id"] if "id" in existing else None
+                    row_alert_id = existing["alert_id"] if "alert_id" in existing else None
+
                 is_mismatched_mock = (
                     (row_id and str(row_id) != str(alert_uuid)) and
                     (row_alert_id and str(row_alert_id) != str(alert_uuid))
                 )
                 if not is_mismatched_mock:
-                    tracking_id = existing.get("fincen_tracking_id") if hasattr(existing, "get") else (existing["fincen_tracking_id"] if "fincen_tracking_id" in existing else None)
+                    if hasattr(existing, "get"):
+                        tracking_id = existing.get("fincen_tracking_id")
+                    elif "fincen_tracking_id" in existing:
+                        tracking_id = existing["fincen_tracking_id"]
+                    else:
+                        tracking_id = None
                     if isinstance(tracking_id, str) and tracking_id:
                         await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
                         submitted_at = existing.get("fincen_submitted_at") if hasattr(existing, "get") else ""
@@ -229,7 +242,7 @@ async def submit_sar_to_fincen(
         await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        logger.error(f"FinCEN SAR submission failed: {e}")
+        logger.exception("FinCEN SAR submission failed")
         try:
             async with get_async_db_conn(tenant_id=tenant_id) as conn:
                 await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
@@ -304,7 +317,7 @@ async def submit_sar_to_fincen(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"FinCEN SAR post-filing persistence failed: {e}")
+        logger.exception("FinCEN SAR post-filing persistence failed")
         raise HTTPException(status_code=500, detail=f"FinCEN filing post-processing failed: {str(e)}")
 
 
@@ -446,13 +459,13 @@ async def review_sar_draft(
     try:
         draft_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid draft ID.")
+        raise HTTPException(status_code=400, detail=INVALID_DRAFT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         draft = await conn.fetchrow("SELECT * FROM sar_drafts WHERE id = $1;", draft_uuid)
         if not draft:
-            raise HTTPException(status_code=404, detail="SAR draft not found.")
+            raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
 
         if draft["status"] != "PENDING_MLRO_REVIEW":
             raise HTTPException(
@@ -520,7 +533,7 @@ async def get_sar_draft(
     try:
         draft_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid draft ID.")
+        raise HTTPException(status_code=400, detail=INVALID_DRAFT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -537,7 +550,7 @@ async def get_sar_draft(
             draft_uuid, uuid.UUID(str(tenant_id))
         )
         if not draft:
-            raise HTTPException(status_code=404, detail="SAR draft not found.")
+            raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
 
         return {
             "draft_id": str(draft["id"]),
@@ -575,7 +588,7 @@ async def update_sar_draft(
     try:
         draft_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid draft ID.")
+        raise HTTPException(status_code=400, detail=INVALID_DRAFT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -584,7 +597,7 @@ async def update_sar_draft(
             draft_uuid, uuid.UUID(str(tenant_id))
         )
         if not draft:
-            raise HTTPException(status_code=404, detail="SAR draft not found.")
+            raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
 
         if draft["status"] in ["APPROVED", "FILED"]:
             raise HTTPException(

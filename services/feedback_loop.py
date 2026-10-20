@@ -19,6 +19,8 @@ from services.isolation_forest import IsolationForestScratch, _iforest_model
 
 logger = logging.getLogger(__name__)
 
+_feedback_tasks: set[asyncio.Task] = set()
+
 
 
 class ActiveLearningFeedbackService:
@@ -89,11 +91,13 @@ class ActiveLearningFeedbackService:
                 count = await conn.fetchval("SELECT COUNT(*) FROM ml_feedback_samples;")
                 if count > 0 and count % 5 == 0:
                     logger.info(f"[Active Learning] Dispatching background online model retraining task ({count} samples recorded).")
-                    asyncio.create_task(self.retrain_model_with_feedback())
+                    task = asyncio.create_task(self.retrain_model_with_feedback())
+                    _feedback_tasks.add(task)
+                    task.add_done_callback(_feedback_tasks.discard)
 
                 return True
-        except Exception as e:
-            logger.error(f"Failed to record analyst feedback: {e}")
+        except Exception:
+            logger.exception("Failed to record analyst feedback")
             return False
 
     async def retrain_model_with_feedback(self) -> Dict[str, Any]:
@@ -171,7 +175,7 @@ class ActiveLearningFeedbackService:
                     "retrained_at": datetime.now(timezone.utc).isoformat()
                 }
         except Exception as e:
-            logger.error(f"Online retraining failed: {e}")
+            logger.exception("Online retraining failed")
             return {"status": "FAILED", "error": str(e)}
 
 

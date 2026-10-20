@@ -69,7 +69,7 @@ class ConnectionManager:
         is_global = message.get("is_system_broadcast", False)
         disconnected = []
 
-        for connection, info in list(self.active_connections.items()):
+        for connection, info in self.active_connections.items():
             # Enforce Tenant Isolation:
             # If target tenant is set, only broadcast to connections from that tenant
             # or global compliance overseers (SUPER_ADMIN, GLOBAL_AUDITOR).
@@ -138,7 +138,7 @@ async def start_redis_ws_listener(ws_mgr: ConnectionManager, shutdown_event: asy
                     await ws_mgr._send_local(data.get("message", {}), data.get("target_tenant_id"))
                 await asyncio.sleep(0.05)
             except asyncio.CancelledError:
-                break
+                raise
             except Exception as loop_err:
                 logger.debug(f"Redis WS listener error: {loop_err}")
                 await asyncio.sleep(1.0)

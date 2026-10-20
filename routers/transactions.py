@@ -129,8 +129,14 @@ async def ingest_transaction(
             if tenant_id:
                 enforce_tenant_data_scope(current_user, target_tenant_id=str(tenant_id))
 
-            sender_status = (row.get("sender_status") if hasattr(row, "get") else (row["sender_status"] if "sender_status" in row else None)) or "ACTIVE"
-            receiver_status = (row.get("receiver_status") if hasattr(row, "get") else (row["receiver_status"] if "receiver_status" in row else None)) or "ACTIVE"
+            if hasattr(row, "get"):
+                raw_sender_status = row.get("sender_status")
+                raw_receiver_status = row.get("receiver_status")
+            else:
+                raw_sender_status = row["sender_status"] if "sender_status" in row else None
+                raw_receiver_status = row["receiver_status"] if "receiver_status" in row else None
+            sender_status = raw_sender_status or "ACTIVE"
+            receiver_status = raw_receiver_status or "ACTIVE"
 
             if sender_status == "FROZEN":
                 raise HTTPException(
@@ -169,7 +175,7 @@ async def ingest_transaction(
     except Exception as e:
         if idemp_key:
             await clear_idempotency_key(idemp_key, tenant_id=str(user_tenant_id) if user_tenant_id else None)
-        logger.error(f"Database lookup failed for account: {e}")
+        logger.exception("Database lookup failed for account")
         raise HTTPException(status_code=500, detail="Database lookup failed during transaction validation.")
 
     # Step 2: Fetch Behavioral Baseline & Run Rules Engine
@@ -214,10 +220,9 @@ async def ingest_transaction(
         geo_config = rules_cfg.get("rules", {}).get("GEOGRAPHIC_SANCTIONS", {})
         high_risk_countries = geo_config.get("high_risk_countries", ["RU", "IR", "KP", "SY"])
         for bic in [sender_bic, receiver_bic]:
-            if bic and len(bic) >= 6:
-                if bic[4:6].upper() in high_risk_countries:
-                    is_geo = 1
-                    break
+            if bic and len(bic) >= 6 and bic[4:6].upper() in high_risk_countries:
+                is_geo = 1
+                break
                     
         # Get Isolation Forest Anomaly Score
         iforest_score = await get_iforest_score(
@@ -258,7 +263,7 @@ async def ingest_transaction(
         dynamic_score = dynamic_res["dynamic_risk_score"]
         explainability = dynamic_res["explainability"]
     except Exception as e:
-        logger.error(f"Failed to calculate dynamic risk scoring: {e}")
+        logger.exception("Failed to calculate dynamic risk scoring")
         # Fallback to standard ML model risk score
         dynamic_score = ai_score
         explainability = {
@@ -278,7 +283,14 @@ async def ingest_transaction(
     alert_triggered = dynamic_score >= 0.75 or len(triggered_rules) > 0
     decision = "HELD" if is_hard_hold else "APPROVED"
     tx_status = "HELD" if is_hard_hold else "COMPLETED"
-    threat_level = ("CRITICAL" if dynamic_score >= 0.90 else ("HIGH" if dynamic_score >= 0.75 else "MEDIUM")) if alert_triggered else "NONE"
+    if not alert_triggered:
+        threat_level = "NONE"
+    elif dynamic_score >= 0.90:
+        threat_level = "CRITICAL"
+    elif dynamic_score >= 0.75:
+        threat_level = "HIGH"
+    else:
+        threat_level = "MEDIUM"
 
     # Step 4: Write transaction to PostgreSQL
     tx_id = str(uuid.uuid4())
@@ -292,7 +304,13 @@ async def ingest_transaction(
                         sender_id, receiver_id
                     )
                     for acc in (locked_accounts or []):
-                        st = (acc.get("status") if hasattr(acc, "get") else (acc["status"] if "status" in acc else None)) or "ACTIVE"
+                        if hasattr(acc, "get"):
+                            raw_st = acc.get("status")
+                        elif "status" in acc:
+                            raw_st = acc["status"]
+                        else:
+                            raw_st = None
+                        st = raw_st or "ACTIVE"
                         if st == "FROZEN":
                             raise HTTPException(
                                 status_code=http_status.HTTP_403_FORBIDDEN,
@@ -322,7 +340,8 @@ async def ingest_transaction(
             # Create Alert if compliance triggered
             if alert_triggered:
                 # Deduce threat level
-                threat_level = "CRITICAL" if dynamic_score >= 0.90 else ("HIGH" if dynamic_score >= 0.75 else "MEDIUM")
+                if threat_level == "NONE":
+                    threat_level = "CRITICAL" if dynamic_score >= 0.90 else "HIGH"
                 rule_name = triggered_rules[0] if triggered_rules else "BEHAVIORAL_ANOMALY"
                 
                 # Blend standard attributions with dynamic scorer explainability
@@ -439,7 +458,7 @@ async def ingest_transaction(
     except Exception as e:
         if idemp_key:
             await clear_idempotency_key(idemp_key, tenant_id=str(user_tenant_id) if user_tenant_id else None)
-        logger.error(f"Failed to record transaction {tx_id}: {e}")
+        logger.exception("Failed to record transaction %s", tx_id)
         raise HTTPException(status_code=500, detail="Failed to record transaction due to internal database error.")
 
     # Step 5: Publish Scored Transaction to Redpanda for Async Graph Updates
@@ -674,7 +693,7 @@ async def get_transaction_by_id(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to fetch transaction {id}: {e}")
+        logger.exception("Failed to fetch transaction %s", id)
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 
 
@@ -763,5 +782,5 @@ async def list_transactions(
             response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Next-Cursor-Timestamp, X-Next-Cursor-ID"
             return transactions
     except Exception as e:
-        logger.error(f"Failed to list transactions: {e}")
+        logger.exception("Failed to list transactions")
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")

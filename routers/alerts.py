@@ -18,6 +18,10 @@ from typing import List
 import logging
 logger = logging.getLogger(__name__)
 
+INVALID_ALERT_ID = "Invalid alert ID format"
+ALERT_NOT_FOUND = "Alert not found"
+UPDATE_ZERO = "UPDATE 0"
+
 router = APIRouter(prefix="/api/v1/alerts", tags=["Alerts"])
 
 
@@ -154,7 +158,7 @@ async def get_alert_graph(
     try:
         alert_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+        raise HTTPException(status_code=400, detail=INVALID_ALERT_ID)
 
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
@@ -171,7 +175,7 @@ async def get_alert_graph(
                 alert_uuid
             )
             if not row:
-                raise HTTPException(status_code=404, detail="Alert not found")
+                raise HTTPException(status_code=404, detail=ALERT_NOT_FOUND)
             sender, receiver = row[0], row[1]
     except HTTPException:
         raise
@@ -315,7 +319,7 @@ async def resolve_alert(
                 uuid.UUID(id)
             )
             if not alert:
-                raise HTTPException(status_code=404, detail="Alert not found")
+                raise HTTPException(status_code=404, detail=ALERT_NOT_FOUND)
 
             current_status = alert["status"] or "OPEN"
             # Deterministic State Guard: Validate alert transition
@@ -330,7 +334,7 @@ async def resolve_alert(
                 """,
                 status, uuid.UUID(current_user["id"]), uuid.UUID(id), current_status
             )
-            if update_result == "UPDATE 0":
+            if update_result == UPDATE_ZERO:
                 raise HTTPException(
                     status_code=409,
                     detail=f"Conflict: Alert {id} was modified concurrently by another user."
@@ -448,7 +452,7 @@ async def get_alert_sar_narrative(
         )
         return narrative_res
     except Exception as e:
-        logger.error(f"Failed to generate SAR narrative for alert {id}: {e}")
+        logger.exception("Failed to generate SAR narrative for alert %s", id)
         raise HTTPException(status_code=500, detail=f"Failed to generate SAR narrative: {str(e)}")
 
 
@@ -483,8 +487,8 @@ async def assign_alert(
                 "UPDATE alerts SET assigned_officer_id = $1 WHERE id = $2;",
                 officer["id"], uuid.UUID(id)
             )
-            if updated == "UPDATE 0":
-                raise HTTPException(status_code=404, detail="Alert not found.")
+            if updated == UPDATE_ZERO:
+                raise HTTPException(status_code=404, detail=ALERT_NOT_FOUND)
 
             # Broadcast WebSocket update with strict tenant isolation (B3)
             from routers.metrics import ws_manager
@@ -524,7 +528,7 @@ async def escalate_alert(
     try:
         alert_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+        raise HTTPException(status_code=400, detail=INVALID_ALERT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     justification = payload.justification if payload and payload.justification else "Escalated to Senior Review Committee."
@@ -543,7 +547,7 @@ async def escalate_alert(
                 alert_uuid
             )
             if not alert_row:
-                raise HTTPException(status_code=404, detail="Alert not found")
+                raise HTTPException(status_code=404, detail=ALERT_NOT_FOUND)
 
             current_st = alert_row["status"] if (alert_row and hasattr(alert_row, "__getitem__") and isinstance(alert_row["status"], str)) else "OPEN"
             validate_alert_transition(current_st, "ESCALATED")
@@ -557,8 +561,8 @@ async def escalate_alert(
                 """,
                 user_uuid, alert_uuid
             )
-            if updated == "UPDATE 0":
-                raise HTTPException(status_code=404, detail="Alert not found")
+            if updated == UPDATE_ZERO:
+                raise HTTPException(status_code=404, detail=ALERT_NOT_FOUND)
 
             # Persist to alert_escalations table (Sprint 1 / Section 1.2)
             try:
@@ -611,7 +615,7 @@ async def escalate_alert(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to escalate alert: {e}")
+        logger.exception("Failed to escalate alert")
         raise HTTPException(status_code=500, detail=f"Failed to escalate alert: {str(e)}")
 
 
@@ -629,7 +633,7 @@ async def claim_alert(
     try:
         alert_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+        raise HTTPException(status_code=400, detail=INVALID_ALERT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     user_uuid = None
@@ -646,10 +650,16 @@ async def claim_alert(
                 alert_uuid
             )
             if not alert_row:
-                raise HTTPException(status_code=404, detail="Alert not found")
+                raise HTTPException(status_code=404, detail=ALERT_NOT_FOUND)
 
             # Check if alert is already claimed by a DIFFERENT officer
-            assigned_officer = alert_row.get("assigned_officer_id") if hasattr(alert_row, "get") else (alert_row["assigned_officer_id"] if "assigned_officer_id" in alert_row else None)
+            if hasattr(alert_row, "get"):
+                assigned_officer = alert_row.get("assigned_officer_id")
+            elif "assigned_officer_id" in alert_row:
+                assigned_officer = alert_row["assigned_officer_id"]
+            else:
+                assigned_officer = None
+
             if isinstance(assigned_officer, (uuid.UUID, str)):
                 officer_str = str(assigned_officer)
                 if officer_str and officer_str != str(user_uuid) and officer_str != str(current_user.get("id")):
@@ -658,7 +668,12 @@ async def claim_alert(
                         detail=f"Conflict: Alert {id} is already claimed by another investigator."
                     )
 
-            raw_status = alert_row.get("status") if hasattr(alert_row, "get") else (alert_row["status"] if "status" in alert_row else "OPEN")
+            if hasattr(alert_row, "get"):
+                raw_status = alert_row.get("status")
+            elif "status" in alert_row:
+                raw_status = alert_row["status"]
+            else:
+                raw_status = "OPEN" 
             current_status = raw_status if isinstance(raw_status, str) else "OPEN"
             target_status = "IN_REVIEW" if current_status in ("NEW", "OPEN") else current_status
             validate_alert_transition(current_status, target_status)
@@ -674,7 +689,7 @@ async def claim_alert(
                 """,
                 user_uuid, alert_uuid
             )
-            if updated == "UPDATE 0":
+            if updated == UPDATE_ZERO:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Conflict: Alert {id} was claimed concurrently by another user."
@@ -709,7 +724,7 @@ async def claim_alert(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to claim alert: {e}")
+        logger.exception("Failed to claim alert")
         raise HTTPException(status_code=500, detail=f"Failed to claim alert: {e}")
 
 
@@ -724,7 +739,7 @@ async def get_alert_escalations(
     try:
         alert_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+        raise HTTPException(status_code=400, detail=INVALID_ALERT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
@@ -788,11 +803,11 @@ async def patch_alert(
     Supports status transitions (CLOSE_SAR, CLOSE_FALSE_POSITIVE, ESCALATED) and officer assignment.
     """
     try:
-        alert_uuid = uuid.UUID(id)
+        uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+        raise HTTPException(status_code=400, detail=INVALID_ALERT_ID)
 
-    tenant_id = enforce_tenant_data_scope(current_user)
+    enforce_tenant_data_scope(current_user)
 
     # 1. Handle officer assignment if requested
     if payload.officer_username:
@@ -847,7 +862,7 @@ async def get_alert_details(
     try:
         alert_uuid = uuid.UUID(id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid alert ID format")
+        raise HTTPException(status_code=400, detail=INVALID_ALERT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
@@ -874,7 +889,7 @@ async def get_alert_details(
                 alert_uuid
             )
             if not row:
-                raise HTTPException(status_code=404, detail="Alert not found")
+                raise HTTPException(status_code=404, detail=ALERT_NOT_FOUND)
 
             sender_id = row["sender_id"]
 
@@ -1016,7 +1031,7 @@ async def get_alert_details(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to load alert details: {e}")
+        logger.exception("Failed to load alert details")
         raise HTTPException(status_code=500, detail=f"Failed to load alert details: {str(e)}")
 
 
@@ -1159,7 +1174,7 @@ async def bulk_resolve_alerts(
                 "message": f"Successfully processed {count} alerts in batch transaction."
             }
     except Exception as e:
-        logger.error(f"Bulk alert action failed: {e}")
+        logger.exception("Bulk alert action failed")
         raise HTTPException(status_code=500, detail=f"Bulk action failed: {str(e)}")
 
 
@@ -1240,7 +1255,7 @@ async def export_alerts_csv(
                     if len(rows) < chunk_size:
                         break
         except Exception as e:
-            logger.error(f"CSV streaming failed: {e}")
+            logger.exception("CSV streaming failed")
             raise
 
     filename = f"aml_alerts_audit_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
@@ -1333,7 +1348,7 @@ async def export_alerts_pdf(
             """
             return HTMLResponse(content=html_content)
     except Exception as e:
-        logger.error(f"PDF/HTML report generation failed: {e}")
+        logger.exception("PDF/HTML report generation failed")
         raise HTTPException(status_code=500, detail=f"Report export failed: {str(e)}")
 
 def generate_sar_xml(alert_data, justification: str) -> str:

@@ -61,7 +61,7 @@ async def generate_str_batch(
 
         return result
     except Exception as e:
-        logger.error(f"Failed to compile STR batch: {e}")
+        logger.exception("Failed to compile STR batch")
         raise HTTPException(status_code=500, detail=f"STR batch compilation failed: {str(e)}")
 
 
@@ -100,7 +100,7 @@ async def list_str_batches(
                 })
             return {"batches": batches}
     except Exception as e:
-        logger.error(f"Failed to list STR batches: {e}")
+        logger.exception("Failed to list STR batches")
         raise HTTPException(status_code=500, detail=f"Failed to fetch batches: {str(e)}")
 
 
@@ -135,7 +135,7 @@ async def download_str_batch(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"STR batch download failed: {e}")
+        logger.exception("STR batch download failed")
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
 
 
@@ -190,5 +190,5 @@ async def transmit_str_batch(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"STR batch transmission failed: {e}")
+        logger.exception("STR batch transmission failed")
         raise HTTPException(status_code=500, detail=f"Transmission failed: {str(e)}")

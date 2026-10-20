@@ -49,8 +49,8 @@ async def iam_lifespan(app: FastAPI):
     try:
         await init_db_pool()
         logger.info("IAM PostgreSQL pool initialized.")
-    except Exception as e:
-        logger.error(f"IAM PostgreSQL pool init failed: {e}")
+    except Exception:
+        logger.exception("IAM PostgreSQL pool init failed")
         if not allow_offline:
             raise
 

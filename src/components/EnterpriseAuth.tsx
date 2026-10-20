@@ -50,7 +50,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [tenantId, setTenantId] = useState('00000000-0000-0000-0000-000000000001');
+  const [tenantId] = useState('00000000-0000-0000-0000-000000000001');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -71,7 +71,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
       length: pwd.length >= 12,
       hasUpper: /[A-Z]/.test(pwd),
       hasLower: /[a-z]/.test(pwd),
-      hasNumber: /[0-9]/.test(pwd),
+      hasNumber: /\d/.test(pwd),
       hasSymbol: /[^A-Za-z0-9]/.test(pwd),
     };
 
@@ -94,9 +94,9 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
     if (/([a-zA-Z0-9])\1{2,}/.test(pwd)) entropyBits = Math.max(0, entropyBits - 15);
 
     // Passphrase bonus (longer length with spaces or delimiter separators)
-    if (pwd.length >= 20 && /\s|[_\-]/.test(pwd)) entropyBits += 18;
+    if (pwd.length >= 20 && /\s|[_-]/.test(pwd)) entropyBits += 18;
 
-    let score = 0;
+    let score = 1;
     let label = 'Weak';
     let color = 'bg-rose-500';
 
@@ -112,10 +112,6 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
       score = 2;
       label = 'Fair';
       color = 'bg-amber-500';
-    } else {
-      score = 1;
-      label = 'Weak';
-      color = 'bg-rose-500';
     }
 
     return { score, entropyBits, label, color, checks };
@@ -280,6 +276,30 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
     }, 600);
   };
 
+  let submitButtonContent: React.ReactNode;
+  if (isLoading) {
+    submitButtonContent = (
+      <>
+        <RefreshCw className="w-4 h-4 animate-spin" />
+        <span>Authenticating with Argon2id...</span>
+      </>
+    );
+  } else if (mode === 'login') {
+    submitButtonContent = (
+      <>
+        <span>Access Cockpit</span>
+        <ArrowRight className="w-4 h-4" />
+      </>
+    );
+  } else {
+    submitButtonContent = (
+      <>
+        <span>Register Officer Profile</span>
+        <KeyRound className="w-4 h-4" />
+      </>
+    );
+  }
+
   return (
     <div className="w-full max-w-md mx-auto">
       {/* Container with Glassmorphism & Subtle Institutional Glow */}
@@ -300,7 +320,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
             <ShieldCheck className="w-6 h-6" />
           </div>
           <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-            AML Sentinel Core
+            <span>AML Sentinel Core</span>
             <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800">
               NIST 800-63B
             </span>
@@ -566,22 +586,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
             disabled={isLoading}
             className="w-full py-2.5 px-4 mt-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-medium text-sm flex items-center justify-center gap-2 transition duration-150 shadow-lg shadow-indigo-600/20 disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-offset-2 focus:ring-offset-slate-900"
           >
-            {isLoading ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Authenticating with Argon2id...</span>
-              </>
-            ) : mode === 'login' ? (
-              <>
-                <span>Access Cockpit</span>
-                <ArrowRight className="w-4 h-4" />
-              </>
-            ) : (
-              <>
-                <span>Register Officer Profile</span>
-                <KeyRound className="w-4 h-4" />
-              </>
-            )}
+            {submitButtonContent}
           </button>
         </form>
 
@@ -603,7 +608,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
                 onClick={() => handleSsoClick('google')}
                 className="flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-xs font-medium text-slate-300 hover:text-white transition"
               >
-                <svg className="w-4 h-4" viewBox="0 0 24 24">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" aria-hidden="true">
                   <path
                     fill="currentColor"
                     d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -628,7 +633,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
                 onClick={() => handleSsoClick('github')}
                 className="flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-xs font-medium text-slate-300 hover:text-white transition"
               >
-                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
                 </svg>
                 GitHub Corp

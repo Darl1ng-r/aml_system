@@ -195,6 +195,8 @@ async def refresh_resource_lock(
             if raw:
                 data = json.loads(raw)
                 if data.get("locked_by") == str(user_id):
+                    if lock_token and data.get("lock_token") and str(data.get("lock_token")) != str(lock_token):
+                        return False, {"detail": "Invalid lock token"}
                     data["expires_at"] = new_expires_at.isoformat()
                     data["ttl_seconds"] = ttl_seconds
                     await redis.set(key, json.dumps(data), ex=ttl_seconds)
@@ -219,6 +221,8 @@ async def refresh_resource_lock(
                 new_expires_at, res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(user_id))
             )
             if row:
+                if lock_token and row["lock_token"] and str(row["lock_token"]) != str(lock_token):
+                    return False, {"detail": "Invalid lock token"}
                 return True, {
                     "resource_type": row["resource_type"],
                     "resource_id": str(row["resource_id"]),

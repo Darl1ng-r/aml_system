@@ -74,12 +74,13 @@ def get_ssl_context(purpose: ssl.Purpose = ssl.Purpose.SERVER_AUTH) -> Optional[
         if os.path.exists(ca_path):
             ctx.load_verify_locations(cafile=ca_path)
             ctx.verify_mode = ssl.CERT_REQUIRED
+            ctx.check_hostname = True
             logger.info(f"Loaded internal CA root certificate from {ca_path}")
         else:
             if tls_required:
                 raise FileNotFoundError(f"Enabled/required TLS requires CA cert at {ca_path}")
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+            ctx.check_hostname = True
+            ctx.verify_mode = ssl.CERT_REQUIRED
 
         # Load Mutual TLS (mTLS) Client Certificate & Private Key if present
         if os.path.exists(cert_path) and os.path.exists(key_path):
@@ -90,7 +91,7 @@ def get_ssl_context(purpose: ssl.Purpose = ssl.Purpose.SERVER_AUTH) -> Optional[
 
         return ctx
     except Exception as e:
-        logger.error(f"Failed to configure SSLContext: {e}")
+        logger.exception("Failed to configure SSLContext")
         if tls_active:
             raise RuntimeError(f"Strict mTLS initialization failed: {e}") from e
         return None

@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sys
+from datetime import datetime
 
 # Ensure repository root is on Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -27,9 +28,125 @@ from services.isolation_forest import get_iforest_score
 from services.dynamic_scorer import compute_dynamic_risk
 from observability.logging import setup_json_logging
 
-from datetime import datetime
-
 logger = logging.getLogger("aml.scoring_worker")
+
+# Prevent premature garbage collection of background tasks
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _extract_hour_of_day(event: dict) -> int:
+    """Extracts transaction hour from event payload with graceful fallback."""
+    ts_val = event.get("timestamp")
+    if not ts_val:
+        return 12
+    try:
+        if isinstance(ts_val, str):
+            return datetime.fromisoformat(ts_val.replace("Z", "+00:00")).hour
+        if hasattr(ts_val, "hour"):
+            return ts_val.hour
+    except Exception:
+        pass
+    return 12
+
+
+def _determine_threat_level(dynamic_score: float) -> str:
+    """Categorizes threat severity based on calibrated dynamic risk threshold."""
+    if dynamic_score >= 0.90:
+        return "CRITICAL"
+    if dynamic_score >= 0.75:
+        return "HIGH"
+    return "MEDIUM"
+
+
+async def _fetch_account_row_from_db(tenant_id: str, sender_id: str, receiver_id: str):
+    """Queries account risks and 24h transaction velocity from DB."""
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            return await conn.fetchrow(
+                """
+                SELECT 
+                    s.risk_score AS sender_risk,
+                    r.risk_score AS receiver_risk,
+                    (SELECT COUNT(*) FROM transactions WHERE sender_account_id = s.id AND timestamp >= NOW() - INTERVAL '24 hours') AS velocity_24h
+                FROM accounts s
+                LEFT JOIN accounts r ON r.id = $2
+                WHERE s.id = $1;
+                """,
+                sender_id, receiver_id
+            )
+    except Exception as e:
+        logger.warning(f"Could not load account risk attributes from DB: {e}")
+        return None
+
+
+def _safe_float(val, fallback: float) -> float:
+    try:
+        return float(val) if val is not None else fallback
+    except (ValueError, TypeError):
+        return fallback
+
+
+def _safe_int(val, fallback: int) -> int:
+    try:
+        return int(val) if val is not None else fallback
+    except (ValueError, TypeError):
+        return fallback
+
+
+async def _resolve_account_features(
+    event: dict, tenant_id: str, sender_id: str, receiver_id: str
+) -> tuple[float, float, int]:
+    """Resolves risk attributes and velocity from payload or DB fallback."""
+    s_val = event.get("sender_risk")
+    r_val = event.get("receiver_risk")
+    v_val = event.get("velocity_count")
+
+    db_row = None
+    if s_val is None or r_val is None or v_val is None:
+        db_row = await _fetch_account_row_from_db(tenant_id, sender_id, receiver_id)
+
+    if s_val is None and db_row:
+        s_val = db_row.get("sender_risk")
+    if r_val is None and db_row:
+        r_val = db_row.get("receiver_risk")
+    if v_val is None and db_row:
+        v_val = db_row.get("velocity_24h")
+
+    return _safe_float(s_val, 0.2), _safe_float(r_val, 0.2), _safe_int(v_val, 1)
+
+
+async def _persist_scoring_decision(
+    tx_id: str,
+    tenant_id: str,
+    new_status: str,
+    alert_triggered: bool,
+    dynamic_score: float,
+    triggered_rules: list[str],
+    attributions: dict,
+    explainability: dict
+) -> None:
+    """Updates transaction status and inserts regulatory alert when triggered."""
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        await conn.execute(
+            "UPDATE transactions SET status = $1 WHERE id = $2 AND tenant_id = $3;",
+            new_status, tx_id, tenant_id
+        )
+
+        if alert_triggered:
+            threat_level = _determine_threat_level(dynamic_score)
+            rule_name = triggered_rules[0] if triggered_rules else "BEHAVIORAL_ANOMALY"
+            explainability_payload = {
+                "ml_attributions": attributions,
+                "dynamic_risk": explainability
+            }
+            await conn.execute(
+                """
+                INSERT INTO alerts (tenant_id, transaction_id, rule_name, threat_level, ai_risk_score, explainability_payload)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT DO NOTHING;
+                """,
+                tenant_id, tx_id, rule_name, threat_level, dynamic_score, json.dumps(explainability_payload)
+            )
 
 
 async def score_transaction(event: dict):
@@ -42,52 +159,10 @@ async def score_transaction(event: dict):
 
     logger.info(f"Processing async transaction scoring for tx={tx_id} tenant={tenant_id}")
 
-    # Extract real transaction features with fallback to DB lookup if missing from payload
-    sender_risk = float(event["sender_risk"]) if event.get("sender_risk") is not None else None
-    receiver_risk = float(event["receiver_risk"]) if event.get("receiver_risk") is not None else None
-    velocity_24h = int(event["velocity_count"]) if event.get("velocity_count") is not None else None
-
-    if sender_risk is None or receiver_risk is None or velocity_24h is None:
-        try:
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                row = await conn.fetchrow(
-                    """
-                    SELECT 
-                        s.risk_score AS sender_risk,
-                        r.risk_score AS receiver_risk,
-                        (SELECT COUNT(*) FROM transactions WHERE sender_account_id = s.id AND timestamp >= NOW() - INTERVAL '24 hours') AS velocity_24h
-                    FROM accounts s
-                    LEFT JOIN accounts r ON r.id = $2
-                    WHERE s.id = $1;
-                    """,
-                    sender_id, receiver_id
-                )
-                if row:
-                    if sender_risk is None and row["sender_risk"] is not None:
-                        sender_risk = float(row["sender_risk"])
-                    if receiver_risk is None and row["receiver_risk"] is not None:
-                        receiver_risk = float(row["receiver_risk"])
-                    if velocity_24h is None and row["velocity_24h"] is not None:
-                        velocity_24h = int(row["velocity_24h"])
-        except Exception as e:
-            logger.warning(f"Could not load account risk attributes from DB: {e}")
-
-    sender_risk = sender_risk if sender_risk is not None else 0.2
-    receiver_risk = receiver_risk if receiver_risk is not None else 0.2
-    velocity_24h = velocity_24h if velocity_24h is not None else 1
-
-    # Extract transaction hour
-    ts_val = event.get("timestamp")
-    hour_of_day = 12
-    if ts_val:
-        try:
-            if isinstance(ts_val, str):
-                hour_of_day = datetime.fromisoformat(ts_val.replace("Z", "+00:00")).hour
-            elif hasattr(ts_val, "hour"):
-                hour_of_day = ts_val.hour
-        except Exception:
-            hour_of_day = 12
-
+    sender_risk, receiver_risk, velocity_24h = await _resolve_account_features(
+        event, tenant_id, sender_id, receiver_id
+    )
+    hour_of_day = _extract_hour_of_day(event)
     is_geo = int(event.get("is_geo_risk", 0))
 
     # 1. Rules evaluation
@@ -96,7 +171,8 @@ async def score_transaction(event: dict):
         receiver_id=receiver_id,
         amount=amount,
         sender_account_number=event.get("sender_account", ""),
-        receiver_account_number=event.get("receiver_account", "")
+        receiver_account_number=event.get("receiver_account", ""),
+        tenant_id=tenant_id
     )
 
     # 2. ML scoring with real dynamic features
@@ -143,30 +219,16 @@ async def score_transaction(event: dict):
     new_status = "HELD" if is_hard_hold else "COMPLETED"
 
     # 5. Persist updates to PostgreSQL
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        await conn.execute(
-            "UPDATE transactions SET status = $1 WHERE id = $2 AND tenant_id = $3;",
-            new_status, tx_id, tenant_id
-        )
+    await _persist_scoring_decision(
+        tx_id, tenant_id, new_status, alert_triggered, dynamic_score,
+        triggered_rules, attributions, explainability
+    )
 
-        if alert_triggered:
-            threat_level = "CRITICAL" if dynamic_score >= 0.90 else ("HIGH" if dynamic_score >= 0.75 else "MEDIUM")
-            rule_name = triggered_rules[0] if triggered_rules else "BEHAVIORAL_ANOMALY"
-            explainability_payload = {
-                "ml_attributions": attributions,
-                "dynamic_risk": explainability
-            }
-            await conn.execute(
-                """
-                INSERT INTO alerts (tenant_id, transaction_id, rule_name, threat_level, ai_risk_score, explainability_payload)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT DO NOTHING;
-                """,
-                tenant_id, tx_id, rule_name, threat_level, dynamic_score, json.dumps(explainability_payload)
-            )
+    # 6. Recalculate baseline in background without premature garbage collection
+    task = asyncio.create_task(calculate_customer_baseline(str(sender_id)))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
-    # 6. Recalculate baseline in background
-    asyncio.create_task(calculate_customer_baseline(str(sender_id)))
     logger.info(f"Transaction tx={tx_id} evaluated: decision={decision} risk={dynamic_score:.3f}")
 
 

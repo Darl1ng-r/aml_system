@@ -31,10 +31,11 @@ logger = logging.getLogger(__name__)
 
 WHITELIST_PUBSUB_CHANNEL = "aml:whitelist:cache_invalidate"
 DEFAULT_WHITELIST_CACHE_TTL = 604800  # 7 days default TTL in Redis
+UTC_OFFSET_SUFFIX = "+00:00"
 
 # Fast in-memory L1 cache for whitelist evaluations (per-process micro-cache)
-# Key: f"{tenant_id}:{rule}:{entity_name.lower()}" -> dict(entry)
 _LOCAL_WHITELIST_STORE: Dict[str, Dict[str, Any]] = {}
+_background_tasks: set[asyncio.Future] = set()
 
 
 def clear_local_whitelist_cache(broadcast: bool = False):
@@ -48,7 +49,9 @@ def clear_local_whitelist_cache(broadcast: bool = False):
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.ensure_future(_broadcast_whitelist_invalidation({"action": "CLEAR"}))
+                task = asyncio.ensure_future(_broadcast_whitelist_invalidation({"action": "CLEAR"}))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
         except Exception as e:
             logger.debug(f"Failed to broadcast whitelist cache clear: {e}")
 
@@ -206,7 +209,7 @@ async def is_entity_whitelisted(
             cached = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:*:{entity_name.strip().lower()}")
         if cached:
             exp = cached.get("expires_at")
-            if not exp or datetime.fromisoformat(exp.replace("Z", "+00:00")) > now:
+            if not exp or datetime.fromisoformat(exp.replace("Z", UTC_OFFSET_SUFFIX)) > now:
                 return True
 
     if customer_id:
@@ -215,7 +218,7 @@ async def is_entity_whitelisted(
             cached_cust = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:*:cust:{customer_id}")
         if cached_cust:
             exp = cached_cust.get("expires_at")
-            if not exp or datetime.fromisoformat(exp.replace("Z", "+00:00")) > now:
+            if not exp or datetime.fromisoformat(exp.replace("Z", UTC_OFFSET_SUFFIX)) > now:
                 return True
 
     # ── Level 2: Distributed Redis L2 Cache ───────────────────────────────────
@@ -236,7 +239,7 @@ async def is_entity_whitelisted(
                 if raw_val:
                     entry = json.loads(raw_val)
                     exp = entry.get("expires_at")
-                    if not exp or datetime.fromisoformat(exp.replace("Z", "+00:00")) > now:
+                    if not exp or datetime.fromisoformat(exp.replace("Z", UTC_OFFSET_SUFFIX)) > now:
                         # Hydrate L1 cache for subsequent local calls
                         _LOCAL_WHITELIST_STORE[l1_key] = entry
                         return True
@@ -282,6 +285,21 @@ async def is_entity_whitelisted(
         if row:
             cleared_at_val = row.get("cleared_at")
             expires_at_val = row.get("expires_at")
+
+            if hasattr(cleared_at_val, "isoformat"):
+                cleared_at_str = cleared_at_val.isoformat()
+            elif cleared_at_val:
+                cleared_at_str = str(cleared_at_val)
+            else:
+                cleared_at_str = None
+
+            if hasattr(expires_at_val, "isoformat"):
+                expires_at_str = expires_at_val.isoformat()
+            elif expires_at_val:
+                expires_at_str = str(expires_at_val)
+            else:
+                expires_at_str = None
+
             db_entry = {
                 "id": str(row["id"]),
                 "tenant_id": str(row["tenant_id"]),
@@ -290,8 +308,8 @@ async def is_entity_whitelisted(
                 "matched_rule": row.get("matched_rule"),
                 "disposition": row.get("disposition", "FALSE_POSITIVE"),
                 "cleared_by": row.get("cleared_by"),
-                "cleared_at": cleared_at_val.isoformat() if hasattr(cleared_at_val, "isoformat") else (str(cleared_at_val) if cleared_at_val else None),
-                "expires_at": expires_at_val.isoformat() if hasattr(expires_at_val, "isoformat") else (str(expires_at_val) if expires_at_val else None),
+                "cleared_at": cleared_at_str,
+                "expires_at": expires_at_str,
                 "notes": row.get("notes")
             }
             # Hydrate L1 Cache

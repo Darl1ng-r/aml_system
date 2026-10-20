@@ -11,14 +11,14 @@ Changes:
   4. rule_configs — per-tenant, per-rule versioned rule configuration table with
      full audit trail, replacing the flat rules_configuration and JSON-file approach.
 """
-from typing import Sequence, Union
+from typing import Sequence
 from alembic import op
 import sqlalchemy as sa
 
 revision: str = '022'
-down_revision: Union[str, None] = '021'
-branch_labels: Union[Sequence[str], None] = None
-depends_on: Union[Sequence[str], None] = None
+down_revision: str | None = '021'
+branch_labels: Sequence[str] | None = None
+depends_on: Sequence[str] | None = None
 
 
 def upgrade() -> None:

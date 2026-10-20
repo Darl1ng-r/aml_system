@@ -9,14 +9,14 @@ Changes:
   2. customer_id and tax_id columns on accounts table for entity-level aggregation (TIN / Beneficial Ownership scoping).
   3. Row Level Security policy for multi-tenant isolation on whitelisted_entities.
 """
-from typing import Sequence, Union
+from typing import Sequence
 from alembic import op
 import sqlalchemy as sa
 
 revision: str = '024'
-down_revision: Union[str, None] = '023'
-branch_labels: Union[Sequence[str], None] = None
-depends_on: Union[Sequence[str], None] = None
+down_revision: str | None = '023'
+branch_labels: Sequence[str] | None = None
+depends_on: Sequence[str] | None = None
 
 
 def upgrade() -> None:

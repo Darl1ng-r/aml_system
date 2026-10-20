@@ -114,16 +114,19 @@ def name_similarity_score(s1: str, s2: str) -> float:
     
     return max(lev, jw, token_sort, token_set)
 
+OFAC_SDN_LIST = "OFAC SDN List"
+UN_SANCTIONS_LIST = "UN Consolidated Sanctions List"
+
 # Reliable built-in sanctions baseline dataset for resilient offline / in-engine screening
 SANCTIONS_BASELINE = [
-    {"name": "Vladimir Smirnov", "source_list": "OFAC SDN List", "entity_type": "Individual", "program": "UKRAINE-EO13661"},
-    {"name": "Wladimir Smirnow", "source_list": "OFAC SDN List", "entity_type": "Individual", "program": "UKRAINE-EO13661"},
-    {"name": "V. Smirnov LLC", "source_list": "OFAC SDN List", "entity_type": "Entity", "program": "RUSSIA-SANCTIONS"},
-    {"name": "Ivan Petrov Trading Gmbh", "source_list": "OFAC SDN List", "entity_type": "Entity", "program": "CYBER-EO13694"},
-    {"name": "Al-Nusra Front Syndicate", "source_list": "OFAC SDN List", "entity_type": "Group", "program": "SDGT-TERRORISM"},
-    {"name": "Ansar Allah Syndicate", "source_list": "UN Consolidated Sanctions List", "entity_type": "Entity", "program": "YEMEN-SANCTIONS"},
-    {"name": "Central Bank of Al-Aqsa", "source_list": "UN Consolidated Sanctions List", "entity_type": "Entity", "program": "ISIL-AL-QAIDA"},
-    {"name": "General Security Bureau Committee", "source_list": "UN Consolidated Sanctions List", "entity_type": "Group", "program": "DPRK-SANCTIONS"},
+    {"name": "Vladimir Smirnov", "source_list": OFAC_SDN_LIST, "entity_type": "Individual", "program": "UKRAINE-EO13661"},
+    {"name": "Wladimir Smirnow", "source_list": OFAC_SDN_LIST, "entity_type": "Individual", "program": "UKRAINE-EO13661"},
+    {"name": "V. Smirnov LLC", "source_list": OFAC_SDN_LIST, "entity_type": "Entity", "program": "RUSSIA-SANCTIONS"},
+    {"name": "Ivan Petrov Trading Gmbh", "source_list": OFAC_SDN_LIST, "entity_type": "Entity", "program": "CYBER-EO13694"},
+    {"name": "Al-Nusra Front Syndicate", "source_list": OFAC_SDN_LIST, "entity_type": "Group", "program": "SDGT-TERRORISM"},
+    {"name": "Ansar Allah Syndicate", "source_list": UN_SANCTIONS_LIST, "entity_type": "Entity", "program": "YEMEN-SANCTIONS"},
+    {"name": "Central Bank of Al-Aqsa", "source_list": UN_SANCTIONS_LIST, "entity_type": "Entity", "program": "ISIL-AL-QAIDA"},
+    {"name": "General Security Bureau Committee", "source_list": UN_SANCTIONS_LIST, "entity_type": "Group", "program": "DPRK-SANCTIONS"},
 ]
 
 
@@ -463,6 +466,13 @@ async def search_sanctions_and_pep(
         has_sanctions_hit = sanctions_res.get("match_found", False)
         has_pep_hit = pep_res.get("match_found", False)
 
+        if has_sanctions_hit:
+            source_list_val = sanctions_res.get("source_list")
+        elif has_pep_hit:
+            source_list_val = pep_res.get("source_list")
+        else:
+            source_list_val = "Clean"
+
         result = {
             "query_name": payload.name,
             "threshold": payload.threshold,
@@ -470,7 +480,7 @@ async def search_sanctions_and_pep(
             "sanctions_hit": sanctions_res,
             "pep_hit": pep_res,
             # Legacy compatibility fields
-            "source_list": sanctions_res.get("source_list") if has_sanctions_hit else (pep_res.get("source_list") if has_pep_hit else "Clean"),
+            "source_list": source_list_val,
             "score": max(sanctions_res.get("score", 0.0), pep_res.get("score", 0.0)),
             "matched_entry": sanctions_res.get("matched_entry") or pep_res.get("matched_entry")
         }

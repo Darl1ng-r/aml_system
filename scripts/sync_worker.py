@@ -302,6 +302,7 @@ async def run_kafka_consumer(neo4j_driver, shutdown_event: asyncio.Event):
 
     except asyncio.CancelledError:
         logger.info("Consumer task cancelled — shutting down.")
+        raise
     except Exception as e:
         logger.error(f"Consumer loop fatal error: {e}")
         raise

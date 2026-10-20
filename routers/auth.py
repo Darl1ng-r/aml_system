@@ -123,14 +123,16 @@ async def login(
     supabase_user = None
     if settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_"):
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-                async with session.post(
+            async with (
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session,
+                session.post(
                     f"{settings.supabase_url}/auth/v1/token?grant_type=password",
                     json=payload,
                     headers=headers
-                ) as resp:
-                    if resp.status == 200:
-                        supabase_user = await resp.json()
+                ) as resp
+            ):
+                if resp.status == 200:
+                    supabase_user = await resp.json()
         except Exception as e:
             logger.warning(f"Supabase auth unreachable: {e}. Falling back to local verification.")
             supabase_user = None
@@ -377,16 +379,18 @@ async def signup(
     supabase_data = None
     if settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_"):
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-                async with session.post(
+            async with (
+                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session,
+                session.post(
                     f"{settings.supabase_url}/auth/v1/signup",
                     json=signup_data,
                     headers=headers
-                ) as resp:
-                    if resp.status == 200:
-                        supabase_data = await resp.json()
-                    else:
-                        logger.warning(f"Supabase signup returned status {resp.status}. Falling back to local registration.")
+                ) as resp
+            ):
+                if resp.status == 200:
+                    supabase_data = await resp.json()
+                else:
+                    logger.warning(f"Supabase signup returned status {resp.status}. Falling back to local registration.")
         except Exception as e:
             logger.warning(f"Supabase auth unreachable during signup: {e}. Falling back to local registration.")
             supabase_data = None
@@ -518,8 +522,8 @@ async def signup(
         }
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Local signup failed: {e}")
+    except Exception:
+        logger.exception("Local signup failed")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered or invalid registration data"
@@ -809,8 +813,8 @@ async def refresh_access_token(
         raise credentials_exception
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Token refresh failed: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Token refresh failed")
         raise HTTPException(status_code=500, detail="Token refresh failed due to an internal error.")
 
 

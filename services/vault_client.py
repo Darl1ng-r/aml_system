@@ -18,6 +18,7 @@ Design decisions:
     decide whether to hard-fail or fall back to env vars.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -62,6 +63,7 @@ class VaultClient:
 
     async def authenticate_token(self, token: str) -> None:
         """Use a static Vault token (dev mode only — never use in production)."""
+        await asyncio.sleep(0)
         self._token = token
         logger.info("VaultClient: authenticated via static token (dev mode).")
 

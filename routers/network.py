@@ -63,13 +63,13 @@ async def expand_graph_node(
             if s_node:
                 s_id = s_node.get("id", str(s_node.element_id))
                 s_label = s_node.get("account_number") or s_node.get("name") or s_id
-                s_type = list(s_node.labels)[0] if s_node.labels else "Account"
+                s_type = next(iter(s_node.labels)) if s_node.labels else "Account"
                 nodes[s_id] = {"id": s_id, "label": s_label, "type": s_type, "properties": dict(s_node)}
 
             if c_node:
                 c_id = c_node.get("id", str(c_node.element_id))
                 c_label = c_node.get("account_number") or c_node.get("name") or c_id
-                c_type = list(c_node.labels)[0] if c_node.labels else "Account"
+                c_type = next(iter(c_node.labels)) if c_node.labels else "Account"
                 nodes[c_id] = {"id": c_id, "label": c_label, "type": c_type, "properties": dict(c_node)}
 
             rel_list = rels if isinstance(rels, list) else [rels]

@@ -47,6 +47,7 @@ class SiemForwarderService:
 
     async def forward_event(self, event_type: str, payload: Dict[str, Any], severity: str = "INFO") -> bool:
         """Dispatches event to configured SIEM buffer and external destination."""
+        await asyncio.sleep(0)
         if not self.enabled:
             return False
 

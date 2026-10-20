@@ -12,6 +12,7 @@ Uses Redis atomic key reservation (`SET NX EX`) to:
 
 import json
 import logging
+import asyncio
 from typing import Optional, Tuple, Any, Dict
 from fastapi import Request, HTTPException, status
 from database.redis_db import get_async_redis_client
@@ -157,6 +158,7 @@ async def clear_idempotency_key(
 
 async def extract_idempotency_key(request: Optional[Request] = None, body_key: Optional[str] = None) -> Optional[str]:
     """Extracts idempotency key from headers (Idempotency-Key or X-Idempotency-Key) or body."""
+    await asyncio.sleep(0)
     header_key = None
     if request is not None and hasattr(request, "headers"):
         header_key = request.headers.get("Idempotency-Key") or request.headers.get("X-Idempotency-Key")

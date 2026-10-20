@@ -2,11 +2,9 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Shield,
-  ShieldAlert,
   Play,
   PlayCircle,
   ArrowRight,
-  Zap,
   Activity,
   Network,
   ScanFace,
@@ -16,23 +14,15 @@ import {
   Key,
   Database,
   Server,
-  Check,
   X,
   RotateCw,
   AlertOctagon,
   Maximize2,
   Volume2,
   Menu,
-  FileText,
   Sliders,
-  Radio,
   Search,
   CheckCircle2,
-  AlertTriangle,
-  ChevronRight,
-  Info,
-  Layers,
-  BarChart3,
   Pause
 } from 'lucide-react';
 
@@ -341,7 +331,7 @@ const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
         if (renderer) {
           renderer.dispose();
           if (container.contains(renderer.domElement)) {
-            container.removeChild(renderer.domElement);
+            renderer.domElement.remove();
           }
         }
       };
@@ -371,13 +361,12 @@ const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
   };
 
   return (
-    <div
+    <section
       className="relative w-full rounded-xl overflow-hidden border border-[#DAD3C3] shadow-lg bg-[#1B1F2B]"
-      role="region"
       aria-label="Interactive 3D Global Money Flow Topology Visualizer"
     >
       {webGlAvailable ? (
-        <div ref={mountRef} className="w-full h-[480px] relative cursor-grab active:cursor-grabbing" tabIndex={0} />
+        <div ref={mountRef} className="w-full h-[480px] relative cursor-grab active:cursor-grabbing" role="application" aria-label="3D visualizer canvas" />
       ) : (
         /* Accessible High-Performance 2D Topology Fallback */
         <div className="w-full h-[480px] p-6 flex flex-col justify-between bg-gradient-to-b from-[#1B1F2B] to-[#141720]">
@@ -411,7 +400,7 @@ const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
                         : 'bg-[#4C7A5E]/20 text-[#4C7A5E]'
                     }`}
                   >
-                    Risk {node.risk}
+                    <span>Risk {node.risk}</span>
                   </span>
                 </div>
                 <div className="text-xs text-white truncate mt-1">{node.name}</div>
@@ -526,7 +515,7 @@ const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
           <span>Approved Clearing Hub</span>
         </div>
       </div>
-    </div>
+    </section>
   );
 };
 
@@ -1657,6 +1646,10 @@ export const AmlLandingPage: React.FC = () => {
             role="dialog"
             aria-modal="true"
             aria-label="Sentinel AML Cockpit Case Walkthrough Video"
+            tabIndex={-1}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setVideoModalOpen(false);
+            }}
             onClick={(e: React.MouseEvent<HTMLDivElement>) => {
               if (e.target === e.currentTarget) setVideoModalOpen(false);
             }}

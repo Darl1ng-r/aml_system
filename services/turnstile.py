@@ -41,16 +41,18 @@ async def verify_turnstile_token(token: str | None, remote_ip: str | None = None
 
     try:
         timeout = aiohttp.ClientTimeout(total=3.0)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(TURNSTILE_SITEVERIFY_URL, data=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    success = bool(data.get("success", False))
-                    if not success:
-                        logger.warning(f"Turnstile verification failed: {data.get('error-codes', [])}")
-                    return success
-                logger.warning(f"Turnstile siteverify endpoint returned HTTP {resp.status}")
-                return False
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.post(TURNSTILE_SITEVERIFY_URL, data=payload) as resp
+        ):
+            if resp.status == 200:
+                data = await resp.json()
+                success = bool(data.get("success", False))
+                if not success:
+                    logger.warning(f"Turnstile verification failed: {data.get('error-codes', [])}")
+                return success
+            logger.warning(f"Turnstile siteverify endpoint returned HTTP {resp.status}")
+            return False
     except Exception as e:
         logger.warning(f"Turnstile siteverify unreachable: {e}")
         # In non-production environments, fail open on network error to allow continuous development
