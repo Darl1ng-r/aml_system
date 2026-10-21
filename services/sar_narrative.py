@@ -97,16 +97,11 @@ def synthesize_5part_narrative(
     return part_1 + part_2 + part_3 + part_4 + part_5
 
 
-async def generate_sar_narrative(
+async def _fetch_sar_alert_row(
     alert_id: str,
     tenant_id: Optional[str] = None,
     conn=None,
-    analyst_id: Optional[str] = None,
-    justification_notes: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Gathers case and transaction context to generate an audit-grade 5-part SAR narrative.
-    """
+) -> dict:
     alert_uuid = uuid.UUID(str(alert_id))
     query = """
         SELECT a.id as alert_id, a.rule_name, a.threat_level, a.ai_risk_score,
@@ -135,8 +130,7 @@ async def generate_sar_narrative(
                 row = await db_conn.fetchrow(query, alert_uuid)
 
     if not row:
-        # Fallback dictionary for testing / offline execution
-        row = {
+        return {
             "alert_id": alert_id,
             "rule_name": "STRUCTURING_VELOCITY_24H",
             "threat_level": "CRITICAL",
@@ -160,8 +154,10 @@ async def generate_sar_narrative(
             "receiver_bic": "BOFAUS3NXXX",
             "receiver_tier": "STANDARD",
         }
+    return dict(row)
 
-    # Parse explainability
+
+def _parse_sar_explainability(row: dict) -> tuple[float, list[str]]:
     expl = {}
     try:
         raw_expl = row.get("explainability_payload")
@@ -174,7 +170,45 @@ async def generate_sar_narrative(
 
     dynamic_info = expl.get("dynamic_risk", {})
     zscore = float(dynamic_info.get("amount_zscore", 2.5))
-    top_drivers = expl.get("top_drivers") or dynamic_info.get("top_drivers", ["High transactional velocity", "Sub-threshold structuring"])
+    top_drivers = expl.get("top_drivers") or dynamic_info.get(
+        "top_drivers", ["High transactional velocity", "Sub-threshold structuring"]
+    )
+    return zscore, top_drivers
+
+
+async def _calculate_baseline_delta(
+    sender_id: Any,
+    tenant_id: Optional[str],
+    amount: float,
+    zscore: float,
+) -> float:
+    avg_baseline = None
+    if sender_id:
+        try:
+            from services.behavioral import get_customer_baseline
+            cust_base = await get_customer_baseline(str(sender_id), tenant_id=tenant_id)
+            if cust_base and "avg_amount" in cust_base and float(cust_base["avg_amount"]) > 0.0:
+                avg_baseline = float(cust_base["avg_amount"])
+        except Exception:
+            pass
+
+    if avg_baseline is not None and avg_baseline > 0.0:
+        return round(abs(amount - avg_baseline) / avg_baseline * 100.0, 1)
+    return round(max(abs(zscore) * 25.0, 10.0), 1)
+
+
+async def generate_sar_narrative(
+    alert_id: str,
+    tenant_id: Optional[str] = None,
+    conn=None,
+    analyst_id: Optional[str] = None,
+    justification_notes: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Gathers case and transaction context to generate an audit-grade 5-part SAR narrative.
+    """
+    row = await _fetch_sar_alert_row(alert_id, tenant_id, conn)
+    zscore, top_drivers = _parse_sar_explainability(row)
 
     amount = float(row.get("amount", 0.0))
     tx_time = row.get("tx_timestamp")
@@ -224,21 +258,9 @@ async def generate_sar_narrative(
         "Transaction exhibits severe deviation from established historical operating parameters."
     )
 
-    sender_id = row.get("sender_id")
-    avg_baseline = None
-    if sender_id:
-        try:
-            from services.behavioral import get_customer_baseline
-            cust_base = await get_customer_baseline(str(sender_id), tenant_id=tenant_id)
-            if cust_base and "avg_amount" in cust_base and float(cust_base["avg_amount"]) > 0.0:
-                avg_baseline = float(cust_base["avg_amount"])
-        except Exception:
-            pass
-
-    if avg_baseline is not None and avg_baseline > 0.0:
-        empirical_delta_pct = round(abs(amount - avg_baseline) / avg_baseline * 100.0, 1)
-    else:
-        empirical_delta_pct = round(max(abs(zscore) * 25.0, 10.0), 1)
+    empirical_delta_pct = await _calculate_baseline_delta(
+        row.get("sender_id"), tenant_id, amount, zscore
+    )
 
     suspicious_rationale = {
         "narrative_rationale": justification_notes or "Transaction identified by automated neural behavioral monitoring.",

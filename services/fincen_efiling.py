@@ -71,7 +71,7 @@ class FinCENEfilingClient:
             root = ET.fromstring(xml_str)
             return root.tag.endswith("SuspiciousActivityReport") or root.tag == "SuspiciousActivityReport"
         except ET.ParseError as e:
-            logger.error(f"FinCEN XML parse failure: {e}")
+            logger.exception(f"FinCEN XML parse failure: {e}")
             return False
 
     async def submit_sar(self, sar_xml: str, alert_id: str) -> Dict[str, Any]:
@@ -133,7 +133,7 @@ class FinCENEfilingClient:
                         "sandbox": False
                     }
         except Exception as e:
-            logger.error(f"FinCEN HTTP connection failed: {e}")
+            logger.exception(f"FinCEN HTTP connection failed: {e}")
             raise RuntimeError(f"FinCEN connection error: {str(e)}")
 
     async def generate_sar_narrative(

@@ -187,7 +187,7 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
             return baseline
 
     except Exception as e:
-        logger.error(f"Failed to calculate or cache customer baseline for {account_id}: {e}")
+        logger.exception(f"Failed to calculate or cache customer baseline for {account_id}: {e}")
         # Return fallback on error
         return {
             "account_id": account_id,

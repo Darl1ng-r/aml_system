@@ -16,7 +16,7 @@ Features:
 import logging
 import os
 import jwt
-from typing import List, Optional
+from typing import List, Optional, Any
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -195,6 +195,19 @@ def get_jwt_signing_key() -> str:
     return "default_development_secret_change_in_prod"
 
 
+def _append_keys(target_list: List[str], *sources: Any) -> None:
+    for source in sources:
+        if not source:
+            continue
+        if isinstance(source, str):
+            items = [k.strip() for k in source.split(",") if k.strip()]
+        else:
+            items = [k.strip() for k in source if k and str(k).strip()]
+        for item in items:
+            if item and item not in target_list:
+                target_list.append(item)
+
+
 def get_jwt_verification_keys() -> List[str]:
     """Returns ordered list of valid keys for verifying existing tokens.
     Supports zero-downtime rotation across asymmetric RSA public keys and legacy HMAC keys."""
@@ -202,31 +215,17 @@ def get_jwt_verification_keys() -> List[str]:
 
     # 1. Asymmetric RSA public key
     _, pub_pem = get_or_create_rsa_keypair()
-    if pub_pem not in keys:
+    if pub_pem:
         keys.append(pub_pem)
 
-    # 2. Vault symmetric keys
-    vault_keys_str = _secret_store().get("jwt.secret_keys", "")
-    if vault_keys_str:
-        for k in vault_keys_str.split(","):
-            cleaned = k.strip()
-            if cleaned and cleaned not in keys:
-                keys.append(cleaned)
-
-    # 3. Environment symmetric keys
-    keys_env = os.getenv("JWT_SECRET_KEYS", "")
-    if keys_env:
-        for k in keys_env.split(","):
-            cleaned = k.strip()
-            if cleaned and cleaned not in keys:
-                keys.append(cleaned)
-
-    for fk in _jwt_fallback_keys:
-        if fk and fk not in keys:
-            keys.append(fk)
-
-    if settings.jwt_secret_key and settings.jwt_secret_key not in keys:
-        keys.append(settings.jwt_secret_key)
+    # 2. Vault symmetric keys, environment symmetric keys, in-memory fallbacks, and settings key
+    _append_keys(
+        keys,
+        _secret_store().get("jwt.secret_keys", ""),
+        os.getenv("JWT_SECRET_KEYS", ""),
+        _jwt_fallback_keys,
+        settings.jwt_secret_key,
+    )
 
     return keys
 

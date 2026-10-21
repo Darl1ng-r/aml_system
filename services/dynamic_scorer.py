@@ -12,6 +12,86 @@ def _safe_float(val: any, default: float = 0.0) -> float:
         return default
 
 
+def _calc_z_score(safe_amount: float, baseline: dict) -> tuple[float, float]:
+    avg_amount = max(_safe_float(baseline.get("avg_amount", 0.0)), 0.0)
+    var_amount = max(_safe_float(baseline.get("variance_amount", 0.0)), 0.0)
+    if var_amount > 0.0:
+        std_amount = math.sqrt(var_amount)
+    elif "std_amount" in baseline and _safe_float(baseline.get("std_amount", 0.0)) > 0.0:
+        std_amount = _safe_float(baseline.get("std_amount"))
+    else:
+        std_amount = 0.0
+
+    if avg_amount > 0.0:
+        min_std = max(avg_amount * 0.1, 1.0)
+        effective_std = max(std_amount, min_std)
+        z_score = (safe_amount - avg_amount) / effective_std
+        z_score_prob = (
+            min(max((safe_amount - avg_amount) / (3.0 * effective_std), 0.0), 1.0)
+            if safe_amount > avg_amount
+            else 0.0
+        )
+        return z_score, z_score_prob
+    return 0.0, 0.0
+
+
+def _compute_pep_elevation(pep_tier: str | None) -> float:
+    if not pep_tier:
+        return 0.0
+    tier_str = str(pep_tier).upper()
+    if "TIER_1" in tier_str or "HEAD_OF_STATE" in tier_str:
+        return 0.25
+    if "TIER_2" in tier_str or "MINISTER" in tier_str or "GOVERNMENT" in tier_str:
+        return 0.15
+    if "TIER_3" in tier_str or "JUDICIARY" in tier_str:
+        return 0.10
+    return 0.05
+
+
+def _apply_floors(dynamic_score: float, z_score: float, c_taint: float, rules_triggered: list[str]) -> float:
+    score = dynamic_score
+    if rules_triggered:
+        score = max(score, 0.80)
+    if z_score >= 3.5:
+        score = max(score, 0.80)
+    if c_taint >= 0.70:
+        score = max(score, c_taint)
+    critical_rules = {"SANCTIONS_HIT", "CONDUIT_RAPID_PASSTHROUGH", "STRUCTURING_EXTENDED_7D"}
+    if any(r in critical_rules for r in rules_triggered):
+        score = max(score, 0.85)
+    return score
+
+
+def _extract_top_drivers(
+    rules_triggered: list[str],
+    z_score: float,
+    c_jurisdiction: float,
+    c_ml: float,
+    pep_tier: str | None,
+    c_taint: float,
+) -> list[str]:
+    top_drivers = []
+    if rules_triggered:
+        top_drivers.append(f"RULES_TRIGGERED: {', '.join(rules_triggered)}")
+    if z_score >= 2.0:
+        top_drivers.append(f"BEHAVIORAL_AMOUNT_SPIKE (Z={round(z_score, 2)})")
+    if c_jurisdiction >= 0.70:
+        top_drivers.append(f"HIGH_RISK_JURISDICTION ({round(c_jurisdiction, 2)})")
+    if c_ml >= 0.70:
+        top_drivers.append(f"AI_ANOMALY_CONFIDENCE ({round(c_ml, 2)})")
+    if pep_tier:
+        top_drivers.append(f"POLITICALLY_EXPOSED_PERSON ({pep_tier})")
+    if c_taint >= 0.50:
+        top_drivers.append(f"TRANSITIVE_TAINT_PROPAGATION ({round(c_taint, 2)})")
+    if any("CONDUIT" in r for r in rules_triggered):
+        top_drivers.append("CONDUIT_FUNDS_FLOW_THROUGH")
+    if any("STRUCTURING_EXTENDED" in r for r in rules_triggered):
+        top_drivers.append("EXTENDED_7D_STRUCTURING_CLUSTER")
+    if any("JUST_BELOW" in r for r in rules_triggered):
+        top_drivers.append("JUST_BELOW_CTR_REPORTING_THRESHOLD")
+    return top_drivers
+
+
 def compute_dynamic_risk(
     rules_triggered: list[str],
     ml_score: float,
@@ -34,28 +114,7 @@ def compute_dynamic_risk(
     """
     # 1. Input safety & Z-score calculation for transaction amount
     safe_amount = max(_safe_float(amount), 0.0)
-    avg_amount = max(_safe_float(baseline.get("avg_amount", 0.0)), 0.0)
-    var_amount = max(_safe_float(baseline.get("variance_amount", 0.0)), 0.0)
-    if var_amount > 0.0:
-        std_amount = math.sqrt(var_amount)
-    elif "std_amount" in baseline and _safe_float(baseline.get("std_amount", 0.0)) > 0.0:
-        std_amount = _safe_float(baseline.get("std_amount"))
-    else:
-        std_amount = 0.0
-    
-    if avg_amount > 0.0:
-        min_std = max(avg_amount * 0.1, 1.0)
-        # Robust near-zero variance guard: prevent catastrophic Z-score explosion
-        effective_std = max(std_amount, min_std)
-        z_score = (safe_amount - avg_amount) / effective_std
-        
-        if safe_amount > avg_amount:
-            z_score_prob = min(max((safe_amount - avg_amount) / (3.0 * effective_std), 0.0), 1.0)
-        else:
-            z_score_prob = 0.0
-    else:
-        z_score = 0.0
-        z_score_prob = 0.0
+    z_score, z_score_prob = _calc_z_score(safe_amount, baseline)
 
     # 2. Clamped Quant Inputs
     c_ml = min(max(_safe_float(ml_score), 0.0), 1.0)
@@ -74,64 +133,19 @@ def compute_dynamic_risk(
     base_score = base_ml_component + behavioral_component + crr_component
 
     # 4. PEP Tier Multiplier / Risk Elevation
-    pep_elevation = 0.0
-    if pep_tier:
-        tier_str = str(pep_tier).upper()
-        if "TIER_1" in tier_str or "HEAD_OF_STATE" in tier_str:
-            pep_elevation = 0.25
-        elif "TIER_2" in tier_str or "MINISTER" in tier_str or "GOVERNMENT" in tier_str:
-            pep_elevation = 0.15
-        elif "TIER_3" in tier_str or "JUDICIARY" in tier_str:
-            pep_elevation = 0.10
-        else:
-            pep_elevation = 0.05
-    
+    pep_elevation = _compute_pep_elevation(pep_tier)
+
     # 5. Rule trigger scaling / escalations (M4)
-    rule_applied = False
-    rule_elevation = 0.0
-    if rules_triggered:
-        rule_elevation = 0.25 * len(rules_triggered)
-        rule_applied = True
+    rule_applied = bool(rules_triggered)
+    rule_elevation = 0.25 * len(rules_triggered) if rules_triggered else 0.0
 
     # Pre-floor additive score
     unclamped_score = base_score + pep_elevation + rule_elevation
-    dynamic_score = unclamped_score
-
-    # Rule minimum floor
-    if rules_triggered:
-        dynamic_score = max(dynamic_score, 0.80)
-
-    # 6. Non-Compensatory Floors (Prevent ML-dilution alert suppression)
-    if z_score >= 3.5:
-        dynamic_score = max(dynamic_score, 0.80)
-    if c_taint >= 0.70:
-        dynamic_score = max(dynamic_score, c_taint)
-    critical_rules = {"SANCTIONS_HIT", "CONDUIT_RAPID_PASSTHROUGH", "STRUCTURING_EXTENDED_7D"}
-    if any(r in critical_rules for r in rules_triggered):
-        dynamic_score = max(dynamic_score, 0.85)
-
+    dynamic_score = _apply_floors(unclamped_score, z_score, c_taint, rules_triggered)
     final_score = round(min(max(dynamic_score, 0.0), 1.0), 4)
 
-    # 7. Institutional Top Drivers for Compliance Examination (Verafin standard)
-    top_drivers = []
-    if rules_triggered:
-        top_drivers.append(f"RULES_TRIGGERED: {', '.join(rules_triggered)}")
-    if z_score >= 2.0:
-        top_drivers.append(f"BEHAVIORAL_AMOUNT_SPIKE (Z={round(z_score, 2)})")
-    if c_jurisdiction >= 0.70:
-        top_drivers.append(f"HIGH_RISK_JURISDICTION ({round(c_jurisdiction, 2)})")
-    if c_ml >= 0.70:
-        top_drivers.append(f"AI_ANOMALY_CONFIDENCE ({round(c_ml, 2)})")
-    if pep_tier:
-        top_drivers.append(f"POLITICALLY_EXPOSED_PERSON ({pep_tier})")
-    if c_taint >= 0.50:
-        top_drivers.append(f"TRANSITIVE_TAINT_PROPAGATION ({round(c_taint, 2)})")
-    if any("CONDUIT" in r for r in rules_triggered):
-        top_drivers.append("CONDUIT_FUNDS_FLOW_THROUGH")
-    if any("STRUCTURING_EXTENDED" in r for r in rules_triggered):
-        top_drivers.append("EXTENDED_7D_STRUCTURING_CLUSTER")
-    if any("JUST_BELOW" in r for r in rules_triggered):
-        top_drivers.append("JUST_BELOW_CTR_REPORTING_THRESHOLD")
+    # 6. Institutional Top Drivers for Compliance Examination (Verafin standard)
+    top_drivers = _extract_top_drivers(rules_triggered, z_score, c_jurisdiction, c_ml, pep_tier, c_taint)
 
     # 8. Reconciled Attributions satisfying the Efficiency Axiom (OCC / Federal Reserve SR 11-7)
     # The sum of all additive factor contributions strictly equals final_score.

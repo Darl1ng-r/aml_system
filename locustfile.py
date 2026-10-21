@@ -1,6 +1,8 @@
-import random
+import secrets
 import uuid
 from locust import HttpUser, task, between
+
+prng = secrets.SystemRandom()
 
 class AMLIngestionUser(HttpUser):
     """
@@ -32,26 +34,26 @@ class AMLIngestionUser(HttpUser):
         # 10% chance of triggering Structuring ($9,000 - $9,999)
         # 5% chance of triggering Large CTR ($10,000+)
         # 85% chance of normal routine transaction ($10 - $2,500)
-        roll = random.random()
+        roll = prng.random()
         if roll < 0.10:
-            amount = round(random.uniform(9000.0, 9950.0), 2)
+            amount = round(prng.uniform(9000.0, 9950.0), 2)
         elif roll < 0.15:
-            amount = round(random.uniform(10500.0, 50000.0), 2)
+            amount = round(prng.uniform(10500.0, 50000.0), 2)
         else:
-            amount = round(random.uniform(15.0, 2500.0), 2)
+            amount = round(prng.uniform(15.0, 2500.0), 2)
 
-        sender = random.choice(self.test_accounts)
-        receiver = random.choice([acc for acc in self.test_accounts if acc != sender] or self.test_accounts)
+        sender = prng.choice(self.test_accounts)
+        receiver = prng.choice([acc for acc in self.test_accounts if acc != sender] or self.test_accounts)
 
         payload = {
             "sender_account_id": sender,
             "receiver_account_id": receiver,
             "amount": amount,
             "currency": "USD",
-            "country": random.choice(self.countries),
-            "merchant": random.choice(self.merchants),
-            "device": f"Terminal-{random.randint(1, 20):02d}",
-            "channel": random.choice(self.channels)
+            "country": prng.choice(self.countries),
+            "merchant": prng.choice(self.merchants),
+            "device": f"Terminal-{prng.randint(1, 20):02d}",
+            "channel": prng.choice(self.channels)
         }
 
         with self.client.post("/api/v1/transactions", json=payload, headers=self.headers, catch_response=True) as resp:

@@ -170,14 +170,16 @@ async def check_breached_password(password: str) -> bool:
     try:
         import hashlib
         import aiohttp
-        sha1_hash = hashlib.sha1(password.encode("utf-8")).hexdigest().upper()
+        # HIBP k-anonymity protocol requires SHA-1 prefix lookup
+        sha1_hash = hashlib.sha1(password.encode("utf-8"), usedforsecurity=False).hexdigest().upper()
         prefix = sha1_hash[:5]
         suffix = sha1_hash[5:]
 
         timeout = aiohttp.ClientTimeout(total=2.0)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(f"https://api.pwnedpasswords.com/range/{prefix}") as resp:
-                if resp.status == 200:
+        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+            f"https://api.pwnedpasswords.com/range/{prefix}"
+        ) as resp:
+            if resp.status == 200:
                     body = await resp.text()
                     for line in body.splitlines():
                         if ":" in line:
@@ -213,6 +215,78 @@ def create_refresh_token(data: dict) -> str:
     signing_key = get_jwt_signing_key()
     return jwt.encode(to_encode, signing_key, algorithm=ALGORITHM)
 
+def _resolve_auth_token(
+    request: Request | str | None,
+    bearer_token: str | None,
+    token: str | None,
+) -> str | None:
+    if isinstance(request, str):
+        return request
+    cookie_token = None
+    if request is not None and hasattr(request, "cookies"):
+        cookie_token = request.cookies.get("access_token")
+    return token or bearer_token or cookie_token
+
+
+async def _verify_token_version(user_id: str, token_version: Any) -> None:
+    if token_version is None:
+        return
+    try:
+        from database.redis_db import get_async_redis_client
+        redis = await get_async_redis_client()
+        if redis:
+            cached_ver = await redis.get(f"user:token_version:{user_id}")
+            if cached_ver is not None and int(cached_ver) > int(token_version):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Could not validate credentials",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+
+async def _verify_supabase_user(resolved_token: str, credentials_exception: HTTPException) -> dict:
+    if not (settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_")):
+        raise credentials_exception
+
+    headers = {
+        "Authorization": f"Bearer {resolved_token}",
+        "apikey": settings.supabase_key,
+    }
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session, session.get(
+            f"{settings.supabase_url}/auth/v1/user", headers=headers
+        ) as resp:
+            if resp.status != 200:
+                raise credentials_exception
+            user_data = await resp.json()
+            user_metadata = user_data.get("user_metadata", {})
+            role = user_metadata.get("role", "ANALYST")
+            email = user_data.get("email", "")
+            username = email.split("@")[0] if email else "anonymous"
+            tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+            user_id = user_data.get("id")
+            from observability.middleware import user_id_var, tenant_id_var
+            user_id_var.set(str(user_id))
+            tenant_id_var.set(str(tenant_id))
+            return {
+                "id": user_id,
+                "username": username,
+                "role": role,
+                "email": email,
+                "tenant_id": tenant_id,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Supabase auth verification failed: {e}")
+        raise credentials_exception
+
+
 async def get_current_user(
     request: Request = None,
     bearer_token: str | None = Depends(oauth2_scheme),
@@ -224,15 +298,7 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    if isinstance(request, str):
-        resolved_token = request
-        request = None
-    else:
-        cookie_token = None
-        if request is not None and hasattr(request, "cookies"):
-            cookie_token = request.cookies.get("access_token")
-        resolved_token = token or bearer_token or cookie_token
-
+    resolved_token = _resolve_auth_token(request, bearer_token, token)
     if not resolved_token:
         raise credentials_exception
     
@@ -247,19 +313,7 @@ async def get_current_user(
         token_version = payload.get("token_version")
         
         if user_id:
-            # Check active token_version to immediately invalidate revoked sessions
-            if token_version is not None:
-                try:
-                    from database.redis_db import get_async_redis_client
-                    redis = await get_async_redis_client()
-                    if redis:
-                        cached_ver = await redis.get(f"user:token_version:{user_id}")
-                        if cached_ver is not None and int(cached_ver) > int(token_version):
-                            raise credentials_exception
-                except HTTPException:
-                    raise
-                except Exception:
-                    pass
+            await _verify_token_version(user_id, token_version)
 
             from observability.middleware import user_id_var, tenant_id_var
             user_id_var.set(str(user_id))
@@ -276,45 +330,7 @@ async def get_current_user(
         pass  # Fall back to Supabase check if local decode fails
 
     # 2. Fallback to Supabase verification
-    if settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_"):
-        headers = {
-            "Authorization": f"Bearer {resolved_token}",
-            "apikey": settings.supabase_key
-        }
-        
-        import aiohttp
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
-                async with session.get(f"{settings.supabase_url}/auth/v1/user", headers=headers) as resp:
-                    if resp.status != 200:
-                        raise credentials_exception
-                    user_data = await resp.json()
-                    
-                    user_metadata = user_data.get("user_metadata", {})
-                    role = user_metadata.get("role", "ANALYST")
-                    email = user_data.get("email", "")
-                    username = email.split("@")[0] if email else "anonymous"
-                    tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
-                    
-                    user_id = user_data.get("id")
-                    from observability.middleware import user_id_var, tenant_id_var
-                    user_id_var.set(str(user_id))
-                    tenant_id_var.set(str(tenant_id))
-                    
-                    return {
-                        "id": user_id,
-                        "username": username,
-                        "role": role,
-                        "email": email,
-                        "tenant_id": tenant_id
-                    }
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning(f"Supabase auth verification failed: {e}")
-            raise credentials_exception
-
-    raise credentials_exception
+    return await _verify_supabase_user(resolved_token, credentials_exception)
 
 
 async def revoke_user_sessions(user_id: str) -> int:
@@ -352,17 +368,26 @@ async def revoke_user_sessions(user_id: str) -> int:
     return new_version
 
 
+PERM_CASES_ALL = "cases:*"
+PERM_CASES_READ = "cases:read"
+PERM_ALERTS_ALL = "alerts:*"
+PERM_ALERTS_READ = "alerts:read"
+PERM_TRANSACTIONS_ALL = "transactions:*"
+PERM_TRANSACTIONS_READ = "transactions:read"
+PERM_REPORTS_ALL = "reports:*"
+PERM_KYC_ALL = "kyc:*"
+
 ROLE_HIERARCHY = {
     "SUPER_ADMIN": ["*"],
-    "TENANT_ADMIN": ["users:*", "rules:*", "cases:*", "alerts:*", "transactions:*", "sar:*", "reports:*", "kyc:*", "ctr:*"],
-    "ADMIN": ["users:*", "rules:*", "cases:*", "alerts:*", "transactions:*", "sar:*", "reports:*", "kyc:*", "ctr:*"],
-    "MLRO": ["sar:approve", "sar:submit", "cases:*", "alerts:*", "transactions:read", "edd:review", "accounts:freeze", "kyc:*", "ctr:approve", "ctr:submit", "reports:*"],
-    "L2_INVESTIGATOR": ["cases:*", "alerts:*", "transactions:read", "sar:draft", "edd:request", "kyc:review"],
-    "L1_ANALYST": ["alerts:read", "alerts:triage", "transactions:read", "cases:read", "cases:triage"],
-    "ANALYST": ["alerts:read", "alerts:triage", "alerts:action", "cases:*", "transactions:*", "sar:draft", "edd:request", "kyc:review"],
-    "AUDITOR": ["audit_log:read", "reports:read", "cases:read", "alerts:read", "transactions:read", "pii:masked"],
-    "GLOBAL_AUDITOR": ["audit_log:read", "reports:read", "cases:read", "alerts:read", "transactions:read", "cross_tenant:read"],
-    "API_CONSUMER": ["transactions:ingest", "screening:query", "alerts:read"],
+    "TENANT_ADMIN": ["users:*", "rules:*", PERM_CASES_ALL, PERM_ALERTS_ALL, PERM_TRANSACTIONS_ALL, "sar:*", PERM_REPORTS_ALL, PERM_KYC_ALL, "ctr:*"],
+    "ADMIN": ["users:*", "rules:*", PERM_CASES_ALL, PERM_ALERTS_ALL, PERM_TRANSACTIONS_ALL, "sar:*", PERM_REPORTS_ALL, PERM_KYC_ALL, "ctr:*"],
+    "MLRO": ["sar:approve", "sar:submit", PERM_CASES_ALL, PERM_ALERTS_ALL, PERM_TRANSACTIONS_READ, "edd:review", "accounts:freeze", PERM_KYC_ALL, "ctr:approve", "ctr:submit", PERM_REPORTS_ALL],
+    "L2_INVESTIGATOR": [PERM_CASES_ALL, PERM_ALERTS_ALL, PERM_TRANSACTIONS_READ, "sar:draft", "edd:request", "kyc:review"],
+    "L1_ANALYST": [PERM_ALERTS_READ, "alerts:triage", PERM_TRANSACTIONS_READ, PERM_CASES_READ, "cases:triage"],
+    "ANALYST": [PERM_ALERTS_READ, "alerts:triage", "alerts:action", PERM_CASES_ALL, PERM_TRANSACTIONS_ALL, "sar:draft", "edd:request", "kyc:review"],
+    "AUDITOR": ["audit_log:read", "reports:read", PERM_CASES_READ, PERM_ALERTS_READ, PERM_TRANSACTIONS_READ, "pii:masked"],
+    "GLOBAL_AUDITOR": ["audit_log:read", "reports:read", PERM_CASES_READ, PERM_ALERTS_READ, PERM_TRANSACTIONS_READ, "cross_tenant:read"],
+    "API_CONSUMER": ["transactions:ingest", "screening:query", PERM_ALERTS_READ],
     "SYSTEM": ["*"]
 }
 
@@ -490,34 +515,40 @@ class DownstreamAuthValidator:
             PyJWKClient(jwks_url, cache_keys=cache_keys) if jwks_url else None
         )
 
+    def _validate_gateway_headers(self, request: Request) -> Optional[UserClaims]:
+        x_user_id = request.headers.get("x-user-id")
+        x_tenant_id = request.headers.get("x-tenant-id")
+        if not (x_user_id and x_tenant_id):
+            return None
+
+        expected_secret = getattr(settings, "internal_gateway_secret", None)
+        if expected_secret:
+            inbound_gateway_token = request.headers.get("x-internal-gateway-token")
+            if not inbound_gateway_token or inbound_gateway_token != expected_secret:
+                logger.warning("Untrusted internal identity headers detected without valid gateway token.")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: Spoofed or unverified internal gateway headers.",
+                )
+
+        x_roles = request.headers.get("x-user-roles")
+        roles = [r.strip() for r in x_roles.split(",")] if x_roles else []
+        return UserClaims(
+            user_id=x_user_id,
+            tenant_id=x_tenant_id,
+            username=request.headers.get("x-user-name", "gateway_authenticated"),
+            roles=roles,
+            is_mfa_authenticated=request.headers.get("x-mfa-verified", "false").lower() == "true",
+        )
+
     def validate_request(self, request: Request) -> UserClaims:
         """
         FastAPI dependency helper to authenticate incoming requests.
         """
         # 1. Check for trusted headers injected by the API Gateway
-        x_user_id = request.headers.get("x-user-id")
-        x_tenant_id = request.headers.get("x-tenant-id")
-        x_roles = request.headers.get("x-user-roles")
-        inbound_gateway_token = request.headers.get("x-internal-gateway-token")
-
-        if x_user_id and x_tenant_id:
-            expected_secret = getattr(settings, "internal_gateway_secret", None)
-            if expected_secret:
-                if not inbound_gateway_token or inbound_gateway_token != expected_secret:
-                    logger.warning("Untrusted internal identity headers detected without valid gateway token.")
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Access denied: Spoofed or unverified internal gateway headers.",
-                    )
-
-            roles = [r.strip() for r in x_roles.split(",")] if x_roles else []
-            return UserClaims(
-                user_id=x_user_id,
-                tenant_id=x_tenant_id,
-                username=request.headers.get("x-user-name", "gateway_authenticated"),
-                roles=roles,
-                is_mfa_authenticated=request.headers.get("x-mfa-verified", "false").lower() == "true",
-            )
+        gateway_claims = self._validate_gateway_headers(request)
+        if gateway_claims is not None:
+            return gateway_claims
 
         # 2. Otherwise extract and validate Bearer JWT token
         auth_header = request.headers.get("Authorization")

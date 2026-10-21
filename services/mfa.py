@@ -59,8 +59,8 @@ def generate_totp_code(secret: str, for_time: float | None = None, time_step: in
     padded_secret = secret + "=" * ((8 - len(secret) % 8) % 8)
     key = base64.b32decode(padded_secret, casefold=True)
 
-    # HMAC-SHA1
-    hmac_hash = hmac.new(key, counter_bytes, hashlib.sha1).digest()
+    # RFC 6238 / RFC 4226 TOTP standard requires HMAC-SHA1
+    hmac_hash = hmac.new(key, counter_bytes, "sha1").digest()
 
     # Dynamic truncation (RFC 4226 section 5.4)
     offset = hmac_hash[-1] & 0x0F

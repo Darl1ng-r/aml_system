@@ -95,6 +95,130 @@ async def list_customers(
         }
 
 
+async def _fetch_customer_activity(conn, acc_num: str, acc_uuid: uuid.UUID):
+    tx_rows = await conn.fetch(
+        """
+        SELECT id, amount, currency, timestamp,
+               sender_account_id, receiver_account_id
+        FROM transactions
+        WHERE sender_account_id = $1 OR receiver_account_id = $1
+        ORDER BY timestamp DESC
+        LIMIT 30;
+        """,
+        acc_num
+    )
+    recent_txs = [
+        {
+            "id": str(r["id"]),
+            "amount": float(r["amount"]),
+            "currency": r["currency"],
+            "timestamp": r["timestamp"].isoformat() if r["timestamp"] else "",
+            "type": "OUTBOUND" if r["sender_account_id"] == acc_num else "INBOUND",
+            "counterparty": r["receiver_account_id"] if r["sender_account_id"] == acc_num else r["sender_account_id"]
+        }
+        for r in tx_rows
+    ]
+
+    monthly_rows = await conn.fetch(
+        """
+        SELECT TO_CHAR(timestamp, 'YYYY-MM') as month,
+               COUNT(*) as tx_count,
+               SUM(amount) as total_volume
+        FROM transactions
+        WHERE (sender_account_id = $1 OR receiver_account_id = $1)
+          AND timestamp >= NOW() - INTERVAL '12 months'
+        GROUP BY TO_CHAR(timestamp, 'YYYY-MM')
+        ORDER BY month ASC;
+        """,
+        acc_num
+    )
+    monthly_trend = [
+        {"month": r["month"], "tx_count": int(r["tx_count"]), "volume": float(r["total_volume"] or 0.0)}
+        for r in monthly_rows
+    ]
+
+    alert_rows = await conn.fetch(
+        """
+        SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.status, a.created_at
+        FROM alerts a
+        JOIN transactions t ON a.transaction_id = t.id
+        WHERE t.sender_account_id = $1 OR t.receiver_account_id = $1
+        ORDER BY a.created_at DESC
+        LIMIT 15;
+        """,
+        acc_num
+    )
+    alerts = [
+        {
+            "id": str(r["id"]),
+            "rule_name": r["rule_name"],
+            "threat_level": r["threat_level"],
+            "score": float(r["ai_risk_score"] or 0.0),
+            "status": r["status"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else ""
+        }
+        for r in alert_rows
+    ]
+
+    edd_rows = await conn.fetch(
+        """
+        SELECT id, trigger_reason, status, mlro_decision, created_at
+        FROM edd_requests
+        WHERE account_id = $1
+        ORDER BY created_at DESC;
+        """,
+        acc_uuid
+    )
+    edd_records = [
+        {
+            "id": str(r["id"]),
+            "trigger_reason": r["trigger_reason"],
+            "status": r["status"],
+            "decision": r["mlro_decision"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else ""
+        }
+        for r in edd_rows
+    ]
+    return recent_txs, monthly_trend, alerts, edd_records
+
+
+async def _fetch_customer_ubo(acc_num: str, owner_name: str, customer_id: str) -> list[dict]:
+    ubo_nodes = []
+    try:
+        driver = await get_async_neo4j_driver()
+        async with driver.session() as session:
+            result = await session.run(
+                """
+                MATCH (p:Person)-[r:OWNS_UBO]->(c:Company)
+                WHERE c.account_number = $acc_num OR c.name = $owner_name
+                RETURN p.name as name, p.tax_id as tax_id, r.percentage as percentage
+                LIMIT 10;
+                """,
+                acc_num=acc_num, owner_name=owner_name
+            )
+            records = await result.data()
+            for rec in records:
+                ubo_nodes.append({
+                    "name": rec["name"],
+                    "tax_id": rec.get("tax_id") or "N/A",
+                    "percentage": float(rec.get("percentage") or 0.0)
+                })
+    except Exception as ne:
+        logger.debug(f"Neo4j UBO lookup bypassed for customer {customer_id}: {ne}")
+    return ubo_nodes
+
+
+def _calculate_customer_risk_factors(swift_bic: str | None, tx_count: int, risk_score: float) -> dict:
+    high_risk_bic = bool(swift_bic and len(swift_bic) >= 6 and swift_bic[4:6] in ["RU", "IR", "KP", "SY"])
+    return {
+        "jurisdiction_risk": 0.85 if high_risk_bic else 0.15,
+        "velocity_risk": min(1.0, tx_count * 0.08),
+        "pep_risk": 0.90 if risk_score > 0.85 else 0.10,
+        "adverse_media_risk": 0.75 if risk_score > 0.80 else 0.05,
+        "composite_score": risk_score
+    }
+
+
 @router.get("/{id}/dossier")
 async def get_customer_dossier(
     id: str,
@@ -135,130 +259,25 @@ async def get_customer_dossier(
         owner_name = acc["owner_name"]
         risk_score = float(acc["risk_score"] or 0.15)
 
-        # 1. Transaction history & monthly volume
-        tx_rows = await conn.fetch(
-            """
-            SELECT id, amount, currency, timestamp,
-                   sender_account_id, receiver_account_id
-            FROM transactions
-            WHERE sender_account_id = $1 OR receiver_account_id = $1
-            ORDER BY timestamp DESC
-            LIMIT 30;
-            """,
-            acc_num
+        recent_txs, monthly_trend, alerts, edd_records = await _fetch_customer_activity(
+            conn, acc_num, acc_uuid
         )
-        recent_txs = [
-            {
-                "id": str(r["id"]),
-                "amount": float(r["amount"]),
-                "currency": r["currency"],
-                "timestamp": r["timestamp"].isoformat() if r["timestamp"] else "",
-                "type": "OUTBOUND" if r["sender_account_id"] == acc_num else "INBOUND",
-                "counterparty": r["receiver_account_id"] if r["sender_account_id"] == acc_num else r["sender_account_id"]
-            }
-            for r in tx_rows
-        ]
 
-        # Monthly aggregation for 12 months heatmap/trend
-        monthly_rows = await conn.fetch(
-            """
-            SELECT TO_CHAR(timestamp, 'YYYY-MM') as month,
-                   COUNT(*) as tx_count,
-                   SUM(amount) as total_volume
-            FROM transactions
-            WHERE (sender_account_id = $1 OR receiver_account_id = $1)
-              AND timestamp >= NOW() - INTERVAL '12 months'
-            GROUP BY TO_CHAR(timestamp, 'YYYY-MM')
-            ORDER BY month ASC;
-            """,
-            acc_num
-        )
-        monthly_trend = [
-            {"month": r["month"], "tx_count": int(r["tx_count"]), "volume": float(r["total_volume"] or 0.0)}
-            for r in monthly_rows
-        ]
-
-        # 2. Historical Alerts
-        alert_rows = await conn.fetch(
-            """
-            SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.status, a.created_at
-            FROM alerts a
-            JOIN transactions t ON a.transaction_id = t.id
-            WHERE t.sender_account_id = $1 OR t.receiver_account_id = $1
-            ORDER BY a.created_at DESC
-            LIMIT 15;
-            """,
-            acc_num
-        )
-        alerts = [
-            {
-                "id": str(r["id"]),
-                "rule_name": r["rule_name"],
-                "threat_level": r["threat_level"],
-                "score": float(r["ai_risk_score"] or 0.0),
-                "status": r["status"],
-                "created_at": r["created_at"].isoformat() if r["created_at"] else ""
-            }
-            for r in alert_rows
-        ]
-
-        # 3. EDD Requests
-        edd_rows = await conn.fetch(
-            """
-            SELECT id, trigger_reason, status, mlro_decision, created_at
-            FROM edd_requests
-            WHERE account_id = $1
-            ORDER BY created_at DESC;
-            """,
-            acc_uuid
-        )
-        edd_records = [
-            {
-                "id": str(r["id"]),
-                "trigger_reason": r["trigger_reason"],
-                "status": r["status"],
-                "decision": r["mlro_decision"],
-                "created_at": r["created_at"].isoformat() if r["created_at"] else ""
-            }
-            for r in edd_rows
-        ]
-
-    # 4. Beneficial Ownership (UBO) from Neo4j
-    ubo_nodes = []
-    try:
-        driver = await get_async_neo4j_driver()
-        async with driver.session() as session:
-            result = await session.run(
-                """
-                MATCH (p:Person)-[r:OWNS_UBO]->(c:Company)
-                WHERE c.account_number = $acc_num OR c.name = $owner_name
-                RETURN p.name as name, p.tax_id as tax_id, r.percentage as percentage
-                LIMIT 10;
-                """,
-                acc_num=acc_num, owner_name=owner_name
-            )
-            records = await result.data()
-            for rec in records:
-                ubo_nodes.append({
-                    "name": rec["name"],
-                    "tax_id": rec.get("tax_id") or "N/A",
-                    "percentage": float(rec.get("percentage") or 0.0)
-                })
-    except Exception as ne:
-        logger.debug(f"Neo4j UBO lookup bypassed for customer {id}: {ne}")
-
-    # 5. Risk Factors Breakdown
-    risk_factors = {
-        "jurisdiction_risk": 0.85 if (acc["swift_bic"] and acc["swift_bic"][4:6] in ["RU", "IR", "KP", "SY"]) else 0.15,
-        "velocity_risk": min(1.0, len(recent_txs) * 0.08),
-        "pep_risk": 0.90 if risk_score > 0.85 else 0.10,
-        "adverse_media_risk": 0.75 if risk_score > 0.80 else 0.05,
-        "composite_score": risk_score
-    }
+    ubo_nodes = await _fetch_customer_ubo(acc_num, owner_name, id)
+    risk_factors = _calculate_customer_risk_factors(acc["swift_bic"], len(recent_txs), risk_score)
 
     # Mask sensitive details if role is AUDITOR
     is_auditor = current_user.get("role") in ["AUDITOR", "GLOBAL_AUDITOR"]
     display_owner = owner_name if not is_auditor else f"{owner_name[:2]}*** {owner_name.split()[-1][:1]}***"
+
+    if acc["risk_category"]:
+        risk_tier = acc["risk_category"]
+    elif risk_score >= 0.85:
+        risk_tier = "CRITICAL"
+    elif risk_score >= 0.70:
+        risk_tier = "HIGH"
+    else:
+        risk_tier = "STANDARD"
 
     return {
         "id": str(acc["id"]),
@@ -266,7 +285,7 @@ async def get_customer_dossier(
         "swift_bic": acc["swift_bic"],
         "owner_name": display_owner,
         "status": acc["status"] or "ACTIVE",
-        "risk_tier": acc["risk_category"] or ("CRITICAL" if risk_score >= 0.85 else ("HIGH" if risk_score >= 0.70 else "STANDARD")),
+        "risk_tier": risk_tier,
         "risk_score": risk_score,
         "risk_breakdown": risk_factors,
         "created_at": acc["created_at"].isoformat() if acc["created_at"] else "",
