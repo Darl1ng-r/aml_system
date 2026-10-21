@@ -90,6 +90,195 @@ class SARPreviewRequest(BaseModel):
     receiver_name: str | None = None
 
 
+def _extract_row_field(row: Any, key: str) -> Any:
+    if hasattr(row, "get"):
+        return row.get(key)
+    if isinstance(row, dict) and key in row:
+        return row[key]
+    try:
+        return row[key]
+    except Exception:
+        return None
+
+
+async def _check_preflight_alert(conn: Any, alert_uuid: uuid.UUID, idemp_key: str, tenant_id: Any) -> bool:
+    existing = await conn.fetchrow(
+        """
+        SELECT id, fincen_tracking_id, fincen_filing_status, fincen_submitted_at
+        FROM alerts
+        WHERE id = $1;
+        """,
+        alert_uuid
+    )
+    if not existing:
+        return False
+    row_id = _extract_row_field(existing, "id")
+    row_alert_id = _extract_row_field(existing, "alert_id")
+    is_mismatched = (
+        bool(row_id and str(row_id) != str(alert_uuid)) and
+        bool(row_alert_id and str(row_alert_id) != str(alert_uuid))
+    )
+    if is_mismatched:
+        return True
+
+    tracking_id = _extract_row_field(existing, "fincen_tracking_id")
+    if isinstance(tracking_id, str) and tracking_id:
+        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
+        submitted_at = _extract_row_field(existing, "fincen_submitted_at") or ""
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"SAR already electronically filed under Tracking ID {tracking_id} at {submitted_at}."
+        )
+    return False
+
+
+async def _validate_maker_checker(
+    conn: Any,
+    payload: FinCENSubmissionRequest,
+    alert_uuid: uuid.UUID,
+    current_user: dict,
+    is_mismatched_mock: bool
+) -> Any:
+    if payload.draft_id:
+        try:
+            d_uuid = uuid.UUID(str(payload.draft_id))
+            draft = await conn.fetchrow(
+                "SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username FROM sar_drafts WHERE id = $1;",
+                d_uuid
+            )
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid draft_id format.")
+        if not draft:
+            raise HTTPException(status_code=404, detail="Referenced SAR draft does not exist.")
+    else:
+        draft = await conn.fetchrow(
+            "SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username FROM sar_drafts WHERE alert_id = $1 AND status = 'APPROVED' ORDER BY created_at DESC LIMIT 1;",
+            alert_uuid
+        )
+
+    if is_mismatched_mock:
+        return draft
+
+    if not draft:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Four-Eyes Principle Violation: Electronic filing requires a validated SAR draft with status 'APPROVED' and verified MLRO review signature."
+        )
+    if draft.get("status") != "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Four-Eyes Principle Violation: SAR draft is {draft.get('status')}; must be APPROVED by an MLRO before filing."
+        )
+    if not draft.get("reviewed_by"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Segregation of Duties Violation: SAR draft lacks verified MLRO review signature."
+        )
+    caller_role = current_user.get("role", "")
+    is_same_author = (
+        draft.get("drafted_by") and
+        str(draft.get("drafted_by")) == str(draft.get("reviewed_by"))
+    )
+    if is_same_author and caller_role != "SUPER_ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Segregation of Duties Violation: Filer cannot be both the author and the sole approver of the SAR draft."
+        )
+    return draft
+
+
+async def _execute_fincen_gateway_submission(
+    payload: FinCENSubmissionRequest,
+    alert_uuid: uuid.UUID,
+    tenant_id: Any,
+    idemp_key: str
+) -> dict:
+    try:
+        return await fincen_client.submit_sar(payload.sar_xml, payload.alert_id)
+    except ValueError as ve:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
+        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.exception("FinCEN SAR submission failed")
+        try:
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
+        except Exception:
+            pass
+        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"FinCEN filing failed: {str(e)}")
+
+
+async def _persist_fincen_receipt(
+    receipt: dict,
+    payload: FinCENSubmissionRequest,
+    alert_uuid: uuid.UUID,
+    draft_to_validate: Any,
+    current_user: dict,
+    tenant_id: Any,
+    idemp_key: str,
+    response: Response | None
+) -> dict:
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        await conn.execute(
+            """
+            UPDATE alerts
+            SET fincen_tracking_id = $1,
+                fincen_filing_status = $2,
+                fincen_submitted_at = NOW()
+            WHERE id = $3;
+            """,
+            receipt["fincen_tracking_id"], receipt["status"], alert_uuid
+        )
+        if draft_to_validate and draft_to_validate.get("id"):
+            try:
+                await conn.execute(
+                    "UPDATE sar_drafts SET status = 'FILED' WHERE id = $1;",
+                    draft_to_validate["id"]
+                )
+            except Exception:
+                pass
+
+    logger.info(
+        f"AUDIT LOG: FinCEN SAR electronically filed by '{current_user['username']}' "
+        f"for Alert {payload.alert_id} | Tracking ID: {receipt['fincen_tracking_id']} | Status: {receipt['status']}"
+    )
+
+    from routers.metrics import ws_manager
+    await ws_manager.broadcast({
+        "event": "FINCEN_SAR_FILED",
+        "tenant_id": str(tenant_id),
+        "alert_id": payload.alert_id,
+        "fincen_tracking_id": receipt["fincen_tracking_id"],
+        "status": receipt["status"],
+        "submitted_by": current_user["username"]
+    }, target_tenant_id=str(tenant_id))
+
+    if response is not None:
+        response.headers["Location"] = f"/api/v1/fincen/sars/{payload.alert_id}"
+
+    res_body = {
+        "alert_id": payload.alert_id,
+        "fincen_tracking_id": receipt["fincen_tracking_id"],
+        "status": receipt["status"],
+        "ack_code": receipt.get("fincen_ack_code"),
+        "confirmation_message": receipt.get("fincen_confirmation_message"),
+        "submitted_at": receipt.get("submitted_at"),
+        "sandbox": receipt.get("sandbox", True)
+    }
+
+    await save_idempotency_result(
+        idemp_key,
+        status_code=status.HTTP_201_CREATED,
+        body=res_body,
+        tenant_id=str(tenant_id) if tenant_id else None,
+        ttl_seconds=86400
+    )
+    return res_body
+
+
 @router.post("/sars", status_code=status.HTTP_201_CREATED)
 @router.post("/sar/submit", status_code=status.HTTP_201_CREATED)
 async def submit_sar_to_fincen(
@@ -133,93 +322,14 @@ async def submit_sar_to_fincen(
             headers=headers
         )
 
-    # 3. PostgreSQL Pre-flight check under tenant scope
+    # 3. PostgreSQL Pre-flight check & Maker-Checker validation
+    draft_to_validate = None
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            existing = await conn.fetchrow(
-                """
-                SELECT id, fincen_tracking_id, fincen_filing_status, fincen_submitted_at
-                FROM alerts
-                WHERE id = $1;
-                """,
-                alert_uuid
-            )
-            if existing:
-                if hasattr(existing, "get"):
-                    row_id = existing.get("id")
-                    row_alert_id = existing.get("alert_id")
-                else:
-                    row_id = existing["id"] if "id" in existing else None
-                    row_alert_id = existing["alert_id"] if "alert_id" in existing else None
+            is_mismatched_mock = await _check_preflight_alert(conn, alert_uuid, idemp_key, tenant_id)
+            draft_to_validate = await _validate_maker_checker(conn, payload, alert_uuid, current_user, is_mismatched_mock)
 
-                is_mismatched_mock = (
-                    (row_id and str(row_id) != str(alert_uuid)) and
-                    (row_alert_id and str(row_alert_id) != str(alert_uuid))
-                )
-                if not is_mismatched_mock:
-                    if hasattr(existing, "get"):
-                        tracking_id = existing.get("fincen_tracking_id")
-                    elif "fincen_tracking_id" in existing:
-                        tracking_id = existing["fincen_tracking_id"]
-                    else:
-                        tracking_id = None
-                    if isinstance(tracking_id, str) and tracking_id:
-                        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
-                        submitted_at = existing.get("fincen_submitted_at") if hasattr(existing, "get") else ""
-                        raise HTTPException(
-                            status_code=status.HTTP_409_CONFLICT,
-                            detail=f"SAR already electronically filed under Tracking ID {tracking_id} at {submitted_at}."
-                        )
-
-            # 4. Enforce 4-Eyes Principle / Maker-Checker Policy (BSA 31 CFR § 1020.320 & Segregation of Duties)
-            # Direct filing without an MLRO-approved draft is strictly blocked.
-            draft_to_validate = None
-            if payload.draft_id:
-                try:
-                    d_uuid = uuid.UUID(str(payload.draft_id))
-                    draft_to_validate = await conn.fetchrow(
-                        "SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username FROM sar_drafts WHERE id = $1;",
-                        d_uuid
-                    )
-                except ValueError:
-                    raise HTTPException(status_code=400, detail="Invalid draft_id format.")
-                if not draft_to_validate:
-                    raise HTTPException(status_code=404, detail="Referenced SAR draft does not exist.")
-            else:
-                # If draft_id was not explicitly passed, look up approved draft for this alert
-                draft_to_validate = await conn.fetchrow(
-                    "SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username FROM sar_drafts WHERE alert_id = $1 AND status = 'APPROVED' ORDER BY created_at DESC LIMIT 1;",
-                    alert_uuid
-                )
-
-            caller_role = current_user.get("role", "")
-            if not is_mismatched_mock:
-                if not draft_to_validate:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Four-Eyes Principle Violation: Electronic filing requires a validated SAR draft with status 'APPROVED' and verified MLRO review signature."
-                    )
-                if draft_to_validate.get("status") != "APPROVED":
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=f"Four-Eyes Principle Violation: SAR draft is {draft_to_validate.get('status')}; must be APPROVED by an MLRO before filing."
-                    )
-                if not draft_to_validate.get("reviewed_by"):
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Segregation of Duties Violation: SAR draft lacks verified MLRO review signature."
-                    )
-                if (
-                    draft_to_validate.get("drafted_by")
-                    and str(draft_to_validate.get("drafted_by")) == str(draft_to_validate.get("reviewed_by"))
-                    and caller_role != "SUPER_ADMIN"
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail="Segregation of Duties Violation: Filer cannot be both the author and the sole approver of the SAR draft."
-                    )
-
-            # 5. Set state to FILING_PENDING to prevent concurrent double-filing
+            # Set state to FILING_PENDING to prevent concurrent double-filing
             await conn.execute(
                 """
                 UPDATE alerts
@@ -233,87 +343,12 @@ async def submit_sar_to_fincen(
     except Exception as db_err:
         logger.warning(f"Pre-flight filing check warning: {db_err}")
 
-    # 5. Electronic submission to FinCEN gateway
+    # 4. Electronic submission to FinCEN gateway
+    receipt = await _execute_fincen_gateway_submission(payload, alert_uuid, tenant_id, idemp_key)
+
+    # 5. Success: Persist confirmed tracking information & audit
     try:
-        receipt = await fincen_client.submit_sar(payload.sar_xml, payload.alert_id)
-    except ValueError as ve:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
-        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        logger.exception("FinCEN SAR submission failed")
-        try:
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
-        except Exception:
-            pass
-        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"FinCEN filing failed: {str(e)}")
-
-    # 6. Success: Persist confirmed tracking information
-    try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            await conn.execute(
-                """
-                UPDATE alerts
-                SET fincen_tracking_id = $1,
-                    fincen_filing_status = $2,
-                    fincen_submitted_at = NOW()
-                WHERE id = $3;
-                """,
-                receipt["fincen_tracking_id"], receipt["status"], alert_uuid
-            )
-
-            if draft_to_validate and draft_to_validate.get("id"):
-                try:
-                    await conn.execute(
-                        "UPDATE sar_drafts SET status = 'FILED' WHERE id = $1;",
-                        draft_to_validate["id"]
-                    )
-                except Exception:
-                    pass
-
-        # Audit logging
-        logger.info(
-            f"AUDIT LOG: FinCEN SAR electronically filed by '{current_user['username']}' "
-            f"for Alert {payload.alert_id} | Tracking ID: {receipt['fincen_tracking_id']} | Status: {receipt['status']}"
-        )
-
-        # Broadcast real-time WebSocket notification with strict tenant isolation (B3)
-        from routers.metrics import ws_manager
-        await ws_manager.broadcast({
-            "event": "FINCEN_SAR_FILED",
-            "tenant_id": str(tenant_id),
-            "alert_id": payload.alert_id,
-            "fincen_tracking_id": receipt["fincen_tracking_id"],
-            "status": receipt["status"],
-            "submitted_by": current_user["username"]
-        }, target_tenant_id=str(tenant_id))
-
-        if response is not None:
-            response.headers["Location"] = f"/api/v1/fincen/sars/{payload.alert_id}"
-
-        res_body = {
-            "alert_id": payload.alert_id,
-            "fincen_tracking_id": receipt["fincen_tracking_id"],
-            "status": receipt["status"],
-            "ack_code": receipt.get("fincen_ack_code"),
-            "confirmation_message": receipt.get("fincen_confirmation_message"),
-            "submitted_at": receipt.get("submitted_at"),
-            "sandbox": receipt.get("sandbox", True)
-        }
-
-        # Cache in Redis with 24h TTL
-        await save_idempotency_result(
-            idemp_key,
-            status_code=status.HTTP_201_CREATED,
-            body=res_body,
-            tenant_id=str(tenant_id) if tenant_id else None,
-            ttl_seconds=86400
-        )
-
-        return res_body
+        return await _persist_fincen_receipt(receipt, payload, alert_uuid, draft_to_validate, current_user, tenant_id, idemp_key, response)
     except HTTPException:
         raise
     except Exception as e:
@@ -739,6 +774,94 @@ class SARNarrativeGenerationRequest(BaseModel):
     tone: Optional[str] = "FORMAL_REGULATORY"
 
 
+def _populate_row_context(ctx: dict, row: Any) -> None:
+    for src, dst in [
+        ("s_owner", "subject"),
+        ("sender_account_id", "acc_num"),
+        ("r_owner", "counterparty"),
+        ("receiver_account_id", "cp_acc"),
+    ]:
+        val = row[src]
+        if val:
+            ctx[dst] = val
+
+    if row["amount"]:
+        ctx["amount"] = float(row["amount"])
+    if row["currency"]:
+        ctx["currency"] = row["currency"]
+    if row["ai_risk_score"]:
+        ctx["risk_score"] = float(row["ai_risk_score"])
+    if row["timestamp"]:
+        ctx["tx_timestamp"] = row["timestamp"].strftime("%B %d, %Y at %H:%M UTC")
+    rule = row["rule_name"]
+    if rule and rule not in ctx["typologies"]:
+        ctx["typologies"].insert(0, rule)
+
+
+async def _fetch_narrative_context(tenant_id: Any, alert_id: str | None, payload: SARNarrativeGenerationRequest) -> dict:
+    ctx = {
+        "subject": payload.subject_name or "Subject Entity",
+        "acc_num": payload.account_number or "ACC-ORIGINATOR",
+        "counterparty": payload.counterparty_name or "Counterparty Commercial Ltd.",
+        "cp_acc": payload.counterparty_account or "ACC-BENEFICIARY",
+        "amount": payload.amount or 45000.0,
+        "currency": payload.currency or "USD",
+        "typologies": list(payload.typologies) if payload.typologies else ["SUSPICIOUS_VELOCITY"],
+        "risk_score": 0.88,
+        "tx_timestamp": datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
+    }
+    if not alert_id:
+        return ctx
+    try:
+        alert_uuid = uuid.UUID(alert_id)
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT a.rule_name, a.threat_level, a.ai_risk_score,
+                       t.amount, t.currency, t.timestamp,
+                       t.sender_account_id, s_acc.owner_name as s_owner,
+                       t.receiver_account_id, r_acc.owner_name as r_owner
+                FROM alerts a
+                LEFT JOIN transactions t ON a.transaction_id = t.id
+                LEFT JOIN accounts s_acc ON t.sender_account_id = s_acc.account_number
+                LEFT JOIN accounts r_acc ON t.receiver_account_id = r_acc.account_number
+                WHERE a.id = $1;
+                """,
+                alert_uuid
+            )
+            if row:
+                _populate_row_context(ctx, row)
+    except Exception as e:
+        logger.debug(f"DB lookup fallback in generate_sar_narrative: {e}")
+    return ctx
+
+
+def _format_regulatory_narrative(ctx: dict) -> str:
+    typo_bullets = "\n".join([
+        f"  - {t.replace('_', ' ').title()} with AI anomaly factor of {ctx['risk_score']:.2f}"
+        for t in ctx["typologies"]
+    ])
+    return (
+        f"PART I: SUBJECT IDENTIFICATION & ACCOUNT PROFILE\n"
+        f"This Suspicious Activity Report (SAR) is submitted concerning {ctx['subject']} (Account No: {ctx['acc_num']}). "
+        f"The subject maintains commercial deposit and wire capabilities with our institution. "
+        f"Ongoing automated Customer Due Diligence (CDD) and transactional behavioral profiling flagged anomalous movement of funds inconsistent with the subject's stated corporate purpose and historical velocity baselines.\n\n"
+        f"PART II: SUMMARY OF SUSPICIOUS ACTIVITY & CHRONOLOGY\n"
+        f"On or about {ctx['tx_timestamp']}, the subject initiated or received high-velocity transfer(s) totaling {ctx['currency']} {ctx['amount']:,.2f} involving counterparty {ctx['counterparty']} (Account No: {ctx['cp_acc']}). "
+        f"The activity represents a statistically significant deviation (>3.2 standard deviations) above the subject's 90-day rolling baseline volume.\n\n"
+        f"PART III: SUSPICIOUS TYPOLOGY & PATTERN ANALYSIS\n"
+        f"The transaction monitoring engine triggered the following regulatory typologies:\n"
+        f"{typo_bullets}\n"
+        f"Analysis indicates rapid movement of funds and deliberate fragmentation consistent with layering techniques designed to obscure the true beneficial origin and ultimate destination of proceeds.\n\n"
+        f"PART IV: COUNTERPARTY & JURISDICTIONAL INVESTIGATION\n"
+        f"Subsequent open-source intelligence (OSINT) and counterparty screening revealed that beneficiary {ctx['counterparty']} operates with limited verifiable physical operational presence. "
+        f"No legitimate underlying economic rationale or bona fide commercial contract was produced upon compliance inquiry. Beneficial Ownership (UBO) tracing indicated multi-tiered corporate shielding structures.\n\n"
+        f"PART V: CONCLUSION & DISPOSITION\n"
+        f"In accordance with 31 CFR 1020.320 and international AML/CFT standards, our institution has determined that the aforementioned transactions lack apparent lawful purpose and exhibit classic indicators of money laundering. "
+        f"The customer profile has been flagged for enhanced post-filing monitoring, and this filing is transmitted for law enforcement referral and regulatory archiving."
+    )
+
+
 @router.post("/sar/generate-narrative")
 async def generate_sar_narrative(
     payload: SARNarrativeGenerationRequest,
@@ -751,81 +874,13 @@ async def generate_sar_narrative(
     counterparty topologies, and rule anomaly attributions.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
-    
-    # Defaults
-    subject = payload.subject_name or "Subject Entity"
-    acc_num = payload.account_number or "ACC-ORIGINATOR"
-    counterparty = payload.counterparty_name or "Counterparty Commercial Ltd."
-    cp_acc = payload.counterparty_account or "ACC-BENEFICIARY"
-    amount = payload.amount or 45000.0
-    currency = payload.currency or "USD"
-    typologies = list(payload.typologies) if payload.typologies else ["SUSPICIOUS_VELOCITY"]
-    risk_score = 0.88
-    tx_timestamp = datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
-
-    # If alert_id is provided, fetch richer context from PostgreSQL
-    if payload.alert_id:
-        try:
-            alert_uuid = uuid.UUID(payload.alert_id)
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                row = await conn.fetchrow(
-                    """
-                    SELECT a.rule_name, a.threat_level, a.ai_risk_score,
-                           t.amount, t.currency, t.timestamp,
-                           t.sender_account_id, s_acc.owner_name as s_owner,
-                           t.receiver_account_id, r_acc.owner_name as r_owner
-                    FROM alerts a
-                    LEFT JOIN transactions t ON a.transaction_id = t.id
-                    LEFT JOIN accounts s_acc ON t.sender_account_id = s_acc.account_number
-                    LEFT JOIN accounts r_acc ON t.receiver_account_id = r_acc.account_number
-                    WHERE a.id = $1;
-                    """,
-                    alert_uuid
-                )
-                if row:
-                    subject = row["s_owner"] or subject
-                    acc_num = row["sender_account_id"] or acc_num
-                    counterparty = row["r_owner"] or counterparty
-                    cp_acc = row["receiver_account_id"] or cp_acc
-                    amount = float(row["amount"] or amount)
-                    currency = row["currency"] or currency
-                    risk_score = float(row["ai_risk_score"] or 0.88)
-                    if row["timestamp"]:
-                        tx_timestamp = row["timestamp"].strftime("%B %d, %Y at %H:%M UTC")
-                    if row["rule_name"] and row["rule_name"] not in typologies:
-                        typologies.insert(0, row["rule_name"])
-        except Exception as e:
-            logger.debug(f"DB lookup fallback in generate_sar_narrative: {e}")
-
-    typo_bullets = "\n".join([f"  - {t.replace('_', ' ').title()} with AI anomaly factor of {risk_score:.2f}" for t in typologies])
-    
-    narrative_text = (
-        f"PART I: SUBJECT IDENTIFICATION & ACCOUNT PROFILE\n"
-        f"This Suspicious Activity Report (SAR) is submitted concerning {subject} (Account No: {acc_num}). "
-        f"The subject maintains commercial deposit and wire capabilities with our institution. "
-        f"Ongoing automated Customer Due Diligence (CDD) and transactional behavioral profiling flagged anomalous movement of funds inconsistent with the subject's stated corporate purpose and historical velocity baselines.\n\n"
-        f"PART II: SUMMARY OF SUSPICIOUS ACTIVITY & CHRONOLOGY\n"
-        f"On or about {tx_timestamp}, the subject initiated or received high-velocity transfer(s) totaling {currency} {amount:,.2f} involving counterparty {counterparty} (Account No: {cp_acc}). "
-        f"The activity represents a statistically significant deviation (>3.2 standard deviations) above the subject's 90-day rolling baseline volume.\n\n"
-        f"PART III: SUSPICIOUS TYPOLOGY & PATTERN ANALYSIS\n"
-        f"The transaction monitoring engine triggered the following regulatory typologies:\n"
-        f"{typo_bullets}\n"
-        f"Analysis indicates rapid movement of funds and deliberate fragmentation consistent with layering techniques designed to obscure the true beneficial origin and ultimate destination of proceeds.\n\n"
-        f"PART IV: COUNTERPARTY & JURISDICTIONAL INVESTIGATION\n"
-        f"Subsequent open-source intelligence (OSINT) and counterparty screening revealed that beneficiary {counterparty} operates with limited verifiable physical operational presence. "
-        f"No legitimate underlying economic rationale or bona fide commercial contract was produced upon compliance inquiry. Beneficial Ownership (UBO) tracing indicated multi-tiered corporate shielding structures.\n\n"
-        f"PART V: CONCLUSION & DISPOSITION\n"
-        f"In accordance with 31 CFR 1020.320 and international AML/CFT standards, our institution has determined that the aforementioned transactions lack apparent lawful purpose and exhibit classic indicators of money laundering. "
-        f"The customer profile has been flagged for enhanced post-filing monitoring, and this filing is transmitted for law enforcement referral and regulatory archiving."
-    )
-
-    words = len(narrative_text.split())
-    chars = len(narrative_text)
+    ctx = await _fetch_narrative_context(tenant_id, payload.alert_id, payload)
+    narrative_text = _format_regulatory_narrative(ctx)
 
     return {
         "narrative": narrative_text,
-        "word_count": words,
-        "character_count": chars,
+        "word_count": len(narrative_text.split()),
+        "character_count": len(narrative_text),
         "sections": ["PART I", "PART II", "PART III", "PART IV", "PART V"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "model_version": "AML-Sentinel-NarrativeGen-v3.1"

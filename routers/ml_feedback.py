@@ -13,6 +13,7 @@ Provides API endpoints for active learning feedback stats and model retraining:
 """
 
 import logging
+from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from database.postgres import get_async_db_conn
 from services.auth import RoleChecker
@@ -46,7 +47,7 @@ async def retrain_model_now(
                     "false_positives_learned": result["false_positives_learned"],
                     "retrained_by": current_user["username"]
                 })
-        except Exception as e:
+        except Exception:
             logger.exception("Async model retraining failed")
 
     background_tasks.add_task(_async_retrain_and_broadcast)
@@ -84,6 +85,44 @@ async def get_feedback_stats(
     except Exception as e:
         logger.exception("Failed to query feedback stats")
         raise HTTPException(status_code=500, detail=f"Failed to fetch feedback stats: {str(e)}")
+
+
+def _resolve_attributions(parsed: dict, row: Any) -> dict:
+    attributions = parsed.get("dynamic_risk") or parsed.get("attributions") or {}
+    if not attributions or not isinstance(attributions, dict):
+        amt = float(row["amount"] or 10000.0)
+        amt_push = min(0.35, round(amt / 100000.0 * 0.35, 3))
+        return {
+            "transaction_velocity": 0.28,
+            "amount_magnitude": amt_push,
+            "jurisdiction_deviation": 0.18,
+            "counterparty_network_risk": 0.14,
+            "historical_tenure_mitigation": -0.07
+        }
+    return attributions
+
+
+def _build_waterfall_steps(attributions: dict, base_value: float) -> tuple[list, dict]:
+    waterfall_steps = []
+    cumulative = base_value
+    for feat, val in attributions.items():
+        if isinstance(val, (int, float)):
+            v = float(val)
+            waterfall_steps.append({
+                "feature": feat.replace("_", " ").title(),
+                "impact": round(v, 3),
+                "direction": "RISK_ELEVATION" if v > 0 else "RISK_MITIGATION",
+                "start_value": round(cumulative, 3),
+                "end_value": round(cumulative + v, 3)
+            })
+            cumulative += v
+
+    top_driver = max(
+        waterfall_steps,
+        key=lambda s: s["impact"],
+        default={"feature": "Transaction Velocity", "impact": 0.28}
+    )
+    return waterfall_steps, top_driver
 
 
 @router.get("/explain/{alert_id}")
@@ -130,36 +169,9 @@ async def get_alert_explainability(
         score = float(row["ai_risk_score"] or 0.75)
         base_value = 0.15
 
-        # Extract or synthesize realistic SHAP waterfall values
-        attributions = parsed.get("dynamic_risk") or parsed.get("attributions") or {}
-        if not attributions or not isinstance(attributions, dict):
-            amt = float(row["amount"] or 10000.0)
-            amt_push = min(0.35, round(amt / 100000.0 * 0.35, 3))
-            attributions = {
-                "transaction_velocity": 0.28,
-                "amount_magnitude": amt_push,
-                "jurisdiction_deviation": 0.18,
-                "counterparty_network_risk": 0.14,
-                "historical_tenure_mitigation": -0.07
-            }
+        attributions = _resolve_attributions(parsed, row)
+        waterfall_steps, top_driver = _build_waterfall_steps(attributions, base_value)
 
-        waterfall_steps = []
-        cumulative = base_value
-        for feat, val in attributions.items():
-            if isinstance(val, (int, float)):
-                v = float(val)
-                waterfall_steps.append({
-                    "feature": feat.replace("_", " ").title(),
-                    "impact": round(v, 3),
-                    "direction": "RISK_ELEVATION" if v > 0 else "RISK_MITIGATION",
-                    "start_value": round(cumulative, 3),
-                    "end_value": round(cumulative + v, 3)
-                })
-                cumulative += v
-
-        # Top positive driver
-        top_driver = max(waterfall_steps, key=lambda s: s["impact"], default={"feature": "Transaction Velocity", "impact": 0.28})
-        
         return {
             "alert_id": str(row["id"]),
             "rule_name": row["rule_name"],

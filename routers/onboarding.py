@@ -70,7 +70,7 @@ async def onboard_individual(
         screen_res = await perform_sanctions_search(payload.name, 0.80, es)
         # If high risk sanctions hit, default to a high risk score
         risk_score = 0.95 if screen_res["match_found"] else 0.10
-    except Exception as ex_es:
+    except Exception:
         # CHAOS-01 Fail-Closed: Never fail open (risk 0.20) if sanctions screening dependency is offline!
         logger.exception("Sanctions screening offline/timed out during onboarding")
         risk_score = 1.0
@@ -110,6 +110,108 @@ async def onboard_individual(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account number already exists")
         raise HTTPException(status_code=500, detail="Onboarding failed due to an internal error.")
 
+from typing import Any
+
+
+async def _screen_corporate_and_ubos(company_name: str, ubos: list[UboDetail]) -> tuple[float, bool]:
+    corp_risk_score = 0.15
+    corp_screening_failed = False
+    try:
+        es = await get_async_elasticsearch_client()
+        comp_screen = await perform_sanctions_search(company_name, 0.80, es)
+        if comp_screen.get("match_found"):
+            corp_risk_score = 0.95
+        for ubo in ubos:
+            ubo_screen = await perform_sanctions_search(ubo.name, 0.80, es)
+            if ubo_screen.get("match_found"):
+                corp_risk_score = 0.95
+                break
+    except Exception as ex_es:
+        logger.warning(f"Sanctions screening failed during corporate onboarding: {ex_es}")
+        corp_risk_score = 1.0
+        corp_screening_failed = True
+    return corp_risk_score, corp_screening_failed
+
+
+async def _persist_corporate_account(
+    authorized_tenant_id: Any,
+    payload: CorporateOnboard,
+    corp_risk_score: float,
+    response: Response | None
+) -> Any:
+    try:
+        async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
+            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", authorized_tenant_id)
+            if not tenant:
+                raise HTTPException(status_code=400, detail="Invalid tenant_id")
+
+            account_id = await conn.fetchval(
+                """
+                INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id;
+                """,
+                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.company_name, corp_risk_score
+            )
+
+            if response is not None:
+                response.headers["Location"] = f"/api/v1/onboard/accounts/{account_id}"
+            return account_id
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("PostgreSQL corporate onboarding failed")
+        if "unique constraint" in str(e).lower():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account number already exists")
+        raise HTTPException(status_code=500, detail="Corporate onboarding database error.")
+
+
+async def _persist_neo4j_corporate_graph(
+    neo4j_driver: Any,
+    account_id: Any,
+    payload: CorporateOnboard
+) -> None:
+    async with neo4j_driver.session() as session:
+        await session.run(
+            """
+            MERGE (c:Company {registration_number: $reg_num})
+            ON CREATE SET c.name = $name, c.id = $id
+            ON MATCH SET c.name = $name
+            """,
+            reg_num=payload.registration_number,
+            name=payload.company_name,
+            id=str(account_id)
+        )
+
+        await session.run(
+            """
+            MERGE (a:Account {id: $id})
+            SET a.account_number = $acc_num
+            WITH a
+            MATCH (c:Company {registration_number: $reg_num})
+            MERGE (a)-[:BELONGS_TO]->(c)
+            """,
+            id=str(account_id),
+            acc_num=payload.account_number,
+            reg_num=payload.registration_number
+        )
+
+        for ubo in payload.ubos:
+            await session.run(
+                """
+                MERGE (p:Person {tax_id: $tax_id})
+                ON CREATE SET p.name = $name
+                WITH p
+                MATCH (c:Company {registration_number: $reg_num})
+                MERGE (p)-[:OWNS_UBO {percentage: $percentage}]->(c)
+                """,
+                tax_id=ubo.tax_id,
+                name=ubo.name,
+                reg_num=payload.registration_number,
+                percentage=ubo.ownership_percentage
+            )
+
+
 @router.post("/accounts/corporate", status_code=status.HTTP_201_CREATED)
 @router.post("/corporate", status_code=status.HTTP_201_CREATED)
 async def onboard_corporate(
@@ -122,95 +224,14 @@ async def onboard_corporate(
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
 
     # Step 0: Sanctions screening for corporate entity and beneficial owners
-    corp_risk_score = 0.15
-    corp_screening_failed = False
-    try:
-        es = await get_async_elasticsearch_client()
-        comp_screen = await perform_sanctions_search(payload.company_name, 0.80, es)
-        if comp_screen.get("match_found"):
-            corp_risk_score = 0.95
-        for ubo in payload.ubos:
-            ubo_screen = await perform_sanctions_search(ubo.name, 0.80, es)
-            if ubo_screen.get("match_found"):
-                corp_risk_score = 0.95
-                break
-    except Exception as ex_es:
-        logger.warning(f"Sanctions screening failed during corporate onboarding: {ex_es}")
-        corp_risk_score = 1.0
-        corp_screening_failed = True
+    corp_risk_score, corp_screening_failed = await _screen_corporate_and_ubos(payload.company_name, payload.ubos)
 
     # Step 1: Save to PostgreSQL (relational profile)
-    try:
-        async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
-            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", authorized_tenant_id)
-            if not tenant:
-                raise HTTPException(status_code=400, detail="Invalid tenant_id")
-
-            # Create company account
-            account_id = await conn.fetchval(
-                """
-                INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING id;
-                """,
-                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.company_name, corp_risk_score
-            )
-
-            if response is not None:
-                response.headers["Location"] = f"/api/v1/onboard/accounts/{account_id}"
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("PostgreSQL corporate onboarding failed")
-        if "unique constraint" in str(e).lower():
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account number already exists")
-        raise HTTPException(status_code=500, detail="Corporate onboarding database error.")
+    account_id = await _persist_corporate_account(authorized_tenant_id, payload, corp_risk_score, response)
 
     # Step 2: Save corporate structures & UBO tracing to Neo4j
     try:
-        async with neo4j_driver.session() as session:
-            # Create Company node
-            await session.run(
-                """
-                MERGE (c:Company {registration_number: $reg_num})
-                ON CREATE SET c.name = $name, c.id = $id
-                ON MATCH SET c.name = $name
-                """,
-                reg_num=payload.registration_number,
-                name=payload.company_name,
-                id=str(account_id)
-            )
-            
-            # Create Account node linked to Company
-            await session.run(
-                """
-                MERGE (a:Account {id: $id})
-                SET a.account_number = $acc_num
-                WITH a
-                MATCH (c:Company {registration_number: $reg_num})
-                MERGE (a)-[:BELONGS_TO]->(c)
-                """,
-                id=str(account_id),
-                acc_num=payload.account_number,
-                reg_num=payload.registration_number
-            )
-
-            # Create Person (UBO) nodes & OWNS_UBO relationships
-            for ubo in payload.ubos:
-                await session.run(
-                    """
-                    MERGE (p:Person {tax_id: $tax_id})
-                    ON CREATE SET p.name = $name
-                    WITH p
-                    MATCH (c:Company {registration_number: $reg_num})
-                    MERGE (p)-[:OWNS_UBO {percentage: $percentage}]->(c)
-                    """,
-                    tax_id=ubo.tax_id,
-                    name=ubo.name,
-                    reg_num=payload.registration_number,
-                    percentage=ubo.ownership_percentage
-                )
-                
+        await _persist_neo4j_corporate_graph(neo4j_driver, account_id, payload)
         corp_status = "APPROVED" if (corp_risk_score < 0.8 and not corp_screening_failed) else "HELD_FOR_REVIEW"
         return {
             "account_id": str(account_id),
@@ -220,13 +241,13 @@ async def onboard_corporate(
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Neo4j corporate onboarding failed")
         # STATE-03 Compensating rollback: delete incomplete Postgres account on Neo4j failure
         try:
             async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
                 await conn.execute("DELETE FROM accounts WHERE id = $1;", account_id)
-        except Exception as roll_err:
+        except Exception:
             logger.exception("Compensating Postgres rollback failed")
         raise HTTPException(status_code=500, detail="Corporate graph registration failed due to an internal error.")
 
