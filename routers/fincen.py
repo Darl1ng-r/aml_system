@@ -558,6 +558,34 @@ async def review_sar_draft(
         }
 
 
+def _format_sar_draft_response(draft: Any) -> dict:
+    created = draft["created_at"]
+    updated = draft.get("updated_at")
+    return {
+        "draft_id": str(draft["id"]),
+        "alert_id": str(draft["alert_id"]) if draft["alert_id"] else None,
+        "case_id": str(draft["case_id"]) if draft["case_id"] else None,
+        "status": draft["status"],
+        "drafted_by": str(draft["drafted_by"]) if draft["drafted_by"] else None,
+        "drafted_by_username": draft["drafted_by_username"],
+        "narrative": draft["narrative"] or "",
+        "xml_payload": draft["xml_payload"] or "",
+        "reviewed_by_username": draft["reviewed_by_username"],
+        "rejection_reason": draft["rejection_reason"],
+        "created_at": created.isoformat() if created else None,
+        "updated_at": updated.isoformat() if updated else None,
+        "alert_details": {
+            "rule_name": draft.get("rule_name") or "SUSPICIOUS_ACTIVITY",
+            "threat_level": draft.get("threat_level") or "HIGH",
+            "risk_score": float(draft.get("ai_risk_score") or 0.85),
+            "amount": float(draft.get("amount") or 0.0),
+            "currency": draft.get("currency") or "USD",
+            "sender_account": draft.get("sender_account_id") or "",
+            "receiver_account": draft.get("receiver_account_id") or ""
+        }
+    }
+
+
 @router.get("/sar/drafts/{id}")
 async def get_sar_draft(
     id: str,
@@ -587,29 +615,7 @@ async def get_sar_draft(
         if not draft:
             raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
 
-        return {
-            "draft_id": str(draft["id"]),
-            "alert_id": str(draft["alert_id"]) if draft["alert_id"] else None,
-            "case_id": str(draft["case_id"]) if draft["case_id"] else None,
-            "status": draft["status"],
-            "drafted_by": str(draft["drafted_by"]) if draft["drafted_by"] else None,
-            "drafted_by_username": draft["drafted_by_username"],
-            "narrative": draft["narrative"] or "",
-            "xml_payload": draft["xml_payload"] or "",
-            "reviewed_by_username": draft["reviewed_by_username"],
-            "rejection_reason": draft["rejection_reason"],
-            "created_at": draft["created_at"].isoformat() if draft["created_at"] else None,
-            "updated_at": draft["updated_at"].isoformat() if draft.get("updated_at") else None,
-            "alert_details": {
-                "rule_name": draft.get("rule_name") or "SUSPICIOUS_ACTIVITY",
-                "threat_level": draft.get("threat_level") or "HIGH",
-                "risk_score": float(draft.get("ai_risk_score") or 0.85),
-                "amount": float(draft.get("amount") or 0.0),
-                "currency": draft.get("currency") or "USD",
-                "sender_account": draft.get("sender_account_id") or "",
-                "receiver_account": draft.get("receiver_account_id") or ""
-            }
-        }
+        return _format_sar_draft_response(draft)
 
 
 @router.patch("/sar/drafts/{id}")

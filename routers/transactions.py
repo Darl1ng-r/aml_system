@@ -631,45 +631,41 @@ async def ingest_transaction(
     return await _finalize_ingest_response(idemp_key, body_hash, user_tenant_id, result, tx_id, response)
 
 
-@router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
-async def ingest_transaction_async(
-    payload: TransactionRequest,
-    background_tasks: BackgroundTasks,
-    request: Request = None,
-    response: Response = None,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
-    _rate_limit=Depends(RateLimiter(limit=1000, window=60))
-):
-    """
-    Decoupled, high-throughput asynchronous ingestion buffer route (GAP-ASYNC).
-    Accepts transactions, validates idempotency, buffers to Redpanda stream
-    and durable transactional outbox, returning HTTP 202 (<5ms) for downstream
-    asynchronous scoring workers.
-    """
-    user_tenant_id = enforce_tenant_data_scope(current_user)
-    idemp_key = await extract_idempotency_key(request, payload.idempotency_key)
-
-    if idemp_key:
-        is_cached, cached_val = await check_idempotency(
-            idemp_key,
-            tenant_id=str(user_tenant_id) if user_tenant_id else None
+async def _check_async_idempotency(
+    idemp_key: str | None,
+    user_tenant_id: Any,
+    response: Response | None
+) -> JSONResponse | None:
+    if not idemp_key:
+        return None
+    is_cached, cached_val = await check_idempotency(
+        idemp_key,
+        tenant_id=str(user_tenant_id) if user_tenant_id else None
+    )
+    if is_cached and cached_val:
+        headers = {"Idempotency-Key": idemp_key, "X-Cache-Lookup": "HIT"}
+        if response is not None:
+            response.headers["Idempotency-Key"] = idemp_key
+            response.headers["X-Cache-Lookup"] = "HIT"
+        return JSONResponse(
+            status_code=cached_val.get("status_code", status.HTTP_202_ACCEPTED),
+            content=cached_val.get("body", {}),
+            headers=headers
         )
-        if is_cached and cached_val:
-            headers = {"Idempotency-Key": idemp_key, "X-Cache-Lookup": "HIT"}
-            if response is not None:
-                response.headers["Idempotency-Key"] = idemp_key
-                response.headers["X-Cache-Lookup"] = "HIT"
-            return JSONResponse(
-                status_code=cached_val.get("status_code", status.HTTP_202_ACCEPTED),
-                content=cached_val.get("body", {}),
-                headers=headers
-            )
+    return None
 
-    tx_id = str(uuid.uuid4())
 
+async def _buffer_async_transaction(
+    tx_id: str,
+    payload: TransactionRequest,
+    user_tenant_id: Any,
+    username: str,
+    background_tasks: BackgroundTasks
+) -> None:
+    tenant_str = str(user_tenant_id) if user_tenant_id else None
     buffer_payload = {
         "transaction_id": tx_id,
-        "tenant_id": str(user_tenant_id) if user_tenant_id else None,
+        "tenant_id": tenant_str,
         "sender_account": payload.sender_account,
         "receiver_account": payload.receiver_account,
         "amount": payload.amount,
@@ -679,7 +675,7 @@ async def ingest_transaction_async(
         "merchant": payload.merchant,
         "device": payload.device,
         "channel": payload.channel,
-        "ingested_by": current_user.get("username", "api_ingest"),
+        "ingested_by": username,
         "ingested_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -687,7 +683,7 @@ async def ingest_transaction_async(
     background_tasks.add_task(
         publish_transaction,
         buffer_payload,
-        key=str(user_tenant_id) if user_tenant_id else tx_id,
+        key=tenant_str or tx_id,
         topic="aml.transactions.raw",
     )
 
@@ -701,12 +697,19 @@ async def ingest_transaction_async(
                 aggregate_id=tx_id,
                 event_type="aml.core.transaction.buffered.v1",
                 payload=buffer_payload,
-                tenant_id=str(user_tenant_id) if user_tenant_id else None,
+                tenant_id=tenant_str,
                 headers={"topic": "aml.transactions.raw"},
             )
     except Exception as ex_buf:
         logger.warning(f"Async ingestion outbox buffering warning: {ex_buf}")
 
+
+async def _finalize_async_response(
+    idemp_key: str | None,
+    user_tenant_id: Any,
+    tx_id: str,
+    response: Response | None
+) -> dict[str, str]:
     accepted_body = {
         "status": "ACCEPTED",
         "transaction_id": tx_id,
@@ -729,6 +732,36 @@ async def ingest_transaction_async(
         response.headers["Location"] = f"/api/v1/transactions/{tx_id}"
 
     return accepted_body
+
+
+@router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_transaction_async(
+    payload: TransactionRequest,
+    background_tasks: BackgroundTasks,
+    request: Request = None,
+    response: Response = None,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=1000, window=60))
+):
+    """
+    Decoupled, high-throughput asynchronous ingestion buffer route (GAP-ASYNC).
+    Accepts transactions, validates idempotency, buffers to Redpanda stream
+    and durable transactional outbox, returning HTTP 202 (<5ms) for downstream
+    asynchronous scoring workers.
+    """
+    user_tenant_id = enforce_tenant_data_scope(current_user)
+    idemp_key = await extract_idempotency_key(request, payload.idempotency_key)
+
+    cached_resp = await _check_async_idempotency(idemp_key, user_tenant_id, response)
+    if cached_resp is not None:
+        return cached_resp
+
+    tx_id = str(uuid.uuid4())
+    username = current_user.get("username", "api_ingest")
+    await _buffer_async_transaction(tx_id, payload, user_tenant_id, username, background_tasks)
+
+    return await _finalize_async_response(idemp_key, user_tenant_id, tx_id, response)
+
 
 
 @router.get("/{id}")
