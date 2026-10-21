@@ -14,6 +14,65 @@ def get_mode_list(items: list, limit: int = 3) -> list[str]:
     counts = Counter(valid_items)
     return [item for item, _ in counts.most_common(limit)]
 
+def _build_default_baseline(account_id: str) -> dict:
+    return {
+        "account_id": account_id,
+        "avg_amount": 0.0,
+        "median_amount": 0.0,
+        "variance_amount": 0.0,
+        "daily_frequency": 0.0,
+        "weekly_frequency": 0.0,
+        "monthly_frequency": 0,
+        "unique_receivers_count": 0,
+        "unique_receiver_countries_count": 0,
+        "avg_hour": 0.0,
+        "variance_hour": 0.0,
+        "top_countries": [],
+        "top_merchants": [],
+        "top_devices": [],
+        "top_channels": []
+    }
+
+
+def _compute_circular_hour_stats(hours: list[int]) -> tuple[float, float]:
+    if not hours:
+        return 0.0, 0.0
+    import math
+    angles = [2.0 * math.pi * h / 24.0 for h in hours]
+    sin_mean = float(np.mean([math.sin(a) for a in angles]))
+    cos_mean = float(np.mean([math.cos(a) for a in angles]))
+    circ_hour = (math.atan2(sin_mean, cos_mean) * 24.0 / (2.0 * math.pi)) % 24.0
+    avg_hour_val = round(circ_hour, 2)
+    R = min(math.sqrt(sin_mean**2 + cos_mean**2), 1.0)
+    circ_dispersion = 2.0 * (1.0 - R) * ((24.0 / (2.0 * math.pi)) ** 2)
+    return avg_hour_val, round(float(circ_dispersion), 2)
+
+
+def _calculate_frequencies(rows: list) -> tuple[float, float, int]:
+    now = datetime.now(timezone.utc)
+    limit_30_days = now - timedelta(days=30)
+    rows_30 = [r for r in rows if r["timestamp"].replace(tzinfo=timezone.utc) >= limit_30_days]
+    count_30 = len(rows_30)
+    timestamps = [r["timestamp"] for r in rows_30]
+    if timestamps:
+        min_time = min(timestamps).replace(tzinfo=timezone.utc)
+        max_time = max(timestamps).replace(tzinfo=timezone.utc)
+        span_days = max((max_time - min_time).days, 1.0)
+    else:
+        span_days = 30.0
+    daily_freq = count_30 / span_days
+    weekly_freq = daily_freq * 7.0
+    return float(daily_freq), float(weekly_freq), int(count_30)
+
+
+def _evaluate_jurisdiction_risk(countries: list) -> float:
+    high_risk_set = {"RU", "IR", "KP", "SY", "AF", "MM"}
+    for c in countries:
+        if c and c.upper() in high_risk_set:
+            return 0.85
+    return 0.1
+
+
 async def calculate_customer_baseline(account_id: str, tenant_id: str | None = None) -> dict:
     """
     Computes a customer's transaction baseline behavior using historical data
@@ -37,24 +96,7 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
             rows = await conn.fetch(query, account_id)
             
             if not rows:
-                # Default baseline profile if no transaction history exists
-                baseline = {
-                    "account_id": account_id,
-                    "avg_amount": 0.0,
-                    "median_amount": 0.0,
-                    "variance_amount": 0.0,
-                    "daily_frequency": 0.0,
-                    "weekly_frequency": 0.0,
-                    "monthly_frequency": 0,
-                    "unique_receivers_count": 0,
-                    "unique_receiver_countries_count": 0,
-                    "avg_hour": 0.0,
-                    "variance_hour": 0.0,
-                    "top_countries": [],
-                    "top_merchants": [],
-                    "top_devices": [],
-                    "top_channels": []
-                }
+                baseline = _build_default_baseline(account_id)
             else:
                 amounts = [float(row["amount"]) for row in rows]
                 hours = [row["timestamp"].hour for row in rows]
@@ -64,61 +106,22 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                 devices = [row["device"] for row in rows if row["device"]]
                 channels = [row["channel"] for row in rows if row["channel"]]
                 
-                # Frequencies in last 30 days
-                now = datetime.now(timezone.utc)
-                limit_30_days = now - timedelta(days=30)
-                rows_30 = [r for r in rows if r["timestamp"].replace(tzinfo=timezone.utc) >= limit_30_days]
-                count_30 = len(rows_30)
-                
-                # Dynamic time range for daily/weekly division (min 1 day, max 30 days)
-                timestamps = [r["timestamp"] for r in rows_30]
-                if timestamps:
-                    min_time = min(timestamps).replace(tzinfo=timezone.utc)
-                    max_time = max(timestamps).replace(tzinfo=timezone.utc)
-                    span_days = max((max_time - min_time).days, 1.0)
-                else:
-                    span_days = 30.0
-                
-                daily_freq = count_30 / span_days
-                weekly_freq = daily_freq * 7.0
-                
-                # Circular mean and circular dispersion for 24-hour periodic cycle
-                if hours:
-                    import math
-                    angles = [2.0 * math.pi * h / 24.0 for h in hours]
-                    sin_mean = float(np.mean([math.sin(a) for a in angles]))
-                    cos_mean = float(np.mean([math.cos(a) for a in angles]))
-                    circ_hour = (math.atan2(sin_mean, cos_mean) * 24.0 / (2.0 * math.pi)) % 24.0
-                    avg_hour_val = round(circ_hour, 2)
-                    # Circular variance derived from mean resultant vector length R in [0, 1]
-                    R = min(math.sqrt(sin_mean**2 + cos_mean**2), 1.0)
-                    # Circular dispersion mapped to squared-hour units: Var_circ = 2 * (1 - R) * (24 / 2pi)^2
-                    circ_dispersion = 2.0 * (1.0 - R) * ((24.0 / (2.0 * math.pi)) ** 2)
-                    var_hour_val = round(float(circ_dispersion), 2)
-                else:
-                    avg_hour_val = 0.0
-                    var_hour_val = 0.0
+                daily_freq, weekly_freq, count_30 = _calculate_frequencies(rows)
+                avg_hour_val, var_hour_val = _compute_circular_hour_stats(hours)
 
                 # Unbiased sample variance with Bessel's correction (ddof=1) capped for numeric(15,2) safety
                 raw_variance = float(np.var(amounts, ddof=1)) if len(amounts) > 1 else 0.0
                 safe_variance = min(raw_variance, 999_999_999_999.0)
-
-                # Compute Jurisdiction Risk Score based on top countries
-                high_risk_set = {"RU", "IR", "KP", "SY", "AF", "MM"}
-                j_risk = 0.1
-                for c in countries:
-                    if c and c.upper() in high_risk_set:
-                        j_risk = 0.85
-                        break
+                j_risk = _evaluate_jurisdiction_risk(countries)
 
                 baseline = {
                     "account_id": account_id,
                     "avg_amount": float(np.mean(amounts)),
                     "median_amount": float(np.median(amounts)),
                     "variance_amount": safe_variance,
-                    "daily_frequency": float(daily_freq),
-                    "weekly_frequency": float(weekly_freq),
-                    "monthly_frequency": int(count_30),
+                    "daily_frequency": daily_freq,
+                    "weekly_frequency": weekly_freq,
+                    "monthly_frequency": count_30,
                     "unique_receivers_count": int(len(set(receivers))),
                     "unique_receiver_countries_count": int(len(set(countries))),
                     "avg_hour": avg_hour_val,

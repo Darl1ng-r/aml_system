@@ -7,7 +7,7 @@ alert aggregation, and disposition tracking (GAP-1).
 
 import logging
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Any
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field, field_validator
@@ -313,6 +313,41 @@ async def add_case_note(
         }
 
 
+def _build_case_updates(payload: CaseUpdateRequest) -> tuple[list[str], list[Any], int]:
+    updates = []
+    params = []
+    p_idx = 1
+
+    if payload.title is not None:
+        updates.append(f"title = ${p_idx}")
+        params.append(payload.title)
+        p_idx += 1
+    if payload.priority is not None:
+        updates.append(f"priority = ${p_idx}")
+        params.append(payload.priority)
+        p_idx += 1
+    if payload.status is not None:
+        updates.append(f"status = ${p_idx}")
+        params.append(payload.status)
+        p_idx += 1
+        if payload.status == "CLOSED":
+            updates.append("closed_at = NOW()")
+    if payload.assigned_to is not None:
+        try:
+            assigned_uuid = uuid.UUID(payload.assigned_to) if payload.assigned_to else None
+        except ValueError:
+            assigned_uuid = None
+        updates.append(f"assigned_to = ${p_idx}")
+        params.append(assigned_uuid)
+        p_idx += 1
+    if payload.narrative is not None:
+        updates.append(f"narrative = ${p_idx}")
+        params.append(payload.narrative)
+        p_idx += 1
+
+    return updates, params, p_idx
+
+
 @router.patch("/{id}")
 async def update_case(
     id: str,
@@ -337,36 +372,7 @@ async def update_case(
         if payload.status:
             validate_case_transition(case_row["status"], payload.status)
 
-        updates = []
-        params = []
-        p_idx = 1
-
-        if payload.title is not None:
-            updates.append(f"title = ${p_idx}")
-            params.append(payload.title)
-            p_idx += 1
-        if payload.priority is not None:
-            updates.append(f"priority = ${p_idx}")
-            params.append(payload.priority)
-            p_idx += 1
-        if payload.status is not None:
-            updates.append(f"status = ${p_idx}")
-            params.append(payload.status)
-            p_idx += 1
-            if payload.status == "CLOSED":
-                updates.append("closed_at = NOW()")
-        if payload.assigned_to is not None:
-            try:
-                assigned_uuid = uuid.UUID(payload.assigned_to) if payload.assigned_to else None
-            except ValueError:
-                assigned_uuid = None
-            updates.append(f"assigned_to = ${p_idx}")
-            params.append(assigned_uuid)
-            p_idx += 1
-        if payload.narrative is not None:
-            updates.append(f"narrative = ${p_idx}")
-            params.append(payload.narrative)
-            p_idx += 1
+        updates, params, p_idx = _build_case_updates(payload)
 
         if updates:
             updates.append("updated_at = NOW()")

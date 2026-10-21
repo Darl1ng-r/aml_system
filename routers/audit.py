@@ -13,7 +13,7 @@ import logging
 import uuid
 import hashlib
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel
 
@@ -26,23 +26,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/audit", tags=["Audit Log Vault"])
 
 
-@router.get("/logs")
-async def list_audit_logs(
-    response: Response,
-    page: int = Query(default=1, ge=1),
-    limit: int = Query(default=50, ge=1, le=200),
-    actor: Optional[str] = Query(None, description="Username or Actor ID filter"),
-    action: Optional[str] = Query(None, description="Action filter (e.g. UPDATE_RULE, ACCOUNT_FROZEN)"),
-    resource_type: Optional[str] = Query(None, description="Target resource type (e.g. ALERT, CASE, RULE, ACCOUNT)"),
-    date_from: Optional[str] = Query(None, description="ISO timestamp start filter"),
-    date_to: Optional[str] = Query(None, description="ISO timestamp end filter"),
-    current_user: dict = Depends(RoleChecker(["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "MLRO"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
-):
-    """Queries paginated audit logs with dynamic filtering within tenant boundaries."""
-    tenant_id = enforce_tenant_data_scope(current_user)
-    offset = (page - 1) * limit
-
+def _build_audit_filter_clause(
+    tenant_id: Any,
+    actor: Optional[str],
+    action: Optional[str],
+    resource_type: Optional[str],
+    date_from: Optional[str],
+    date_to: Optional[str],
+) -> tuple[str, list, int]:
     conditions = ["tenant_id = $1"]
     params = [uuid.UUID(str(tenant_id))]
     p_idx = 2
@@ -64,23 +55,61 @@ async def list_audit_logs(
 
     if date_from:
         try:
-            d_from = datetime.fromisoformat(date_from)
+            params.append(datetime.fromisoformat(date_from))
             conditions.append(f"created_at >= ${p_idx}")
-            params.append(d_from)
             p_idx += 1
         except ValueError:
             pass
 
     if date_to:
         try:
-            d_to = datetime.fromisoformat(date_to)
+            params.append(datetime.fromisoformat(date_to))
             conditions.append(f"created_at <= ${p_idx}")
-            params.append(d_to)
             p_idx += 1
         except ValueError:
             pass
 
-    where_clause = " AND ".join(conditions)
+    return " AND ".join(conditions), params, p_idx
+
+
+def _serialize_audit_row(r: dict) -> dict:
+    details = r["details"] if isinstance(r["details"], dict) else json.loads(r["details"] or "{}")
+    return {
+        "id": str(r["id"]),
+        "created_at": r["created_at"].isoformat() if r["created_at"] else "",
+        "actor_id": r["actor_id"],
+        "actor_username": r["actor_username"] or "SYSTEM",
+        "actor_role": r["actor_role"],
+        "actor_ip": r["actor_ip"],
+        "actor_user_agent": r["actor_user_agent"],
+        "session_id": r["session_id"],
+        "action": r["action"],
+        "resource_type": r["resource_type"],
+        "resource_id": r["resource_id"],
+        "has_state_diff": bool(r["before_state"] or r["after_state"]),
+        "details": details
+    }
+
+
+@router.get("/logs")
+async def list_audit_logs(
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    actor: Optional[str] = Query(None, description="Username or Actor ID filter"),
+    action: Optional[str] = Query(None, description="Action filter (e.g. UPDATE_RULE, ACCOUNT_FROZEN)"),
+    resource_type: Optional[str] = Query(None, description="Target resource type (e.g. ALERT, CASE, RULE, ACCOUNT)"),
+    date_from: Optional[str] = Query(None, description="ISO timestamp start filter"),
+    date_to: Optional[str] = Query(None, description="ISO timestamp end filter"),
+    current_user: dict = Depends(RoleChecker(["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "MLRO"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+):
+    """Queries paginated audit logs with dynamic filtering within tenant boundaries."""
+    tenant_id = enforce_tenant_data_scope(current_user)
+    offset = (page - 1) * limit
+    where_clause, params, p_idx = _build_audit_filter_clause(
+        tenant_id, actor, action, resource_type, date_from, date_to
+    )
 
     try:
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
@@ -98,24 +127,7 @@ async def list_audit_logs(
                 LIMIT ${p_idx} OFFSET ${p_idx + 1};
             """
             rows = await conn.fetch(data_query, *params, limit, offset)
-
-            items = []
-            for r in rows:
-                items.append({
-                    "id": str(r["id"]),
-                    "created_at": r["created_at"].isoformat() if r["created_at"] else "",
-                    "actor_id": r["actor_id"],
-                    "actor_username": r["actor_username"] or "SYSTEM",
-                    "actor_role": r["actor_role"],
-                    "actor_ip": r["actor_ip"],
-                    "actor_user_agent": r["actor_user_agent"],
-                    "session_id": r["session_id"],
-                    "action": r["action"],
-                    "resource_type": r["resource_type"],
-                    "resource_id": r["resource_id"],
-                    "has_state_diff": bool(r["before_state"] or r["after_state"]),
-                    "details": r["details"] if isinstance(r["details"], dict) else json.loads(r["details"] or "{}")
-                })
+            items = [_serialize_audit_row(r) for r in rows]
 
             response.headers["X-Total-Count"] = str(total_count or 0)
             response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
@@ -282,6 +294,15 @@ async def export_audit_logs(
     )
 
 
+def _parse_json_field(val: Any) -> Any:
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except Exception:
+            return val
+    return val
+
+
 @router.get("/logs/{id}")
 async def get_audit_log_detail(
     id: str,
@@ -311,26 +332,9 @@ async def get_audit_log_detail(
             if not row:
                 raise HTTPException(status_code=404, detail="Audit record not found.")
 
-            before_val = row["before_state"]
-            if isinstance(before_val, str):
-                try:
-                    before_val = json.loads(before_val)
-                except Exception:
-                    pass
-
-            after_val = row["after_state"]
-            if isinstance(after_val, str):
-                try:
-                    after_val = json.loads(after_val)
-                except Exception:
-                    pass
-
-            details_val = row["details"]
-            if isinstance(details_val, str):
-                try:
-                    details_val = json.loads(details_val)
-                except Exception:
-                    pass
+            before_val = _parse_json_field(row["before_state"])
+            after_val = _parse_json_field(row["after_state"])
+            details_val = _parse_json_field(row["details"]) or {}
 
             return {
                 "id": str(row["id"]),
@@ -346,7 +350,7 @@ async def get_audit_log_detail(
                 "resource_id": row["resource_id"],
                 "before_state": before_val,
                 "after_state": after_val,
-                "details": details_val or {}
+                "details": details_val
             }
     except HTTPException:
         raise
