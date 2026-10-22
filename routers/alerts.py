@@ -1254,7 +1254,7 @@ async def export_alerts_csv(
                     offset += len(rows)
                     if len(rows) < chunk_size:
                         break
-        except Exception as e:
+        except Exception:
             logger.exception("CSV streaming failed")
             raise
 

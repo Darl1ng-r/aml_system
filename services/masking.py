@@ -39,6 +39,18 @@ def mask_account_number(acc: str) -> str:
     return ("*" * (len(s) - 4)) + s[-4:]
 
 
+def _mask_scalar_field(key_lower: str, val: str) -> str:
+    if any(x in key_lower for x in ["name", "owner"]):
+        return mask_name(val)
+    if any(x in key_lower for x in ["account", "acc_num"]):
+        return mask_account_number(val)
+    if any(x in key_lower for x in ["tax_id", "ssn", "registration"]):
+        return mask_string(val, show_start=2, show_end=2)
+    if "bic" in key_lower:
+        return mask_string(val, show_start=4, show_end=0)
+    return val
+
+
 def mask_pii_data(data: dict[str, Any] | list[Any] | Any, role: str = "AUDITOR") -> Any:
     """
     Recursively scans and masks PII fields if user role is AUDITOR or GLOBAL_AUDITOR.
@@ -52,20 +64,10 @@ def mask_pii_data(data: dict[str, Any] | list[Any] | Any, role: str = "AUDITOR")
     if isinstance(data, dict):
         masked_dict = {}
         for k, v in data.items():
-            key_lower = k.lower()
             if isinstance(v, (dict, list)):
                 masked_dict[k] = mask_pii_data(v, role=role)
             elif isinstance(v, str):
-                if any(x in key_lower for x in ["name", "owner"]):
-                    masked_dict[k] = mask_name(v)
-                elif any(x in key_lower for x in ["account", "acc_num"]):
-                    masked_dict[k] = mask_account_number(v)
-                elif any(x in key_lower for x in ["tax_id", "ssn", "registration"]):
-                    masked_dict[k] = mask_string(v, show_start=2, show_end=2)
-                elif "bic" in key_lower:
-                    masked_dict[k] = mask_string(v, show_start=4, show_end=0)
-                else:
-                    masked_dict[k] = v
+                masked_dict[k] = _mask_scalar_field(k.lower(), v)
             else:
                 masked_dict[k] = v
         return masked_dict

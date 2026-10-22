@@ -11,6 +11,49 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Tuple, Union, List
 
 
+def _first_present(data: dict[str, Any], keys: list[str], default: Any) -> Any:
+    for k in keys:
+        val = data.get(k)
+        if val is not None and val != "":
+            return val
+    return default
+
+
+def _normalize_goaml_input(data: tuple | list | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(data, (list, tuple)):
+        alert_id, rule_name, threat, score, amt, curr, ts, s_acc, s_owner, r_acc, r_owner = data
+        return {
+            "alert_id": alert_id,
+            "rule_name": rule_name,
+            "threat": threat,
+            "score": score,
+            "amt": amt,
+            "curr": curr,
+            "ts": ts,
+            "s_acc": s_acc,
+            "s_owner": s_owner,
+            "r_acc": r_acc,
+            "r_owner": r_owner,
+            "txn_id": f"TX-{alert_id}"
+        }
+
+    alert_id = _first_present(data, ["alert_id", "id"], "UNKNOWN")
+    return {
+        "alert_id": alert_id,
+        "rule_name": _first_present(data, ["rule_name", "reason"], "SUSPICIOUS_TRANSACTION"),
+        "threat": _first_present(data, ["threat_level", "threat"], "HIGH"),
+        "score": _first_present(data, ["risk_score", "score"], 0.85),
+        "amt": _first_present(data, ["amount", "amt"], 0.0),
+        "curr": _first_present(data, ["currency", "curr"], "EUR"),
+        "ts": _first_present(data, ["timestamp", "ts"], datetime.now(timezone.utc)),
+        "s_acc": _first_present(data, ["sender_account", "sender_account_id", "s_acc"], ""),
+        "s_owner": _first_present(data, ["sender_name", "s_owner"], ""),
+        "r_acc": _first_present(data, ["receiver_account", "receiver_account_id", "r_acc"], ""),
+        "r_owner": _first_present(data, ["receiver_name", "r_owner"], ""),
+        "txn_id": _first_present(data, ["transaction_id"], f"TX-{alert_id}")
+    }
+
+
 def generate_goaml_xml(
     data: tuple | list | dict[str, Any],
     narrative: str,
@@ -32,22 +75,19 @@ def generate_goaml_xml(
     Returns:
         Formatted XML string matching UNODC goAML specifications.
     """
-    if isinstance(data, (list, tuple)):
-        alert_id, rule_name, threat, score, amt, curr, ts, s_acc, s_owner, r_acc, r_owner = data
-        txn_id = f"TX-{alert_id}"
-    else:
-        alert_id = data.get("alert_id") or data.get("id") or "UNKNOWN"
-        rule_name = data.get("rule_name") or data.get("reason") or "SUSPICIOUS_TRANSACTION"
-        threat = data.get("threat_level") or data.get("threat") or "HIGH"
-        score = data.get("risk_score") or data.get("score") or 0.85
-        amt = data.get("amount") or data.get("amt") or 0.0
-        curr = data.get("currency") or data.get("curr") or "EUR"
-        ts = data.get("timestamp") or data.get("ts") or datetime.now(timezone.utc)
-        s_acc = data.get("sender_account") or data.get("sender_account_id") or data.get("s_acc") or ""
-        s_owner = data.get("sender_name") or data.get("s_owner") or ""
-        r_acc = data.get("receiver_account") or data.get("receiver_account_id") or data.get("r_acc") or ""
-        r_owner = data.get("receiver_name") or data.get("r_owner") or ""
-        txn_id = data.get("transaction_id") or f"TX-{alert_id}"
+    norm = _normalize_goaml_input(data)
+    alert_id = norm["alert_id"]
+    rule_name = norm["rule_name"]
+    threat = norm["threat"]
+    score = norm["score"]
+    amt = norm["amt"]
+    curr = norm["curr"]
+    ts = norm["ts"]
+    s_acc = norm["s_acc"]
+    s_owner = norm["s_owner"]
+    r_acc = norm["r_acc"]
+    r_owner = norm["r_owner"]
+    txn_id = norm["txn_id"]
 
     if hasattr(ts, "isoformat"):
         ts_str = ts.isoformat()

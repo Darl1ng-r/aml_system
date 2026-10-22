@@ -7,7 +7,7 @@ and rule_config_history tables, with Redis pub/sub invalidation and simulation t
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import json
 import os
 import uuid
@@ -104,6 +104,46 @@ async def list_rules(
     ]
 
 
+def _parse_user_uuid(user_id: Any) -> Optional[uuid.UUID]:
+    if not user_id:
+        return None
+    try:
+        return uuid.UUID(str(user_id))
+    except (ValueError, TypeError):
+        return None
+
+
+def _compute_rule_updates(current_row: Any, payload: RulePatchPayload) -> Tuple[bool, dict, int]:
+    if payload.enabled is not None:
+        new_enabled = payload.enabled
+    elif current_row:
+        new_enabled = current_row["enabled"]
+    else:
+        new_enabled = True
+
+    existing_config = {}
+    if current_row and current_row["config"]:
+        raw_cfg = current_row["config"]
+        existing_config = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg)
+
+    new_config = existing_config.copy()
+    if payload.config is not None:
+        new_config.update(payload.config)
+
+    new_version = (current_row["version"] + 1) if current_row else 1
+    return new_enabled, new_config, new_version
+
+
+async def _broadcast_rule_invalidation(rule_name: str) -> None:
+    RulesEngine.reload_config()
+    try:
+        redis = await get_async_redis_client()
+        if redis:
+            await redis.publish("aml:rules:cache_invalidate", f"rule_updated:{rule_name}")
+    except Exception as re:
+        logger.warning(f"Redis cache invalidation broadcast skipped: {re}")
+
+
 @router.patch("/{rule_name}")
 async def patch_rule(
     rule_name: str,
@@ -117,12 +157,7 @@ async def patch_rule(
     tenant_id = enforce_tenant_data_scope(current_user)
     tenant_uuid = uuid.UUID(str(tenant_id))
     user_id = current_user.get("id")
-    user_uuid = None
-    if user_id:
-        try:
-            user_uuid = uuid.UUID(str(user_id))
-        except (ValueError, TypeError):
-            user_uuid = None
+    user_uuid = _parse_user_uuid(user_id)
     username = current_user.get("username", "Admin")
 
     try:
@@ -137,22 +172,7 @@ async def patch_rule(
                 tenant_uuid, rule_name
             )
 
-            if payload.enabled is not None:
-                new_enabled = payload.enabled
-            elif current_row:
-                new_enabled = current_row["enabled"]
-            else:
-                new_enabled = True
-            
-            existing_config = {}
-            if current_row and current_row["config"]:
-                existing_config = current_row["config"] if isinstance(current_row["config"], dict) else json.loads(current_row["config"])
-            
-            new_config = existing_config.copy()
-            if payload.config is not None:
-                new_config.update(payload.config)
-
-            new_version = (current_row["version"] + 1) if current_row else 1
+            new_enabled, new_config, new_version = _compute_rule_updates(current_row, payload)
 
             # 2. Upsert into rule_configs
             saved_id = await conn.fetchval(
@@ -190,13 +210,7 @@ async def patch_rule(
             )
 
         # 4. Invalidate memory cache and broadcast to Redis
-        RulesEngine.reload_config()
-        try:
-            redis = await get_async_redis_client()
-            if redis:
-                await redis.publish("aml:rules:cache_invalidate", f"rule_updated:{rule_name}")
-        except Exception as re:
-            logger.warning(f"Redis cache invalidation broadcast skipped: {re}")
+        await _broadcast_rule_invalidation(rule_name)
 
         # 5. Log audit event
         log_audit_event(

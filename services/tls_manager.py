@@ -49,6 +49,39 @@ def validate_mtls_configuration(strict: bool = False) -> None:
         logger.info("mTLS configuration validated successfully: internal CA, client cert, and key exist.")
 
 
+def _is_tls_requested(ca_path: str, cert_path: str) -> tuple[bool, bool]:
+    tls_secret_dir = os.path.dirname(ca_path)
+    tls_required = bool(
+        settings.enable_tls
+        or getattr(settings, 'strict_mtls', False)
+        or os.path.exists(tls_secret_dir)
+    )
+    secrets_present = os.path.exists(ca_path) and os.path.exists(cert_path)
+    tls_active = tls_required or secrets_present
+    return tls_required, tls_active
+
+
+def _load_ca_certs(ctx: ssl.SSLContext, ca_path: str, tls_required: bool) -> None:
+    if os.path.exists(ca_path):
+        ctx.load_verify_locations(cafile=ca_path)
+        ctx.verify_mode = ssl.CERT_REQUIRED
+        ctx.check_hostname = True
+        logger.info(f"Loaded internal CA root certificate from {ca_path}")
+    elif tls_required:
+        raise FileNotFoundError(f"Enabled/required TLS requires CA cert at {ca_path}")
+    else:
+        ctx.check_hostname = True
+        ctx.verify_mode = ssl.CERT_REQUIRED
+
+
+def _load_client_certs(ctx: ssl.SSLContext, cert_path: str, key_path: str, tls_required: bool) -> None:
+    if os.path.exists(cert_path) and os.path.exists(key_path):
+        ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
+        logger.info(f"Loaded mTLS client certificate & key from {cert_path}")
+    elif tls_required:
+        raise FileNotFoundError(f"Enabled/required TLS requires client cert and key at {cert_path} / {key_path}")
+
+
 def get_ssl_context(purpose: ssl.Purpose = ssl.Purpose.SERVER_AUTH) -> Optional[ssl.SSLContext]:
     """
     Builds a secure SSLContext for encrypted in-transit client connections.
@@ -59,36 +92,14 @@ def get_ssl_context(purpose: ssl.Purpose = ssl.Purpose.SERVER_AUTH) -> Optional[
     cert_path = settings.tls_client_cert or "/var/run/secrets/tls/tls.crt"
     key_path = settings.tls_client_key or "/var/run/secrets/tls/tls.key"
 
-    tls_secret_dir = os.path.dirname(ca_path)
-    tls_required = settings.enable_tls or getattr(settings, 'strict_mtls', False) or os.path.exists(tls_secret_dir)
-
-    # Check if explicit enable_tls/strict setting is set OR if mounted secrets exist
-    tls_active = tls_required or (os.path.exists(ca_path) and os.path.exists(cert_path))
+    tls_required, tls_active = _is_tls_requested(ca_path, cert_path)
     if not tls_active:
         return None
 
     try:
         ctx = ssl.create_default_context(purpose=purpose)
-
-        # Load Custom Internal CA certificate if present
-        if os.path.exists(ca_path):
-            ctx.load_verify_locations(cafile=ca_path)
-            ctx.verify_mode = ssl.CERT_REQUIRED
-            ctx.check_hostname = True
-            logger.info(f"Loaded internal CA root certificate from {ca_path}")
-        else:
-            if tls_required:
-                raise FileNotFoundError(f"Enabled/required TLS requires CA cert at {ca_path}")
-            ctx.check_hostname = True
-            ctx.verify_mode = ssl.CERT_REQUIRED
-
-        # Load Mutual TLS (mTLS) Client Certificate & Private Key if present
-        if os.path.exists(cert_path) and os.path.exists(key_path):
-            ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
-            logger.info(f"Loaded mTLS client certificate & key from {cert_path}")
-        elif tls_required:
-            raise FileNotFoundError(f"Enabled/required TLS requires client cert and key at {cert_path} / {key_path}")
-
+        _load_ca_certs(ctx, ca_path, tls_required)
+        _load_client_certs(ctx, cert_path, key_path, tls_required)
         return ctx
     except Exception as e:
         logger.exception("Failed to configure SSLContext")

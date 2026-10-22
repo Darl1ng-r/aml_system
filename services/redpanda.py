@@ -69,8 +69,8 @@ async def _get_producer():
             await p.start()
             _producer = p
             logger.info(f"AIOKafka producer connected to {KAFKA_BOOTSTRAP_SERVERS}")
-        except Exception as e:
-            logger.error(f"Failed to start Kafka producer: {e}")
+        except Exception:
+            logger.exception("Failed to start Kafka producer")
             _producer = None
     return _producer
 
@@ -114,11 +114,8 @@ async def publish_transaction_async(
             f"→ {target_topic}"
         )
         return True
-    except Exception as e:
-        logger.error(
-            f"Failed to publish tx {transaction_payload.get('transaction_id')}: {e}. "
-            f"Payload: {json.dumps(transaction_payload)}"
-        )
+    except Exception:
+        logger.exception("Failed to publish tx %s", transaction_payload.get("transaction_id"))
         return False
 
 
@@ -139,8 +136,8 @@ def publish_transaction(
             task.add_done_callback(_background_tasks.discard)
         else:
             loop.run_until_complete(publish_transaction_async(transaction_payload, key=key, topic=topic))
-    except Exception as e:
-        logger.error(f"publish_transaction wrapper error: {e}")
+    except Exception:
+        logger.exception("publish_transaction wrapper error")
         logger.warning(
             f"[LOG ONLY - REDPANDA OFFLINE] Message: {json.dumps(transaction_payload)}"
         )

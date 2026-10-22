@@ -17,7 +17,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone, timedelta
-from typing import List
+from typing import List, Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
 from database.postgres import get_async_db_read_conn
@@ -146,6 +146,14 @@ async def start_redis_ws_listener(ws_mgr: ConnectionManager, shutdown_event: asy
         logger.warning(f"Failed to start Redis WebSocket listener (standalone fallback active): {e}")
 
 
+def _determine_risk_tier(active: int) -> str:
+    if active >= 4:
+        return "Critical"
+    if active >= 2:
+        return "High"
+    return "Normal"
+
+
 # ── Analytics API Endpoint ────────────────────────────────────────────────────
 @router.get("/api/v1/metrics/dashboard")
 async def get_dashboard_metrics(
@@ -223,7 +231,7 @@ async def get_dashboard_metrics(
                     "username": row["username"],
                     "active_cases": active,
                     "resolution_rate": f"{res_rate}%",
-                    "risk_tier": "Critical" if active >= 4 else ("High" if active >= 2 else "Normal")
+                    "risk_tier": _determine_risk_tier(active)
                 })
 
             return {
@@ -237,8 +245,151 @@ async def get_dashboard_metrics(
                 "analyst_leaderboard": analysts
             }
     except Exception as e:
-        logger.error(f"Dashboard metrics query failed: {e}")
+        logger.exception("Dashboard metrics query failed")
         raise HTTPException(status_code=500, detail=f"Failed to load analytics: {str(e)}")
+
+
+async def _fetch_executive_counts(conn: Any) -> dict:
+    alerts_24h = await conn.fetchval(
+        "SELECT COUNT(*) FROM alerts WHERE created_at >= NOW() - INTERVAL '24 hours';"
+    )
+    open_alerts = await conn.fetchval(
+        "SELECT COUNT(*) FROM alerts WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN');"
+    )
+    open_cases = await conn.fetchval(
+        "SELECT COUNT(*) FROM cases WHERE status IN ('OPEN', 'INVESTIGATING', 'PENDING_EDD', 'PENDING_SAR');"
+    )
+    sars_mtd = await conn.fetchval(
+        """
+        SELECT COUNT(*) FROM sar_drafts
+        WHERE status IN ('APPROVED', 'FILED')
+          AND created_at >= DATE_TRUNC('month', NOW());
+        """
+    )
+    total_closed = await conn.fetchval(
+        "SELECT COUNT(*) FROM alerts WHERE status LIKE 'CLOSED%';"
+    )
+    fps_closed = await conn.fetchval(
+        "SELECT COUNT(*) FROM alerts WHERE status = 'CLOSED_FALSE_POSITIVE';"
+    )
+
+    t_closed = int(total_closed or 0)
+    f_closed = int(fps_closed or 0)
+    fp_rate = round((f_closed / t_closed * 100), 1) if t_closed > 0 else 0.0
+
+    return {
+        "alerts_24h": int(alerts_24h or 0),
+        "open_alerts": int(open_alerts or 0),
+        "open_cases": int(open_cases or 0),
+        "sars_filed_mtd": int(sars_mtd or 0),
+        "false_positive_rate": f"{fp_rate}%",
+        "median_triage_hours": 3.8
+    }
+
+
+async def _fetch_executive_sla_breaches(conn: Any) -> dict:
+    breach_24h = await conn.fetchval(
+        """
+        SELECT COUNT(*) FROM alerts
+        WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
+          AND created_at <= NOW() - INTERVAL '24 hours';
+        """
+    )
+    breach_48h = await conn.fetchval(
+        """
+        SELECT COUNT(*) FROM alerts
+        WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
+          AND created_at <= NOW() - INTERVAL '48 hours';
+        """
+    )
+    breach_72h = await conn.fetchval(
+        """
+        SELECT COUNT(*) FROM alerts
+        WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
+          AND created_at <= NOW() - INTERVAL '72 hours';
+        """
+    )
+
+    breach_rows = await conn.fetch(
+        """
+        SELECT a.id, a.rule_name, a.threat_level, a.created_at,
+               ROUND(EXTRACT(EPOCH FROM (NOW() - a.created_at)) / 3600.0, 1) as age_hours,
+               COALESCE(u.username, 'UNASSIGNED') as assignee
+        FROM alerts a
+        LEFT JOIN users u ON a.assigned_officer_id = u.id
+        WHERE a.status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
+          AND a.created_at <= NOW() - INTERVAL '24 hours'
+        ORDER BY a.created_at ASC
+        LIMIT 10;
+        """
+    )
+    breach_items = [
+        {
+            "alert_id": str(r["id"]),
+            "rule_name": r["rule_name"],
+            "threat_level": r["threat_level"],
+            "age_hours": float(r["age_hours"]),
+            "assignee": r["assignee"]
+        }
+        for r in breach_rows
+    ]
+
+    return {
+        "breach_24h": int(breach_24h or 0),
+        "breach_48h": int(breach_48h or 0),
+        "breach_72h": int(breach_72h or 0),
+        "items": breach_items
+    }
+
+
+async def _fetch_executive_analytics(conn: Any) -> tuple[list[dict], dict, list[dict]]:
+    cat_rows = await conn.fetch(
+        "SELECT rule_name, COUNT(*) as count FROM alerts GROUP BY rule_name ORDER BY count DESC LIMIT 8;"
+    )
+    typologies = [{"rule_name": r["rule_name"], "count": int(r["count"])} for r in cat_rows]
+
+    trend_rows = await conn.fetch(
+        """
+        SELECT DATE(created_at) as day, COUNT(*) as count
+        FROM alerts
+        WHERE created_at >= NOW() - INTERVAL '7 days'
+        GROUP BY DATE(created_at)
+        ORDER BY day ASC;
+        """
+    )
+    days_map = { (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%a"): 0 for i in reversed(range(7)) }
+    for row in trend_rows:
+        day_name = row["day"].strftime("%a")
+        if day_name in days_map:
+            days_map[day_name] = int(row["count"])
+
+    leaderboard_rows = await conn.fetch(
+        """
+        SELECT u.username,
+               COUNT(a.id) FILTER (WHERE a.status IN ('OPEN', 'IN_REVIEW', 'ESCALATED')) as active_cases,
+               COUNT(a.id) FILTER (WHERE a.status LIKE 'CLOSED%') as resolved_cases,
+               COUNT(a.id) as total_cases
+        FROM users u
+        LEFT JOIN alerts a ON u.id = a.assigned_officer_id
+        GROUP BY u.username
+        ORDER BY resolved_cases DESC
+        LIMIT 10;
+        """
+    )
+    analysts = []
+    for row in leaderboard_rows:
+        active = int(row["active_cases"])
+        resolved = int(row["resolved_cases"])
+        total = int(row["total_cases"])
+        res_rate = round((resolved / total * 100), 1) if total > 0 else 100.0
+        analysts.append({
+            "username": row["username"],
+            "active_cases": active,
+            "resolved_cases": resolved,
+            "resolution_rate": f"{res_rate}%"
+        })
+
+    return typologies, days_map, analysts
 
 
 @router.get("/api/v1/metrics/executive")
@@ -252,149 +403,13 @@ async def get_executive_metrics(
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            # 1. 24h Alert Volume
-            alerts_24h = await conn.fetchval(
-                "SELECT COUNT(*) FROM alerts WHERE created_at >= NOW() - INTERVAL '24 hours';"
-            ) or 0
-
-            # 2. Open alerts & cases
-            open_alerts = await conn.fetchval(
-                "SELECT COUNT(*) FROM alerts WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN');"
-            ) or 0
-            open_cases = await conn.fetchval(
-                "SELECT COUNT(*) FROM cases WHERE status IN ('OPEN', 'INVESTIGATING', 'PENDING_EDD', 'PENDING_SAR');"
-            ) or 0
-
-            # 3. SARs filed Month-to-Date
-            sars_mtd = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM sar_drafts
-                WHERE status IN ('APPROVED', 'FILED')
-                  AND created_at >= DATE_TRUNC('month', NOW());
-                """
-            ) or 0
-
-            # 4. False positive rate
-            total_closed = await conn.fetchval(
-                "SELECT COUNT(*) FROM alerts WHERE status LIKE 'CLOSED%';"
-            ) or 0
-            fps_closed = await conn.fetchval(
-                "SELECT COUNT(*) FROM alerts WHERE status = 'CLOSED_FALSE_POSITIVE';"
-            ) or 0
-            fp_rate = round((fps_closed / total_closed * 100), 1) if total_closed > 0 else 0.0
-
-            # 5. SLA Breach Indicators (> 24h, > 48h, > 72h)
-            breach_24h = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM alerts
-                WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
-                  AND created_at <= NOW() - INTERVAL '24 hours';
-                """
-            ) or 0
-            breach_48h = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM alerts
-                WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
-                  AND created_at <= NOW() - INTERVAL '48 hours';
-                """
-            ) or 0
-            breach_72h = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM alerts
-                WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
-                  AND created_at <= NOW() - INTERVAL '72 hours';
-                """
-            ) or 0
-
-            # Top SLA breaches for display
-            breach_rows = await conn.fetch(
-                """
-                SELECT a.id, a.rule_name, a.threat_level, a.created_at,
-                       ROUND(EXTRACT(EPOCH FROM (NOW() - a.created_at)) / 3600.0, 1) as age_hours,
-                       COALESCE(u.username, 'UNASSIGNED') as assignee
-                FROM alerts a
-                LEFT JOIN users u ON a.assigned_officer_id = u.id
-                WHERE a.status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
-                  AND a.created_at <= NOW() - INTERVAL '24 hours'
-                ORDER BY a.created_at ASC
-                LIMIT 10;
-                """
-            )
-            breach_items = [
-                {
-                    "alert_id": str(r["id"]),
-                    "rule_name": r["rule_name"],
-                    "threat_level": r["threat_level"],
-                    "age_hours": float(r["age_hours"]),
-                    "assignee": r["assignee"]
-                }
-                for r in breach_rows
-            ]
-
-            # 6. Typologies distribution
-            cat_rows = await conn.fetch(
-                "SELECT rule_name, COUNT(*) as count FROM alerts GROUP BY rule_name ORDER BY count DESC LIMIT 8;"
-            )
-            typologies = [{"rule_name": r["rule_name"], "count": int(r["count"])} for r in cat_rows]
-
-            # 7. 7-Day Trend
-            trend_rows = await conn.fetch(
-                """
-                SELECT DATE(created_at) as day, COUNT(*) as count
-                FROM alerts
-                WHERE created_at >= NOW() - INTERVAL '7 days'
-                GROUP BY DATE(created_at)
-                ORDER BY day ASC;
-                """
-            )
-            days_map = { (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%a"): 0 for i in reversed(range(7)) }
-            for row in trend_rows:
-                day_name = row["day"].strftime("%a")
-                if day_name in days_map:
-                    days_map[day_name] = int(row["count"])
-
-            # 8. Analyst Leaderboard
-            leaderboard_rows = await conn.fetch(
-                """
-                SELECT u.username,
-                       COUNT(a.id) FILTER (WHERE a.status IN ('OPEN', 'IN_REVIEW', 'ESCALATED')) as active_cases,
-                       COUNT(a.id) FILTER (WHERE a.status LIKE 'CLOSED%') as resolved_cases,
-                       COUNT(a.id) as total_cases
-                FROM users u
-                LEFT JOIN alerts a ON u.id = a.assigned_officer_id
-                GROUP BY u.username
-                ORDER BY resolved_cases DESC
-                LIMIT 10;
-                """
-            )
-            analysts = []
-            for row in leaderboard_rows:
-                active = int(row["active_cases"])
-                resolved = int(row["resolved_cases"])
-                total = int(row["total_cases"])
-                res_rate = round((resolved / total * 100), 1) if total > 0 else 100.0
-                analysts.append({
-                    "username": row["username"],
-                    "active_cases": active,
-                    "resolved_cases": resolved,
-                    "resolution_rate": f"{res_rate}%"
-                })
+            kpis = await _fetch_executive_counts(conn)
+            sla_breaches = await _fetch_executive_sla_breaches(conn)
+            typologies, days_map, analysts = await _fetch_executive_analytics(conn)
 
             return {
-                "kpis": {
-                    "alerts_24h": alerts_24h,
-                    "open_alerts": open_alerts,
-                    "open_cases": open_cases,
-                    "sars_filed_mtd": sars_mtd,
-                    "false_positive_rate": f"{fp_rate}%",
-                    "median_triage_hours": 3.8
-                },
-                "sla_breaches": {
-                    "breach_24h": breach_24h,
-                    "breach_48h": breach_48h,
-                    "breach_72h": breach_72h,
-                    "items": breach_items
-                },
+                "kpis": kpis,
+                "sla_breaches": sla_breaches,
                 "typologies": typologies,
                 "daily_trend": {
                     "labels": list(days_map.keys()),
@@ -403,7 +418,7 @@ async def get_executive_metrics(
                 "leaderboard": analysts
             }
     except Exception as e:
-        logger.error(f"Failed to calculate executive compliance metrics: {e}")
+        logger.exception("Failed to calculate executive compliance metrics")
         raise HTTPException(status_code=500, detail=f"Executive metrics failed: {str(e)}")
 
 

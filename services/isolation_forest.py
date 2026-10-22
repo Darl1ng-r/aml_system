@@ -1,7 +1,10 @@
 import numpy as np
 import random
+import secrets
 import math
 import logging
+import asyncio
+from concurrent.futures import ProcessPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +45,7 @@ class IsolationTree:
             
         # Randomly select a feature that is not constant
         feature_indices = list(range(n_features))
-        random.shuffle(feature_indices)
+        secrets.SystemRandom().shuffle(feature_indices)
         
         split_feature = None
         split_value = None
@@ -52,7 +55,7 @@ class IsolationTree:
             feat_max = X[:, feat].max()
             if feat_min < feat_max:
                 split_feature = feat
-                split_value = random.uniform(feat_min, feat_max)
+                split_value = secrets.SystemRandom().uniform(feat_min, feat_max)
                 break
                 
         if split_feature is None:
@@ -147,20 +150,55 @@ def _fit_isolation_forest_job(n_estimators: int, max_samples: int, X_train: np.n
     return model
 
 
+def _generate_synthetic_training_data() -> np.ndarray:
+    rng = np.random.default_rng(42)
+    n_samples = 100
+    amounts = rng.exponential(scale=3000, size=n_samples)
+    sender_risks = rng.beta(a=2, b=5, size=n_samples)
+    receiver_risks = rng.beta(a=2, b=5, size=n_samples)
+    hours = rng.integers(0, 24, size=n_samples)
+    is_geo_risks = rng.choice([0, 1], size=n_samples, p=[0.95, 0.05])
+    return np.stack([amounts, sender_risks, receiver_risks, hours, is_geo_risks], axis=1)
+
+
+def _extract_training_features(rows: list, high_risk_countries: list) -> np.ndarray:
+    features = []
+    for row in rows:
+        amount = float(row["amount"])
+        sender_risk = float(row["sender_risk"]) if row["sender_risk"] is not None else 0.1
+        receiver_risk = float(row["receiver_risk"]) if row["receiver_risk"] is not None else 0.1
+        hour = row["timestamp"].hour
+
+        is_geo = 0
+        for bic in [row["sender_bic"], row["receiver_bic"]]:
+            if bic and len(bic) >= 6 and bic[4:6].upper() in high_risk_countries:
+                is_geo = 1
+                break
+
+        features.append([amount, sender_risk, receiver_risk, hour, is_geo])
+    return np.array(features)
+
+
+async def _fit_model_in_executor(X_train: np.ndarray) -> IsolationForestScratch:
+    loop = asyncio.get_running_loop()
+    try:
+        with ProcessPoolExecutor(max_workers=1) as pool:
+            return await loop.run_in_executor(pool, _fit_isolation_forest_job, 50, 256, X_train)
+    except Exception:
+        return await asyncio.to_thread(_fit_isolation_forest_job, 50, 256, X_train)
+
+
 async def retrain_system_iforest():
     global _iforest_model
     logger.info("Retraining system-wide Isolation Forest...")
     try:
         from database.postgres import get_async_db_conn
         from services.rules import get_rules_config
-        import asyncio
-        from concurrent.futures import ProcessPoolExecutor
-        
+
         config = get_rules_config()
         geo_config = config.get("rules", {}).get("GEOGRAPHIC_SANCTIONS", {})
         high_risk_countries = geo_config.get("high_risk_countries", ["RU", "IR", "KP", "SY"])
-        
-        # Load the last 2000 completed transactions to train
+
         query = """
             SELECT t.amount, s.risk_score as sender_risk, r.risk_score as receiver_risk, t.timestamp,
                    s.swift_bic as sender_bic, r.swift_bic as receiver_bic
@@ -173,46 +211,14 @@ async def retrain_system_iforest():
         """
         async with get_async_db_conn() as conn:
             rows = await conn.fetch(query)
-            
-        # If there are not enough transactions, seed synthetic samples
+
         if len(rows) < 10:
             logger.info("Not enough transactions in DB to train Isolation Forest. Seeding synthetic data for training.")
-            rng = np.random.default_rng(42)
-            n_samples = 100
-            amounts = rng.exponential(scale=3000, size=n_samples)
-            sender_risks = rng.beta(a=2, b=5, size=n_samples)
-            receiver_risks = rng.beta(a=2, b=5, size=n_samples)
-            hours = rng.integers(0, 24, size=n_samples)
-            is_geo_risks = rng.choice([0, 1], size=n_samples, p=[0.95, 0.05])
-            
-            X_train = np.stack([amounts, sender_risks, receiver_risks, hours, is_geo_risks], axis=1)
+            X_train = _generate_synthetic_training_data()
         else:
-            features = []
-            for row in rows:
-                amount = float(row["amount"])
-                sender_risk = float(row["sender_risk"]) if row["sender_risk"] is not None else 0.1
-                receiver_risk = float(row["receiver_risk"]) if row["receiver_risk"] is not None else 0.1
-                hour = row["timestamp"].hour
-                
-                is_geo = 0
-                for bic in [row["sender_bic"], row["receiver_bic"]]:
-                    if bic and len(bic) >= 6:
-                        if bic[4:6].upper() in high_risk_countries:
-                            is_geo = 1
-                            break
-                            
-                features.append([amount, sender_risk, receiver_risk, hour, is_geo])
-                
-            X_train = np.array(features)
-            
-        loop = asyncio.get_running_loop()
-        try:
-            with ProcessPoolExecutor(max_workers=1) as pool:
-                model = await loop.run_in_executor(pool, _fit_isolation_forest_job, 50, 256, X_train)
-        except Exception:
-            model = await asyncio.to_thread(_fit_isolation_forest_job, 50, 256, X_train)
+            X_train = _extract_training_features(rows, high_risk_countries)
 
-        _iforest_model = model
+        _iforest_model = await _fit_model_in_executor(X_train)
         logger.info(f"System-wide Isolation Forest trained successfully on {X_train.shape[0]} samples.")
     except Exception:
         logger.exception("Failed to retrain Isolation Forest")

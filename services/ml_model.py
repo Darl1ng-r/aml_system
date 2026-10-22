@@ -44,6 +44,7 @@ FEATURE_NAMES = [
 
 AMOUNT_NORM_CAP = 100_000.0
 
+DEFAULT_CURRENCY = "US Dollar"
 HIGH_RISK_CURRENCIES = {"Ruble", "Yuan", "Shekel", "Dinar", "Iranian Rial"}
 
 PAYMENT_FORMATS = {
@@ -97,7 +98,7 @@ class AMLAnomalyModel:
                     f"Recommended threshold: {self._recommended_threshold}"
                 )
             except Exception as e:
-                logger.error(f"Failed to load XGBoost model: {e}. Falling back to legacy formula.")
+                logger.exception(f"Failed to load XGBoost model: {e}. Falling back to legacy formula.")
                 self._mode = "fallback"
 
         # ── Fallback: legacy logistic regression coefficients ─────────────────
@@ -132,8 +133,8 @@ class AMLAnomalyModel:
         receiver_risk: float,
         velocity_count: int,
         hour: int = 12,
-        currency_paid: str = "US Dollar",
-        currency_recv: str = "US Dollar",
+        currency_paid: str = DEFAULT_CURRENCY,
+        currency_recv: str = DEFAULT_CURRENCY,
         pay_format: str = "Wire",
         amount_received: float | None = None,
         amount_ratio: float | None = None,
@@ -184,8 +185,8 @@ class AMLAnomalyModel:
         velocity_count: int,
         # Extended fields (optional — backward-compatible)
         hour: int = 12,
-        currency_paid: str = "US Dollar",
-        currency_recv: str = "US Dollar",
+        currency_paid: str = DEFAULT_CURRENCY,
+        currency_recv: str = DEFAULT_CURRENCY,
         pay_format: str = "Wire",
         explain: bool = False,
         amount_received: float | None = None,
@@ -223,8 +224,8 @@ class AMLAnomalyModel:
             receiver_risk=float(features.get("receiver_risk", 0.2)),
             velocity_count=int(features.get("velocity_24h", features.get("velocity_count", 1))),
             hour=int(features.get("hour_of_day", features.get("hour", 12))),
-            currency_paid=features.get("currency", "US Dollar"),
-            currency_recv=features.get("currency", "US Dollar"),
+            currency_paid=features.get("currency", DEFAULT_CURRENCY),
+            currency_recv=features.get("currency", DEFAULT_CURRENCY),
             pay_format=features.get("channel", "Wire"),
             explain=True,
             amount_received=float(amt_recv) if amt_recv is not None else None,
@@ -267,7 +268,7 @@ class AMLAnomalyModel:
                 "attributions": attributions,
             }
         except Exception as e:
-            logger.error(f"XGBoost inference failed: {e}. Falling back to legacy formula.")
+            logger.exception(f"XGBoost inference failed: {e}. Falling back to legacy formula.")
             return self._predict_fallback(amount, sender_risk, receiver_risk, velocity_count)
 
     def _predict_fallback(self, amount, sender_risk, receiver_risk, velocity_count) -> dict:

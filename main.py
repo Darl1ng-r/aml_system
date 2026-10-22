@@ -21,32 +21,25 @@ import logging
 setup_json_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+MIME_TEXT_HTML = "text/html"
+LOGIN_ROUTE = "/login"
+
 # Shutdown event shared between the FastAPI app and the sync worker
 _worker_shutdown_event = asyncio.Event()
 
+# Task reference retention to prevent premature garbage collection
+_background_tasks: set[asyncio.Task] = set()
 
-async def startup_db_clients(app_instance: FastAPI):
-    logger.info("Starting up database connections...")
-    import sys
-    import os
-    import asyncio
-    from database.postgres import init_db_pool
-    from database.redis_db import get_redis_client, get_async_redis_client
 
-    # ── 0. Bootstrap Vault secrets (must be FIRST — all subsequent steps depend on it) ──
-    try:
-        from services.vault_loader import VaultSecretsLoader
-        await VaultSecretsLoader.bootstrap()
-        logger.info("Vault secrets loaded successfully.")
-    except RuntimeError as e:
-        logger.critical(f"CRITICAL: Vault secrets bootstrap failed: {e}")
-        raise
+def create_background_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
-    # ── 0b. TLS/mTLS validation ──────────────────────────────────────────
-    from services.tls_manager import validate_mtls_configuration
-    validate_mtls_configuration(strict=settings.strict_mtls or settings.enable_tls)
 
-    # ── 0c. Initialise OpenTelemetry tracing ──────────────────────────────
+def _init_observability(app_instance: FastAPI) -> None:
+    # 0c. Initialise OpenTelemetry tracing
     try:
         from observability.tracing import init_tracer
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -59,7 +52,7 @@ async def startup_db_clients(app_instance: FastAPI):
     except Exception as e:
         logger.warning(f"OpenTelemetry init skipped (non-fatal): {e}")
 
-    # ── 0d. Initialise Sentry error tracking (if configured) ─────────────
+    # 0d. Initialise Sentry error tracking (if configured)
     if getattr(settings, "sentry_dsn", None):
         try:
             import sentry_sdk
@@ -71,12 +64,11 @@ async def startup_db_clients(app_instance: FastAPI):
             logger.info("Sentry APM & error tracking initialized.")
         except Exception as e:
             logger.warning(f"Sentry init skipped (non-fatal): {e}")
-    allow_offline = getattr(settings, "allow_offline_dev", False) or os.getenv("ALLOW_OFFLINE_DEV", "false").lower() == "true"
-    pg_connected = False
 
-    # ── 1. Initialize & Fail-Fast PostgreSQL ─────────────────────────────
-    # ── Tier 1 (Critical Hard Dependencies): Fail-Fast ───────────────────
-    # 1a. PostgreSQL Primary Pool
+
+async def _init_postgres_and_migrations(allow_offline: bool) -> bool:
+    from database.postgres import init_db_pool
+    pg_connected = False
     try:
         await init_db_pool()
         pg_connected = True
@@ -85,8 +77,7 @@ async def startup_db_clients(app_instance: FastAPI):
         if not allow_offline:
             raise RuntimeError("PostgreSQL database initialization failed") from e
         logger.warning("ALLOW_OFFLINE_DEV active: Continuing without PostgreSQL connection.")
-    
-    # 1b. Run Alembic migrations (conditional on RUN_MIGRATIONS_ON_STARTUP - Finding #30)
+
     run_migrations = getattr(settings, "run_migrations_on_startup", False) or os.getenv("RUN_MIGRATIONS_ON_STARTUP", "false").lower() == "true"
     if pg_connected and run_migrations:
         try:
@@ -103,8 +94,11 @@ async def startup_db_clients(app_instance: FastAPI):
             logger.warning("ALLOW_OFFLINE_DEV active: Continuing without running Alembic migrations.")
     elif pg_connected:
         logger.info("Startup Alembic migrations skipped (managed via dedicated Kubernetes Job).")
-        
-    # 2. Initialize & Fail-Fast Redis
+    return pg_connected
+
+
+async def _init_redis(allow_offline: bool) -> None:
+    from database.redis_db import get_redis_client, get_async_redis_client
     try:
         get_redis_client()
         await get_async_redis_client()
@@ -114,8 +108,36 @@ async def startup_db_clients(app_instance: FastAPI):
             raise RuntimeError("Redis cache is required for startup") from e
         logger.warning("ALLOW_OFFLINE_DEV active: Continuing without Redis connection.")
 
-    # ── Tier 2 (Soft Dependencies & Warmup): Async Non-Blocking (Finding #1) ───
-    asyncio.create_task(warm_soft_dependencies(allow_offline))
+
+async def startup_db_clients(app_instance: FastAPI):
+    logger.info("Starting up database connections...")
+    from services.vault_loader import VaultSecretsLoader
+    from services.tls_manager import validate_mtls_configuration
+
+    # 0. Bootstrap Vault secrets (must be FIRST — all subsequent steps depend on it)
+    try:
+        await VaultSecretsLoader.bootstrap()
+        logger.info("Vault secrets loaded successfully.")
+    except RuntimeError as e:
+        logger.critical(f"CRITICAL: Vault secrets bootstrap failed: {e}")
+        raise
+
+    # 0b. TLS/mTLS validation
+    validate_mtls_configuration(strict=settings.strict_mtls or settings.enable_tls)
+
+    # 0c & 0d. Observability
+    _init_observability(app_instance)
+
+    allow_offline = getattr(settings, "allow_offline_dev", False) or os.getenv("ALLOW_OFFLINE_DEV", "false").lower() == "true"
+
+    # 1. PostgreSQL & Migrations
+    await _init_postgres_and_migrations(allow_offline)
+
+    # 2. Redis
+    await _init_redis(allow_offline)
+
+    # Tier 2 (Soft Dependencies & Warmup): Async Non-Blocking
+    create_background_task(warm_soft_dependencies(allow_offline))
 
 
 async def warm_soft_dependencies(allow_offline: bool):
@@ -153,31 +175,31 @@ async def warm_soft_dependencies(allow_offline: bool):
     # 6. Start Neo4j Graph Sync Worker (Optional in-process runner)
     if os.getenv("RUN_EMBEDDED_WORKER", "false").lower() == "true":
         logger.info("Starting embedded background Neo4j graph synchronization worker...")
-        asyncio.create_task(run_sync_worker(shutdown_event=_worker_shutdown_event))
+        create_background_task(run_sync_worker(shutdown_event=_worker_shutdown_event))
 
     # 7. Start Periodic Background Watchlist Sync Task
     if not allow_offline:
         from services.watchlist_sync import schedule_periodic_watchlist_sync
         logger.info("Starting background periodic watchlist sync task...")
-        asyncio.create_task(schedule_periodic_watchlist_sync(interval_seconds=86400, shutdown_event=_worker_shutdown_event))
+        create_background_task(schedule_periodic_watchlist_sync(interval_seconds=86400, shutdown_event=_worker_shutdown_event))
 
     # 8. Start Distributed Redis WebSocket PubSub Listener
     if not allow_offline:
         from routers.metrics import ws_manager, start_redis_ws_listener
         logger.info("Starting distributed Redis WebSocket pubsub listener task...")
-        asyncio.create_task(start_redis_ws_listener(ws_manager, shutdown_event=_worker_shutdown_event))
+        create_background_task(start_redis_ws_listener(ws_manager, shutdown_event=_worker_shutdown_event))
 
     # 9. Start Distributed Redis Rules Invalidation Listener
     if not allow_offline:
         from services.rules import start_redis_rules_listener
         logger.info("Starting distributed Redis rules cache invalidation listener task...")
-        asyncio.create_task(start_redis_rules_listener(shutdown_event=_worker_shutdown_event))
+        create_background_task(start_redis_rules_listener(shutdown_event=_worker_shutdown_event))
 
     # 10. Start Distributed Redis Whitelist Invalidation Listener
     if not allow_offline:
         from services.whitelisting import start_redis_whitelist_listener
         logger.info("Starting distributed Redis whitelist cache invalidation listener task...")
-        asyncio.create_task(start_redis_whitelist_listener(shutdown_event=_worker_shutdown_event))
+        create_background_task(start_redis_whitelist_listener(shutdown_event=_worker_shutdown_event))
 
 
 
@@ -401,7 +423,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     accept = request.headers.get("accept", "")
-    if exc.status_code == 404 and "text/html" in accept and os.path.exists("static/404.html"):
+    if exc.status_code == 404 and MIME_TEXT_HTML in accept and os.path.exists("static/404.html"):
         return FileResponse("static/404.html", status_code=404)
     return JSONResponse(
         status_code=exc.status_code,
@@ -417,7 +439,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         extra={"correlation_id": correlation_id}
     )
     accept = request.headers.get("accept", "")
-    if "text/html" in accept and os.path.exists("static/500.html"):
+    if MIME_TEXT_HTML in accept and os.path.exists("static/500.html"):
         return FileResponse(
             "static/500.html",
             status_code=500,
@@ -442,7 +464,7 @@ def read_sitemap():
 @app.get("/")
 def read_root(request: Request):
     accept = request.headers.get("accept", "")
-    if "application/json" in accept and "text/html" not in accept:
+    if "application/json" in accept and MIME_TEXT_HTML not in accept:
         return {
             "status": "ONLINE",
             "service": "AML Platform Ingestion Gateway",
@@ -459,19 +481,19 @@ def read_dashboard(request: Request):
     """Server-side cookie authentication guard for compliance dashboard (Finding #20)."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
 
     try:
         from services.secrets_manager import decode_jwt_with_rotation
         payload = decode_jwt_with_rotation(token)
         if not payload or payload.get("type") != "access":
-            return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+            return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     except Exception:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
 
     return FileResponse("static/index.html")
 
-@app.get("/login", response_class=FileResponse)
+@app.get(LOGIN_ROUTE, response_class=FileResponse)
 def read_login():
     return FileResponse("static/login.html")
 
@@ -481,7 +503,7 @@ def read_triage(request: Request):
     """Server-side cookie authentication guard for Alert Triage Inbox."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/triage.html")
 
 @app.get("/admin/rules", response_class=FileResponse)
@@ -490,7 +512,7 @@ def read_rules_admin(request: Request):
     """Server-side cookie authentication guard for Rule Builder & Tuner."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/rules-admin.html")
 
 @app.get("/admin/users", response_class=FileResponse)
@@ -499,7 +521,7 @@ def read_users_admin(request: Request):
     """Server-side cookie authentication guard for User & Permissions Governance."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/users-admin.html")
 
 @app.get("/sar/draft/{id}", response_class=FileResponse)
@@ -509,7 +531,7 @@ def read_sar_editor(request: Request, id: str = None):
     """Server-side cookie authentication guard for SAR Draft Editor."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/sar-editor.html")
 
 @app.get("/sar/queue", response_class=FileResponse)
@@ -518,7 +540,7 @@ def read_sar_queue(request: Request):
     """Server-side cookie authentication guard for MLRO SAR Filing Queue."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/sar-queue.html")
 
 @app.get("/customers/{id}", response_class=FileResponse)
@@ -527,7 +549,7 @@ def read_customer_360(request: Request, id: str = None):
     """Server-side cookie authentication guard for Customer 360 Dossier."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/customer-360.html")
 
 @app.get("/network/{account_id}", response_class=FileResponse)
@@ -536,7 +558,7 @@ def read_network_graph(request: Request, account_id: str = None):
     """Server-side cookie authentication guard for Network Graph Visualizer."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/network.html")
 
 @app.get("/dashboard/executive", response_class=FileResponse)
@@ -545,7 +567,7 @@ def read_executive_dashboard(request: Request):
     """Server-side cookie authentication guard for Executive Compliance Dashboard."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/executive-dashboard.html")
 
 @app.get("/audit/logs", response_class=FileResponse)
@@ -554,7 +576,7 @@ def read_audit_vault(request: Request):
     """Server-side cookie authentication guard for Audit Log Vault."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/audit-vault.html")
 
 @app.get("/admin/health", response_class=FileResponse)
@@ -563,7 +585,7 @@ def read_system_health(request: Request):
     """Server-side cookie authentication guard for Admin System Health."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/system-health.html")
 
 @app.get("/ml/governance", response_class=FileResponse)
@@ -573,7 +595,7 @@ def read_ml_governance(request: Request):
     """Server-side cookie authentication guard for ML Governance & Model Validation."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/ml-governance.html")
 
 @app.get("/settings/risk-appetite", response_class=FileResponse)
@@ -582,7 +604,7 @@ def read_risk_appetite(request: Request):
     """Server-side cookie authentication guard for Institutional Risk Appetite Settings."""
     token = request.cookies.get("access_token")
     if not token:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
     return FileResponse("static/risk-appetite.html")
 
 

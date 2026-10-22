@@ -205,118 +205,136 @@ class OutboxRelayEngine:
         self._running = False
         self._last_prune_time = 0.0
 
+    async def _wait_for_next_poll(self, shutdown_event: Optional[asyncio.Event]) -> bool:
+        if not shutdown_event:
+            await asyncio.sleep(self.poll_interval)
+            return False
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=self.poll_interval)
+            return True
+        except asyncio.TimeoutError:
+            return False
+
+    async def _fetch_pending_batch(self, pool: Any) -> list[dict]:
+        async with pool.acquire() as conn, conn.transaction():
+            return await fetch_pending_outbox_events(
+                conn, limit=self.batch_size, lease_id=self.worker_id
+            )
+
+    @staticmethod
+    async def _publish_single_event(event: dict) -> tuple[str, bool, str | None]:
+        from services.redpanda import publish_transaction_async
+        event_id = event["id"]
+        try:
+            payload = event["payload"]
+            tenant_key = (
+                event.get("tenant_id")
+                or payload.get("tenant_id")
+                or event.get("aggregate_id")
+            )
+            headers = event.get("headers") or {}
+            topic = headers.get("topic")
+            if not topic and event.get("event_type") == "aml.core.transaction.buffered.v1":
+                topic = "aml.transactions.raw"
+
+            success = await publish_transaction_async(
+                payload,
+                key=str(tenant_key) if tenant_key else None,
+                topic=topic,
+            )
+            if success:
+                return event_id, True, None
+            return event_id, False, "Broker publish returned False"
+        except Exception as pub_exc:
+            logger.exception("Error publishing outbox event %s", event_id)
+            return event_id, False, str(pub_exc)
+
+    async def _persist_event_statuses(
+        self,
+        pool: Any,
+        published_ids: list[str],
+        failed_records: list[tuple[str, str]],
+    ) -> None:
+        async with pool.acquire() as conn, conn.transaction():
+            if published_ids:
+                await conn.execute(
+                    """
+                    UPDATE transactional_outbox
+                    SET status = 'PUBLISHED', published_at = NOW()
+                    WHERE id = ANY($1::uuid[]);
+                    """,
+                    published_ids,
+                )
+            for eid, err in failed_records:
+                await mark_outbox_event_failed(conn, eid, err)
+
+    async def _dispatch_events_batch(self, pool: Any, events: list[dict]) -> int:
+        published_ids: list[str] = []
+        failed_records: list[tuple[str, str]] = []
+        for event in events:
+            eid, ok, err = await self._publish_single_event(event)
+            if ok:
+                published_ids.append(eid)
+            else:
+                failed_records.append((eid, err or "Unknown publish failure"))
+
+        await self._persist_event_statuses(pool, published_ids, failed_records)
+        return len(published_ids)
+
+    async def _maybe_prune_retention(self, pool: Any) -> None:
+        loop_time = asyncio.get_running_loop().time()
+        if loop_time - self._last_prune_time >= self.prune_interval:
+            self._last_prune_time = loop_time
+            try:
+                async with pool.acquire() as conn:
+                    await prune_published_outbox_events(
+                        conn, retention_hours=self.retention_hours
+                    )
+            except Exception as prune_exc:
+                logger.warning("Error during periodic outbox pruning: %s", prune_exc)
+
+    async def _execute_relay_cycle(self, pool: Any) -> int:
+        try:
+            events = await self._fetch_pending_batch(pool)
+            if events:
+                processed_count = await self._dispatch_events_batch(pool, events)
+            else:
+                processed_count = 0
+            await self._maybe_prune_retention(pool)
+            return processed_count
+        except Exception:
+            logger.exception("Outbox relay loop encountered error")
+            return 0
+
     async def run(self, shutdown_event: Optional[asyncio.Event] = None):
         self._running = True
         logger.info(f"Starting Transactional Outbox Relay Engine ({self.worker_id})...")
-
         from database.postgres import get_db_pool
 
-        while self._running:
-            if shutdown_event and shutdown_event.is_set():
-                logger.info("Outbox Relay Engine received shutdown signal.")
-                break
-
-            processed_count = 0
-            try:
-                pool = await get_db_pool()
-                if not pool:
-                    if shutdown_event:
-                        try:
-                            await asyncio.wait_for(shutdown_event.wait(), timeout=self.poll_interval)
-                            break
-                        except asyncio.TimeoutError:
-                            pass
-                    else:
-                        await asyncio.sleep(self.poll_interval)
-                    continue
-
-                # 1. Fetch pending batch inside an isolated transaction; atomically marks rows as PROCESSING with lease
-                events = []
-                async with pool.acquire() as conn:
-                    async with conn.transaction():
-                        events = await fetch_pending_outbox_events(
-                            conn, limit=self.batch_size, lease_id=self.worker_id
-                        )
-
-                # 2. Publish to Kafka outside of any database transaction (Zero DB Lock Contention)
-                if events:
-                    from services.redpanda import publish_transaction_async
-                    published_ids = []
-                    failed_records = []
-
-                    for event in events:
-                        try:
-                            payload = event["payload"]
-                            tenant_key = (
-                                event.get("tenant_id")
-                                or payload.get("tenant_id")
-                                or event.get("aggregate_id")
-                            )
-                            headers = event.get("headers") or {}
-                            topic = headers.get("topic")
-                            if not topic and event.get("event_type") == "aml.core.transaction.buffered.v1":
-                                topic = "aml.transactions.raw"
-
-                            success = await publish_transaction_async(
-                                payload,
-                                key=str(tenant_key) if tenant_key else None,
-                                topic=topic,
-                            )
-                            if success:
-                                published_ids.append(event["id"])
-                                processed_count += 1
-                            else:
-                                failed_records.append((event["id"], "Broker publish returned False"))
-                        except Exception as pub_exc:
-                            logger.error(f"Error publishing outbox event {event['id']}: {pub_exc}")
-                            failed_records.append((event["id"], str(pub_exc)))
-
-                    # 3. Batch update statuses in a single swift transaction
-                    async with pool.acquire() as conn:
-                        async with conn.transaction():
-                            if published_ids:
-                                await conn.execute(
-                                    """
-                                    UPDATE transactional_outbox
-                                    SET status = 'PUBLISHED', published_at = NOW()
-                                    WHERE id = ANY($1::uuid[]);
-                                    """,
-                                    published_ids,
-                                )
-                            for eid, err in failed_records:
-                                await mark_outbox_event_failed(conn, eid, err)
-
-                # 4. Periodic background retention pruning
-                loop_time = asyncio.get_running_loop().time()
-                if loop_time - self._last_prune_time >= self.prune_interval:
-                    self._last_prune_time = loop_time
-                    try:
-                        async with pool.acquire() as conn:
-                            await prune_published_outbox_events(
-                                conn, retention_hours=self.retention_hours
-                            )
-                    except Exception as prune_exc:
-                        logger.warning(f"Error during periodic outbox pruning: {prune_exc}")
-
-            except Exception as loop_exc:
-                logger.error(f"Outbox relay loop encounter error: {loop_exc}")
-
-            # If we processed a full batch, check immediately again; otherwise sleep
-            if processed_count < self.batch_size:
-                try:
-                    if shutdown_event:
-                        try:
-                            await asyncio.wait_for(shutdown_event.wait(), timeout=self.poll_interval)
-                            break
-                        except asyncio.TimeoutError:
-                            pass
-                    else:
-                        await asyncio.sleep(self.poll_interval)
-                except asyncio.CancelledError:
+        try:
+            while self._running:
+                if shutdown_event and shutdown_event.is_set():
+                    logger.info("Outbox Relay Engine received shutdown signal.")
                     break
 
-        self._running = False
-        logger.info("Transactional Outbox Relay Engine stopped.")
+                pool = await get_db_pool()
+                if not pool:
+                    if await self._wait_for_next_poll(shutdown_event):
+                        break
+                    continue
+
+                processed_count = await self._execute_relay_cycle(pool)
+
+                if processed_count < self.batch_size:
+                    if await self._wait_for_next_poll(shutdown_event):
+                        break
+        except asyncio.CancelledError:
+            self._running = False
+            logger.info("Transactional Outbox Relay Engine task cancelled.")
+            raise
+        finally:
+            self._running = False
+            logger.info("Transactional Outbox Relay Engine stopped.")
 
     def stop(self):
         self._running = False

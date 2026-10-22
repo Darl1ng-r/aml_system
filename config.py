@@ -95,39 +95,48 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
+    def _check_insecure_passwords(self) -> None:
+        insecure_defaults = {
+            "postgrespassword",
+            "passwordpassword",
+            "changeme_in_production",
+            "change_me_in_production_jwt_secret_key_256bit",
+            "aml_app_secure_pass_2026",
+        }
+        passwords = [
+            ("postgres_password", self.postgres_password),
+            ("neo4j_password", self.neo4j_password),
+            ("elastic_password", self.elastic_password),
+            ("aml_app_password", self.aml_app_password),
+        ]
+        for name, pw in passwords:
+            if pw in insecure_defaults:
+                raise ValueError(f"CRITICAL: Default {name} is forbidden in production environment!")
+
+        if self.internal_gateway_secret in {"aml-internal-gateway-secret-dev-only", ""}:
+            raise ValueError("CRITICAL: Default internal_gateway_secret is forbidden in production environment!")
+
+    def _check_production_origins_and_metrics(self) -> None:
+        # PRR Enforcement: In production, metrics_secret must be set and high-entropy
+        if not self.metrics_secret or len(self.metrics_secret.strip()) < 16:
+            raise ValueError("CRITICAL: METRICS_SECRET must be configured with >= 16 characters in production environment!")
+
+        # PRR Enforcement: In production, allowed_origins cannot contain localhost or wildcard
+        origins = [o.strip().lower() for o in self.allowed_origins.split(",") if o.strip()]
+        for origin in origins:
+            if origin == "*" or "localhost" in origin or "127.0.0.1" in origin:
+                raise ValueError(f"CRITICAL: Insecure ALLOWED_ORIGINS entry '{origin}' is forbidden in production! Must be explicit HTTPS domain.")
+
     @model_validator(mode="after")
     def validate_production_settings(self):
-        if str(self.environment).lower() == "production":
-            insecure_defaults = {
-                "postgrespassword",
-                "passwordpassword",
-                "changeme_in_production",
-                "change_me_in_production_jwt_secret_key_256bit",
-                "aml_app_secure_pass_2026",
-            }
-            if self.postgres_password in insecure_defaults:
-                raise ValueError("CRITICAL: Default postgres_password is forbidden in production environment!")
-            if self.neo4j_password in insecure_defaults:
-                raise ValueError("CRITICAL: Default neo4j_password is forbidden in production environment!")
-            if self.elastic_password in insecure_defaults:
-                raise ValueError("CRITICAL: Default elastic_password is forbidden in production environment!")
-            if self.aml_app_password in insecure_defaults:
-                raise ValueError("CRITICAL: Default aml_app_password is forbidden in production environment!")
-            if self.internal_gateway_secret in {"aml-internal-gateway-secret-dev-only", ""}:
-                raise ValueError("CRITICAL: Default internal_gateway_secret is forbidden in production environment!")
+        if str(self.environment).lower() != "production":
+            return self
 
-            # PRR Enforcement: In production, metrics_secret must be set and high-entropy
-            if not self.metrics_secret or len(self.metrics_secret.strip()) < 16:
-                raise ValueError("CRITICAL: METRICS_SECRET must be configured with >= 16 characters in production environment!")
+        self._check_insecure_passwords()
+        self._check_production_origins_and_metrics()
 
-            # PRR Enforcement: In production, allowed_origins cannot contain localhost or wildcard
-            origins = [o.strip().lower() for o in self.allowed_origins.split(",") if o.strip()]
-            for origin in origins:
-                if origin == "*" or "localhost" in origin or "127.0.0.1" in origin:
-                    raise ValueError(f"CRITICAL: Insecure ALLOWED_ORIGINS entry '{origin}' is forbidden in production! Must be explicit HTTPS domain.")
-
-            # Fail-Closed: Production must NEVER run in offline development mode
-            self.allow_offline_dev = False
+        # Fail-Closed: Production must NEVER run in offline development mode
+        self.allow_offline_dev = False
         return self
 
 settings = Settings()

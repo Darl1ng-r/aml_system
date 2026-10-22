@@ -27,7 +27,6 @@ async def record_audit_event_tx(
     actor_username: Optional[str] = None,
     actor_ip: Optional[str] = None,
     actor_user_agent: Optional[str] = None,
-    session_id: Optional[str] = None,
     before_state: Optional[Dict[str, Any]] = None,
     after_state: Optional[Dict[str, Any]] = None,
     **kwargs: Any
@@ -37,6 +36,7 @@ async def record_audit_event_tx(
     within the caller's active database transaction/connection (conn).
     Guarantees zero dropped audit records on process crash or container SIGTERM eviction (AUDIT-01).
     """
+    session_id: Optional[str] = kwargs.get("session_id")
     details: Optional[Dict[str, Any]] = kwargs.get("details")
     t_uuid = None
     if tenant_id:
