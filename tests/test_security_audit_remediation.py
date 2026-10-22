@@ -76,7 +76,7 @@ async def test_rate_limiter_in_process_fallback_when_redis_offline():
         await limiter(req)
 
         # 4th request must be rejected with 429 Too Many Requests
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(HTTPException, match="Too many requests") as exc_info:
             await limiter(req)
         assert exc_info.value.status_code == 429
 
@@ -100,7 +100,7 @@ async def test_rate_limiter_fail_closed_on_sensitive_routes():
     with patch("services.rate_limiter.get_async_redis_client", AsyncMock(side_effect=ConnectionError("Redis down"))):
         await limiter(req)
         await limiter(req)
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(HTTPException, match="Too many requests") as exc_info:
             await limiter(req)
         assert exc_info.value.status_code == 429
 

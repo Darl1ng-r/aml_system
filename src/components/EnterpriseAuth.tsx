@@ -40,6 +40,133 @@ interface PasswordEntropyResult {
   };
 }
 
+const getEntropyRating = (entropyBits: number, pwdLength: number, checksLength: boolean) => {
+  if (entropyBits >= 80 && checksLength) {
+    return { score: 4, label: 'Enterprise Grade', color: 'bg-emerald-500' };
+  }
+  if (entropyBits >= 60 && pwdLength >= 10) {
+    return { score: 3, label: 'Strong', color: 'bg-teal-500' };
+  }
+  if (entropyBits >= 40 && pwdLength >= 8) {
+    return { score: 2, label: 'Fair', color: 'bg-amber-500' };
+  }
+  return { score: 1, label: 'Weak', color: 'bg-rose-500' };
+};
+
+// ── 1. NIST SP 800-63B Password Entropy Calculation ──────────────────────────
+export const calculateEntropy = (pwd: string): PasswordEntropyResult => {
+  const checks = {
+    length: pwd.length >= 12,
+    hasUpper: /[A-Z]/.test(pwd),
+    hasLower: /[a-z]/.test(pwd),
+    hasNumber: /\d/.test(pwd),
+    hasSymbol: /[^A-Za-z0-9]/.test(pwd),
+  };
+
+  if (!pwd) {
+    return { score: 0, entropyBits: 0, label: 'Empty', color: 'bg-slate-700', checks };
+  }
+
+  let poolSize = 0;
+  if (checks.hasLower) poolSize += 26;
+  if (checks.hasUpper) poolSize += 26;
+  if (checks.hasNumber) poolSize += 10;
+  if (checks.hasSymbol) poolSize += 33;
+  poolSize = Math.max(poolSize, 10);
+
+  let entropyBits = Math.round(pwd.length * Math.log2(poolSize));
+  if (/([a-zA-Z0-9])\1{2,}/.test(pwd)) entropyBits = Math.max(0, entropyBits - 15);
+  if (pwd.length >= 20 && /\s|[_-]/.test(pwd)) entropyBits += 18;
+
+  const rating = getEntropyRating(entropyBits, pwd.length, checks.length);
+  return { ...rating, entropyBits, checks };
+};
+
+const validateAuthInputs = (
+  mode: AuthMode,
+  username: string,
+  password: string,
+  confirmPassword: string,
+  usernameAvailable: boolean | null
+): string | null => {
+  if (!username.trim() || !password) {
+    return 'Please provide both username and password.';
+  }
+  if (mode === 'register') {
+    if (password.length < 10) {
+      return 'Password must be at least 10 characters per NIST SP 800-63B standards.';
+    }
+    if (password !== confirmPassword) {
+      return 'Passwords do not match.';
+    }
+    if (usernameAvailable === false) {
+      return 'Username is already taken. Please choose another identifier.';
+    }
+  }
+  return null;
+};
+
+const storeAuthTokens = (data: { access_token?: string; username: string; role: string }) => {
+  if (typeof window === 'undefined') return;
+  sessionStorage.setItem('auth_active', 'true');
+  localStorage.setItem('auth_session_active', 'true');
+  if (data.access_token) {
+    localStorage.setItem('jwt_token', data.access_token);
+    localStorage.setItem('access_token', data.access_token);
+  }
+  localStorage.setItem('username', data.username);
+  localStorage.setItem('role', data.role);
+};
+
+const executeLoginApi = async (apiBaseUrl: string, username: string, password: string) => {
+  const formData = new URLSearchParams();
+  formData.append('username', username.trim());
+  formData.append('password', password);
+
+  const res = await fetch(`${apiBaseUrl}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-CSRF-Protection': '1',
+    },
+    body: formData,
+    credentials: 'include',
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || 'Invalid credentials or account locked.');
+  }
+  return data;
+};
+
+const executeRegisterApi = async (
+  apiBaseUrl: string,
+  username: string,
+  password: string,
+  tenantId: string
+) => {
+  const res = await fetch(`${apiBaseUrl}/api/v1/auth/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Protection': '1',
+    },
+    body: JSON.stringify({
+      username: username.trim(),
+      password,
+      tenant_id: tenantId,
+    }),
+    credentials: 'include',
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || 'Registration failed. Check password entropy or try another username.');
+  }
+  return data;
+};
+
 export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
   initialMode = 'login',
   onSuccess,
@@ -50,7 +177,7 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [tenantId] = useState('00000000-0000-0000-0000-000000000001');
+  const tenantId = '00000000-0000-0000-0000-000000000001';
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -64,58 +191,6 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
   const passwordId = useId();
   const confirmPasswordId = useId();
   const errorAlertId = useId();
-
-  // ── 1. NIST SP 800-63B Password Entropy Calculation ──────────────────────────
-  const calculateEntropy = (pwd: string): PasswordEntropyResult => {
-    const checks = {
-      length: pwd.length >= 12,
-      hasUpper: /[A-Z]/.test(pwd),
-      hasLower: /[a-z]/.test(pwd),
-      hasNumber: /\d/.test(pwd),
-      hasSymbol: /[^A-Za-z0-9]/.test(pwd),
-    };
-
-    if (!pwd) {
-      return { score: 0, entropyBits: 0, label: 'Empty', color: 'bg-slate-700', checks };
-    }
-
-    // Character pool calculation
-    let poolSize = 0;
-    if (checks.hasLower) poolSize += 26;
-    if (checks.hasUpper) poolSize += 26;
-    if (checks.hasNumber) poolSize += 10;
-    if (checks.hasSymbol) poolSize += 33;
-    poolSize = Math.max(poolSize, 10);
-
-    // NIST Shannon entropy estimation: H = L * log2(R)
-    let entropyBits = Math.round(pwd.length * Math.log2(poolSize));
-
-    // Deduct repetition penalties
-    if (/([a-zA-Z0-9])\1{2,}/.test(pwd)) entropyBits = Math.max(0, entropyBits - 15);
-
-    // Passphrase bonus (longer length with spaces or delimiter separators)
-    if (pwd.length >= 20 && /\s|[_-]/.test(pwd)) entropyBits += 18;
-
-    let score = 1;
-    let label = 'Weak';
-    let color = 'bg-rose-500';
-
-    if (entropyBits >= 80 && checks.length) {
-      score = 4;
-      label = 'Enterprise Grade';
-      color = 'bg-emerald-500';
-    } else if (entropyBits >= 60 && pwd.length >= 10) {
-      score = 3;
-      label = 'Strong';
-      color = 'bg-teal-500';
-    } else if (entropyBits >= 40 && pwd.length >= 8) {
-      score = 2;
-      label = 'Fair';
-      color = 'bg-amber-500';
-    }
-
-    return { score, entropyBits, label, color, checks };
-  };
 
   const entropy = calculateEntropy(password);
 
@@ -156,109 +231,32 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
     setErrorMessage(null);
     setSuccessMessage(null);
 
-    if (!username.trim() || !password) {
-      setErrorMessage('Please provide both username and password.');
+    const validationError = validateAuthInputs(mode, username, password, confirmPassword, usernameAvailable);
+    if (validationError) {
+      setErrorMessage(validationError);
       return;
-    }
-
-    if (mode === 'register') {
-      if (password.length < 10) {
-        setErrorMessage('Password must be at least 10 characters per NIST SP 800-63B standards.');
-        return;
-      }
-      if (password !== confirmPassword) {
-        setErrorMessage('Passwords do not match.');
-        return;
-      }
-      if (usernameAvailable === false) {
-        setErrorMessage('Username is already taken. Please choose another identifier.');
-        return;
-      }
     }
 
     setIsLoading(true);
 
     try {
-      if (mode === 'login') {
-        const formData = new URLSearchParams();
-        formData.append('username', username.trim());
-        formData.append('password', password);
+      const data = mode === 'login'
+        ? await executeLoginApi(apiBaseUrl, username, password)
+        : await executeRegisterApi(apiBaseUrl, username, password, tenantId);
 
-        const res = await fetch(`${apiBaseUrl}/api/v1/auth/login`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'X-CSRF-Protection': '1',
-          },
-          body: formData,
-          credentials: 'include',
-        });
+      storeAuthTokens(data);
 
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || 'Invalid credentials or account locked.');
-        }
+      const welcomeMsg = mode === 'login'
+        ? `Welcome back, ${data.username}! Redirecting...`
+        : 'Account registered and session established! Initializing console...';
+      setSuccessMessage(welcomeMsg);
 
-        // Store tokens securely and signal success
-        if (typeof window !== 'undefined') {
-          sessionStorage.setItem('auth_active', 'true');
-          localStorage.setItem('auth_session_active', 'true');
-          if (data.access_token) {
-            localStorage.setItem('jwt_token', data.access_token);
-            localStorage.setItem('access_token', data.access_token);
-          }
-          localStorage.setItem('username', data.username);
-          localStorage.setItem('role', data.role);
-        }
-
-        setSuccessMessage(`Welcome back, ${data.username}! Redirecting...`);
-        if (onSuccess) {
-          onSuccess({ username: data.username, role: data.role, token: data.access_token });
-        } else {
-          setTimeout(() => {
-            window.location.href = '/dashboard';
-          }, 800);
-        }
+      if (onSuccess) {
+        onSuccess({ username: data.username, role: data.role, token: data.access_token });
       } else {
-        // Register mode
-        const res = await fetch(`${apiBaseUrl}/api/v1/auth/register`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-Protection': '1',
-          },
-          body: JSON.stringify({
-            username: username.trim(),
-            password: password,
-            tenant_id: tenantId,
-          }),
-          credentials: 'include',
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.detail || 'Registration failed. Check password entropy or try another username.');
-        }
-
-        if (typeof window !== 'undefined') {
-          sessionStorage.setItem('auth_active', 'true');
-          localStorage.setItem('auth_session_active', 'true');
-          if (data.access_token) {
-            localStorage.setItem('jwt_token', data.access_token);
-            localStorage.setItem('access_token', data.access_token);
-          }
-          localStorage.setItem('username', data.username);
-          localStorage.setItem('role', data.role);
-        }
-
-        setSuccessMessage('Account registered and session established! Initializing console...');
-        if (onSuccess) {
-          onSuccess({ username: data.username, role: data.role, token: data.access_token });
-        } else {
-          setTimeout(() => {
-            window.location.href = '/dashboard';
-          }, 900);
-        }
+        setTimeout(() => {
+          window.location.href = '/dashboard';
+        }, mode === 'login' ? 800 : 900);
       }
     } catch (err: any) {
       setErrorMessage(err.message || 'An unexpected authentication error occurred.');

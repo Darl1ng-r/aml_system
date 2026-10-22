@@ -20,15 +20,21 @@ const accounts = [
   "RU11223344556677889900"
 ];
 
+let seed = 42;
+function deterministicRandom() {
+  seed = (seed * 1664525 + 1013904223) % 4294967296;
+  return seed / 4294967296;
+}
+
 export default function runLoadTest() {
   const url = 'http://localhost:8000/api/v1/transactions';
-  const sender = accounts[Math.floor(Math.random() * accounts.length)];
-  const receiver = accounts[Math.floor(Math.random() * accounts.length)];
+  const sender = accounts[Math.floor(deterministicRandom() * accounts.length)];
+  const receiver = accounts[Math.floor(deterministicRandom() * accounts.length)];
 
   const payload = JSON.stringify({
     sender_account_id: sender,
     receiver_account_id: receiver,
-    amount: Number.parseFloat((Math.random() * 12000 + 20).toFixed(2)),
+    amount: Number.parseFloat((deterministicRandom() * 12000 + 20).toFixed(2)),
     currency: 'USD',
     country: 'US',
     merchant: 'Global Settlement Core',

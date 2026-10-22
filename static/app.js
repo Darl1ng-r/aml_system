@@ -41,9 +41,9 @@ let activeAlerts = [...mockAlerts];
 window.addEventListener('load', () => {
     log('System Initializing: Compliance Case Management Console v1.0.0', 'info');
     initTheme();
-    initAuth();
+    void initAuth();
     initWebSocket();
-    loadDashboardAnalytics();
+    void loadDashboardAnalytics();
 });
 
 function initTheme() {
@@ -82,6 +82,63 @@ function updateThemeToggleButton(theme) {
 }
 
 // ── Power Analyst Keyboard Shortcuts Engine ───────────────────────────────────
+function handleEscapeKeyShortcut() {
+    const modals = ['shortcuts-modal', 'executive-modal', 'sandbox-modal', 'str-modal'];
+    let closedModal = false;
+    modals.forEach(mId => {
+        const m = document.getElementById(mId);
+        if (m?.style.display === 'flex') {
+            m.style.display = 'none';
+            closedModal = true;
+        }
+    });
+    if (closedModal) return true;
+
+    if (isInputFieldActive()) {
+        document.activeElement.blur();
+        return true;
+    }
+    return false;
+}
+
+function handleActionShortcuts(key) {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === 'a') {
+        void resolveCurrentCase('CLOSE_FALSE_POSITIVE');
+        return true;
+    }
+    if (lowerKey === 'b') {
+        if (typeof openSarConfirmationModal === 'function') {
+            openSarConfirmationModal();
+        } else {
+            void resolveCurrentCase('CLOSE_SAR');
+        }
+        return true;
+    }
+    if (lowerKey === 'e') {
+        void escalateCurrentCase();
+        return true;
+    }
+    return false;
+}
+
+function handleNavigationShortcuts(key) {
+    if (key === 'j' || key === 'ArrowDown' || key === 'ArrowRight') {
+        navigateQueue(1);
+        return true;
+    }
+    if (key === 'k' || key === 'ArrowUp' || key === 'ArrowLeft') {
+        navigateQueue(-1);
+        return true;
+    }
+    if (key === 'Enter') {
+        const noteInput = document.getElementById('inbox-justification');
+        if (noteInput) noteInput.focus();
+        return true;
+    }
+    return false;
+}
+
 window.addEventListener('keydown', (e) => {
     // Toggle Shortcuts Help modal on "?"
     if (e.key === '?' && !isInputFieldActive()) {
@@ -91,22 +148,7 @@ window.addEventListener('keydown', (e) => {
     }
 
     // Close any open modal on "Esc"
-    if (e.key === 'Escape') {
-        const modals = ['shortcuts-modal', 'executive-modal', 'sandbox-modal', 'str-modal'];
-        let closedModal = false;
-        modals.forEach(mId => {
-            const m = document.getElementById(mId);
-            if (m && m.style.display === 'flex') {
-                m.style.display = 'none';
-                closedModal = true;
-            }
-        });
-        if (closedModal) return;
-
-        if (isInputFieldActive()) {
-            document.activeElement.blur();
-            return;
-        }
+    if (e.key === 'Escape' && handleEscapeKeyShortcut()) {
         return;
     }
 
@@ -114,50 +156,16 @@ window.addEventListener('keydown', (e) => {
     if (isInputFieldActive()) {
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
             const activeInput = document.activeElement;
-            if (activeInput && activeInput.id === 'inbox-justification') {
+            if (activeInput?.id === 'inbox-justification') {
                 e.preventDefault();
-                resolveCurrentCase('CLOSE_FALSE_POSITIVE');
+                void resolveCurrentCase('CLOSE_FALSE_POSITIVE');
             }
         }
         return;
     }
 
-    // Key "a" or "A": Approve (Dismiss False Positive)
-    if (e.key === 'a' || e.key === 'A') {
+    if (handleActionShortcuts(e.key) || handleNavigationShortcuts(e.key)) {
         e.preventDefault();
-        resolveCurrentCase('CLOSE_FALSE_POSITIVE');
-    }
-    // Key "b" or "B": Block & Flag SAR (Opens Confirmation Safeguard Modal)
-    else if (e.key === 'b' || e.key === 'B') {
-        e.preventDefault();
-        if (typeof openSarConfirmationModal === 'function') {
-            openSarConfirmationModal();
-        } else {
-            resolveCurrentCase('CLOSE_SAR');
-        }
-    }
-    // Key "e" or "E": Escalate
-    else if (e.key === 'e' || e.key === 'E') {
-        e.preventDefault();
-        escalateCurrentCase();
-    }
-    // Key "j" or "ArrowDown" or "ArrowRight": Next Case in Queue
-    else if (e.key === 'j' || e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-        e.preventDefault();
-        navigateQueue(1);
-    }
-    // Key "k" or "ArrowUp" or "ArrowLeft": Previous Case in Queue
-    else if (e.key === 'k' || e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-        e.preventDefault();
-        navigateQueue(-1);
-    }
-    // Key "Enter": Focus justification notes input
-    else if (e.key === 'Enter') {
-        e.preventDefault();
-        const noteInput = document.getElementById('inbox-justification');
-        if (noteInput) {
-            noteInput.focus();
-        }
     }
 });
 
@@ -172,6 +180,16 @@ function toggleShortcutsModal() {
     const modal = document.getElementById('shortcuts-modal');
     if (!modal) return;
     modal.style.display = (modal.style.display === 'flex') ? 'none' : 'flex';
+}
+
+function getAlertRiskClass(alert) {
+    if (alert.threat_level === 'CRITICAL' || alert.ai_risk_score >= 0.85) {
+        return 'high';
+    }
+    if (alert.threat_level === 'HIGH' || alert.ai_risk_score >= 0.6) {
+        return 'med';
+    }
+    return 'low';
 }
 
 // ── Left Rail Queue Navigation ────────────────────────────────────────────────
@@ -191,8 +209,7 @@ function renderQueueRail() {
         item.onclick = () => selectCase(alert.alert_id);
         item.title = alert.title || `Case ${alert.alert_id}`;
 
-        const riskClass = (alert.threat_level === 'CRITICAL' || alert.ai_risk_score >= 0.85) ? 'high' : 
-                          ((alert.threat_level === 'HIGH' || alert.ai_risk_score >= 0.6) ? 'med' : 'low');
+        const riskClass = getAlertRiskClass(alert);
 
         const shortId = alert.short_id || (alert.alert_id.includes('-') ? alert.alert_id.split('-').pop() : alert.alert_id.slice(-4));
 
@@ -352,8 +369,9 @@ async function checkServerStatus() {
             throw new Error(`Server returned HTTP ${response.status}`);
         }
     } catch (e) {
+        // Fall back to mock mode when the live ingestion scoring core is unreachable
         setMockMode(true);
-        log('Database Gateway offline or non-JSON response. Simulated mock evaluation activated.', 'warn');
+        log(`Database Gateway offline (${e.message}). Simulated mock evaluation activated.`, 'warn');
         return false;
     }
 }
@@ -364,13 +382,58 @@ let _liveReloadDebounceTimer = null;
 function scheduleLiveRefresh() {
     if (_liveReloadDebounceTimer) clearTimeout(_liveReloadDebounceTimer);
     _liveReloadDebounceTimer = setTimeout(() => {
-        loadAlerts();
-        loadDashboardAnalytics();
+        void loadAlerts();
+        void loadDashboardAnalytics();
     }, 2500);
 }
 
 let wsHeartbeatTimer = null;
 let wsReconnectAttempts = 0;
+const _seenWsEvents = new Set();
+
+function handleWebSocketEvent(data) {
+    switch (data.event) {
+        case 'NEW_ALERT':
+            log(`⚡ REAL-TIME EVENT: New Alert Triggered! Rule: ${data.rule_name}, Threat: ${data.threat_level}`, 'err');
+            scheduleLiveRefresh();
+            break;
+        case 'NEW_TRANSACTION':
+            log(`📥 LIVE TRANSACTION: Ingested $${data.amount} ${data.currency} (Score: ${Math.round(data.risk_score * 100)}%)`, 'info');
+            break;
+        case 'ALERT_RESOLVED':
+            log(`✅ REAL-TIME EVENT: Case Resolved. Status: ${data.status}`, 'success');
+            scheduleLiveRefresh();
+            break;
+        case 'ALERT_ESCALATED':
+            log(`⚠️ REAL-TIME EVENT: Case Escalated by ${data.escalated_by}. Status: ${data.status}`, 'warn');
+            scheduleLiveRefresh();
+            break;
+        case 'ALERT_ASSIGNED':
+            log(`👤 REAL-TIME EVENT: Case assigned to ${data.assigned_officer}`, 'info');
+            scheduleLiveRefresh();
+            break;
+        case 'GRAPH_SYNCED':
+            log(`🕸️ REAL-TIME GRAPH: Synced edge $${data.amount} (${data.sender_account} → ${data.receiver_account})`, 'info');
+            if (activeAlertId) {
+                const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
+                if (alert) void loadGraphData(activeAlertId, alert);
+            }
+            break;
+        case 'STR_BATCH_GENERATED':
+            log(`📦 REAL-TIME EVENT: Sealed STR batch container ${data.batch_id} with ${data.record_count} records.`, 'success');
+            void loadSTRBatches();
+            break;
+        case 'STR_BATCH_TRANSMITTED':
+            log(`🚀 REAL-TIME EVENT: Transmitted STR batch package ${data.batch_id}. Status: ${data.status}`, 'success');
+            void loadSTRBatches();
+            break;
+        case 'WATCHLIST_SYNCED':
+            log(`🔄 REAL-TIME EVENT: Global Watchlists Synced! ${data.total_records} records processed across OFAC, World-Check & Dow Jones.`, 'success');
+            break;
+        default:
+            break;
+    }
+}
 
 function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -382,7 +445,9 @@ function initWebSocket() {
     try {
         if (liveWebSocket) {
             liveWebSocket.onclose = null;
-            try { liveWebSocket.close(); } catch (_) {}
+            try { liveWebSocket.close(); } catch (_) {
+                // Ignore failure when closing disconnected socket
+            }
         }
         liveWebSocket = new WebSocket(wsUrl);
 
@@ -392,13 +457,12 @@ function initWebSocket() {
             // 30-second periodic heartbeat ping to prevent proxy idle timeouts
             if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
             wsHeartbeatTimer = setInterval(() => {
-                if (liveWebSocket && liveWebSocket.readyState === WebSocket.OPEN) {
+                if (liveWebSocket?.readyState === WebSocket.OPEN) {
                     liveWebSocket.send('ping');
                 }
             }, 30000);
         };
 
-        const _seenWsEvents = new Set();
         liveWebSocket.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
@@ -413,37 +477,9 @@ function initWebSocket() {
                     _seenWsEvents.delete(first);
                 }
 
-                if (data.event === 'NEW_ALERT') {
-                    log(`⚡ REAL-TIME EVENT: New Alert Triggered! Rule: ${data.rule_name}, Threat: ${data.threat_level}`, 'err');
-                    scheduleLiveRefresh();
-                } else if (data.event === 'NEW_TRANSACTION') {
-                    log(`📥 LIVE TRANSACTION: Ingested $${data.amount} ${data.currency} (Score: ${Math.round(data.risk_score * 100)}%)`, 'info');
-                } else if (data.event === 'ALERT_RESOLVED') {
-                    log(`✅ REAL-TIME EVENT: Case Resolved. Status: ${data.status}`, 'success');
-                    scheduleLiveRefresh();
-                } else if (data.event === 'ALERT_ESCALATED') {
-                    log(`⚠️ REAL-TIME EVENT: Case Escalated by ${data.escalated_by}. Status: ${data.status}`, 'warn');
-                    scheduleLiveRefresh();
-                } else if (data.event === 'ALERT_ASSIGNED') {
-                    log(`👤 REAL-TIME EVENT: Case assigned to ${data.assigned_officer}`, 'info');
-                    scheduleLiveRefresh();
-                } else if (data.event === 'GRAPH_SYNCED') {
-                    log(`🕸️ REAL-TIME GRAPH: Synced edge $${data.amount} (${data.sender_account} → ${data.receiver_account})`, 'info');
-                    if (activeAlertId) {
-                        const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
-                        if (alert) loadGraphData(activeAlertId, alert);
-                    }
-                } else if (data.event === 'STR_BATCH_GENERATED') {
-                    log(`📦 REAL-TIME EVENT: Sealed STR batch container ${data.batch_id} with ${data.record_count} records.`, 'success');
-                    loadSTRBatches();
-                } else if (data.event === 'STR_BATCH_TRANSMITTED') {
-                    log(`🚀 REAL-TIME EVENT: Transmitted STR batch package ${data.batch_id}. Status: ${data.status}`, 'success');
-                    loadSTRBatches();
-                } else if (data.event === 'WATCHLIST_SYNCED') {
-                    log(`🔄 REAL-TIME EVENT: Global Watchlists Synced! ${data.total_records} records processed across OFAC, World-Check & Dow Jones.`, 'success');
-                }
+                handleWebSocketEvent(data);
             } catch (e) {
-                // Ignore raw strings
+                // Ignore raw non-JSON string payloads from third-party intermediaries
             }
         };
 
@@ -451,13 +487,14 @@ function initWebSocket() {
             if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
             // Full Jitter Exponential Backoff (1s -> 2s -> 4s -> max 30s + jitter)
             const baseDelay = Math.min(30000, 1000 * Math.pow(2, wsReconnectAttempts));
-            const jitter = Math.random() * 1000;
+            const jitter = (Date.now() % 1000);
             const retryDelay = Math.round(baseDelay + jitter);
             wsReconnectAttempts++;
             log(`WebSocket feed disconnected. Reconnecting in ${(retryDelay / 1000).toFixed(1)}s...`, 'warn');
             setTimeout(initWebSocket, retryDelay);
         };
     } catch (e) {
+        log(`WebSocket initialization error: ${e.message}`, 'warn');
         if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
         setTimeout(initWebSocket, 5000);
     }
@@ -482,7 +519,7 @@ function log(msg, type = 'info') {
 
     // Prevent memory leaks: cap feed at 200 elements
     while (feed.children.length > 200) {
-        feed.removeChild(feed.firstChild);
+        feed.firstChild?.remove();
     }
     feed.scrollTop = feed.scrollHeight;
 }
@@ -507,7 +544,7 @@ async function loadDashboardAnalytics() {
         const response = await fetch(`${BASE_URL}/api/v1/metrics/dashboard`, {
             headers: getAuthHeaders()
         });
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`Dashboard metrics request failed with HTTP ${response.status}`);
         const metrics = await response.json();
 
         // 1. KPI Cards
@@ -525,7 +562,7 @@ async function loadDashboardAnalytics() {
 
     } catch (e) {
         setMockMode(true);
-        log('Failed to fetch dashboard metrics. Rendering mock analytics.', 'warn');
+        log(`Failed to fetch dashboard metrics: ${e.message}. Rendering mock analytics.`, 'warn');
         renderMockCharts();
     }
 }
@@ -573,7 +610,7 @@ function renderCategoryChart(categories) {
     const ctx = document.getElementById('alert-category-chart');
     if (!ctx) return;
 
-    const labels = categories.map(c => c.category.replace(/_/g, ' '));
+    const labels = categories.map(c => c.category.replaceAll('_', ' '));
     const counts = categories.map(c => c.count);
 
     if (categoryChartInstance) {
@@ -622,11 +659,22 @@ function renderLeaderboard(analysts) {
 
     analysts.forEach(item => {
         const tr = document.createElement('tr');
-        const badgeClass = item.active_cases >= 4 ? 'badge-red' : (item.active_cases >= 2 ? 'badge-orange' : 'badge-green');
-        const tierBadgeClass = item.risk_tier === 'Critical' ? 'badge-red' : (item.risk_tier === 'High' ? 'badge-orange' : 'badge-blue');
+        let badgeClass = 'badge-green';
+        if (item.active_cases >= 4) {
+            badgeClass = 'badge-red';
+        } else if (item.active_cases >= 2) {
+            badgeClass = 'badge-orange';
+        }
+
+        let tierBadgeClass = 'badge-blue';
+        if (item.risk_tier === 'Critical') {
+            tierBadgeClass = 'badge-red';
+        } else if (item.risk_tier === 'High') {
+            tierBadgeClass = 'badge-orange';
+        }
 
         tr.innerHTML = `
-            <td><strong>${item.username.replace('_', ' ')}</strong></td>
+            <td><strong>${item.username.replaceAll('_', ' ')}</strong></td>
             <td><span class="badge ${badgeClass}">${item.active_cases} Active</span></td>
             <td>${item.resolution_rate}</td>
             <td><span class="badge ${tierBadgeClass}">${item.risk_tier}</span></td>
@@ -661,118 +709,124 @@ function formatTenure(dateStr) {
     return months >= 12 ? `${Math.floor(months / 12)}y ${months % 12}m` : `${months} mo`;
 }
 
+function mapApiAlertToClientModel(alert) {
+    const tx = alert.transaction || {};
+    const amountFormatted = tx.amount ? '$' + Number(tx.amount).toLocaleString('en-US', { minimumFractionDigits: 2 }) : '$0.00';
+    const senderName = tx.sender_name || tx.sender || 'Primary Account';
+    const receiverName = tx.receiver_name || tx.receiver || 'Beneficiary';
+    const tenure = alert.account_created_at ? formatTenure(alert.account_created_at) : 'Institutional';
+    const riskTier = alert.sender_risk_tier || (alert.threat_level === 'CRITICAL' ? 'CRITICAL' : 'STANDARD');
+
+    return {
+        alert_id: alert.alert_id,
+        short_id: alert.alert_id ? alert.alert_id.slice(-6) : 'N/A',
+        title: `${alert.rule_name || 'AML ALERT'} — ${amountFormatted} (${senderName} → ${receiverName})`,
+        rule_name: alert.rule_name || 'COMPLIANCE_ALERT',
+        threat_level: alert.threat_level || 'MEDIUM',
+        ai_risk_score: (alert.ai_risk_score !== null && alert.ai_risk_score !== undefined) ? alert.ai_risk_score : 0.5,
+        status: alert.status || 'OPEN',
+        created_at: alert.created_at || new Date().toISOString(),
+        assignee: alert.assignee || 'Unassigned',
+        threshold_proximity: alert.threat_level === 'CRITICAL' ? '95%+' : 'Standard',
+        channel: tx.channel || 'Wire Transfer',
+        counterparty_jurisdiction: tx.country || 'DOMESTIC',
+        prior_30d_txns: 1,
+        account_tenure: tenure,
+        rules_triggered_count: 1,
+        model_version: 'v4.2.1',
+        transaction: {
+            amount: tx.amount || 0,
+            currency: tx.currency || 'USD',
+            timestamp: tx.timestamp || new Date().toISOString(),
+            sender: tx.sender || 'Primary Account',
+            sender_account: tx.sender || 'N/A',
+            sender_name: senderName,
+            receiver: tx.receiver || 'Beneficiary',
+            receiver_account: tx.receiver || 'N/A',
+            receiver_name: receiverName,
+            channel: tx.channel || 'Wire Transfer',
+            country: tx.country || 'DOMESTIC'
+        },
+        rules_triggered: [
+            { code: alert.rule_name || 'R-COMP-01', desc: `— Triggered compliance rule ${alert.rule_name}`, critical: alert.threat_level === 'CRITICAL' }
+        ],
+        explainability: alert.explainability || {
+            attributions: { "transaction_risk": 0.5 }
+        },
+        entity: {
+            name: senderName,
+            nationality: tx.country || 'Global',
+            tier: `${riskTier} Tier`,
+            connected: receiverName,
+            customer_since: tenure,
+            occupation: 'Commercial Account',
+            pep: 'Screened Clean',
+            sanctions: 'Screened Clean',
+            adverse_media: 'Clean'
+        },
+        linked_entities: [],
+        prior_alerts: [],
+        ledger: []
+    };
+}
+
+function renderMockAlertsQueue() {
+    renderInbox(activeAlerts);
+    renderQueueRail();
+    if (activeAlerts.length > 0) {
+        const currentId = (activeAlertId && activeAlerts.some(a => a.alert_id === activeAlertId)) ? activeAlertId : activeAlerts[0].alert_id;
+        selectCase(currentId);
+    }
+    updatePaginationControls(activeAlerts.length);
+}
+
 // TAB 1 & 2: Alerts and Triage loading
+function buildAlertsUrl() {
+    let url = `${BASE_URL}/api/v1/alerts?page=${currentPage}&limit=${pageSize}`;
+    if (activeSearchTerm) url += `&search=${encodeURIComponent(activeSearchTerm)}`;
+    if (activeSeverityFilter && activeSeverityFilter !== 'ALL') url += `&severity=${encodeURIComponent(activeSeverityFilter)}`;
+    return url;
+}
+
+function _applyLoadedAlerts(data, xTotalCount) {
+    totalAlertsCount = xTotalCount ? Number.parseInt(xTotalCount, 10) : data.length;
+    activeAlerts = Array.isArray(data) ? data.map(mapApiAlertToClientModel) : [];
+
+    renderInbox(activeAlerts);
+    renderQueueRail();
+    if (activeAlerts.length > 0) {
+        const currentId = (activeAlertId && activeAlerts.some(a => a.alert_id === activeAlertId)) ? activeAlertId : activeAlerts[0].alert_id;
+        selectCase(currentId);
+    }
+    updatePaginationControls(totalAlertsCount);
+}
+
 async function loadAlerts(search = null, severity = null) {
     if (search !== null) activeSearchTerm = search;
     if (severity !== null) activeSeverityFilter = severity;
 
     log('Loading telemetry cases queue...', 'info');
     if (mockMode) {
-        renderInbox(activeAlerts);
-        renderQueueRail();
-        if (activeAlerts.length > 0) {
-            const currentId = (activeAlertId && activeAlerts.some(a => a.alert_id === activeAlertId)) ? activeAlertId : activeAlerts[0].alert_id;
-            selectCase(currentId);
-        }
-        updatePaginationControls(activeAlerts.length);
+        renderMockAlertsQueue();
         return;
     }
 
     try {
-        let url = `${BASE_URL}/api/v1/alerts?page=${currentPage}&limit=${pageSize}`;
-        if (activeSearchTerm) url += `&search=${encodeURIComponent(activeSearchTerm)}`;
-        if (activeSeverityFilter && activeSeverityFilter !== 'ALL') url += `&severity=${encodeURIComponent(activeSeverityFilter)}`;
-
-        const response = await fetch(url, {
+        const response = await fetch(buildAlertsUrl(), {
             headers: getAuthHeaders()
         });
 
         if (response.status === 401) {
-            logout();
+            await logout();
             return;
         }
 
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error('Alerts fetch failed with HTTP ' + response.status);
         const data = await response.json();
-
-        const xTotalCount = response.headers.get('X-Total-Count');
-        totalAlertsCount = xTotalCount ? parseInt(xTotalCount, 10) : data.length;
-
-        if (data && Array.isArray(data)) {
-            activeAlerts = data.map((alert) => {
-                const tx = alert.transaction || {};
-                const amountFormatted = tx.amount ? '$' + Number(tx.amount).toLocaleString('en-US', { minimumFractionDigits: 2 }) : '$0.00';
-                const senderName = tx.sender_name || tx.sender || 'Primary Account';
-                const receiverName = tx.receiver_name || tx.receiver || 'Beneficiary';
-                const tenure = alert.account_created_at ? formatTenure(alert.account_created_at) : 'Institutional';
-                const riskTier = alert.sender_risk_tier || (alert.threat_level === 'CRITICAL' ? 'CRITICAL' : 'STANDARD');
-
-                return {
-                    alert_id: alert.alert_id,
-                    short_id: alert.alert_id ? alert.alert_id.slice(-6) : 'N/A',
-                    title: `${alert.rule_name || 'AML ALERT'} — ${amountFormatted} (${senderName} → ${receiverName})`,
-                    rule_name: alert.rule_name || 'COMPLIANCE_ALERT',
-                    threat_level: alert.threat_level || 'MEDIUM',
-                    ai_risk_score: alert.ai_risk_score !== null && alert.ai_risk_score !== undefined ? alert.ai_risk_score : 0.5,
-                    status: alert.status || 'OPEN',
-                    created_at: alert.created_at || new Date().toISOString(),
-                    assignee: alert.assignee || 'Unassigned',
-                    threshold_proximity: alert.threat_level === 'CRITICAL' ? '95%+' : 'Standard',
-                    channel: tx.channel || 'Wire Transfer',
-                    counterparty_jurisdiction: tx.country || 'DOMESTIC',
-                    prior_30d_txns: 1,
-                    account_tenure: tenure,
-                    rules_triggered_count: 1,
-                    model_version: 'v4.2.1',
-                    transaction: {
-                        amount: tx.amount || 0,
-                        currency: tx.currency || 'USD',
-                        timestamp: tx.timestamp || new Date().toISOString(),
-                        sender: tx.sender || 'Primary Account',
-                        sender_account: tx.sender || 'N/A',
-                        sender_name: senderName,
-                        receiver: tx.receiver || 'Beneficiary',
-                        receiver_account: tx.receiver || 'N/A',
-                        receiver_name: receiverName,
-                        channel: tx.channel || 'Wire Transfer',
-                        country: tx.country || 'DOMESTIC'
-                    },
-                    rules_triggered: [
-                        { code: alert.rule_name || 'R-COMP-01', desc: `— Triggered compliance rule ${alert.rule_name}`, critical: alert.threat_level === 'CRITICAL' }
-                    ],
-                    explainability: alert.explainability || {
-                        attributions: { "transaction_risk": 0.5 }
-                    },
-                    entity: {
-                        name: senderName,
-                        nationality: tx.country || 'Global',
-                        tier: `${riskTier} Tier`,
-                        connected: receiverName,
-                        customer_since: tenure,
-                        occupation: 'Commercial Account',
-                        pep: 'Screened Clean',
-                        sanctions: 'Screened Clean',
-                        adverse_media: 'Clean'
-                    },
-                    linked_entities: [],
-                    prior_alerts: [],
-                    ledger: []
-                };
-            });
-        } else {
-            activeAlerts = [];
-        }
-
-        renderInbox(activeAlerts);
-        renderQueueRail();
-        if (activeAlerts.length > 0) {
-            const currentId = (activeAlertId && activeAlerts.some(a => a.alert_id === activeAlertId)) ? activeAlertId : activeAlerts[0].alert_id;
-            selectCase(currentId);
-        }
-        updatePaginationControls(totalAlertsCount);
+        _applyLoadedAlerts(data, response.headers.get('X-Total-Count'));
         log(`Synced telemetry page ${currentPage} from postgres connection pool.`, 'success');
     } catch (e) {
-        log('Failed to fetch cases from API. Please verify network and authentication credentials.', 'error');
+        log(`Failed to fetch cases from API: ${e.message}`, 'error');
         activeAlerts = [];
         renderInbox(activeAlerts);
         renderQueueRail();
@@ -801,7 +855,7 @@ function updatePaginationControls(totalCount) {
 function prevPage() {
     if (currentPage > 1) {
         currentPage--;
-        loadAlerts();
+        void loadAlerts();
     }
 }
 
@@ -809,7 +863,7 @@ function nextPage() {
     const totalPages = Math.ceil(totalAlertsCount / pageSize);
     if (currentPage < totalPages) {
         currentPage++;
-        loadAlerts();
+        void loadAlerts();
     }
 }
 
@@ -838,7 +892,7 @@ function renderInbox(alertsList) {
         const idStr = `<code>${alert.alert_id.substring(0, 8)}...</code>`;
         const threatClass = alert.threat_level === 'CRITICAL' ? 'badge-red' : 'badge-orange';
         const threatBadge = `<span class="badge ${threatClass}">${alert.threat_level}</span>`;
-        const ruleBadge = `<strong>${alert.rule_name.replace(/_/g, ' ')}</strong>`;
+        const ruleBadge = `<strong>${alert.rule_name.replaceAll('_', ' ')}</strong>`;
         const senderBrief = alert.transaction.sender.substring(0, 10) + "...";
         const receiverBrief = alert.transaction.receiver.substring(0, 10) + "...";
 
@@ -910,8 +964,8 @@ async function executeBulkResolve(action) {
             }
         });
         log(`Mock batch resolved ${ids.length} alerts successfully.`, 'success');
-        loadAlerts();
-        loadDashboardAnalytics();
+        void loadAlerts();
+        void loadDashboardAnalytics();
         return;
     }
 
@@ -930,17 +984,17 @@ async function executeBulkResolve(action) {
         });
 
         if (response.status === 401) {
-            logout();
+            await logout();
             return;
         }
 
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`Bulk action request failed with HTTP ${response.status}`);
         const res = await response.json();
         log(`Batch Operation Succeeded: ${res.message}`, 'success');
-        loadAlerts();
-        loadDashboardAnalytics();
+        void loadAlerts();
+        void loadDashboardAnalytics();
     } catch (e) {
-        log('Bulk resolution failed. Please verify database pool or network connections.', 'warn');
+        log(`Bulk resolution failed: ${e.message}. Please verify database pool or network connections.`, 'warn');
     }
 }
 
@@ -950,7 +1004,7 @@ async function exportAlertsCSV() {
         const response = await fetch(`${BASE_URL}/api/v1/alerts/export/csv`, {
             headers: getAuthHeaders()
         });
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`CSV export request failed with HTTP ${response.status}`);
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -962,19 +1016,18 @@ async function exportAlertsCSV() {
         window.URL.revokeObjectURL(url);
         log('CSV compliance audit export successfully downloaded.', 'success');
     } catch (e) {
-        log('CSV export failed. Please verify API connection.', 'warn');
+        log(`CSV export failed: ${e.message}. Please verify API connection.`, 'warn');
     }
 }
 
 async function exportAlertsPDF() {
     log('Generating FinCEN regulatory audit report preview...', 'info');
     try {
-        const token = localStorage.getItem('jwt_token');
         const win = window.open(`${BASE_URL}/api/v1/alerts/export/pdf`, '_blank');
         if (win) win.focus();
         log('Audit report preview window launched.', 'success');
     } catch (e) {
-        log('Failed to launch audit report preview.', 'warn');
+        log(`Failed to launch audit report preview: ${e.message}`, 'warn');
     }
 }
 
@@ -1000,12 +1053,49 @@ function filterInboxTable() {
     clearTimeout(searchDebounceTimer);
     searchDebounceTimer = setTimeout(() => {
         currentPage = 1;
-        loadAlerts(searchVal, severityVal);
+        void loadAlerts(searchVal, severityVal);
     }, 300);
 }
 
 let caseLockHeartbeat = null;
 let currentCaseLockToken = null;
+
+function _handleCaseLockConflict(data, banner, textEl, timerEl, forceBtn) {
+    const holder = data?.detail?.lock_info?.locked_by_name || 'another investigator';
+    if (banner) {
+        banner.style.display = 'flex';
+        banner.style.background = '#FEF2F2';
+        banner.style.borderColor = '#FECACA';
+        banner.style.color = '#991B1B';
+    }
+    if (textEl) textEl.innerHTML = `⚠️ <strong>Locked by ${holder}</strong> — Editing disabled to prevent data collisions.`;
+    if (timerEl) timerEl.innerText = 'Read-Only Mode';
+    const role = localStorage.getItem('role') || 'ANALYST';
+    if (forceBtn && ['ADMIN', 'SUPER_ADMIN', 'MLRO'].includes(role)) {
+        forceBtn.style.display = 'inline-block';
+    }
+}
+
+function _handleCaseLockAcquired(data, banner, textEl, timerEl, forceBtn, caseId) {
+    currentCaseLockToken = data.lock?.lock_token;
+    if (banner) {
+        banner.style.display = 'flex';
+        banner.style.background = '#FFFBEB';
+        banner.style.borderColor = '#FDE68A';
+        banner.style.color = '#92400E';
+    }
+    if (textEl) textEl.innerHTML = `🔒 <strong>You have exclusive edit lock on this case</strong> — Collision protection enabled.`;
+    if (timerEl) timerEl.innerText = 'Session lock renews in 5:00 (active)';
+    if (forceBtn) forceBtn.style.display = 'none';
+
+    caseLockHeartbeat = setInterval(() => {
+        void fetch(`${BASE_URL}/api/v1/locks/ALERT/${caseId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ lock_token: currentCaseLockToken, ttl_seconds: 300 })
+        }).catch(err => console.warn('Case lock heartbeat error:', err));
+    }, 60000);
+}
 
 async function acquireCaseLock(caseId) {
     if (caseLockHeartbeat) {
@@ -1026,39 +1116,10 @@ async function acquireCaseLock(caseId) {
 
         if (res.status === 409) {
             const data = await res.json();
-            const holder = data.detail && data.detail.lock_info ? data.detail.lock_info.locked_by_name : 'another investigator';
-            if (banner) {
-                banner.style.display = 'flex';
-                banner.style.background = '#FEF2F2';
-                banner.style.borderColor = '#FECACA';
-                banner.style.color = '#991B1B';
-            }
-            if (textEl) textEl.innerHTML = `⚠️ <strong>Locked by ${holder}</strong> — Editing disabled to prevent data collisions.`;
-            if (timerEl) timerEl.innerText = 'Read-Only Mode';
-            const role = localStorage.getItem('role') || 'ANALYST';
-            if (forceBtn && ['ADMIN', 'SUPER_ADMIN', 'MLRO'].includes(role)) {
-                forceBtn.style.display = 'inline-block';
-            }
+            _handleCaseLockConflict(data, banner, textEl, timerEl, forceBtn);
         } else if (res.ok) {
             const data = await res.json();
-            currentCaseLockToken = data.lock.lock_token;
-            if (banner) {
-                banner.style.display = 'flex';
-                banner.style.background = '#FFFBEB';
-                banner.style.borderColor = '#FDE68A';
-                banner.style.color = '#92400E';
-            }
-            if (textEl) textEl.innerHTML = `🔒 <strong>You have exclusive edit lock on this case</strong> — Collision protection enabled.`;
-            if (timerEl) timerEl.innerText = 'Session lock renews in 5:00 (active)';
-            if (forceBtn) forceBtn.style.display = 'none';
-
-            caseLockHeartbeat = setInterval(() => {
-                fetch(`${BASE_URL}/api/v1/locks/ALERT/${caseId}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                    body: JSON.stringify({ lock_token: currentCaseLockToken, ttl_seconds: 300 })
-                });
-            }, 60000);
+            _handleCaseLockAcquired(data, banner, textEl, timerEl, forceBtn, caseId);
         }
     } catch (e) {
         console.warn('Case lock acquisition error:', e);
@@ -1075,10 +1136,10 @@ async function forceUnlockCurrentCase() {
         });
         if (res.ok) {
             alert('Lock broken. Re-acquiring lease...');
-            acquireCaseLock(activeAlertId);
+            void acquireCaseLock(activeAlertId);
         }
     } catch (e) {
-        alert('Failed to force unlock');
+        alert('Failed to force unlock: ' + e.message);
     }
 }
 
@@ -1106,7 +1167,7 @@ function _updateCaseQueueAndTopbar(alert, fullCaseId) {
 
     const topbarCrumb = document.getElementById('topbar-case-crumb');
     if (topbarCrumb) {
-        const ruleFormatted = alert.rule_name ? alert.rule_name.replace(/_/g, ' ') : 'Structuring';
+        const ruleFormatted = alert.rule_name ? alert.rule_name.replaceAll('_', ' ') : 'Structuring';
         const channelFormatted = alert.channel || 'Wire Transfer';
         const openTime = alert.created_at ? new Date(alert.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '09:14';
         topbarCrumb.innerText = `${ruleFormatted} · ${channelFormatted} · Opened ${openTime} today`;
@@ -1165,7 +1226,7 @@ function _updateTriggeredRulesAndShap(alert, firedRulesCount) {
     if (rulesList) {
         const rules = (alert.rules_triggered?.length > 0)
             ? alert.rules_triggered
-            : [{ code: (alert.rule_name || 'COMPLIANCE_ALERT').replace(/_/g, ' '), desc: `— Flagged by transaction monitoring engine (${alert.threat_level || 'STANDARD'})` }];
+            : [{ code: (alert.rule_name || 'COMPLIANCE_ALERT').replaceAll('_', ' '), desc: `— Flagged by transaction monitoring engine (${alert.threat_level || 'STANDARD'})` }];
         rulesList.innerHTML = rules.map(r => `
             <div class="rule-row ${r.critical ? 'critical' : ''}">
                 <span class="rname">${r.code || r.name || 'RULE'}</span>
@@ -1174,7 +1235,7 @@ function _updateTriggeredRulesAndShap(alert, firedRulesCount) {
         `).join('');
     }
 
-    loadGraphData(alert.alert_id, alert);
+    void loadGraphData(alert.alert_id, alert);
 
     const shapList = document.getElementById('inbox-shap-list');
     if (shapList && alert.explainability?.attributions) {
@@ -1193,7 +1254,7 @@ function _updateTriggeredRulesAndShap(alert, firedRulesCount) {
 
             shapItem.innerHTML = `
                 <div class="shap-header">
-                    <span style="text-transform: capitalize;">${key.replace(/_/g, ' ')} Impact</span>
+                    <span style="text-transform: capitalize;">${key.replaceAll('_', ' ')} Impact</span>
                     <span style="color: ${barColor}; font-weight: 600;">${signText}${percentage}% weighting</span>
                 </div>
                 <div class="shap-bar-bg">
@@ -1208,6 +1269,48 @@ function _updateTriggeredRulesAndShap(alert, firedRulesCount) {
     if (rawPre) rawPre.innerText = JSON.stringify(alert, null, 2);
 }
 
+function _renderEntityKyc(entity) {
+    if (!entity) return;
+    const kycName = document.getElementById('ctx-kyc-name');
+    if (kycName) kycName.innerText = entity.name || 'N/A';
+
+    const kycTenure = document.getElementById('ctx-kyc-tenure');
+    if (kycTenure) kycTenure.innerText = entity.customer_since || 'Jul 2025';
+
+    const kycOcc = document.getElementById('ctx-kyc-occupation');
+    if (kycOcc) kycOcc.innerText = entity.occupation || 'Commercial Account';
+
+    const kycPep = document.getElementById('ctx-kyc-pep');
+    if (kycPep) kycPep.innerText = entity.pep || 'Screened Clean';
+
+    const kycSanc = document.getElementById('ctx-kyc-sanctions');
+    if (kycSanc) kycSanc.innerText = entity.sanctions || 'None';
+
+    const kycMed = document.getElementById('ctx-kyc-media');
+    if (kycMed) kycMed.innerText = entity.adverse_media || 'Clean';
+}
+
+function _renderLinkedEntitiesList(linkedList) {
+    const entitiesCount = document.getElementById('ctx-entities-count');
+    const entitiesList = document.getElementById('ctx-entities-list');
+    if (entitiesCount) entitiesCount.innerText = linkedList.length;
+    if (!entitiesList) return;
+
+    if (linkedList.length === 0) {
+        entitiesList.innerHTML = '<div style="font-size:12px; color:var(--ink-soft); padding:8px 0;">No direct counterparties recorded.</div>';
+        return;
+    }
+    entitiesList.innerHTML = linkedList.map(e => `
+        <div class="entity-card">
+            <div class="entity-avatar" style="${e.high_risk ? 'background:var(--risk-high-bg); color:var(--risk-high);' : ''}">${e.avatar || e.name.slice(0, 2).toUpperCase()}</div>
+            <div>
+                <div class="entity-name">${e.name}</div>
+                <div class="entity-meta">${e.relation}</div>
+            </div>
+        </div>
+    `).join('');
+}
+
 function _updateContextKycAndEntities(alert, riskScore) {
     const gaugeScore = document.getElementById('ctx-risk-score');
     if (gaugeScore) gaugeScore.innerText = riskScore;
@@ -1215,49 +1318,12 @@ function _updateContextKycAndEntities(alert, riskScore) {
     const gaugeLabel = document.getElementById('ctx-risk-label');
     if (gaugeLabel) {
         const threat = alert.threat_level || 'HIGH';
-        const ruleFormatted = (alert.rule_name || 'RULES').replace(/_/g, ' ');
+        const ruleFormatted = (alert.rule_name || 'RULES').replaceAll('_', ' ');
         gaugeLabel.innerHTML = `FATF Risk-Based Composite<br><span style="font-weight:600;">${threat}</span> Priority · ${ruleFormatted}`;
     }
 
-    if (alert.entity) {
-        const kycName = document.getElementById('ctx-kyc-name');
-        if (kycName) kycName.innerText = alert.entity.name || 'N/A';
-
-        const kycTenure = document.getElementById('ctx-kyc-tenure');
-        if (kycTenure) kycTenure.innerText = alert.entity.customer_since || 'Jul 2025';
-
-        const kycOcc = document.getElementById('ctx-kyc-occupation');
-        if (kycOcc) kycOcc.innerText = alert.entity.occupation || 'Commercial Account';
-
-        const kycPep = document.getElementById('ctx-kyc-pep');
-        if (kycPep) kycPep.innerText = alert.entity.pep || 'Screened Clean';
-
-        const kycSanc = document.getElementById('ctx-kyc-sanctions');
-        if (kycSanc) kycSanc.innerText = alert.entity.sanctions || 'None';
-
-        const kycMed = document.getElementById('ctx-kyc-media');
-        if (kycMed) kycMed.innerText = alert.entity.adverse_media || 'Clean';
-    }
-
-    const entitiesCount = document.getElementById('ctx-entities-count');
-    const entitiesList = document.getElementById('ctx-entities-list');
-    const linkedList = alert.linked_entities || [];
-    if (entitiesCount) entitiesCount.innerText = linkedList.length;
-    if (entitiesList) {
-        if (linkedList.length === 0) {
-            entitiesList.innerHTML = '<div style="font-size:12px; color:var(--ink-soft); padding:8px 0;">No direct counterparties recorded.</div>';
-        } else {
-            entitiesList.innerHTML = linkedList.map(e => `
-                <div class="entity-card">
-                    <div class="entity-avatar" style="${e.high_risk ? 'background:var(--risk-high-bg); color:var(--risk-high);' : ''}">${e.avatar || e.name.slice(0, 2).toUpperCase()}</div>
-                    <div>
-                        <div class="entity-name">${e.name}</div>
-                        <div class="entity-meta">${e.relation}</div>
-                    </div>
-                </div>
-            `).join('');
-        }
-    }
+    _renderEntityKyc(alert.entity);
+    _renderLinkedEntitiesList(alert.linked_entities || []);
 
     const priorCount = document.getElementById('ctx-prior-alerts-count');
     const priorList = document.getElementById('ctx-prior-alerts-list');
@@ -1288,14 +1354,13 @@ function selectCase(id) {
     const fullCaseId = alert.alert_id.startsWith('aml-') ? alert.alert_id.toUpperCase() : `AML-2026-${shortId}`;
 
     _updateCaseQueueAndTopbar(alert, fullCaseId);
-    acquireCaseLock(alert.alert_id);
+    void acquireCaseLock(alert.alert_id);
 
-    const rawAiScore = (alert.ai_risk_score !== undefined && alert.ai_risk_score !== null && !isNaN(alert.ai_risk_score)) ? Number(alert.ai_risk_score) : 0.8;
+    const rawAiScore = (alert.ai_risk_score !== undefined && alert.ai_risk_score !== null && !Number.isNaN(alert.ai_risk_score)) ? Number(alert.ai_risk_score) : 0.8;
     const riskScore = Math.min(Math.max(Math.round(rawAiScore * 100), 0), 100);
-    const riskClass = (alert.threat_level === 'CRITICAL' || rawAiScore >= 0.85) ? 'high' : 
-                      ((alert.threat_level === 'HIGH' || rawAiScore >= 0.6) ? 'med' : 'low');
+    const riskClass = getAlertRiskClass(alert);
 
-    const firedRulesCount = alert.rules_triggered ? alert.rules_triggered.length : (alert.rules_triggered_count !== undefined && alert.rules_triggered_count !== null ? alert.rules_triggered_count : 0);
+    const firedRulesCount = alert.rules_triggered?.length ?? alert.rules_triggered_count ?? 0;
 
     _updateEvidencePaneAndKpis(alert, riskScore, riskClass, firedRulesCount);
     _updateTriggeredRulesAndShap(alert, firedRulesCount);
@@ -1303,7 +1368,43 @@ function selectCase(id) {
 
     loadInboxTableHighlights(id);
     log(`Cockpit Active: Inspecting Case #${shortId} (${alert.entity ? alert.entity.name : 'Unknown'})`, 'info');
-    fetchAndRenderAlertDetails(id, alert);
+    void fetchAndRenderAlertDetails(id, alert);
+}
+
+function _renderKycSnapshotDetails(entity) {
+    if (!entity) return;
+    const kycName = document.getElementById('ctx-kyc-name');
+    if (kycName) kycName.innerText = entity.name || 'N/A';
+
+    const kycTenure = document.getElementById('ctx-kyc-tenure');
+    if (kycTenure && entity.customer_since) {
+        kycTenure.innerText = formatTenure(entity.customer_since);
+    }
+
+    const kycOcc = document.getElementById('ctx-kyc-occupation');
+    if (kycOcc) kycOcc.innerText = entity.risk_tier ? `${entity.risk_tier} Risk Account` : 'Commercial Account';
+
+    const kycPep = document.getElementById('ctx-kyc-pep');
+    if (kycPep) kycPep.innerText = entity.risk_tier === 'CRITICAL' ? 'Flagged / Review' : 'Screened Clean';
+}
+
+function _renderPriorAlertsDetails(priorAlerts) {
+    if (!priorAlerts) return;
+    const priorCount = document.getElementById('ctx-prior-alerts-count');
+    const priorList = document.getElementById('ctx-prior-alerts-list');
+    if (priorCount) priorCount.innerText = priorAlerts.length;
+    if (!priorList) return;
+
+    if (priorAlerts.length === 0) {
+        priorList.innerHTML = '<div style="font-size:12px; color:var(--ink-soft); padding:6px 0;">No prior alerts recorded in 12 mo.</div>';
+    } else {
+        priorList.innerHTML = priorAlerts.map(pa => `
+            <div class="alert-item">
+                <span>${pa.rule_name.replaceAll('_', ' ')}</span>
+                <span class="adate">${new Date(pa.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })} <span class="status-pill ${pa.status.toLowerCase()}">${pa.status}</span></span>
+            </div>
+        `).join('');
+    }
 }
 
 async function fetchAndRenderAlertDetails(id, alert) {
@@ -1319,70 +1420,19 @@ async function fetchAndRenderAlertDetails(id, alert) {
         if (!response.ok) return;
         const details = await response.json();
 
-        // Update KYC Snapshot with authentic PostgreSQL data
-        if (details.entity) {
-            const kycName = document.getElementById('ctx-kyc-name');
-            if (kycName) kycName.innerText = details.entity.name || 'N/A';
+        _renderKycSnapshotDetails(details.entity);
 
-            const kycTenure = document.getElementById('ctx-kyc-tenure');
-            if (kycTenure && details.entity.customer_since) {
-                kycTenure.innerText = formatTenure(details.entity.customer_since);
-            }
-
-            const kycOcc = document.getElementById('ctx-kyc-occupation');
-            if (kycOcc) kycOcc.innerText = details.entity.risk_tier ? `${details.entity.risk_tier} Risk Account` : 'Commercial Account';
-
-            const kycPep = document.getElementById('ctx-kyc-pep');
-            if (kycPep) kycPep.innerText = details.entity.risk_tier === 'CRITICAL' ? 'Flagged / Review' : 'Screened Clean';
-        }
-
-        // Render dynamic 30-day transaction timeline
-        if (details.timeline_30d && details.timeline_30d.length > 0) {
-            renderTransactionTimeline(details.timeline_30d, details.transaction ? details.transaction.id : null);
+        if (details.timeline_30d?.length > 0) {
+            renderTransactionTimeline(details.timeline_30d, details.transaction?.id || null);
             const prior30dEl = document.getElementById('txn-prior-30d');
             if (prior30dEl) prior30dEl.innerText = details.timeline_30d.length;
         }
 
-        // Render authentic prior alerts from PostgreSQL
-        if (details.prior_alerts) {
-            const priorCount = document.getElementById('ctx-prior-alerts-count');
-            const priorList = document.getElementById('ctx-prior-alerts-list');
-            if (priorCount) priorCount.innerText = details.prior_alerts.length;
-            if (priorList) {
-                if (details.prior_alerts.length === 0) {
-                    priorList.innerHTML = '<div style="font-size:12px; color:var(--ink-soft); padding:6px 0;">No prior alerts recorded in 12 mo.</div>';
-                } else {
-                    priorList.innerHTML = details.prior_alerts.map(pa => `
-                        <div class="alert-item">
-                            <span>${pa.rule_name.replace(/_/g, ' ')}</span>
-                            <span class="adate">${new Date(pa.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })} <span class="status-pill ${pa.status.toLowerCase()}">${pa.status}</span></span>
-                        </div>
-                    `).join('');
-                }
-            }
-        }
+        _renderPriorAlertsDetails(details.prior_alerts);
 
-        // Render authentic linked counterparties from PostgreSQL / Neo4j
         if (details.linked_entities) {
             alert.linked_entities = details.linked_entities;
-            const entitiesCount = document.getElementById('ctx-entities-count');
-            const entitiesList = document.getElementById('ctx-entities-list');
-            if (entitiesCount) entitiesCount.innerText = details.linked_entities.length;
-            if (entitiesList) {
-                if (details.linked_entities.length === 0) {
-                    entitiesList.innerHTML = '<div style="font-size:12px; color:var(--ink-soft); padding:8px 0;">No direct counterparties recorded.</div>';
-                } else {
-                    entitiesList.innerHTML = details.linked_entities.map(e => `
-                        <div class="entity-card">
-                            <div class="entity-avatar" style="${e.high_risk ? 'background:var(--risk-high-bg); color:var(--risk-high);' : ''}">${e.avatar || e.name.slice(0, 2).toUpperCase()}</div>
-                            <div>
-                                <div class="entity-name">${e.name}</div>
-                                <div class="entity-meta">${e.relation}</div>
-                            </div>
-                        </div>
-                    `).join('');
-                }
-            }
+            _renderLinkedEntitiesList(details.linked_entities);
         }
     } catch (e) {
         console.warn("Could not load enhanced alert details:", e);
@@ -1392,10 +1442,11 @@ async function fetchAndRenderAlertDetails(id, alert) {
 function navigateToCustomer360() {
     const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
     let customerId = '';
-    if (alert && alert.entity && (alert.entity.account_id || alert.entity.id)) {
-        customerId = alert.entity.account_id || alert.entity.id;
-    } else if (alert && alert.transaction && (alert.transaction.sender_account || alert.transaction.sender)) {
-        customerId = alert.transaction.sender_account || alert.transaction.sender;
+    if (alert?.entity) {
+        customerId = alert.entity.account_id || alert.entity.id || '';
+    }
+    if (!customerId && alert?.transaction) {
+        customerId = alert.transaction.sender_account || alert.transaction.sender || '';
     }
     window.location.href = customerId ? `/customers/${encodeURIComponent(customerId)}` : '/customers';
 }
@@ -1470,11 +1521,11 @@ async function loadGraphData(alertId, alert) {
         const response = await fetch(`${BASE_URL}/api/v1/alerts/${alertId}/graph`, {
             headers: getAuthHeaders()
         });
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`Graph data request failed with HTTP ${response.status}`);
         const graphData = await response.json();
         renderVisNetworkGraph(graphData, alert);
     } catch (e) {
-        log('Failed to fetch graph data from Neo4j. Rendering mock topology.', 'warn');
+        log(`Failed to fetch graph data from Neo4j: ${e.message}. Rendering mock topology.`, 'warn');
         renderMockGraph(alert);
     }
 }
@@ -1522,8 +1573,8 @@ function renderVisNetworkGraph(graphData, alert) {
         return;
     }
 
-    const senderAcc = (alert && alert.transaction && alert.transaction.sender) || 'ACC-4821-S';
-    const receiverAcc = (alert && alert.transaction && alert.transaction.receiver) || 'ACC-9901-R';
+    const senderAcc = alert?.transaction?.sender || 'ACC-4821-S';
+    const receiverAcc = alert?.transaction?.receiver || 'ACC-9901-R';
 
     const visNodes = rawNodes.map(n => {
         let color = '#3d6b99';
@@ -1617,7 +1668,7 @@ function renderVisNetworkGraph(graphData, alert) {
 
     visNetworkInstance.on('doubleClick', (params) => {
         if (params.nodes && params.nodes.length > 0) {
-            expandGraphNode(params.nodes[0]);
+            void expandGraphNode(params.nodes[0]);
         }
     });
 }
@@ -1653,13 +1704,13 @@ async function expandGraphNode(nodeId) {
         const response = await fetch(`${BASE_URL}/api/v1/network/expand/${nodeId}`, {
             headers: getAuthHeaders()
         });
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`Network expand request failed with HTTP ${response.status}`);
         const expandedData = await response.json();
         const alert = activeAlerts.find(a => a.alert_id === activeAlertId) || activeAlerts[0] || null;
         renderVisNetworkGraph(expandedData, alert);
         log(`Successfully expanded 2-hop network graph around node ${nodeId}.`, 'success');
     } catch (e) {
-        log(`Failed to expand graph node ${nodeId}.`, 'warn');
+        log(`Failed to expand graph node ${nodeId}: ${e.message}`, 'warn');
     }
 }
 
@@ -1683,11 +1734,11 @@ function showNodeDetails(node) {
 }
 
 function renderMockGraph(alert) {
-    const sender = (alert && alert.transaction && alert.transaction.sender) || "ACC-4821-S";
-    const receiver = (alert && alert.transaction && alert.transaction.receiver) || "ACC-9901-R";
-    const connected = (alert && alert.entity && alert.entity.connected) || "Harlow Kane Ltd";
-    const name = (alert && alert.entity && alert.entity.name) || "Tobias M. Varga";
-    const amount = (alert && alert.transaction && alert.transaction.amount) || "$9,480.00";
+    const sender = alert?.transaction?.sender || "ACC-4821-S";
+    const receiver = alert?.transaction?.receiver || "ACC-9901-R";
+    const connected = alert?.entity?.connected || "Harlow Kane Ltd";
+    const name = alert?.entity?.name || "Tobias M. Varga";
+    const amount = alert?.transaction?.amount || "$9,480.00";
 
     const mockData = {
         nodes: [
@@ -1717,42 +1768,21 @@ async function assignCaseToOfficer(officerUsername) {
             body: JSON.stringify({ officer_username: officerUsername })
         });
         if (response.status === 401) {
-            logout();
+            await logout();
             return;
         }
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`Case assignment request failed with HTTP ${response.status}`);
         const res = await response.json();
         log(`Case ${activeAlertId.substring(0, 8)} assigned to officer: ${res.assigned_officer}`, 'success');
-        loadAlerts();
-        loadDashboardAnalytics();
+        void loadAlerts();
+        void loadDashboardAnalytics();
     } catch (e) {
-        log('Failed to assign case officer.', 'warn');
+        log(`Failed to assign case officer: ${e.message}`, 'warn');
     }
 }
 
 // Case action resolutions in 3-Pane Cockpit
-async function resolveCurrentCase(action) {
-    if (!activeAlertId) return;
-    const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
-    if (!alert) return;
-
-    const noteInput = document.getElementById('inbox-justification');
-    const mobileNoteInput = document.getElementById('mobile-inbox-justification');
-    let justification = (noteInput && noteInput.value.trim()) || (mobileNoteInput && mobileNoteInput.value.trim()) || '';
-
-    if (!justification) {
-        if (action === 'CLOSE_FALSE_POSITIVE') {
-            justification = "Legitimate customer activity verified per standard customer profile and counterparty review.";
-        } else if (action === 'CLOSE_SAR') {
-            justification = "SAR Filing initiated: Transaction meets suspicious activity threshold due to structuring and high-risk counterparty jurisdiction.";
-        }
-    }
-
-    const shortId = alert.short_id || (alert.alert_id.includes('-') ? alert.alert_id.split('-').pop() : alert.alert_id.slice(-4));
-    const actionLabel = action === 'CLOSE_SAR' ? 'FLAG SAR & RESTRICT' : 'DISMISS ALERT (FALSE POSITIVE)';
-    log(`Submitting resolution: ${actionLabel} for Case #${shortId}...`, 'info');
-
-    // Double-click protection & loading state (WCAG 2.1 AA)
+function setActionButtonsLoading(targetBtns, loadingText = 'Processing...') {
     const actionBtns = [
         document.getElementById('btn-approve-case'),
         document.getElementById('btn-escalate-case'),
@@ -1762,14 +1792,10 @@ async function resolveCurrentCase(action) {
         document.getElementById('mobile-btn-block-case')
     ].filter(Boolean);
 
-    const targetBtns = (action === 'CLOSE_FALSE_POSITIVE')
-        ? [document.getElementById('btn-approve-case'), document.getElementById('mobile-btn-approve-case')].filter(Boolean)
-        : [document.getElementById('btn-block-case'), document.getElementById('mobile-btn-block-case'), document.getElementById('btn-confirm-sar-submit')].filter(Boolean);
-
     const originalContents = new Map();
     targetBtns.forEach(btn => {
         originalContents.set(btn, btn.innerHTML);
-        btn.innerHTML = `<i data-lucide="loader-2" class="spin" style="width:14px;height:14px;"></i> <span>Processing...</span>`;
+        btn.innerHTML = `<i data-lucide="loader-2" class="spin" style="width:14px;height:14px;"></i> <span>${loadingText}</span>`;
         btn.classList.add('btn-loading');
     });
     if (window.lucide) lucide.createIcons();
@@ -1780,49 +1806,7 @@ async function resolveCurrentCase(action) {
         b.style.pointerEvents = 'none';
     });
 
-    try {
-        if (mockMode) {
-            alert.status = action;
-            log(`Case #${shortId} successfully resolved: ${action}`, 'success');
-            if (noteInput) noteInput.value = '';
-            if (mobileNoteInput) mobileNoteInput.value = '';
-            renderQueueRail();
-            navigateQueue(1);
-            return;
-        }
-
-        const response = await fetch(`${BASE_URL}/api/v1/alerts/${activeAlertId}/action`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...getAuthHeaders()
-            },
-            body: JSON.stringify({
-                action: action,
-                justification: justification,
-                sar_xml_generate: action === 'CLOSE_SAR'
-            })
-        });
-
-        if (response.status === 401) {
-            logout();
-            return;
-        }
-
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.detail || `Server returned HTTP ${response.status}`);
-        }
-        const res = await response.json();
-        alert.status = action;
-        log(`Case #${shortId} closed: ${res.status || action}`, 'success');
-        if (noteInput) noteInput.value = '';
-        if (mobileNoteInput) mobileNoteInput.value = '';
-        renderQueueRail();
-        navigateQueue(1);
-    } catch (e) {
-        log(`Failed to resolve case #${shortId} on server: ${e.message}`, 'err');
-    } finally {
+    return function restoreActionButtons() {
         targetBtns.forEach(btn => {
             if (originalContents.has(btn)) {
                 btn.innerHTML = originalContents.get(btn);
@@ -1835,6 +1819,117 @@ async function resolveCurrentCase(action) {
             b.style.opacity = '1';
             b.style.pointerEvents = 'auto';
         });
+    };
+}
+
+function getCaseJustification(action, defaultJustification = '') {
+    const noteInput = document.getElementById('inbox-justification');
+    const mobileNoteInput = document.getElementById('mobile-inbox-justification');
+    const noteText = noteInput?.value?.trim() || mobileNoteInput?.value?.trim() || '';
+    if (noteText) return noteText;
+
+    if (action === 'CLOSE_FALSE_POSITIVE') {
+        return "Legitimate customer activity verified per standard customer profile and counterparty review.";
+    }
+    if (action === 'CLOSE_SAR') {
+        return "SAR Filing initiated: Transaction meets suspicious activity threshold due to structuring and high-risk counterparty jurisdiction.";
+    }
+    return defaultJustification;
+}
+
+function clearCaseJustificationInputs() {
+    const noteInput = document.getElementById('inbox-justification');
+    const mobileNoteInput = document.getElementById('mobile-inbox-justification');
+    if (noteInput) noteInput.value = '';
+    if (mobileNoteInput) mobileNoteInput.value = '';
+}
+
+async function submitCaseResolutionApi(alertId, action, justification) {
+    const response = await fetch(`${BASE_URL}/api/v1/alerts/${alertId}/action`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders()
+        },
+        body: JSON.stringify({
+            action: action,
+            justification: justification,
+            sar_xml_generate: action === 'CLOSE_SAR'
+        })
+    });
+
+    if (response.status === 401) {
+        await logout();
+        return null;
+    }
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server returned HTTP ${response.status}`);
+    }
+    return await response.json();
+}
+
+async function submitCaseEscalationApi(alertId, justification) {
+    const response = await fetch(`${BASE_URL}/api/v1/alerts/${alertId}/escalate`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders()
+        },
+        body: JSON.stringify({ justification: justification })
+    });
+
+    if (response.status === 401) {
+        await logout();
+        return null;
+    }
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server returned HTTP ${response.status}`);
+    }
+    return await response.json();
+}
+
+async function resolveCurrentCase(action) {
+    if (!activeAlertId) return;
+    const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
+    if (!alert) return;
+
+    const justification = getCaseJustification(action);
+    const shortId = alert.short_id || (alert.alert_id.includes('-') ? alert.alert_id.split('-').pop() : alert.alert_id.slice(-4));
+    const actionLabel = action === 'CLOSE_SAR' ? 'FLAG SAR & RESTRICT' : 'DISMISS ALERT (FALSE POSITIVE)';
+    log(`Submitting resolution: ${actionLabel} for Case #${shortId}...`, 'info');
+
+    const targetBtns = (action === 'CLOSE_FALSE_POSITIVE')
+        ? [document.getElementById('btn-approve-case'), document.getElementById('mobile-btn-approve-case')].filter(Boolean)
+        : [document.getElementById('btn-block-case'), document.getElementById('mobile-btn-block-case'), document.getElementById('btn-confirm-sar-submit')].filter(Boolean);
+
+    const restoreActionButtons = setActionButtonsLoading(targetBtns, 'Processing...');
+
+    try {
+        if (mockMode) {
+            alert.status = action;
+            log(`Case #${shortId} successfully resolved: ${action}`, 'success');
+            clearCaseJustificationInputs();
+            renderQueueRail();
+            navigateQueue(1);
+            return;
+        }
+
+        const res = await submitCaseResolutionApi(activeAlertId, action, justification);
+        if (!res) return;
+
+        alert.status = action;
+        log(`Case #${shortId} closed: ${res.status || action}`, 'success');
+        clearCaseJustificationInputs();
+        renderQueueRail();
+        navigateQueue(1);
+    } catch (e) {
+        log(`Failed to resolve case #${shortId} on server: ${e.message}`, 'err');
+    } finally {
+        restoreActionButtons();
     }
 }
 
@@ -1843,93 +1938,35 @@ async function escalateCurrentCase() {
     const alert = activeAlerts.find(a => a.alert_id === activeAlertId);
     if (!alert) return;
 
-    const noteInput = document.getElementById('inbox-justification');
-    const mobileNoteInput = document.getElementById('mobile-inbox-justification');
-    let justification = (noteInput && noteInput.value.trim()) || (mobileNoteInput && mobileNoteInput.value.trim()) || '';
-    if (!justification) {
-        justification = "Case escalated to Senior Compliance Committee for enhanced due diligence (EDD).";
-    }
-
+    const justification = getCaseJustification('ESCALATE', "Case escalated to Senior Compliance Committee for enhanced due diligence (EDD).");
     const shortId = alert.short_id || (alert.alert_id.includes('-') ? alert.alert_id.split('-').pop() : alert.alert_id.slice(-4));
     log(`Escalating Case #${shortId} to Senior Review Committee...`, 'info');
 
-    // Double-click protection & loading state (WCAG 2.1 AA)
-    const actionBtns = [
-        document.getElementById('btn-approve-case'),
-        document.getElementById('btn-escalate-case'),
-        document.getElementById('btn-block-case'),
-        document.getElementById('mobile-btn-approve-case'),
-        document.getElementById('mobile-btn-escalate-case'),
-        document.getElementById('mobile-btn-block-case')
-    ].filter(Boolean);
-
     const targetBtns = [document.getElementById('btn-escalate-case'), document.getElementById('mobile-btn-escalate-case')].filter(Boolean);
-    const originalContents = new Map();
-    targetBtns.forEach(btn => {
-        originalContents.set(btn, btn.innerHTML);
-        btn.innerHTML = `<i data-lucide="loader-2" class="spin" style="width:14px;height:14px;"></i> <span>Escalating...</span>`;
-        btn.classList.add('btn-loading');
-    });
-    if (window.lucide) lucide.createIcons();
-
-    actionBtns.forEach(b => {
-        b.disabled = true;
-        b.style.opacity = '0.5';
-        b.style.pointerEvents = 'none';
-    });
+    const restoreActionButtons = setActionButtonsLoading(targetBtns, 'Escalating...');
 
     try {
         if (mockMode) {
             alert.status = 'ESCALATED';
-            if (noteInput) noteInput.value = '';
-            if (mobileNoteInput) mobileNoteInput.value = '';
+            clearCaseJustificationInputs();
             log(`Case #${shortId} status updated: ESCALATED`, 'success');
             renderQueueRail();
             navigateQueue(1);
             return;
         }
 
-        const response = await fetch(`${BASE_URL}/api/v1/alerts/${activeAlertId}/escalate`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...getAuthHeaders()
-            },
-            body: JSON.stringify({ justification: justification })
-        });
+        const res = await submitCaseEscalationApi(activeAlertId, justification);
+        if (!res) return;
 
-        if (response.status === 401) {
-            logout();
-            return;
-        }
-
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.detail || `Server returned HTTP ${response.status}`);
-        }
-
-        const res = await response.json();
         alert.status = 'ESCALATED';
-        if (noteInput) noteInput.value = '';
-        if (mobileNoteInput) mobileNoteInput.value = '';
+        clearCaseJustificationInputs();
         log(`Case #${shortId} successfully persisted as ESCALATED in PostgreSQL database.`, 'success');
         renderQueueRail();
         navigateQueue(1);
     } catch (e) {
         log(`Failed to escalate case #${shortId}: ${e.message}`, 'err');
     } finally {
-        targetBtns.forEach(btn => {
-            if (originalContents.has(btn)) {
-                btn.innerHTML = originalContents.get(btn);
-            }
-            btn.classList.remove('btn-loading');
-        });
-        if (window.lucide) lucide.createIcons();
-        actionBtns.forEach(b => {
-            b.disabled = false;
-            b.style.opacity = '1';
-            b.style.pointerEvents = 'auto';
-        });
+        restoreActionButtons();
     }
 }
 
@@ -1949,7 +1986,7 @@ async function submitSARToFinCEN() {
     log(`Transmitting SAR electronically to U.S. FinCEN BSA E-Filing Gateway for case ${activeAlertId.substring(0, 8)}...`, 'info');
 
     if (mockMode) {
-        const trackingId = `BSA-2026-${Math.floor(100000 + Math.random() * 900000)}`;
+        const trackingId = `BSA-2026-${100000 + (Date.now() % 900000)}`;
         document.getElementById('fincen-receipt-box').style.display = 'block';
         document.getElementById('fincen-tracking-id-display').innerText = trackingId;
         document.getElementById('fincen-status-display').innerText = 'ACKNOWLEDGED (Sandbox)';
@@ -1971,11 +2008,11 @@ async function submitSARToFinCEN() {
         });
 
         if (response.status === 401) {
-            logout();
+            await logout();
             return;
         }
 
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`FinCEN submission failed with HTTP ${response.status}`);
         const res = await response.json();
 
         document.getElementById('fincen-receipt-box').style.display = 'block';
@@ -1984,7 +2021,7 @@ async function submitSARToFinCEN() {
         log(`FinCEN Electronic Receipt Ingested: Tracking ID=${res.fincen_tracking_id}, Status=${res.status}`, 'success');
 
     } catch (e) {
-        log('FinCEN electronic submission API error. Please verify transmitter credentials.', 'warn');
+        log(`FinCEN electronic submission API error: ${e.message || 'Please verify transmitter credentials.'}`, 'warn');
     }
 }
 
@@ -2016,7 +2053,7 @@ function generateSARXML(alert, justification) {
 async function runSandboxScreening(event) {
     event.preventDefault();
     const name = document.getElementById('sandbox-screen-name').value.trim();
-    const thresholdVal = parseFloat(document.getElementById('sandbox-screen-threshold').value) / 100;
+    const thresholdVal = Number.parseFloat(document.getElementById('sandbox-screen-threshold').value) / 100;
 
     log(`Multi-Tier Screening query: Identity="${name}", threshold=${thresholdVal}`, 'info');
 
@@ -2054,18 +2091,18 @@ async function runSandboxScreening(event) {
         });
 
         if (response.status === 401) {
-            logout();
+            await logout();
             return;
         }
 
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`Screening request failed with HTTP ${response.status}`);
         const result = await response.json();
         renderSandboxVerdict(result, thresholdVal);
 
     } catch (e) {
-        log('API screening error. Running offline lookup...', 'warn');
+        log(`API screening error (${e.message}). Running offline lookup...`, 'warn');
         setMockMode(true);
-        runSandboxScreening(event);
+        void runSandboxScreening(event);
     }
 }
 
@@ -2076,8 +2113,8 @@ function renderSandboxVerdict(res, threshold) {
     const tbody = document.getElementById('sandbox-hits-tbody');
     tbody.innerHTML = '';
 
-    const sanctionsHit = res.sanctions_hit && res.sanctions_hit.match_found ? res.sanctions_hit : null;
-    const pepHit = res.pep_hit && res.pep_hit.match_found ? res.pep_hit : null;
+    const sanctionsHit = res.sanctions_hit?.match_found ? res.sanctions_hit : null;
+    const pepHit = res.pep_hit?.match_found ? res.pep_hit : null;
 
     const badge = document.getElementById('sandbox-verdict-badge');
     const verdictTitle = document.getElementById('sandbox-verdict-verdict');
@@ -2100,7 +2137,7 @@ function renderSandboxVerdict(res, threshold) {
     } else if (pepHit) {
         badge.innerText = 'PEP TIER MATCH (EDD REQUIRED)';
         badge.className = 'badge badge-orange';
-        verdictTitle.innerText = `PEP TIER MATCH IDENTIFIED (${pepHit.pep_tier.replace(/_/g, ' ')})`;
+        verdictTitle.innerText = `PEP TIER MATCH IDENTIFIED (${pepHit.pep_tier.replaceAll('_', ' ')})`;
         verdictTitle.style.color = 'var(--accent-orange)';
 
         const tr = document.createElement('tr');
@@ -2134,13 +2171,19 @@ async function loadSTRBatches() {
         const response = await fetch(`${BASE_URL}/api/v1/str/batch/list`, {
             headers: getAuthHeaders()
         });
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`STR batches fetch failed with HTTP ${response.status}`);
         const data = await response.json();
         renderSTRBatches(data.batches || []);
     } catch (e) {
-        log('Could not fetch STR batches from API gateway. Falling back to mock dataset.', 'warn');
+        log(`Could not fetch STR batches from API gateway (${e.message}). Falling back to mock dataset.`, 'warn');
         renderMockSTRBatches();
     }
+}
+
+function getStrBatchStatusBadge(status) {
+    if (status === 'ACKNOWLEDGED') return 'badge-green';
+    if (status === 'GENERATED') return 'badge-blue';
+    return 'badge-orange';
 }
 
 function renderSTRBatches(batches) {
@@ -2157,7 +2200,7 @@ function renderSTRBatches(batches) {
 
     batches.forEach(b => {
         const tr = document.createElement('tr');
-        const statusBadge = b.status === 'ACKNOWLEDGED' ? 'badge-green' : (b.status === 'GENERATED' ? 'badge-blue' : 'badge-orange');
+        const statusBadge = getStrBatchStatusBadge(b.status);
         const shortChecksum = b.checksum ? b.checksum.substring(0, 10) + '...' : '-';
 
         tr.innerHTML = `
@@ -2191,16 +2234,16 @@ async function generateSTRBatchPackage() {
             method: 'POST',
             headers: getAuthHeaders()
         });
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`STR batch generation failed with HTTP ${response.status}`);
         const res = await response.json();
         if (res.batch_id) {
             log(`Sealed regulatory STR batch container: ${res.batch_id} (${res.record_count} cases, total $${res.total_amount.toLocaleString()})`, 'success');
-            loadSTRBatches();
+            void loadSTRBatches();
         } else {
             log(res.message || 'No pending un-batched STR reports found.', 'info');
         }
     } catch (e) {
-        log('Failed to generate STR batch container.', 'warn');
+        log(`Failed to generate STR batch container: ${e.message}`, 'warn');
     }
 }
 
@@ -2215,12 +2258,12 @@ async function transmitSTRBatchPackage(batchId) {
             method: 'POST',
             headers: getAuthHeaders()
         });
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`STR batch transmission failed with HTTP ${response.status}`);
         const res = await response.json();
         log(`STR Batch Transmission Succeeded: Tracking ID=${res.fincen_tracking_id}, Status=${res.status}`, 'success');
-        loadSTRBatches();
+        void loadSTRBatches();
     } catch (e) {
-        log('Failed to transmit STR batch package.', 'warn');
+        log(`Failed to transmit STR batch package: ${e.message}`, 'warn');
     }
 }
 
@@ -2248,10 +2291,11 @@ async function syncGlobalWatchlists() {
             method: 'POST',
             headers: getAuthHeaders()
         });
-        if (!response.ok) throw new Error();
+        if (!response.ok) throw new Error(`Watchlist sync failed with HTTP ${response.status}`);
         const res = await response.json();
         log(`Watchlist Synchronization Complete: Processed ${res.total_records_processed} total entries across OFAC, World-Check & Dow Jones.`, 'success');
     } catch (e) {
-        log('Watchlist synchronization failed. Please check provider API keys.', 'warn');
+        log(`Watchlist synchronization failed: ${e.message}. Please check provider API keys.`, 'warn');
     }
 }
+
