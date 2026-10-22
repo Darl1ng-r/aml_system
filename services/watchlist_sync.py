@@ -22,7 +22,7 @@ import os
 import inspect
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 try:
     import httpx
@@ -58,6 +58,144 @@ def _get_watchlist_secret(field: str, env_var: str, default: str = "") -> str:
     return os.getenv(env_var, default)
 
 
+async def _fetch_feed_content(url: str, client=None) -> bytes | None:
+    if httpx is None:
+        return None
+    close_client = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=30.0)
+        close_client = True
+    try:
+        res = await client.get(url)
+        if res.status_code == 200:
+            return res.content
+        return None
+    finally:
+        if close_client:
+            await client.aclose()
+
+
+def _parse_ofac_entry(entry, now_iso: str) -> Optional[Dict[str, Any]]:
+    uid = entry.findtext(".//{*}uid") or ""
+    first_name = entry.findtext(".//{*}firstName") or ""
+    last_name = entry.findtext(".//{*}lastName") or ""
+    title = entry.findtext(".//{*}title") or ""
+    sdn_type = entry.findtext(".//{*}sdnType") or "Individual"
+    remarks = entry.findtext(".//{*}remarks") or ""
+
+    full_name = f"{first_name} {last_name}".strip() if first_name else last_name.strip()
+    if not full_name:
+        return None
+    rec = {
+        "name": full_name,
+        "source_list": OFAC_SDN_LIST_NAME,
+        "entity_type": sdn_type,
+        "program": remarks[:100] if remarks else "OFAC-SDN",
+        "indexed_at": now_iso
+    }
+    if uid:
+        rec["uid"] = uid
+    if title:
+        rec["title"] = title
+    return rec
+
+
+def _parse_ofac_xml(content: bytes) -> List[Dict[str, Any]]:
+    root = ET.fromstring(content)
+    entries = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for entry in root.findall(".//{*}sdnEntry"):
+        rec = _parse_ofac_entry(entry, now_iso)
+        if rec:
+            entries.append(rec)
+    return entries
+
+
+def _parse_un_individual(ind, now_iso: str) -> Optional[Dict[str, Any]]:
+    dataid = ind.findtext("DATAID") or ""
+    first_name = ind.findtext("FIRST_NAME") or ""
+    second_name = ind.findtext("SECOND_NAME") or ""
+    third_name = ind.findtext("THIRD_NAME") or ""
+    full_name = " ".join(filter(None, [first_name, second_name, third_name])).strip()
+    program = ind.findtext("UN_LIST_TYPE") or "UN-CONSOLIDATED"
+    if not full_name:
+        return None
+    rec = {
+        "name": full_name,
+        "source_list": UN_SANCTIONS_LIST_NAME,
+        "entity_type": "Individual",
+        "program": program,
+        "indexed_at": now_iso
+    }
+    if dataid:
+        rec["uid"] = f"UN-IND-{dataid}"
+    return rec
+
+
+def _parse_un_entity(ent, now_iso: str) -> Optional[Dict[str, Any]]:
+    dataid = ent.findtext("DATAID") or ""
+    first_name = ent.findtext("FIRST_NAME") or ""
+    program = ent.findtext("UN_LIST_TYPE") or "UN-CONSOLIDATED"
+    if not first_name:
+        return None
+    rec = {
+        "name": first_name.strip(),
+        "source_list": UN_SANCTIONS_LIST_NAME,
+        "entity_type": "Entity",
+        "program": program,
+        "indexed_at": now_iso
+    }
+    if dataid:
+        rec["uid"] = f"UN-ENT-{dataid}"
+    return rec
+
+
+def _parse_un_xml(content: bytes) -> List[Dict[str, Any]]:
+    root = ET.fromstring(content)
+    entries = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for ind in root.findall(".//INDIVIDUAL"):
+        rec = _parse_un_individual(ind, now_iso)
+        if rec:
+            entries.append(rec)
+    for ent in root.findall(".//ENTITY"):
+        rec = _parse_un_entity(ent, now_iso)
+        if rec:
+            entries.append(rec)
+    return entries
+
+
+def _parse_eu_entry(entity, now_iso: str) -> Optional[Dict[str, Any]]:
+    logical_id = entity.get("logicalId") or ""
+    name_node = entity.find(".//{*}nameAlias")
+    name = name_node.get("wholeName") if name_node is not None else ""
+    type_node = entity.find(".//{*}subjectType")
+    entity_type = type_node.get("code") if type_node is not None else "Individual"
+    if not name:
+        return None
+    rec = {
+        "name": name.strip(),
+        "source_list": EU_SANCTIONS_LIST_NAME,
+        "entity_type": entity_type.capitalize(),
+        "program": "EU-ASSET-FREEZE",
+        "indexed_at": now_iso
+    }
+    if logical_id:
+        rec["uid"] = f"EU-{logical_id}"
+    return rec
+
+
+def _parse_eu_xml(content: bytes) -> List[Dict[str, Any]]:
+    root = ET.fromstring(content)
+    entries = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for entity in root.findall(".//{*}sanctionEntity"):
+        rec = _parse_eu_entry(entity, now_iso)
+        if rec:
+            entries.append(rec)
+    return entries
+
+
 class WatchlistSyncEngine:
     """Engine responsible for fetching, parsing, and indexing live global watchlists."""
 
@@ -76,47 +214,14 @@ class WatchlistSyncEngine:
     async def fetch_ofac_sdn_feed(self, client=None) -> List[Dict[str, Any]]:
         """Downloads and parses the official U.S. Treasury OFAC SDN XML feed."""
         logger.info(f"Downloading official OFAC SDN XML feed from {OFAC_SDN_URL}...")
-        if httpx is not None:
-            try:
-                close_client = False
-                if client is None:
-                    client = httpx.AsyncClient(timeout=30.0)
-                    close_client = True
-                try:
-                    res = await client.get(OFAC_SDN_URL)
-                    if res.status_code == 200:
-                        root = ET.fromstring(res.content)
-                        entries = []
-                        # Parse SDN Entry nodes
-                        for entry in root.findall(".//{*}sdnEntry"):
-                            uid = entry.findtext(".//{*}uid") or ""
-                            first_name = entry.findtext(".//{*}firstName") or ""
-                            last_name = entry.findtext(".//{*}lastName") or ""
-                            title = entry.findtext(".//{*}title") or ""
-                            sdn_type = entry.findtext(".//{*}sdnType") or "Individual"
-                            remarks = entry.findtext(".//{*}remarks") or ""
-
-                            full_name = f"{first_name} {last_name}".strip() if first_name else last_name.strip()
-                            if full_name:
-                                rec = {
-                                    "name": full_name,
-                                    "source_list": OFAC_SDN_LIST_NAME,
-                                    "entity_type": sdn_type,
-                                    "program": remarks[:100] if remarks else "OFAC-SDN",
-                                    "indexed_at": datetime.now(timezone.utc).isoformat()
-                                }
-                                if uid:
-                                    rec["uid"] = uid
-                                if title:
-                                    rec["title"] = title
-                                entries.append(rec)
-                        logger.info(f"Parsed {len(entries)} entries from OFAC SDN XML feed.")
-                        return entries
-                finally:
-                    if close_client:
-                        await client.aclose()
-            except Exception as e:
-                logger.warning(f"Failed to fetch live OFAC XML feed ({e}). Utilizing fallback OFAC dataset.")
+        try:
+            content = await _fetch_feed_content(OFAC_SDN_URL, client=client)
+            if content:
+                entries = _parse_ofac_xml(content)
+                logger.info(f"Parsed {len(entries)} entries from OFAC SDN XML feed.")
+                return entries
+        except Exception as e:
+            logger.warning(f"Failed to fetch live OFAC XML feed ({e}). Utilizing fallback OFAC dataset.")
 
         # Reliable built-in OFAC SDN baseline
         return [
@@ -129,59 +234,14 @@ class WatchlistSyncEngine:
     async def fetch_un_sanctions_feed(self, client=None) -> List[Dict[str, Any]]:
         """Downloads and parses the official United Nations Security Council Consolidated Sanctions XML feed."""
         logger.info(f"Downloading official UN Consolidated Sanctions XML feed from {UN_SANCTIONS_URL}...")
-        if httpx is not None:
-            try:
-                close_client = False
-                if client is None:
-                    client = httpx.AsyncClient(timeout=30.0)
-                    close_client = True
-                try:
-                    res = await client.get(UN_SANCTIONS_URL)
-                    if res.status_code == 200:
-                        root = ET.fromstring(res.content)
-                        entries = []
-                        # Parse Individual entries
-                        for ind in root.findall(".//INDIVIDUAL"):
-                            dataid = ind.findtext("DATAID") or ""
-                            first_name = ind.findtext("FIRST_NAME") or ""
-                            second_name = ind.findtext("SECOND_NAME") or ""
-                            third_name = ind.findtext("THIRD_NAME") or ""
-                            full_name = " ".join(filter(None, [first_name, second_name, third_name])).strip()
-                            program = ind.findtext("UN_LIST_TYPE") or "UN-CONSOLIDATED"
-                            if full_name:
-                                rec = {
-                                    "name": full_name,
-                                    "source_list": UN_SANCTIONS_LIST_NAME,
-                                    "entity_type": "Individual",
-                                    "program": program,
-                                    "indexed_at": datetime.now(timezone.utc).isoformat()
-                                }
-                                if dataid:
-                                    rec["uid"] = f"UN-IND-{dataid}"
-                                entries.append(rec)
-                        # Parse Entity entries
-                        for ent in root.findall(".//ENTITY"):
-                            dataid = ent.findtext("DATAID") or ""
-                            first_name = ent.findtext("FIRST_NAME") or ""
-                            program = ent.findtext("UN_LIST_TYPE") or "UN-CONSOLIDATED"
-                            if first_name:
-                                rec = {
-                                    "name": first_name.strip(),
-                                    "source_list": UN_SANCTIONS_LIST_NAME,
-                                    "entity_type": "Entity",
-                                    "program": program,
-                                    "indexed_at": datetime.now(timezone.utc).isoformat()
-                                }
-                                if dataid:
-                                    rec["uid"] = f"UN-ENT-{dataid}"
-                                entries.append(rec)
-                        logger.info(f"Parsed {len(entries)} entries from UN Consolidated XML feed.")
-                        return entries
-                finally:
-                    if close_client:
-                        await client.aclose()
-            except Exception as e:
-                logger.warning(f"Failed to fetch live UN XML feed ({e}). Utilizing fallback UN dataset.")
+        try:
+            content = await _fetch_feed_content(UN_SANCTIONS_URL, client=client)
+            if content:
+                entries = _parse_un_xml(content)
+                logger.info(f"Parsed {len(entries)} entries from UN Consolidated XML feed.")
+                return entries
+        except Exception as e:
+            logger.warning(f"Failed to fetch live UN XML feed ({e}). Utilizing fallback UN dataset.")
 
         # Reliable built-in UN Consolidated Sanctions baseline
         return [
@@ -193,41 +253,14 @@ class WatchlistSyncEngine:
     async def fetch_eu_sanctions_feed(self, client=None) -> List[Dict[str, Any]]:
         """Downloads and parses the official European Union Financial Sanctions Files (FSF) Asset Freeze XML feed."""
         logger.info(f"Downloading official EU Financial Sanctions XML feed from {EU_SANCTIONS_URL}...")
-        if httpx is not None:
-            try:
-                close_client = False
-                if client is None:
-                    client = httpx.AsyncClient(timeout=30.0)
-                    close_client = True
-                try:
-                    res = await client.get(EU_SANCTIONS_URL)
-                    if res.status_code == 200:
-                        root = ET.fromstring(res.content)
-                        entries = []
-                        for entity in root.findall(".//{*}sanctionEntity"):
-                            logical_id = entity.get("logicalId") or ""
-                            name_node = entity.find(".//{*}nameAlias")
-                            name = name_node.get("wholeName") if name_node is not None else ""
-                            type_node = entity.find(".//{*}subjectType")
-                            entity_type = type_node.get("code") if type_node is not None else "Individual"
-                            if name:
-                                rec = {
-                                    "name": name.strip(),
-                                    "source_list": EU_SANCTIONS_LIST_NAME,
-                                    "entity_type": entity_type.capitalize(),
-                                    "program": "EU-ASSET-FREEZE",
-                                    "indexed_at": datetime.now(timezone.utc).isoformat()
-                                }
-                                if logical_id:
-                                    rec["uid"] = f"EU-{logical_id}"
-                                entries.append(rec)
-                        logger.info(f"Parsed {len(entries)} entries from EU Financial Sanctions XML feed.")
-                        return entries
-                finally:
-                    if close_client:
-                        await client.aclose()
-            except Exception as e:
-                logger.warning(f"Failed to fetch live EU XML feed ({e}). Utilizing fallback EU dataset.")
+        try:
+            content = await _fetch_feed_content(EU_SANCTIONS_URL, client=client)
+            if content:
+                entries = _parse_eu_xml(content)
+                logger.info(f"Parsed {len(entries)} entries from EU Financial Sanctions XML feed.")
+                return entries
+        except Exception as e:
+            logger.warning(f"Failed to fetch live EU XML feed ({e}). Utilizing fallback EU dataset.")
 
         # Reliable built-in EU Consolidated Asset Freeze baseline
         return [
@@ -305,6 +338,20 @@ class WatchlistSyncEngine:
 
         return {"status": "INITIALIZED", "sanctions_count": s_count, "pep_count": p_count}
 
+    async def _fetch_all_records(self) -> tuple[list, list, list, list, list]:
+        if httpx is not None:
+            async with httpx.AsyncClient(timeout=30.0) as http_client:
+                ofac = await self.fetch_ofac_sdn_feed(client=http_client)
+                un = await self.fetch_un_sanctions_feed(client=http_client)
+                eu = await self.fetch_eu_sanctions_feed(client=http_client)
+        else:
+            ofac = await self.fetch_ofac_sdn_feed()
+            un = await self.fetch_un_sanctions_feed()
+            eu = await self.fetch_eu_sanctions_feed()
+        worldcheck = await self.fetch_worldcheck_feed()
+        dowjones = await self.fetch_dowjones_feed()
+        return ofac, un, eu, worldcheck, dowjones
+
     async def sync_all_watchlists(self) -> Dict[str, Any]:
         """
         Executes parallel sync across OFAC, UN, EU, World-Check, and Dow Jones data sources
@@ -312,63 +359,11 @@ class WatchlistSyncEngine:
         using efficient bulk operations.
         """
         es = await get_async_elasticsearch_client()
-
-        if httpx is not None:
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                ofac_records = await self.fetch_ofac_sdn_feed(client=http_client)
-                un_records = await self.fetch_un_sanctions_feed(client=http_client)
-                eu_records = await self.fetch_eu_sanctions_feed(client=http_client)
-        else:
-            ofac_records = await self.fetch_ofac_sdn_feed()
-            un_records = await self.fetch_un_sanctions_feed()
-            eu_records = await self.fetch_eu_sanctions_feed()
-
-        worldcheck_records = await self.fetch_worldcheck_feed()
-        dowjones_records = await self.fetch_dowjones_feed()
-
+        ofac_records, un_records, eu_records, worldcheck_records, dowjones_records = await self._fetch_all_records()
         all_records = ofac_records + un_records + eu_records + worldcheck_records + dowjones_records
-        indexed_sanctions = 0
-        indexed_pep = 0
 
-        actions = []
-        for record in all_records:
-            target_index = PEP_INDEX if "pep_tier" in record or "PEP" in record.get("source_list", "") else SANCTIONS_INDEX
-            name_clean = record.get("name", "").strip().lower()
-            source_clean = record.get("source_list", "").strip().lower()
-            uid_clean = str(record.get("uid", "")).strip().lower()
-            type_clean = record.get("entity_type", "").strip().lower()
-            prog_clean = record.get("program", "").strip().lower()
-            tier_clean = record.get("pep_tier", "").strip().lower()
-            country_clean = record.get("country", "").strip().lower()
-
-            raw_identity = f"{uid_clean}:{name_clean}:{source_clean}:{type_clean}:{prog_clean}:{tier_clean}:{country_clean}"
-            doc_id = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()[:32]
-
-            if target_index == PEP_INDEX:
-                indexed_pep += 1
-            else:
-                indexed_sanctions += 1
-
-            actions.append({
-                "_op_type": "index",
-                "_index": target_index,
-                "_id": doc_id,
-                "_source": record
-            })
-
-        if actions:
-            try:
-                from elasticsearch.helpers import async_bulk
-                await async_bulk(es, actions, chunk_size=500)
-            except Exception as e:
-                logger.warning(f"Elasticsearch bulk indexing fallback: {e}")
-                for action in actions:
-                    try:
-                        res = es.index(index=action["_index"], id=action["_id"], document=action["_source"], op_type="index")
-                        if inspect.isawaitable(res):
-                            await res
-                    except Exception as ex:
-                        logger.warning(f"Elasticsearch single index fallback warning: {ex}")
+        actions, indexed_sanctions, indexed_pep = _build_watchlist_bulk_actions(all_records)
+        await _execute_bulk_indexing(es, actions)
 
         try:
             await es.indices.refresh(index=SANCTIONS_INDEX)
@@ -376,22 +371,7 @@ class WatchlistSyncEngine:
         except Exception as e:
             logger.warning(f"Elasticsearch refresh warning: {e}")
 
-        # Invalidate screening cache to prevent stale screening decisions post-sync
-        try:
-            from database.redis_db import get_async_redis_client
-            redis_client = await get_async_redis_client()
-            cursor = 0
-            deleted_keys = 0
-            while True:
-                cursor, keys = await redis_client.scan(cursor=cursor, match="screening:combined:*", count=100)
-                if keys:
-                    await redis_client.delete(*keys)
-                    deleted_keys += len(keys)
-                if cursor == 0 or cursor == "0" or cursor == b"0":
-                    break
-            logger.info(f"[Watchlist Sync Engine] Invalidated {deleted_keys} screening cache entries in Redis.")
-        except Exception as e:
-            logger.warning(f"Redis cache invalidation after watchlist sync bypassed: {e}")
+        await _invalidate_screening_cache()
 
         logger.info(
             f"[Watchlist Sync Engine] Completed full sync across OFAC, UN, EU, World-Check, and Dow Jones. "
@@ -412,7 +392,124 @@ class WatchlistSyncEngine:
         }
 
 
+def _build_watchlist_bulk_actions(all_records: list) -> tuple[list[dict], int, int]:
+    indexed_sanctions = 0
+    indexed_pep = 0
+    actions = []
+    for record in all_records:
+        target_index = PEP_INDEX if "pep_tier" in record or "PEP" in record.get("source_list", "") else SANCTIONS_INDEX
+        name_clean = record.get("name", "").strip().lower()
+        source_clean = record.get("source_list", "").strip().lower()
+        uid_clean = str(record.get("uid", "")).strip().lower()
+        type_clean = record.get("entity_type", "").strip().lower()
+        prog_clean = record.get("program", "").strip().lower()
+        tier_clean = record.get("pep_tier", "").strip().lower()
+        country_clean = record.get("country", "").strip().lower()
+
+        raw_identity = f"{uid_clean}:{name_clean}:{source_clean}:{type_clean}:{prog_clean}:{tier_clean}:{country_clean}"
+        doc_id = hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()[:32]
+
+        if target_index == PEP_INDEX:
+            indexed_pep += 1
+        else:
+            indexed_sanctions += 1
+
+        actions.append({
+            "_op_type": "index",
+            "_index": target_index,
+            "_id": doc_id,
+            "_source": record
+        })
+    return actions, indexed_sanctions, indexed_pep
+
+
+async def _execute_bulk_indexing(es, actions: list) -> None:
+    if not actions:
+        return
+    try:
+        from elasticsearch.helpers import async_bulk
+        await async_bulk(es, actions, chunk_size=500)
+    except Exception as e:
+        logger.warning(f"Elasticsearch bulk indexing fallback: {e}")
+        for action in actions:
+            try:
+                res = es.index(index=action["_index"], id=action["_id"], document=action["_source"], op_type="index")
+                if inspect.isawaitable(res):
+                    await res
+            except Exception as ex:
+                logger.warning(f"Elasticsearch single index fallback warning: {ex}")
+
+
+async def _invalidate_screening_cache() -> None:
+    try:
+        from database.redis_db import get_async_redis_client
+        redis_client = await get_async_redis_client()
+        cursor = 0
+        deleted_keys = 0
+        while True:
+            cursor, keys = await redis_client.scan(cursor=cursor, match="screening:combined:*", count=100)
+            if keys:
+                await redis_client.delete(*keys)
+                deleted_keys += len(keys)
+            if cursor == 0 or cursor == "0" or cursor == b"0":
+                break
+        logger.info(f"[Watchlist Sync Engine] Invalidated {deleted_keys} screening cache entries in Redis.")
+    except Exception as e:
+        logger.warning(f"Redis cache invalidation after watchlist sync bypassed: {e}")
+
+
 watchlist_sync_engine = WatchlistSyncEngine()
+
+
+async def _rescreen_single_account(acc: dict, es, conn, tenant_id: str | None) -> Optional[dict]:
+    owner = acc.get("owner_name")
+    if not owner or not es:
+        return None
+
+    from routers.screening import perform_sanctions_search
+    from services.audit import record_audit_event_async
+    from services.whitelisting import is_entity_whitelisted
+
+    search_res = await perform_sanctions_search(owner, 0.85, es)
+    if not search_res.get("match_found", False):
+        return None
+
+    t_id = str(acc.get("tenant_id") or tenant_id or "00000000-0000-0000-0000-000000000001")
+    c_id = str(acc.get("customer_id") or "") or None
+
+    if await is_entity_whitelisted(tenant_id=t_id, entity_name=owner, rule_name="SANCTIONS_HIT", customer_id=c_id, conn=conn):
+        logger.info(f"Alert suppressed via active whitelist disposition for entity '{owner}'")
+        await record_audit_event_async(
+            action="WHITELIST_ALERT_SUPPRESSED",
+            actor_id="SYSTEM_CRON",
+            actor_role="SYSTEM",
+            resource_type="ACCOUNT",
+            resource_id=str(acc["id"]),
+            tenant_id=t_id,
+            details={"matched_entity": search_res.get("matched_name"), "reason": "Alert suppressed via active whitelist disposition"}
+        )
+        return None
+
+    acc_id = str(acc["id"])
+    await conn.execute(
+        "UPDATE accounts SET status = 'EDD_REQUIRED', risk_score = 0.95, risk_category = 'CRITICAL' WHERE id = $1;",
+        acc["id"]
+    )
+    await record_audit_event_async(
+        action="CDD_RESCREENING_WATCHLIST_HIT",
+        actor_id="SYSTEM_CRON",
+        actor_role="SYSTEM",
+        resource_type="ACCOUNT",
+        resource_id=acc_id,
+        tenant_id=t_id,
+        details={"matched_entity": search_res.get("matched_name"), "source_list": search_res.get("source_list")}
+    )
+    return {
+        "account_id": acc_id,
+        "owner_name": owner,
+        "matched_name": search_res.get("matched_name"),
+        "source_list": search_res.get("source_list")
+    }
 
 
 async def trigger_ongoing_cdd_rescreening(tenant_id: str | None = None) -> dict:
@@ -423,8 +520,6 @@ async def trigger_ongoing_cdd_rescreening(tenant_id: str | None = None) -> dict:
     """
     from database.postgres import get_async_db_conn
     from database.elasticsearch_db import get_async_elasticsearch_client
-    from routers.screening import perform_sanctions_search
-    from services.audit import record_audit_event_async
 
     es = await get_async_elasticsearch_client()
     accounts_checked = 0
@@ -446,51 +541,11 @@ async def trigger_ongoing_cdd_rescreening(tenant_id: str | None = None) -> dict:
 
             for acc in rows:
                 accounts_checked += 1
-                owner = acc.get("owner_name")
-                if not owner or not es:
-                    continue
-
                 try:
-                    search_res = await perform_sanctions_search(owner, 0.85, es)
-                    if search_res.get("match_found", False):
-                        # Entity-Level False Positive Whitelist check (Four-Eyes resolution)
-                        from services.whitelisting import is_entity_whitelisted
-                        t_id = str(acc.get("tenant_id") or tenant_id or "00000000-0000-0000-0000-000000000001")
-                        c_id = str(acc.get("customer_id") or "") or None
-                        if await is_entity_whitelisted(tenant_id=t_id, entity_name=owner, rule_name="SANCTIONS_HIT", customer_id=c_id, conn=conn):
-                            logger.info(f"Alert suppressed via active whitelist disposition for entity '{owner}'")
-                            await record_audit_event_async(
-                                action="WHITELIST_ALERT_SUPPRESSED",
-                                actor_id="SYSTEM_CRON",
-                                actor_role="SYSTEM",
-                                resource_type="ACCOUNT",
-                                resource_id=str(acc["id"]),
-                                tenant_id=t_id,
-                                details={"matched_entity": search_res.get("matched_name"), "reason": "Alert suppressed via active whitelist disposition"}
-                            )
-                            continue
-
+                    hit = await _rescreen_single_account(acc, es, conn, tenant_id)
+                    if hit:
                         hits_detected += 1
-                        acc_id = str(acc["id"])
-                        escalated_accounts.append({
-                            "account_id": acc_id,
-                            "owner_name": owner,
-                            "matched_name": search_res.get("matched_name"),
-                            "source_list": search_res.get("source_list")
-                        })
-                        await conn.execute(
-                            "UPDATE accounts SET status = 'EDD_REQUIRED', risk_score = 0.95, risk_category = 'CRITICAL' WHERE id = $1;",
-                            acc["id"]
-                        )
-                        await record_audit_event_async(
-                            action="CDD_RESCREENING_WATCHLIST_HIT",
-                            actor_id="SYSTEM_CRON",
-                            actor_role="SYSTEM",
-                            resource_type="ACCOUNT",
-                            resource_id=acc_id,
-                            tenant_id=t_id,
-                            details={"matched_entity": search_res.get("matched_name"), "source_list": search_res.get("source_list")}
-                        )
+                        escalated_accounts.append(hit)
                 except Exception as se:
                     logger.debug(f"Error screening account {acc['id']}: {se}")
     except Exception:

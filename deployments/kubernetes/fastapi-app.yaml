@@ -37,6 +37,7 @@ spec:
         vault.hashicorp.com/secret-volume-path-tls.crt: "/var/run/secrets/tls/tls.crt"
         vault.hashicorp.com/secret-volume-path-tls.key: "/var/run/secrets/tls/tls.key"
     spec:
+      automountServiceAccountToken: false
       containers:
       - name: fastapi-app
         # Immutable image tag placeholder (Finding #26: Replaced by CI/CD with sha-${COMMIT_SHA})
@@ -48,9 +49,11 @@ spec:
           requests:
             cpu: "250m"
             memory: "512Mi"
+            ephemeral-storage: "256Mi"
           limits:
             cpu: "1000m"
             memory: "1024Mi"
+            ephemeral-storage: "512Mi"
         envFrom:
         - secretRef:
             name: aml-secrets

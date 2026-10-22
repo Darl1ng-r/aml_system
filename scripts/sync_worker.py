@@ -160,8 +160,8 @@ async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
         except Exception:
             pass
         return True
-    except Exception as e:
-        logger.error(f"[Neo4j] Write failed for tx {tx_id}: {e}")
+    except Exception:
+        logger.exception(f"[Neo4j] Write failed for tx {tx_id}")
         return False
 
 
@@ -183,8 +183,81 @@ async def send_to_dlq(producer, payload: dict, error: str):
         logger.warning(
             f"[DLQ] Sent tx {payload.get('transaction_id')} to {DLQ_TOPIC}. Error: {error}"
         )
+    except Exception:
+        logger.exception(f"[DLQ] Failed to write to DLQ. Original error: {error}")
+
+
+async def _execute_sync_attempt(tx_payload: dict, neo4j_driver, tracer, trace_ctx, tx_id: str, attempt: int) -> bool:
+    if tracer and trace_ctx:
+        with tracer.start_as_current_span(
+            "sync_to_neo4j",
+            context=trace_ctx,
+            attributes={"tx.id": tx_id, "retry.attempt": attempt},
+        ):
+            return await sync_transaction_to_neo4j(tx_payload, neo4j_driver)
+    return await sync_transaction_to_neo4j(tx_payload, neo4j_driver)
+
+
+async def _sync_with_retries(tx_payload: dict, neo4j_driver, tracer, trace_ctx) -> tuple[bool, str | None]:
+    tx_id = tx_payload.get("transaction_id", "unknown")
+    last_error = None
+    for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+        success = await _execute_sync_attempt(tx_payload, neo4j_driver, tracer, trace_ctx, tx_id, attempt)
+        if success:
+            return True, None
+        last_error = f"Neo4j write failed on attempt {attempt}"
+        if attempt < MAX_RETRY_ATTEMPTS:
+            backoff = 0.5 * (2 ** (attempt - 1))  # 0.5s, 1s, 2s
+            logger.warning(
+                f"[Retry {attempt}/{MAX_RETRY_ATTEMPTS}] "
+                f"tx={tx_id} — retrying in {backoff:.1f}s"
+            )
+            await asyncio.sleep(backoff)
+    return False, last_error
+
+
+async def _process_single_message(msg, tp, neo4j_driver, dlq_producer, consumer) -> bool:
+    tx_payload = msg.value
+    tx_id = tx_payload.get("transaction_id", "unknown")
+    trace_ctx = _extract_trace_context(msg.headers)
+    tracer = _get_tracer()
+
+    success, last_error = await _sync_with_retries(tx_payload, neo4j_driver, tracer, trace_ctx)
+    if not success:
+        logger.error(
+            f"[PERMANENT FAILURE] tx={tx_id} after "
+            f"{MAX_RETRY_ATTEMPTS} attempts. Routing to DLQ."
+        )
+        await send_to_dlq(dlq_producer, tx_payload, last_error or "Unknown failure")
+
+    await consumer.commit({tp: msg.offset + 1})
+    return success
+
+
+async def _poll_next_batch(consumer) -> dict | None:
+    try:
+        return await asyncio.wait_for(
+            consumer.getmany(timeout_ms=POLL_INTERVAL_MS, max_records=50),
+            timeout=2.0,
+        )
+    except asyncio.TimeoutError:
+        return None
     except Exception as e:
-        logger.error(f"[DLQ] Failed to write to DLQ: {e}. Original error: {error}")
+        logger.exception(f"Consumer poll error: {e}. Sleeping 2s...")
+        await asyncio.sleep(2)
+        return None
+
+
+async def _process_batch(batch: dict, neo4j_driver, dlq_producer, consumer) -> tuple[int, int]:
+    processed = 0
+    failed = 0
+    for tp, messages in batch.items():
+        for msg in messages:
+            if await _process_single_message(msg, tp, neo4j_driver, dlq_producer, consumer):
+                processed += 1
+            else:
+                failed += 1
+    return processed, failed
 
 
 # ── Main Redpanda consumer loop ────────────────────────────────────────────────
@@ -219,7 +292,6 @@ async def run_kafka_consumer(neo4j_driver, shutdown_event: asyncio.Event):
         fetch_max_bytes=10 * 1024 * 1024,
     )
 
-    # DLQ producer (separate instance to avoid circular dependency)
     dlq_producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
@@ -235,65 +307,13 @@ async def run_kafka_consumer(neo4j_driver, shutdown_event: asyncio.Event):
         failed = 0
 
         while not shutdown_event.is_set():
-            try:
-                # Batch fetch — getmany returns a dict of {TopicPartition: [msgs]}
-                batch = await asyncio.wait_for(
-                    consumer.getmany(timeout_ms=POLL_INTERVAL_MS, max_records=50),
-                    timeout=2.0,
-                )
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                logger.error(f"Consumer poll error: {e}. Sleeping 2s...")
-                await asyncio.sleep(2)
+            batch = await _poll_next_batch(consumer)
+            if not batch:
                 continue
 
-            for tp, messages in batch.items():
-                for msg in messages:
-                    tx_payload = msg.value
-                    tx_id = tx_payload.get("transaction_id", "unknown")
-
-                    # Link consumer span to the producer trace
-                    trace_ctx = _extract_trace_context(msg.headers)
-                    tracer = _get_tracer()
-
-                    # Retry loop with exponential backoff
-                    success = False
-                    last_error = None
-                    for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
-                        if tracer and trace_ctx:
-                            with tracer.start_as_current_span(
-                                "sync_to_neo4j",
-                                context=trace_ctx,
-                                attributes={"tx.id": tx_id, "retry.attempt": attempt},
-                            ):
-                                success = await sync_transaction_to_neo4j(tx_payload, neo4j_driver)
-                        else:
-                            success = await sync_transaction_to_neo4j(tx_payload, neo4j_driver)
-                        if success:
-                            break
-                        last_error = f"Neo4j write failed on attempt {attempt}"
-                        if attempt < MAX_RETRY_ATTEMPTS:
-                            backoff = 0.5 * (2 ** (attempt - 1))  # 0.5s, 1s, 2s
-                            logger.warning(
-                                f"[Retry {attempt}/{MAX_RETRY_ATTEMPTS}] "
-                                f"tx={tx_id} — retrying in {backoff:.1f}s"
-                            )
-                            await asyncio.sleep(backoff)
-
-                    if success:
-                        processed += 1
-                    else:
-                        failed += 1
-                        logger.error(
-                            f"[PERMANENT FAILURE] tx={tx_id} after "
-                            f"{MAX_RETRY_ATTEMPTS} attempts. Routing to DLQ."
-                        )
-                        await send_to_dlq(dlq_producer, tx_payload, last_error)
-
-                    # Commit offset after processing (success or DLQ) so we
-                    # never reprocess a message that already hit the DLQ.
-                    await consumer.commit({tp: msg.offset + 1})
+            p, f = await _process_batch(batch, neo4j_driver, dlq_producer, consumer)
+            processed += p
+            failed += f
 
             if processed % 100 == 0 and processed > 0:
                 logger.info(
@@ -304,7 +324,7 @@ async def run_kafka_consumer(neo4j_driver, shutdown_event: asyncio.Event):
         logger.info("Consumer task cancelled — shutting down.")
         raise
     except Exception as e:
-        logger.error(f"Consumer loop fatal error: {e}")
+        logger.exception(f"Consumer loop fatal error: {e}")
         raise
     finally:
         logger.info("Stopping consumer and DLQ producer...")
@@ -402,7 +422,7 @@ async def run_postgres_poll_fallback(neo4j_driver, shutdown_event: asyncio.Event
                 await conn.close()
 
         except Exception as e:
-            logger.error(f"PostgreSQL polling error: {e}")
+            logger.exception(f"PostgreSQL polling error: {e}")
 
         await asyncio.sleep(POSTGRES_POLL_INTERVAL_S)
 
@@ -427,7 +447,7 @@ async def main(shutdown_event: asyncio.Event | None = None):
         neo4j_driver = await get_async_neo4j_driver()
         logger.info("Neo4j connection established.")
     except Exception as e:
-        logger.error(f"Cannot connect to Neo4j — worker cannot start: {e}")
+        logger.exception(f"Cannot connect to Neo4j — worker cannot start: {e}")
         return
 
     # Probe Redpanda availability before committing to the consumer
@@ -454,7 +474,7 @@ async def main(shutdown_event: asyncio.Event | None = None):
                 await run_kafka_consumer(neo4j_driver, shutdown_event)
                 break
             except Exception as e:
-                logger.error(f"Redpanda consumer crashed: {e}. Reconnecting in 5 seconds...")
+                logger.exception(f"Redpanda consumer crashed: {e}. Reconnecting in 5 seconds...")
                 await asyncio.sleep(5)
     else:
         while not shutdown_event.is_set():
@@ -462,7 +482,7 @@ async def main(shutdown_event: asyncio.Event | None = None):
                 await run_postgres_poll_fallback(neo4j_driver, shutdown_event)
                 break
             except Exception as e:
-                logger.error(f"PostgreSQL polling worker crashed: {e}. Reconnecting in 5 seconds...")
+                logger.exception(f"PostgreSQL polling worker crashed: {e}. Reconnecting in 5 seconds...")
                 await asyncio.sleep(5)
 
 

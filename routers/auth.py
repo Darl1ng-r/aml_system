@@ -98,102 +98,153 @@ class UserProvision(BaseModel):
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
-@router.post("/login")
-async def login(
-    response: Response,
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    _rate_limit=Depends(RateLimiter(limit=20, window=600))
-):
-    await check_account_lockout(form_data.username)
+async def _attempt_supabase_login(email: str, password: str) -> dict | None:
+    if not (settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_")):
+        return None
+    try:
+        payload = {"email": email, "password": password}
+        headers = {"apikey": settings.supabase_key, "Content-Type": "application/json"}
+        async with (
+            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session,
+            session.post(
+                f"{settings.supabase_url}/auth/v1/token?grant_type=password",
+                json=payload,
+                headers=headers
+            ) as resp
+        ):
+            if resp.status == 200:
+                return await resp.json()
+    except Exception as e:
+        logger.warning(f"Supabase auth unreachable: {e}. Falling back to local verification.")
+    return None
 
-    email = form_data.username
-    if "@" not in email:
-        email = f"{email}@aml.com"
-        
-    payload = {
-        "email": email,
-        "password": form_data.password
-    }
-    
-    headers = {
-        "apikey": settings.supabase_key,
-        "Content-Type": "application/json"
-    }
-    
-    supabase_user = None
-    if settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_"):
-        try:
-            async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session,
-                session.post(
-                    f"{settings.supabase_url}/auth/v1/token?grant_type=password",
-                    json=payload,
-                    headers=headers
-                ) as resp
-            ):
-                if resp.status == 200:
-                    supabase_user = await resp.json()
-        except Exception as e:
-            logger.warning(f"Supabase auth unreachable: {e}. Falling back to local verification.")
-            supabase_user = None
 
-    if supabase_user:
-        await reset_failed_logins(form_data.username)
-        # Supabase authentication succeeded
-        data = supabase_user
-        access_token = data.get("access_token", "")
-        user = data.get("user") or data
-        user_id = user.get("id", "")
-        user_metadata = user.get("user_metadata", {})
-        role = user_metadata.get("role", "ANALYST")
-        username = email.split("@")[0]
-        tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+async def _process_supabase_login_success(
+    response: Response, form_data: OAuth2PasswordRequestForm, email: str, supabase_user: dict
+) -> dict:
+    await reset_failed_logins(form_data.username)
+    data = supabase_user
+    access_token = data.get("access_token", "")
+    user = data.get("user") or data
+    user_id = user.get("id", "")
+    user_metadata = user.get("user_metadata", {})
+    role = user_metadata.get("role", "ANALYST")
+    username = email.split("@")[0]
+    tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
 
-        # Replicate/update Supabase user to local PostgreSQL with password hash for offline resilience
-        hashed_pw = hash_password(form_data.password)
-        from database.postgres import get_async_db_conn
-        async with get_async_db_conn() as conn:
-            await conn.execute(
-                """
-                INSERT INTO users (id, username, role, tenant_id, password_hash)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (id) DO UPDATE SET 
-                    role = EXCLUDED.role, 
-                    username = EXCLUDED.username, 
-                    tenant_id = EXCLUDED.tenant_id,
-                    password_hash = EXCLUDED.password_hash;
-                """,
-                user_id, username, role, tenant_id, hashed_pw
-            )
-
-        refresh_token = create_refresh_token({
-            "sub": user_id,
-            "role": role,
-            "username": username,
-            "tenant_id": tenant_id
-        })
-
-        log_audit_event(
-            event_type="USER_LOGIN",
-            actor_id=str(user_id),
-            actor_role=role,
-            action="LOGIN",
-            resource_type="SESSION",
-            resource_id=str(user_id),
-            tenant_id=tenant_id,
-            details={"username": username, "method": "supabase"}
+    hashed_pw = hash_password(form_data.password)
+    from database.postgres import get_async_db_conn
+    async with get_async_db_conn() as conn:
+        await conn.execute(
+            """
+            INSERT INTO users (id, username, role, tenant_id, password_hash)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (id) DO UPDATE SET 
+                role = EXCLUDED.role, 
+                username = EXCLUDED.username, 
+                tenant_id = EXCLUDED.tenant_id,
+                password_hash = EXCLUDED.password_hash;
+            """,
+            user_id, username, role, tenant_id, hashed_pw
         )
 
-        set_auth_cookies(response, access_token, refresh_token)
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-            "role": role,
-            "username": username
-        }
+    refresh_token = create_refresh_token({
+        "sub": user_id,
+        "role": role,
+        "username": username,
+        "tenant_id": tenant_id
+    })
 
-    # Fallback to local secure credential verification
+    log_audit_event(
+        event_type="USER_LOGIN",
+        actor_id=str(user_id),
+        actor_role=role,
+        action="LOGIN",
+        resource_type="SESSION",
+        resource_id=str(user_id),
+        tenant_id=tenant_id,
+        details={"username": username, "method": "supabase"}
+    )
+
+    set_auth_cookies(response, access_token, refresh_token)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "role": role,
+        "username": username
+    }
+
+
+async def _handle_local_login_failure(username: str, local_user, password: str):
+    if not local_user or not local_user["password_hash"]:
+        from services.auth import DUMMY_ARGON2_HASH
+        verify_password_and_needs_rehash(password, DUMMY_ARGON2_HASH)
+        log_audit_event(
+            event_type="LOGIN_FAILED",
+            actor_id=username,
+            actor_role="UNKNOWN",
+            action="FAILED_LOGIN",
+            resource_type="SESSION",
+            resource_id="",
+            details={"username": username, "reason": "User not found or no password hash"}
+        )
+        attempts = await record_failed_login(username)
+    else:
+        log_audit_event(
+            event_type="LOGIN_FAILED",
+            actor_id=str(local_user["id"]),
+            actor_role=local_user["role"] or "ANALYST",
+            action="FAILED_LOGIN",
+            resource_type="SESSION",
+            resource_id=str(local_user["id"]),
+            tenant_id=str(local_user["tenant_id"]) if local_user["tenant_id"] else "",
+            details={"username": username, "reason": "Password hash mismatch"}
+        )
+        attempts = await record_failed_login(
+            username, tenant_id=str(local_user["tenant_id"]) if local_user["tenant_id"] else None
+        )
+
+    if attempts >= LOCKOUT_THRESHOLD:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail="Account temporarily locked due to excessive failed attempts. Try again in 1800 seconds."
+        )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Incorrect username or password",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+async def _create_mfa_challenge_ticket(
+    user_id: str, role: str, username: str, email: str, tenant_id: str
+) -> dict:
+    import uuid
+    import json
+    from database.redis_db import get_async_redis_client
+    mfa_ticket = f"mfa_{uuid.uuid4().hex}"
+    redis = await get_async_redis_client()
+    if redis:
+        ticket_data = {
+            "user_id": user_id,
+            "role": role,
+            "username": username,
+            "email": email,
+            "tenant_id": tenant_id
+        }
+        await redis.setex(f"mfa:ticket:{mfa_ticket}", 300, json.dumps(ticket_data))
+
+    return {
+        "mfa_required": True,
+        "mfa_ticket": mfa_ticket,
+        "message": "Two-factor authentication required. Please verify with your 6-digit TOTP code or backup recovery code."
+    }
+
+
+async def _execute_local_login(
+    response: Response, form_data: OAuth2PasswordRequestForm, email: str
+) -> dict:
     from database.postgres import get_async_db_conn
     async with get_async_db_conn() as conn:
         local_user = await conn.fetchrow(
@@ -205,57 +256,13 @@ async def login(
             form_data.username
         )
 
-        # ZERO-BYPASS & TIMING ATTACK MITIGATION (NIST SP 800-63B)
         if not local_user or not local_user["password_hash"]:
-            from services.auth import DUMMY_ARGON2_HASH
-            # Execute dummy Argon2id verification so response latency matches existing users exactly
-            verify_password_and_needs_rehash(form_data.password, DUMMY_ARGON2_HASH)
-            log_audit_event(
-                event_type="LOGIN_FAILED",
-                actor_id=form_data.username,
-                actor_role="UNKNOWN",
-                action="FAILED_LOGIN",
-                resource_type="SESSION",
-                resource_id="",
-                details={"username": form_data.username, "reason": "User not found or no password hash"}
-            )
-            attempts = await record_failed_login(form_data.username)
-            if attempts >= LOCKOUT_THRESHOLD:
-                raise HTTPException(
-                    status_code=status.HTTP_423_LOCKED,
-                    detail="Account temporarily locked due to excessive failed attempts. Try again in 1800 seconds."
-                )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            await _handle_local_login_failure(form_data.username, None, form_data.password)
 
         pw_valid, needs_rehash = verify_password_and_needs_rehash(form_data.password, local_user["password_hash"])
         if not pw_valid:
-            log_audit_event(
-                event_type="LOGIN_FAILED",
-                actor_id=str(local_user["id"]),
-                actor_role=local_user["role"] or "ANALYST",
-                action="FAILED_LOGIN",
-                resource_type="SESSION",
-                resource_id=str(local_user["id"]),
-                tenant_id=str(local_user["tenant_id"]) if local_user["tenant_id"] else "",
-                details={"username": form_data.username, "reason": "Password hash mismatch"}
-            )
-            attempts = await record_failed_login(form_data.username, tenant_id=str(local_user["tenant_id"]) if local_user["tenant_id"] else None)
-            if attempts >= LOCKOUT_THRESHOLD:
-                raise HTTPException(
-                    status_code=status.HTTP_423_LOCKED,
-                    detail="Account temporarily locked due to excessive failed attempts. Try again in 1800 seconds."
-                )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            await _handle_local_login_failure(form_data.username, local_user, form_data.password)
 
-        # Automatic transparent re-hashing from legacy PBKDF2 to modern Argon2id
         if needs_rehash:
             try:
                 new_argon2_hash = hash_password(form_data.password)
@@ -273,29 +280,9 @@ async def login(
         is_mfa_enabled = bool(local_user["mfa_enabled"]) if "mfa_enabled" in local_user.keys() else False
         token_version = local_user["token_version"] if "token_version" in local_user.keys() and local_user["token_version"] else 1
 
-    # Multi-Factor Authentication Challenge
     if is_mfa_enabled:
-        import uuid
-        import json
-        mfa_ticket = f"mfa_{uuid.uuid4().hex}"
-        from database.redis_db import get_async_redis_client
-        redis = await get_async_redis_client()
-        if redis:
-            ticket_data = {
-                "user_id": local_user_id,
-                "role": local_role,
-                "username": form_data.username,
-                "email": email,
-                "tenant_id": tenant_id
-            }
-            await redis.setex(f"mfa:ticket:{mfa_ticket}", 300, json.dumps(ticket_data))
+        return await _create_mfa_challenge_ticket(local_user_id, local_role, form_data.username, email, tenant_id)
 
-        return {
-            "mfa_required": True,
-            "mfa_ticket": mfa_ticket,
-            "message": "Two-factor authentication required. Please verify with your 6-digit TOTP code or backup recovery code."
-        }
-    
     import uuid
     family_id = f"fam_{uuid.uuid4().hex}"
     access_token = create_access_token({
@@ -337,131 +324,138 @@ async def login(
         "username": form_data.username
     }
 
-@router.post("/signup", summary="Register compliance officer (Defaults strictly to ANALYST)")
-@router.post("/register", summary="Register compliance officer (Enterprise registration)")
-async def signup(
-    request: Request,
+
+@router.post("/login")
+async def login(
+    response: Response,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    _rate_limit=Depends(RateLimiter(limit=20, window=600))
+):
+    await check_account_lockout(form_data.username)
+
+    email = form_data.username if "@" in form_data.username else f"{form_data.username}@aml.com"
+    supabase_user = await _attempt_supabase_login(email, form_data.password)
+
+    if supabase_user:
+        return await _process_supabase_login_success(response, form_data, email, supabase_user)
+
+    return await _execute_local_login(response, form_data, email)
+
+
+async def _attempt_supabase_signup(email: str, password: str, assigned_role: str, tenant_id: str) -> dict | None:
+    if not (settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_")):
+        return None
+    try:
+        signup_data = {
+            "email": email,
+            "password": password,
+            "data": {
+                "role": assigned_role,
+                "tenant_id": tenant_id
+            }
+        }
+        headers = {
+            "apikey": settings.supabase_key,
+            "Content-Type": "application/json"
+        }
+        async with (
+            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session,
+            session.post(
+                f"{settings.supabase_url}/auth/v1/signup",
+                json=signup_data,
+                headers=headers
+            ) as resp
+        ):
+            if resp.status == 200:
+                return await resp.json()
+            logger.warning(f"Supabase signup returned status {resp.status}. Falling back to local registration.")
+    except Exception as e:
+        logger.warning(f"Supabase auth unreachable during signup: {e}. Falling back to local registration.")
+    return None
+
+
+async def _process_supabase_signup_success(
     response: Response,
     payload: UserSignup,
-    _rate_limit=Depends(RateLimiter(limit=10, window=3600))
-):
-    if request.url.path.endswith("/register"):
-        from services.auth import check_breached_password
-        if await check_breached_password(payload.password):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Password has appeared in a known public data breach (NIST SP 800-63B violation). Please choose a different, more secure passphrase."
+    email: str,
+    assigned_role: str,
+    default_tenant_id: str,
+    hashed_pw: str,
+    supabase_data: dict,
+) -> dict:
+    data = supabase_data
+    access_token = data.get("access_token")
+    user_info = data.get("user") if "user" in data else data
+    supabase_user_id = user_info.get("id")
+
+    if supabase_user_id:
+        from database.postgres import get_async_db_conn
+        async with get_async_db_conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO users (id, username, role, tenant_id, password_hash) 
+                VALUES ($1, $2, $3, $4, $5) 
+                ON CONFLICT (id) DO UPDATE SET 
+                    username = EXCLUDED.username,
+                    role = EXCLUDED.role,
+                    password_hash = EXCLUDED.password_hash;
+                """,
+                supabase_user_id,
+                payload.username,
+                assigned_role,
+                default_tenant_id,
+                hashed_pw
             )
 
-    email = payload.username
-    if "@" not in email:
-        email = f"{email}@aml.com"
-    
-    # Enforce Least Privilege: All self-registered users are strictly ANALYST
-    assigned_role = "ANALYST"
-    default_tenant_id = "00000000-0000-0000-0000-000000000001"
-    hashed_pw = hash_password(payload.password)
-        
-    signup_data = {
-        "email": email,
-        "password": payload.password,
-        "data": {
-            "role": assigned_role,
-            "tenant_id": default_tenant_id
-        }
-    }
-    
-    headers = {
-        "apikey": settings.supabase_key,
-        "Content-Type": "application/json"
-    }
-    
-    supabase_data = None
-    if settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_"):
-        try:
-            async with (
-                aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session,
-                session.post(
-                    f"{settings.supabase_url}/auth/v1/signup",
-                    json=signup_data,
-                    headers=headers
-                ) as resp
-            ):
-                if resp.status == 200:
-                    supabase_data = await resp.json()
-                else:
-                    logger.warning(f"Supabase signup returned status {resp.status}. Falling back to local registration.")
-        except Exception as e:
-            logger.warning(f"Supabase auth unreachable during signup: {e}. Falling back to local registration.")
-            supabase_data = None
-
-    if supabase_data:
-        data = supabase_data
-        access_token = data.get("access_token")
-        
-        user_info = data.get("user") if "user" in data else data
-        supabase_user_id = user_info.get("id")
-        if supabase_user_id:
-            from database.postgres import get_async_db_conn
-            async with get_async_db_conn() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO users (id, username, role, tenant_id, password_hash) 
-                    VALUES ($1, $2, $3, $4, $5) 
-                    ON CONFLICT (id) DO UPDATE SET 
-                        username = EXCLUDED.username,
-                        role = EXCLUDED.role,
-                        password_hash = EXCLUDED.password_hash;
-                    """,
-                    supabase_user_id,
-                    payload.username,
-                    assigned_role,
-                    default_tenant_id,
-                    hashed_pw
-                )
-
-        if not access_token:
-            access_token = create_access_token({
-                "sub": str(supabase_user_id or ""),
-                "role": assigned_role,
-                "username": payload.username,
-                "email": email,
-                "tenant_id": default_tenant_id
-            })
-
-        refresh_token = create_refresh_token({
+    if not access_token:
+        access_token = create_access_token({
             "sub": str(supabase_user_id or ""),
             "role": assigned_role,
             "username": payload.username,
+            "email": email,
             "tenant_id": default_tenant_id
         })
 
-        log_audit_event(
-            event_type="USER_SIGNUP",
-            actor_id=str(supabase_user_id or ""),
-            actor_role=assigned_role,
-            action="SIGNUP",
-            resource_type="USER",
-            resource_id=str(supabase_user_id or ""),
-            tenant_id=default_tenant_id,
-            details={"username": payload.username, "method": "supabase"}
-        )
-        
-        set_auth_cookies(response, access_token, refresh_token)
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-            "role": assigned_role,
-            "username": email.split("@")[0]
-        }
+    refresh_token = create_refresh_token({
+        "sub": str(supabase_user_id or ""),
+        "role": assigned_role,
+        "username": payload.username,
+        "tenant_id": default_tenant_id
+    })
 
-    # Fallback: create local user in PostgreSQL with verified Argon2id password hash
+    log_audit_event(
+        event_type="USER_SIGNUP",
+        actor_id=str(supabase_user_id or ""),
+        actor_role=assigned_role,
+        action="SIGNUP",
+        resource_type="USER",
+        resource_id=str(supabase_user_id or ""),
+        tenant_id=default_tenant_id,
+        details={"username": payload.username, "method": "supabase"}
+    )
+    
+    set_auth_cookies(response, access_token, refresh_token)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "role": assigned_role,
+        "username": email.split("@")[0]
+    }
+
+
+async def _execute_local_signup(
+    response: Response,
+    payload: UserSignup,
+    email: str,
+    assigned_role: str,
+    default_tenant_id: str,
+    hashed_pw: str,
+) -> dict:
     try:
         import uuid
         from database.postgres import get_async_db_conn
         async with get_async_db_conn() as conn:
-            # Check if username is already registered
             existing_user = await conn.fetchrow(
                 "SELECT id FROM users WHERE username = $1;",
                 payload.username
@@ -528,6 +522,38 @@ async def signup(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered or invalid registration data"
         )
+
+
+@router.post("/signup", summary="Register compliance officer (Defaults strictly to ANALYST)")
+@router.post("/register", summary="Register compliance officer (Enterprise registration)")
+async def signup(
+    request: Request,
+    response: Response,
+    payload: UserSignup,
+    _rate_limit=Depends(RateLimiter(limit=10, window=3600))
+):
+    if request.url.path.endswith("/register"):
+        from services.auth import check_breached_password
+        if await check_breached_password(payload.password):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Password has appeared in a known public data breach (NIST SP 800-63B violation). Please choose a different, more secure passphrase."
+            )
+
+    email = payload.username if "@" in payload.username else f"{payload.username}@aml.com"
+    assigned_role = "ANALYST"
+    default_tenant_id = "00000000-0000-0000-0000-000000000001"
+    hashed_pw = hash_password(payload.password)
+
+    supabase_data = await _attempt_supabase_signup(email, payload.password, assigned_role, default_tenant_id)
+    if supabase_data:
+        return await _process_supabase_signup_success(
+            response, payload, email, assigned_role, default_tenant_id, hashed_pw, supabase_data
+        )
+
+    return await _execute_local_signup(
+        response, payload, email, assigned_role, default_tenant_id, hashed_pw
+    )
 
 @router.post("/users", status_code=status.HTTP_201_CREATED, summary="Provision institutional user (RESTful /users)")
 @router.post("/provision", status_code=status.HTTP_201_CREATED, summary="Provision institutional compliance user with explicit role/tenant (Admin only)")
@@ -688,6 +714,66 @@ class RefreshRequest(BaseModel):
     refresh_token: str | None = None
 
 
+async def _handle_token_compromise(
+    redis, response: Response, sub: str | None, role: str, username: str, tenant_id: str, family_id: str
+):
+    # COMPROMISE DETECTED (RFC 6819): An already consumed refresh token was re-submitted!
+    # Immediately invalidate the entire token family and bump active user token_version.
+    await redis.setex(f"token:family_revoked:{family_id}", 30 * 86400, "1")
+    if sub:
+        await redis.incr(f"user:token_version:{sub}")
+        try:
+            import uuid as _uuid
+            _uuid.UUID(str(sub))
+            from database.postgres import get_async_db_conn
+            async with get_async_db_conn() as conn:
+                await conn.execute("UPDATE users SET token_version = token_version + 1 WHERE id = $1;", sub)
+        except Exception as db_err:
+            logger.warning(f"Failed to bump token_version on compromise: {db_err}")
+
+    log_audit_event(
+        event_type="SECURITY_ALERT",
+        actor_id=str(sub or ""),
+        actor_role=role,
+        action="REFRESH_TOKEN_COMPROMISE_DETECTED",
+        resource_type="SESSION",
+        resource_id=str(sub or ""),
+        tenant_id=tenant_id,
+        details={"family_id": family_id, "username": username, "reason": "Reuse of previously revoked refresh token"}
+    )
+    clear_auth_cookies(response)
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Compromised session detected: reuse of revoked refresh token. All active sessions have been terminated for security.",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+
+
+async def _check_refresh_token_revocation(
+    redis, response: Response, token_to_refresh: str, family_id: str | None, sub: str | None,
+    role: str, username: str, tenant_id: str, credentials_exception: HTTPException
+):
+    if not redis:
+        return
+
+    is_family_revoked = await redis.get(f"token:family_revoked:{family_id}") if family_id else None
+    if is_family_revoked:
+        clear_auth_cookies(response)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Compromised session detected: reuse of revoked refresh token. All active sessions have been terminated for security.",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    is_token_revoked = await redis.get(f"token:revoked:{token_to_refresh}")
+    if is_token_revoked:
+        if family_id:
+            await _handle_token_compromise(redis, response, sub, role, username, tenant_id, family_id)
+        else:
+            clear_auth_cookies(response)
+            raise credentials_exception
+
+
 @router.post("/refresh", summary="Exchange refresh token with token rotation")
 async def refresh_access_token(
     request: Request,
@@ -731,54 +817,11 @@ async def refresh_access_token(
 
         # Check Redis denylist & Token Family Compromise Detection (RFC 6819)
         redis = await get_async_redis_client()
+        await _check_refresh_token_revocation(
+            redis, response, token_to_refresh, family_id, sub, role, username, tenant_id, credentials_exception
+        )
+
         if redis:
-            is_family_revoked = await redis.get(f"token:family_revoked:{family_id}") if family_id else None
-            is_token_revoked = await redis.get(f"token:revoked:{token_to_refresh}")
-
-            if is_family_revoked:
-                clear_auth_cookies(response)
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Compromised session detected: reuse of revoked refresh token. All active sessions have been terminated for security.",
-                    headers={"WWW-Authenticate": "Bearer"}
-                )
-
-            if is_token_revoked:
-                if family_id:
-                    # COMPROMISE DETECTED (RFC 6819): An already consumed refresh token was re-submitted!
-                    # Immediately invalidate the entire token family and bump active user token_version.
-                    await redis.setex(f"token:family_revoked:{family_id}", 30 * 86400, "1")
-                    if sub:
-                        await redis.incr(f"user:token_version:{sub}")
-                        try:
-                            import uuid as _uuid
-                            _uuid.UUID(str(sub))
-                            from database.postgres import get_async_db_conn
-                            async with get_async_db_conn() as conn:
-                                await conn.execute("UPDATE users SET token_version = token_version + 1 WHERE id = $1;", sub)
-                        except Exception as db_err:
-                            logger.warning(f"Failed to bump token_version on compromise: {db_err}")
-
-                    log_audit_event(
-                        event_type="SECURITY_ALERT",
-                        actor_id=str(sub or ""),
-                        actor_role=role,
-                        action="REFRESH_TOKEN_COMPROMISE_DETECTED",
-                        resource_type="SESSION",
-                        resource_id=str(sub or ""),
-                        tenant_id=tenant_id,
-                        details={"family_id": family_id, "username": username, "reason": "Reuse of previously revoked refresh token"}
-                    )
-                    clear_auth_cookies(response)
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Compromised session detected: reuse of revoked refresh token. All active sessions have been terminated for security.",
-                        headers={"WWW-Authenticate": "Bearer"}
-                    )
-                else:
-                    clear_auth_cookies(response)
-                    raise credentials_exception
-
             # Token Rotation: Revoke consumed refresh token immediately
             exp = payload.get("exp", 0)
             ttl = max(int(exp - datetime.now(timezone.utc).timestamp()), 1)
@@ -1057,13 +1100,38 @@ async def mfa_enable(body: MFAEnableRequest, current_user: dict = Depends(get_cu
     return {"detail": "Two-factor authentication successfully enabled on your account."}
 
 
+async def _verify_mfa_code_or_recovery(
+    redis, conn, user_id: str, secret: str, recovery_hashes: list, code: str
+) -> bool:
+    from services.mfa import verify_totp_code, verify_and_consume_recovery_code
+    import json
+    if len(code) == 6 and code.isdigit():
+        replay_key = f"mfa:totp_consumed:{user_id}:{code}"
+        if await redis.get(replay_key):
+            raise HTTPException(status_code=401, detail="Invalid or already used authenticator code.")
+        verified = verify_totp_code(secret, code)
+        if verified:
+            await redis.setex(replay_key, 90, "1")
+        return verified
+
+    if "-" in code:
+        consumed, remaining_hashes = verify_and_consume_recovery_code(code, recovery_hashes)
+        if consumed:
+            await conn.execute(
+                "UPDATE users SET recovery_codes = $1::jsonb WHERE id = $2;",
+                json.dumps(remaining_hashes), user_id
+            )
+            return True
+
+    return False
+
+
 @router.post("/mfa/verify", summary="Verify MFA ticket and issue authentication tokens")
 async def mfa_verify(response: Response, body: MFAVerifyRequest):
     """
     Completes the two-factor authentication challenge using an mfa_ticket and either
     a 6-digit TOTP code or a single-use backup recovery code.
     """
-    from services.mfa import verify_totp_code, verify_and_consume_recovery_code
     from database.redis_db import get_async_redis_client
     from database.postgres import get_async_db_conn
     import json
@@ -1096,24 +1164,7 @@ async def mfa_verify(response: Response, body: MFAVerifyRequest):
         recovery_hashes = json.loads(raw_recovery) if isinstance(raw_recovery, str) else (raw_recovery or [])
 
         code = body.code.strip()
-        verified = False
-
-        if len(code) == 6 and code.isdigit():
-            replay_key = f"mfa:totp_consumed:{user_id}:{code}"
-            if await redis.get(replay_key):
-                raise HTTPException(status_code=401, detail="Invalid or already used authenticator code.")
-            verified = verify_totp_code(secret, code)
-            if verified:
-                await redis.setex(replay_key, 90, "1")
-        elif "-" in code:
-            consumed, remaining_hashes = verify_and_consume_recovery_code(code, recovery_hashes)
-            if consumed:
-                verified = True
-                await conn.execute(
-                    "UPDATE users SET recovery_codes = $1::jsonb WHERE id = $2;",
-                    json.dumps(remaining_hashes), user_id
-                )
-
+        verified = await _verify_mfa_code_or_recovery(redis, conn, user_id, secret, recovery_hashes, code)
         if not verified:
             raise HTTPException(status_code=401, detail="Invalid verification code or recovery code.")
 

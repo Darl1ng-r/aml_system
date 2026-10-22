@@ -117,6 +117,8 @@ def name_similarity_score(s1: str, s2: str) -> float:
 OFAC_SDN_LIST = "OFAC SDN List"
 UN_SANCTIONS_LIST = "UN Consolidated Sanctions List"
 
+UNKNOWN_LIST = "Unknown List"
+
 # Reliable built-in sanctions baseline dataset for resilient offline / in-engine screening
 SANCTIONS_BASELINE = [
     {"name": "Vladimir Smirnov", "source_list": OFAC_SDN_LIST, "entity_type": "Individual", "program": "UKRAINE-EO13661"},
@@ -130,6 +132,113 @@ SANCTIONS_BASELINE = [
 ]
 
 
+def _extract_candidate_names(source: dict) -> list[str]:
+    names_to_check = [source.get("name", "")]
+    aliases = source.get("aliases", [])
+    if isinstance(aliases, list):
+        names_to_check.extend(aliases)
+    elif isinstance(aliases, str):
+        names_to_check.append(aliases)
+    return [n for n in names_to_check if n]
+
+
+async def _query_pep_entities_pg(conn, name: str, tenant_id: str | None, columns: str):
+    search_pattern = f"%{name.strip()}%"
+    clean_name = name.strip()
+    if tenant_id:
+        try:
+            t_uuid = uuid.UUID(str(tenant_id))
+            return await conn.fetch(
+                f"""
+                SELECT {columns}
+                FROM pep_entities
+                WHERE (tenant_id = $1 OR tenant_id IS NULL)
+                  AND is_active = true
+                  AND (name ILIKE $2 OR $3 ILIKE '%' || name || '%')
+                LIMIT 100;
+                """,
+                t_uuid, search_pattern, clean_name
+            )
+        except ValueError:
+            pass
+    return await conn.fetch(
+        f"""
+        SELECT {columns}
+        FROM pep_entities
+        WHERE tenant_id IS NULL
+          AND is_active = true
+          AND (name ILIKE $1 OR $2 ILIKE '%' || name || '%')
+        LIMIT 100;
+        """,
+        search_pattern, clean_name
+    )
+
+
+async def _search_es_sanctions_hits(es, name: str, norm_name: str) -> list[dict]:
+    query = {
+        "query": {
+            "bool": {
+                "should": [
+                    {"match": {"name": {"query": name, "fuzziness": "AUTO", "prefix_length": 1}}},
+                    {"match": {"name": {"query": norm_name, "fuzziness": "AUTO", "prefix_length": 1}}},
+                ]
+            }
+        }
+    }
+    response = await es.search(index=SANCTIONS_INDEX, body=query, size=10)
+    return response.get("hits", {}).get("hits", [])
+
+
+def _eval_es_sanctions_hits(hits: list[dict], name: str) -> tuple[float, str, str]:
+    best_similarity = 0.0
+    best_source_list = UNKNOWN_LIST
+    best_matched_name = ""
+    for hit in hits:
+        source = hit.get("_source", {})
+        src_list = source.get("source_list", UNKNOWN_LIST)
+        for candidate_name in _extract_candidate_names(source):
+            sim = name_similarity_score(name, candidate_name)
+            if sim > best_similarity:
+                best_similarity = sim
+                best_source_list = src_list
+                best_matched_name = source.get("name", candidate_name)
+    return best_similarity, best_source_list, best_matched_name
+
+
+async def _eval_pg_sanctions(name: str, tenant_id: str | None) -> tuple[float, str, str]:
+    from database.postgres import get_async_db_read_conn
+    best_similarity = 0.0
+    best_source_list = UNKNOWN_LIST
+    best_matched_name = ""
+    try:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+            rows = await _query_pep_entities_pg(conn, name, tenant_id, "name, source_database, country")
+            for row in rows:
+                p_name = row["name"]
+                sim = name_similarity_score(name, p_name)
+                if sim > best_similarity:
+                    best_similarity = sim
+                    best_source_list = row["source_database"]
+                    best_matched_name = p_name
+    except Exception as pg_err:
+        logger.warning(f"PostgreSQL sanctions query fallback warning: {pg_err}")
+    return best_similarity, best_source_list, best_matched_name
+
+
+def _eval_baseline_sanctions(name: str) -> tuple[float, str, str]:
+    best_similarity = 0.0
+    best_source_list = UNKNOWN_LIST
+    best_matched_name = ""
+    for rec in SANCTIONS_BASELINE:
+        c_name = rec["name"]
+        sim = name_similarity_score(name, c_name)
+        if sim > best_similarity:
+            best_similarity = sim
+            best_source_list = rec["source_list"]
+            best_matched_name = c_name
+    return best_similarity, best_source_list, best_matched_name
+
+
 async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_id: str | None = None) -> dict:
     """
     Core fuzzy sanctions search logic against Elasticsearch with normalized query expansion,
@@ -137,7 +246,7 @@ async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_
     Evaluates all candidate hits and aliases using token-aware fuzzy matching.
     """
     best_similarity = 0.0
-    best_source_list = "Unknown List"
+    best_source_list = UNKNOWN_LIST
     best_matched_name = ""
 
     norm_name = normalize_screening_name(name)
@@ -145,53 +254,10 @@ async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_
     # 1. Search Elasticsearch sanctions index if client is connected and available
     if es is not None:
         try:
-            query = {
-                "query": {
-                    "bool": {
-                        "should": [
-                            {
-                                "match": {
-                                    "name": {
-                                        "query": name,
-                                        "fuzziness": "AUTO",
-                                        "prefix_length": 1
-                                    }
-                                }
-                            },
-                            {
-                                "match": {
-                                    "name": {
-                                        "query": norm_name,
-                                        "fuzziness": "AUTO",
-                                        "prefix_length": 1
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                }
-            }
-            response = await es.search(index=SANCTIONS_INDEX, body=query, size=10)
-            hits = response.get("hits", {}).get("hits", [])
-            for hit in hits:
-                source = hit.get("_source", {})
-                names_to_check = [source.get("name", "")]
-                aliases = source.get("aliases", [])
-                if isinstance(aliases, list):
-                    names_to_check.extend(aliases)
-                elif isinstance(aliases, str):
-                    names_to_check.append(aliases)
-
-                src_list = source.get("source_list", "Unknown List")
-                for candidate_name in names_to_check:
-                    if not candidate_name:
-                        continue
-                    sim = name_similarity_score(name, candidate_name)
-                    if sim > best_similarity:
-                        best_similarity = sim
-                        best_source_list = src_list
-                        best_matched_name = source.get("name", candidate_name)
-
+            hits = await _search_es_sanctions_hits(es, name, norm_name)
+            es_sim, es_src, es_match = _eval_es_sanctions_hits(hits, name)
+            if es_sim > best_similarity:
+                best_similarity, best_source_list, best_matched_name = es_sim, es_src, es_match
             if best_similarity >= threshold:
                 return {
                     "match_found": True,
@@ -206,67 +272,14 @@ async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_
             logger.warning(f"Elasticsearch sanctions search offline/bypass ({es_err}); falling back to PostgreSQL...")
 
     # 2. Database Fallback: Query PostgreSQL 16 (tenant-scoped)
-    try:
-        from database.postgres import get_async_db_read_conn
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            search_pattern = f"%{name.strip()}%"
-            if tenant_id:
-                try:
-                    t_uuid = uuid.UUID(str(tenant_id))
-                    rows = await conn.fetch(
-                        """
-                        SELECT name, source_database, country
-                        FROM pep_entities
-                        WHERE (tenant_id = $1 OR tenant_id IS NULL)
-                          AND is_active = true
-                          AND (name ILIKE $2 OR $3 ILIKE '%' || name || '%')
-                        LIMIT 100;
-                        """,
-                        t_uuid, search_pattern, name.strip()
-                    )
-                except ValueError:
-                    rows = await conn.fetch(
-                        """
-                        SELECT name, source_database, country
-                        FROM pep_entities
-                        WHERE tenant_id IS NULL
-                          AND is_active = true
-                          AND (name ILIKE $1 OR $2 ILIKE '%' || name || '%')
-                        LIMIT 100;
-                        """,
-                        search_pattern, name.strip()
-                    )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT name, source_database, country
-                    FROM pep_entities
-                    WHERE tenant_id IS NULL
-                      AND is_active = true
-                      AND (name ILIKE $1 OR $2 ILIKE '%' || name || '%')
-                    LIMIT 100;
-                    """,
-                    search_pattern, name.strip()
-                )
-
-            for row in rows:
-                p_name = row["name"]
-                sim = name_similarity_score(name, p_name)
-                if sim > best_similarity:
-                    best_similarity = sim
-                    best_source_list = row["source_database"]
-                    best_matched_name = p_name
-    except Exception as pg_err:
-        logger.warning(f"PostgreSQL sanctions query fallback warning: {pg_err}")
+    pg_sim, pg_src, pg_match = await _eval_pg_sanctions(name, tenant_id)
+    if pg_sim > best_similarity:
+        best_similarity, best_source_list, best_matched_name = pg_sim, pg_src, pg_match
 
     # 3. Built-in Sanctions Baseline Fallback (Zero-infrastructure guarantee)
-    for rec in SANCTIONS_BASELINE:
-        c_name = rec["name"]
-        sim = name_similarity_score(name, c_name)
-        if sim > best_similarity:
-            best_similarity = sim
-            best_source_list = rec["source_list"]
-            best_matched_name = c_name
+    base_sim, base_src, base_match = _eval_baseline_sanctions(name)
+    if base_sim > best_similarity:
+        best_similarity, best_source_list, best_matched_name = base_sim, base_src, base_match
 
     match_found = best_similarity >= threshold
     return {
@@ -279,114 +292,66 @@ async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_
         } if best_similarity > 0.0 else None
     }
 
-async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | None = None) -> dict:
-    """
-    Dedicated Politically Exposed Persons (PEP) database search & tiering evaluation.
-    Evaluates all returned hits and aliases across Elasticsearch and PostgreSQL fallback (M11).
-    """
-    from config import PEP_INDEX
-    best_pep_score = 0.0
-    best_pep_res = None
 
-    try:
-        query = {
-            "query": {
-                "match": {
-                    "name": {
-                        "query": name,
-                        "fuzziness": "AUTO",
-                        "prefix_length": 2
-                    }
+def _build_pep_dict(candidate_name: str, source: dict, sim: float, threshold: float) -> dict:
+    return {
+        "match_found": sim >= threshold,
+        "score": round(sim, 2),
+        "pep_tier": source.get("pep_tier", "TIER_2_GOVERNMENT_OFFICIAL"),
+        "position": source.get("position", "Senior Official"),
+        "country": source.get("country", "GLOBAL"),
+        "rca_flag": source.get("rca_flag", False),
+        "source_list": source.get("source_database", "FATF PEP Register"),
+        "matched_entry": {
+            "name": source.get("name", candidate_name),
+            "edd_required": True,
+            "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory."
+        }
+    }
+
+
+async def _search_es_pep(es, name: str, threshold: float) -> dict | None:
+    from config import PEP_INDEX
+    query = {
+        "query": {
+            "match": {
+                "name": {
+                    "query": name,
+                    "fuzziness": "AUTO",
+                    "prefix_length": 2
                 }
             }
         }
-        response = await es.search(index=PEP_INDEX, body=query, size=10)
-        hits = response.get("hits", {}).get("hits", [])
+    }
+    response = await es.search(index=PEP_INDEX, body=query, size=10)
+    hits = response.get("hits", {}).get("hits", [])
+    best_res = None
+    best_score = 0.0
+    for hit in hits:
+        source = hit.get("_source", {})
+        for candidate_name in _extract_candidate_names(source):
+            sim = name_similarity_score(name, candidate_name)
+            if sim > best_score:
+                best_score = sim
+                best_res = _build_pep_dict(candidate_name, source, sim, threshold)
+    return best_res
 
-        for hit in hits:
-            source = hit.get("_source", {})
-            names_to_check = [source.get("name", "")]
-            aliases = source.get("aliases", [])
-            if isinstance(aliases, list):
-                names_to_check.extend(aliases)
-            elif isinstance(aliases, str):
-                names_to_check.append(aliases)
 
-            for candidate_name in names_to_check:
-                if not candidate_name:
-                    continue
-                sim = name_similarity_score(name, candidate_name)
-                if sim > best_pep_score:
-                    best_pep_score = sim
-                    best_pep_res = {
-                        "match_found": sim >= threshold,
-                        "score": round(sim, 2),
-                        "pep_tier": source.get("pep_tier", "TIER_2_GOVERNMENT_OFFICIAL"),
-                        "position": source.get("position", "Senior Official"),
-                        "country": source.get("country", "GLOBAL"),
-                        "rca_flag": source.get("rca_flag", False),
-                        "source_list": source.get("source_database", "FATF PEP Register"),
-                        "matched_entry": {
-                            "name": source.get("name", candidate_name),
-                            "edd_required": True,
-                            "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory."
-                        }
-                    }
-        if best_pep_res and best_pep_res["match_found"]:
-            return best_pep_res
-    except Exception as e:
-        logger.warning(f"Elasticsearch PEP search bypass/fallback: {e}")
-
-    # Database Fallback for PEP entities (tenant-scoped to prevent cross-tenant data leakage)
+async def _search_pg_pep(name: str, threshold: float, tenant_id: str | None) -> dict | None:
+    from database.postgres import get_async_db_read_conn
+    best_res = None
+    best_score = 0.0
     try:
-        from database.postgres import get_async_db_read_conn
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            search_pattern = f"%{name.strip()}%"
-            if tenant_id:
-                try:
-                    t_uuid = uuid.UUID(str(tenant_id))
-                    rows = await conn.fetch(
-                        """
-                        SELECT name, pep_tier, position, country, rca_flag, source_database
-                        FROM pep_entities
-                        WHERE (tenant_id = $1 OR tenant_id IS NULL)
-                          AND is_active = true
-                          AND (name ILIKE $2 OR $3 ILIKE '%' || name || '%')
-                        LIMIT 100;
-                        """,
-                        t_uuid, search_pattern, name.strip()
-                    )
-                except ValueError:
-                    rows = await conn.fetch(
-                        """
-                        SELECT name, pep_tier, position, country, rca_flag, source_database
-                        FROM pep_entities
-                        WHERE tenant_id IS NULL
-                          AND is_active = true
-                          AND (name ILIKE $1 OR $2 ILIKE '%' || name || '%')
-                        LIMIT 100;
-                        """,
-                        search_pattern, name.strip()
-                    )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT name, pep_tier, position, country, rca_flag, source_database
-                    FROM pep_entities
-                    WHERE tenant_id IS NULL
-                      AND is_active = true
-                      AND (name ILIKE $1 OR $2 ILIKE '%' || name || '%')
-                    LIMIT 100;
-                    """,
-                    search_pattern, name.strip()
-                )
-
+            rows = await _query_pep_entities_pg(
+                conn, name, tenant_id, "name, pep_tier, position, country, rca_flag, source_database"
+            )
             for row in rows:
                 p_name = row["name"]
                 sim = name_similarity_score(name, p_name)
-                if sim > best_pep_score:
-                    best_pep_score = sim
-                    best_pep_res = {
+                if sim > best_score:
+                    best_score = sim
+                    best_res = {
                         "match_found": sim >= threshold,
                         "score": round(sim, 2),
                         "pep_tier": row["pep_tier"],
@@ -400,13 +365,28 @@ async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | N
                             "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory."
                         }
                     }
-            if best_pep_res and best_pep_res["match_found"]:
-                return best_pep_res
     except Exception as e:
         logger.warning(f"PostgreSQL PEP query fallback bypass: {e}")
+    return best_res
 
-    if best_pep_res:
-        return best_pep_res
+
+async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | None = None) -> dict:
+    """
+    Dedicated Politically Exposed Persons (PEP) database search & tiering evaluation.
+    Evaluates all returned hits and aliases across Elasticsearch and PostgreSQL fallback (M11).
+    """
+    try:
+        es_res = await _search_es_pep(es, name, threshold)
+        if es_res and es_res["match_found"]:
+            return es_res
+    except Exception as e:
+        logger.warning(f"Elasticsearch PEP search bypass/fallback: {e}")
+
+    pg_res = await _search_pg_pep(name, threshold, tenant_id)
+    if pg_res and pg_res["match_found"]:
+        return pg_res
+    if pg_res:
+        return pg_res
 
     return {
         "match_found": False,

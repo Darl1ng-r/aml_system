@@ -68,6 +68,36 @@ PAYMENT_FORMATS = {
 # ─────────────────────────────────────────────────────────────
 # Feature extraction
 # ─────────────────────────────────────────────────────────────
+def _parse_timestamp_hour(timestamp_str: str) -> int:
+    """Parse hour of day from timestamp string."""
+    if "/" in timestamp_str:
+        parts = timestamp_str.split(" ")
+        return int(parts[1].split(":")[0]) if len(parts) > 1 else 12
+    return 12
+
+
+def _extract_numeric_amount_features(amt_paid: float, amt_received: float) -> tuple[float, float, float]:
+    """Calculate log-normalized amount, conversion ratio, and round-amount marker."""
+    amount_log = math.log1p(amt_paid) / math.log1p(AMOUNT_NORM_CAP)
+    amount_log = min(max(amount_log, 0.0), 1.0)
+    amount_ratio = min(amt_received / amt_paid, 5.0) / 5.0 if amt_paid > 0 else 0.0
+    is_round = 1.0 if (amt_paid > 0 and amt_paid % 1000 == 0) else 0.0
+    return amount_log, amount_ratio, is_round
+
+
+def _extract_categorical_features(
+    currency_recv: str, currency_paid: str, pay_format: str
+) -> tuple[float, float, float, float, float, float]:
+    """Calculate currency and payment format flags."""
+    is_geo_risk = 1.0 if currency_paid in HIGH_RISK_CURRENCIES else 0.0
+    currency_mismatch = 1.0 if currency_recv != currency_paid else 0.0
+    pay_fmt_code = PAYMENT_FORMATS.get(pay_format, PAYMENT_FORMATS["Other"]) / 7.0
+    is_crypto = 1.0 if pay_format == "Bitcoin" else 0.0
+    is_cash = 1.0 if pay_format == "Cash" else 0.0
+    is_reinvestment = 1.0 if pay_format == "Reinvestment" else 0.0
+    return is_geo_risk, currency_mismatch, pay_fmt_code, is_crypto, is_cash, is_reinvestment
+
+
 def extract_features(row: list) -> tuple[list[float], int] | None:
     """
     Extracts feature vector from a raw CSV row.
@@ -85,13 +115,7 @@ def extract_features(row: list) -> tuple[list[float], int] | None:
         return None
     try:
         timestamp_str = row[0].strip()
-        # Parse hour of day from timestamp
-        if "/" in timestamp_str:
-            # Format: 2022/09/01 00:20
-            parts = timestamp_str.split(" ")
-            hour = int(parts[1].split(":")[0]) if len(parts) > 1 else 12
-        else:
-            hour = 12
+        hour = _parse_timestamp_hour(timestamp_str)
 
         amt_received = float(row[5]) if row[5].strip() else 0.0
         currency_recv = row[6].strip()
@@ -100,39 +124,11 @@ def extract_features(row: list) -> tuple[list[float], int] | None:
         pay_format = row[9].strip()
         is_laundering = int(row[10].strip())
 
-        # Feature 1: Log-normalized paid amount (heavy tail, log compresses it)
-        amount_log = math.log1p(amt_paid) / math.log1p(AMOUNT_NORM_CAP)
-        amount_log = min(max(amount_log, 0.0), 1.0)
-
-        # Feature 2: Amount ratio received/paid — large deviation signals FX layering
-        if amt_paid > 0:
-            amount_ratio = min(amt_received / amt_paid, 5.0) / 5.0
-        else:
-            amount_ratio = 0.0
-
-        # Feature 3: Hour of day (normalized to [0,1])
+        amount_log, amount_ratio, is_round = _extract_numeric_amount_features(amt_paid, amt_received)
         hour_norm = hour / 23.0
-
-        # Feature 4: High-risk currency (sending currency is the risk signal)
-        is_geo_risk = 1.0 if currency_paid in HIGH_RISK_CURRENCIES else 0.0
-
-        # Feature 5: Currency mismatch between sending and receiving (conversion)
-        currency_mismatch = 1.0 if currency_recv != currency_paid else 0.0
-
-        # Feature 6: Payment format encoded (ordinal, captures cash/crypto vs. wire)
-        pay_fmt_code = PAYMENT_FORMATS.get(pay_format, PAYMENT_FORMATS["Other"]) / 7.0
-
-        # Feature 7: Is Bitcoin or crypto payment
-        is_crypto = 1.0 if pay_format == "Bitcoin" else 0.0
-
-        # Feature 8: Is Cash (hardest to trace)
-        is_cash = 1.0 if pay_format == "Cash" else 0.0
-
-        # Feature 9: Is Reinvestment (circular flow pattern)
-        is_reinvestment = 1.0 if pay_format == "Reinvestment" else 0.0
-
-        # Feature 10: Round amount marker (amounts divisible by 1000 are suspiciously round)
-        is_round = 1.0 if (amt_paid > 0 and amt_paid % 1000 == 0) else 0.0
+        is_geo_risk, currency_mismatch, pay_fmt_code, is_crypto, is_cash, is_reinvestment = (
+            _extract_categorical_features(currency_recv, currency_paid, pay_format)
+        )
 
         features = [
             amount_log,
@@ -211,7 +207,7 @@ def main():
         import joblib
         import shap
     except ImportError as e:
-        logger.error(f"Missing dependency: {e}. Run: pip install xgboost lightgbm shap joblib scikit-learn")
+        logger.exception(f"Missing dependency: {e}. Run: pip install xgboost lightgbm shap joblib scikit-learn")
         sys.exit(1)
 
     if not os.path.exists(TRANS_PATH):
@@ -255,7 +251,7 @@ def main():
     pipeline = Pipeline([
         ("scaler", StandardScaler()),
         ("classifier", model)
-    ])
+    ], memory=None)
 
     # ── 5. Cross-validation (3 folds for speed) ───────────────
     logger.info("Running 3-fold stratified cross-validation on training set...")

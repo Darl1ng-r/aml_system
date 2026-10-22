@@ -51,10 +51,20 @@ spec:
       labels:
         app: aml-postgres
     spec:
+      automountServiceAccountToken: false
       initContainers:
       # ── Replication bootstrap (runs only on ordinal > 0) ──────────────
       - name: replica-bootstrap
         image: postgres:15-alpine
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+            ephemeral-storage: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+            ephemeral-storage: "256Mi"
         env:
         - name: POD_NAME
           valueFrom:
@@ -129,9 +139,11 @@ spec:
           requests:
             cpu: "250m"
             memory: "512Mi"
+            ephemeral-storage: "256Mi"
           limits:
             cpu: "1000m"
             memory: "1024Mi"
+            ephemeral-storage: "512Mi"
         readinessProbe:
           exec:
             command:

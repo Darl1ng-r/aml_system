@@ -21,24 +21,40 @@ spec:
       labels:
         app: aml-migration
     spec:
+      automountServiceAccountToken: false
       restartPolicy: OnFailure
       containers:
       - name: alembic-migrator
-        image: aml-fastapi-app:latest
+        image: aml-fastapi-app:${IMAGE_TAG}
         imagePullPolicy: IfNotPresent
         command: ["alembic", "upgrade", "head"]
         resources:
           requests:
             cpu: "100m"
             memory: "256Mi"
+            ephemeral-storage: "128Mi"
           limits:
             cpu: "500m"
             memory: "512Mi"
+            ephemeral-storage: "256Mi"
         env:
         - name: POSTGRES_USER
           value: "postgres"
+        - name: POSTGRES_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: aml-config
+              key: POSTGRES_HOST
+        - name: POSTGRES_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: aml-config
+              key: POSTGRES_PORT
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: aml-config
+              key: POSTGRES_DB
         envFrom:
         - secretRef:
             name: aml-secrets
-        - configMapRef:
-            name: aml-config

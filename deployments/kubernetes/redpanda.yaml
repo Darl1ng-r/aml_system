@@ -22,6 +22,7 @@ spec:
       labels:
         app: aml-redpanda
     spec:
+      automountServiceAccountToken: false
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -85,9 +86,11 @@ spec:
           requests:
             cpu: "500m"
             memory: "1Gi"
+            ephemeral-storage: "256Mi"
           limits:
             cpu: "1000m"
             memory: "2Gi"
+            ephemeral-storage: "512Mi"
         readinessProbe:
           exec:
             command: ["rpk", "cluster", "health"]

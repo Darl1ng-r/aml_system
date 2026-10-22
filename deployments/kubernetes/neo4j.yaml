@@ -14,6 +14,7 @@ spec:
       labels:
         app: aml-neo4j
     spec:
+      automountServiceAccountToken: false
       containers:
       - name: neo4j
         image: neo4j:5.15-community
@@ -34,9 +35,11 @@ spec:
           requests:
             cpu: "500m"
             memory: "1.5Gi"
+            ephemeral-storage: "256Mi"
           limits:
             cpu: "2000m"
             memory: "3Gi"
+            ephemeral-storage: "512Mi"
         volumeMounts:
         - name: neo4j-data
           mountPath: /data

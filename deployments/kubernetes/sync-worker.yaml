@@ -18,18 +18,21 @@ spec:
         vault.hashicorp.com/agent-inject: "true"
         vault.hashicorp.com/role: "aml-api-role"
     spec:
+      automountServiceAccountToken: false
       containers:
       - name: sync-worker
-        image: aml-fastapi-app:latest
+        image: aml-fastapi-app:${IMAGE_TAG}
         imagePullPolicy: IfNotPresent
         command: ["python", "scripts/sync_worker.py"]
         resources:
           requests:
             cpu: "250m"
             memory: "384Mi"
+            ephemeral-storage: "256Mi"
           limits:
             cpu: "1000m"
             memory: "768Mi"
+            ephemeral-storage: "512Mi"
         env:
         - name: RUN_EMBEDDED_WORKER
           value: "false"

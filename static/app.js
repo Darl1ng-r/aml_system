@@ -1,3 +1,8 @@
+// Handle unhandled Promise rejections globally to prevent silent failures
+window.addEventListener('unhandledrejection', (event) => {
+    console.error('Unhandled Promise Rejection:', event.reason);
+});
+
 // Ensure all API calls seamlessly include HttpOnly session cookies and Anti-CSRF protection
 const _nativeFetch = window.fetch;
 window.fetch = function (url, options = {}) {
@@ -28,7 +33,7 @@ let visNetworkInstance = null;
 let liveWebSocket = null;
 
 // Seed Mock Cases Database (Cockpit 3-Pane Tier - Finding #21: loaded from static/mock-data.js)
-const mockAlerts = (window.AML_MOCK_DATA && window.AML_MOCK_DATA.mockAlerts) || [];
+const mockAlerts = window.AML_MOCK_DATA?.mockAlerts || [];
 let activeAlerts = [...mockAlerts];
 
 
@@ -42,14 +47,14 @@ window.addEventListener('load', () => {
 });
 
 function initTheme() {
-    const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+    const currentTheme = document.documentElement.dataset.theme || 'light';
     updateThemeToggleButton(currentTheme);
 }
 
 function toggleTheme() {
-    const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+    const currentTheme = document.documentElement.dataset.theme || 'light';
     const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', newTheme);
+    document.documentElement.dataset.theme = newTheme;
     localStorage.setItem('theme', newTheme);
     updateThemeToggleButton(newTheme);
     log(`Switched interface theme to: ${newTheme.toUpperCase()} MODE`, 'info');
@@ -279,7 +284,7 @@ function applyRoleBasedVisibility(role) {
 
     // Dynamic data-role visibility filtering
     document.querySelectorAll('[data-role]').forEach(el => {
-        const allowed = el.getAttribute('data-role').split(',').map(r => r.trim());
+        const allowed = (el.dataset.role || '').split(',').map(r => r.trim());
         const hasAccess = allowed.includes(role) || ['ADMIN', 'SUPER_ADMIN'].includes(role);
         el.style.display = hasAccess ? '' : 'none';
     });
@@ -1078,12 +1083,7 @@ async function forceUnlockCurrentCase() {
 }
 
 // Selecting a case to open Case Investigation Cockpit
-function selectCase(id) {
-    activeAlertId = id;
-    const alert = activeAlerts.find(a => a.alert_id === id) || activeAlerts[0];
-    if (!alert) return;
-
-    // 1. Update Left Rail Highlight & Position
+function _updateCaseQueueAndTopbar(alert, fullCaseId) {
     const railItems = document.querySelectorAll('#queue-rail-items .queue-item');
     railItems.forEach(el => {
         if (el.dataset.id === alert.alert_id) {
@@ -1101,9 +1101,6 @@ function selectCase(id) {
         posEl.innerText = `Case ${caseIdx + 1} of ${casesToCount.length} in queue`;
     }
 
-    // 2. Topbar Updates
-    const shortId = alert.short_id || (alert.alert_id.includes('-') ? alert.alert_id.split('-').pop() : alert.alert_id.slice(-4));
-    const fullCaseId = alert.alert_id.startsWith('aml-') ? alert.alert_id.toUpperCase() : `AML-2026-${shortId}`;
     const topbarId = document.getElementById('topbar-case-id');
     if (topbarId) topbarId.innerText = `CASE #${fullCaseId}`;
 
@@ -1114,34 +1111,27 @@ function selectCase(id) {
         const openTime = alert.created_at ? new Date(alert.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '09:14';
         topbarCrumb.innerText = `${ruleFormatted} · ${channelFormatted} · Opened ${openTime} today`;
     }
+}
 
-    // 3. Pessimistic Case Lease Locking (Section 4.1)
-    acquireCaseLock(alert.alert_id);
-
-    // 3. Center Evidence Pane Header
+function _updateEvidencePaneAndKpis(alert, riskScore, riskClass, firedRulesCount) {
     const txnTitle = document.getElementById('evidence-txn-title');
     if (txnTitle) txnTitle.innerText = alert.title || `Transaction ${alert.alert_id}`;
 
     const txnSub = document.getElementById('evidence-txn-sub');
     if (txnSub) {
-        const sender = alert.transaction ? alert.transaction.sender : 'Unknown';
-        const senderAcct = alert.transaction ? (alert.transaction.sender_account || '****4821') : '****4821';
-        const timeFormatted = alert.transaction && alert.transaction.timestamp ? new Date(alert.transaction.timestamp).toLocaleTimeString() : '08:52:14';
+        const sender = alert.transaction?.sender || 'Unknown';
+        const senderAcct = alert.transaction?.sender_account || '****4821';
+        const timeFormatted = alert.transaction?.timestamp ? new Date(alert.transaction.timestamp).toLocaleTimeString() : '08:52:14';
         txnSub.innerText = `Sender: ${sender} · Account ${senderAcct} · Received ${timeFormatted} today`;
     }
 
     const riskBadge = document.getElementById('evidence-risk-badge');
-    const rawAiScore = (alert.ai_risk_score !== undefined && alert.ai_risk_score !== null && !isNaN(alert.ai_risk_score)) ? Number(alert.ai_risk_score) : 0.8;
-    const riskScore = Math.min(Math.max(Math.round(rawAiScore * 100), 0), 100);
-    const riskClass = (alert.threat_level === 'CRITICAL' || rawAiScore >= 0.85) ? 'high' : 
-                      ((alert.threat_level === 'HIGH' || rawAiScore >= 0.6) ? 'med' : 'low');
     if (riskBadge) {
         riskBadge.className = `risk-badge ${riskClass}`;
         riskBadge.innerText = `● Risk ${riskScore} / 100`;
     }
 
-    // 4. Center 8-Cell KPI Grid
-    const amountVal = alert.transaction ? alert.transaction.amount : 9480;
+    const amountVal = alert.transaction?.amount ?? 9480;
     const amtEl = document.getElementById('txn-amount');
     if (amtEl) amtEl.innerText = `$${Number(amountVal).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -1161,19 +1151,19 @@ function selectCase(id) {
     if (tenureEl) tenureEl.innerText = alert.account_tenure || '14 mo';
 
     const rulesCountEl = document.getElementById('txn-rules-count');
-    const firedRulesCount = alert.rules_triggered ? alert.rules_triggered.length : (alert.rules_triggered_count !== undefined && alert.rules_triggered_count !== null ? alert.rules_triggered_count : 0);
     if (rulesCountEl) rulesCountEl.innerText = firedRulesCount;
 
     const modelEl = document.getElementById('txn-model');
     if (modelEl) modelEl.innerText = alert.model_version || 'Production RBA';
+}
 
-    // 5. Triggered Rules List
+function _updateTriggeredRulesAndShap(alert, firedRulesCount) {
     const rulesHint = document.getElementById('rules-count-hint');
     if (rulesHint) rulesHint.innerText = `${firedRulesCount} rule${firedRulesCount === 1 ? '' : 's'} evaluated`;
 
     const rulesList = document.getElementById('evidence-rule-list');
     if (rulesList) {
-        const rules = (alert.rules_triggered && alert.rules_triggered.length > 0)
+        const rules = (alert.rules_triggered?.length > 0)
             ? alert.rules_triggered
             : [{ code: (alert.rule_name || 'COMPLIANCE_ALERT').replace(/_/g, ' '), desc: `— Flagged by transaction monitoring engine (${alert.threat_level || 'STANDARD'})` }];
         rulesList.innerHTML = rules.map(r => `
@@ -1184,12 +1174,10 @@ function selectCase(id) {
         `).join('');
     }
 
-    // 6. Network Graph Rendering
     loadGraphData(alert.alert_id, alert);
 
-    // 7. Explainability (SHAP List for Rule logic tab)
     const shapList = document.getElementById('inbox-shap-list');
-    if (shapList && alert.explainability && alert.explainability.attributions) {
+    if (shapList && alert.explainability?.attributions) {
         shapList.innerHTML = '';
         const attributions = alert.explainability.attributions;
         Object.keys(attributions).forEach(key => {
@@ -1216,11 +1204,11 @@ function selectCase(id) {
         });
     }
 
-    // 8. Raw Data JSON
     const rawPre = document.getElementById('evidence-raw-json');
     if (rawPre) rawPre.innerText = JSON.stringify(alert, null, 2);
+}
 
-    // 9. Context Pane: Composite Risk Gauge
+function _updateContextKycAndEntities(alert, riskScore) {
     const gaugeScore = document.getElementById('ctx-risk-score');
     if (gaugeScore) gaugeScore.innerText = riskScore;
 
@@ -1231,7 +1219,6 @@ function selectCase(id) {
         gaugeLabel.innerHTML = `FATF Risk-Based Composite<br><span style="font-weight:600;">${threat}</span> Priority · ${ruleFormatted}`;
     }
 
-    // 10. Context Pane: KYC Snapshot
     if (alert.entity) {
         const kycName = document.getElementById('ctx-kyc-name');
         if (kycName) kycName.innerText = alert.entity.name || 'N/A';
@@ -1252,7 +1239,6 @@ function selectCase(id) {
         if (kycMed) kycMed.innerText = alert.entity.adverse_media || 'Clean';
     }
 
-    // 11. Context Pane: Linked Entities
     const entitiesCount = document.getElementById('ctx-entities-count');
     const entitiesList = document.getElementById('ctx-entities-list');
     const linkedList = alert.linked_entities || [];
@@ -1273,7 +1259,6 @@ function selectCase(id) {
         }
     }
 
-    // 12. Context Pane: Prior Alerts
     const priorCount = document.getElementById('ctx-prior-alerts-count');
     const priorList = document.getElementById('ctx-prior-alerts-list');
     if (alert.prior_alerts) {
@@ -1291,13 +1276,33 @@ function selectCase(id) {
             }
         }
     }
+}
 
-    // Legacy table compatibility
+// Selecting a case to open Case Investigation Cockpit
+function selectCase(id) {
+    activeAlertId = id;
+    const alert = activeAlerts.find(a => a.alert_id === id) || activeAlerts[0];
+    if (!alert) return;
+
+    const shortId = alert.short_id || (alert.alert_id.includes('-') ? alert.alert_id.split('-').pop() : alert.alert_id.slice(-4));
+    const fullCaseId = alert.alert_id.startsWith('aml-') ? alert.alert_id.toUpperCase() : `AML-2026-${shortId}`;
+
+    _updateCaseQueueAndTopbar(alert, fullCaseId);
+    acquireCaseLock(alert.alert_id);
+
+    const rawAiScore = (alert.ai_risk_score !== undefined && alert.ai_risk_score !== null && !isNaN(alert.ai_risk_score)) ? Number(alert.ai_risk_score) : 0.8;
+    const riskScore = Math.min(Math.max(Math.round(rawAiScore * 100), 0), 100);
+    const riskClass = (alert.threat_level === 'CRITICAL' || rawAiScore >= 0.85) ? 'high' : 
+                      ((alert.threat_level === 'HIGH' || rawAiScore >= 0.6) ? 'med' : 'low');
+
+    const firedRulesCount = alert.rules_triggered ? alert.rules_triggered.length : (alert.rules_triggered_count !== undefined && alert.rules_triggered_count !== null ? alert.rules_triggered_count : 0);
+
+    _updateEvidencePaneAndKpis(alert, riskScore, riskClass, firedRulesCount);
+    _updateTriggeredRulesAndShap(alert, firedRulesCount);
+    _updateContextKycAndEntities(alert, riskScore);
+
     loadInboxTableHighlights(id);
-
     log(`Cockpit Active: Inspecting Case #${shortId} (${alert.entity ? alert.entity.name : 'Unknown'})`, 'info');
-
-    // Fetch and render authentic KYC, dynamic timeline, and prior alert history
     fetchAndRenderAlertDetails(id, alert);
 }
 

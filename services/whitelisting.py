@@ -76,6 +76,69 @@ def _build_redis_key(tenant_id: str, rule: str, identifier: str, is_customer: bo
     return f"aml:whitelist:{tenant_id}:{rule.strip().upper()}:{prefix}{identifier.strip().lower()}"
 
 
+async def _persist_whitelist_db(
+    entry_id: str,
+    tenant_id: str,
+    customer_id: Optional[str],
+    matched_entity_name: str,
+    rule_upper: str,
+    cleared_by: str,
+    now: datetime,
+    expires_at: Optional[datetime],
+    notes: Optional[str],
+    conn=None
+) -> None:
+    insert_sql = """
+        INSERT INTO whitelisted_entities (
+            id, tenant_id, customer_id, matched_entity_name, matched_rule,
+            disposition, cleared_by, cleared_at, expires_at, notes
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+    """
+    params = (
+        uuid.UUID(entry_id), uuid.UUID(str(tenant_id)), customer_id,
+        matched_entity_name.strip(), rule_upper,
+        "FALSE_POSITIVE", cleared_by, now, expires_at, notes
+    )
+    try:
+        if conn is not None:
+            await conn.execute(insert_sql, *params)
+        else:
+            async with get_async_db_conn(tenant_id=tenant_id) as db_conn:
+                if hasattr(db_conn, "execute"):
+                    await db_conn.execute(insert_sql, *params)
+    except Exception as e:
+        logger.debug(f"Whitelist database write bypassed/fallback: {e}")
+
+
+async def _populate_redis_whitelist(
+    tenant_id: str,
+    rule_upper: str,
+    norm_name: str,
+    customer_id: Optional[str],
+    entry: dict,
+    now: datetime,
+    expires_at: Optional[datetime]
+) -> None:
+    try:
+        redis = await get_async_redis_client()
+        if not redis:
+            return
+        ttl = DEFAULT_WHITELIST_CACHE_TTL
+        if expires_at:
+            exp_dt = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
+            delta = int((exp_dt - now).total_seconds())
+            if delta > 0:
+                ttl = delta
+
+        r_key_entity = _build_redis_key(tenant_id, rule_upper, norm_name)
+        await redis.setex(r_key_entity, ttl, json.dumps(entry))
+        if customer_id:
+            r_key_cust = _build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True)
+            await redis.setex(r_key_cust, ttl, json.dumps(entry))
+    except Exception as e:
+        logger.warning(f"Failed to populate Redis whitelist cache: {e}")
+
+
 async def add_to_whitelist(
     tenant_id: str,
     matched_entity_name: str,
@@ -108,7 +171,6 @@ async def add_to_whitelist(
         "notes": notes or "Adjudicated as false positive by compliance."
     }
 
-    # 1. Update L1 In-Memory Cache
     cache_key = f"{tenant_id}:{rule_upper}:{norm_name}"
     _LOCAL_WHITELIST_STORE[cache_key] = entry
     cust_cache_key = None
@@ -116,58 +178,14 @@ async def add_to_whitelist(
         cust_cache_key = f"{tenant_id}:{rule_upper}:cust:{customer_id}"
         _LOCAL_WHITELIST_STORE[cust_cache_key] = entry
 
-    # 2. Persist in PostgreSQL Source of Truth
-    try:
-        if conn is not None:
-            await conn.execute(
-                """
-                INSERT INTO whitelisted_entities (
-                    id, tenant_id, customer_id, matched_entity_name, matched_rule,
-                    disposition, cleared_by, cleared_at, expires_at, notes
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
-                """,
-                uuid.UUID(entry_id), uuid.UUID(str(tenant_id)), customer_id,
-                matched_entity_name.strip(), rule_upper,
-                "FALSE_POSITIVE", cleared_by, now, expires_at, notes
-            )
-        else:
-            async with get_async_db_conn(tenant_id=tenant_id) as db_conn:
-                if hasattr(db_conn, "execute"):
-                    await db_conn.execute(
-                        """
-                        INSERT INTO whitelisted_entities (
-                            id, tenant_id, customer_id, matched_entity_name, matched_rule,
-                            disposition, cleared_by, cleared_at, expires_at, notes
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
-                        """,
-                        uuid.UUID(entry_id), uuid.UUID(str(tenant_id)), customer_id,
-                        matched_entity_name.strip(), rule_upper,
-                        "FALSE_POSITIVE", cleared_by, now, expires_at, notes
-                    )
-    except Exception as e:
-        logger.debug(f"Whitelist database write bypassed/fallback: {e}")
+    await _persist_whitelist_db(
+        entry_id, tenant_id, customer_id, matched_entity_name,
+        rule_upper, cleared_by, now, expires_at, notes, conn=conn
+    )
+    await _populate_redis_whitelist(
+        tenant_id, rule_upper, norm_name, customer_id, entry, now, expires_at
+    )
 
-    # 3. Write to L2 Distributed Redis Cache
-    try:
-        redis = await get_async_redis_client()
-        if redis:
-            # Determine TTL
-            ttl = DEFAULT_WHITELIST_CACHE_TTL
-            if expires_at:
-                exp_dt = expires_at if expires_at.tzinfo else expires_at.replace(tzinfo=timezone.utc)
-                delta = int((exp_dt - now).total_seconds())
-                if delta > 0:
-                    ttl = delta
-
-            r_key_entity = _build_redis_key(tenant_id, rule_upper, norm_name)
-            await redis.setex(r_key_entity, ttl, json.dumps(entry))
-            if customer_id:
-                r_key_cust = _build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True)
-                await redis.setex(r_key_cust, ttl, json.dumps(entry))
-    except Exception as e:
-        logger.warning(f"Failed to populate Redis whitelist cache: {e}")
-
-    # 4. Broadcast Invalidation / Sync Message to Peer Worker Pods
     broadcast_msg = {
         "action": "SYNC",
         "tenant_id": str(tenant_id),
@@ -181,6 +199,182 @@ async def add_to_whitelist(
         f"Whitelisted entity '{matched_entity_name}' for rule '{matched_rule}' by {cleared_by} (Tenant: {tenant_id})"
     )
     return entry
+
+
+def _is_entry_valid(entry: Optional[dict], now: datetime) -> bool:
+    if not entry:
+        return False
+    exp = entry.get("expires_at")
+    if not exp:
+        return True
+    return datetime.fromisoformat(exp.replace("Z", UTC_OFFSET_SUFFIX)) > now
+
+
+def _check_l1_whitelist(
+    tenant_id: str,
+    rule_upper: str,
+    entity_name: Optional[str],
+    customer_id: Optional[str],
+    now: datetime
+) -> bool:
+    if entity_name:
+        norm_name = entity_name.strip().lower()
+        cached = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:{rule_upper}:{norm_name}")
+        if not cached:
+            cached = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:*:{norm_name}")
+        if _is_entry_valid(cached, now):
+            return True
+
+    if customer_id:
+        cached_cust = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:{rule_upper}:cust:{customer_id}")
+        if not cached_cust:
+            cached_cust = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:*:cust:{customer_id}")
+        if _is_entry_valid(cached_cust, now):
+            return True
+
+    return False
+
+
+async def _check_l2_whitelist(
+    tenant_id: str,
+    rule_upper: str,
+    entity_name: Optional[str],
+    customer_id: Optional[str],
+    now: datetime
+) -> bool:
+    try:
+        redis = await get_async_redis_client()
+        if not redis:
+            return False
+
+        keys_to_check = []
+        if entity_name:
+            norm_name = entity_name.strip().lower()
+            keys_to_check.append((f"{tenant_id}:{rule_upper}:{norm_name}", _build_redis_key(tenant_id, rule_upper, norm_name)))
+            keys_to_check.append((f"{tenant_id}:*:{norm_name}", _build_redis_key(tenant_id, "*", norm_name)))
+        if customer_id:
+            keys_to_check.append((f"{tenant_id}:{rule_upper}:cust:{customer_id}", _build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True)))
+            keys_to_check.append((f"{tenant_id}:*:cust:{customer_id}", _build_redis_key(tenant_id, "*", customer_id, is_customer=True)))
+
+        for l1_key, r_key in keys_to_check:
+            raw_val = await redis.get(r_key)
+            if raw_val:
+                entry = json.loads(raw_val)
+                if _is_entry_valid(entry, now):
+                    _LOCAL_WHITELIST_STORE[l1_key] = entry
+                    return True
+    except Exception as e:
+        logger.debug(f"Redis L2 whitelist lookup bypassed: {e}")
+
+    return False
+
+
+def _format_datetime_str(val: Any) -> Optional[str]:
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    return str(val) if val else None
+
+
+async def _query_l3_whitelist_row(
+    tenant_id: str,
+    rule_upper: str,
+    entity_name: Optional[str],
+    customer_id: Optional[str],
+    conn=None
+) -> Optional[Any]:
+    query_sql = """
+            SELECT id, tenant_id, customer_id, matched_entity_name, matched_rule,
+                   disposition, cleared_by, cleared_at, expires_at, notes
+            FROM whitelisted_entities
+            WHERE tenant_id = $1::uuid
+              AND disposition = 'FALSE_POSITIVE'
+              AND (matched_rule = $2 OR matched_rule = '*')
+              AND (
+                  (LOWER(matched_entity_name) = LOWER($3))
+                  OR ($4::text IS NOT NULL AND customer_id = $4::text)
+              )
+              AND (expires_at IS NULL OR expires_at > NOW())
+            LIMIT 1;
+        """
+    params = (
+        str(tenant_id),
+        rule_upper,
+        entity_name.strip() if entity_name else "",
+        str(customer_id) if customer_id else None
+    )
+    if conn is not None and hasattr(conn, "fetchrow"):
+        return await conn.fetchrow(query_sql, *params)
+    async with get_async_db_read_conn(tenant_id=tenant_id) as db_conn:
+        if hasattr(db_conn, "fetchrow"):
+            return await db_conn.fetchrow(query_sql, *params)
+    return None
+
+
+async def _hydrate_redis_l2(
+    tenant_id: str,
+    rule_upper: str,
+    entity_name: Optional[str],
+    customer_id: Optional[str],
+    expires_at_val: Any,
+    now: datetime,
+    db_entry: dict
+) -> None:
+    try:
+        redis = await get_async_redis_client()
+        if not redis:
+            return
+        ttl = DEFAULT_WHITELIST_CACHE_TTL
+        if expires_at_val and hasattr(expires_at_val, "__sub__"):
+            delta = int((expires_at_val - now).total_seconds())
+            if delta > 0:
+                ttl = delta
+        if entity_name:
+            await redis.setex(_build_redis_key(tenant_id, rule_upper, entity_name), ttl, json.dumps(db_entry))
+        if customer_id:
+            await redis.setex(_build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True), ttl, json.dumps(db_entry))
+    except Exception:
+        pass
+
+
+async def _check_l3_db_whitelist(
+    tenant_id: str,
+    rule_upper: str,
+    entity_name: Optional[str],
+    customer_id: Optional[str],
+    now: datetime,
+    conn=None
+) -> bool:
+    try:
+        row = await _query_l3_whitelist_row(tenant_id, rule_upper, entity_name, customer_id, conn=conn)
+        if not row:
+            return False
+
+        cleared_at_str = _format_datetime_str(row.get("cleared_at"))
+        expires_at_val = row.get("expires_at")
+        expires_at_str = _format_datetime_str(expires_at_val)
+
+        db_entry = {
+            "id": str(row["id"]),
+            "tenant_id": str(row["tenant_id"]),
+            "customer_id": row.get("customer_id"),
+            "matched_entity_name": row.get("matched_entity_name"),
+            "matched_rule": row.get("matched_rule"),
+            "disposition": row.get("disposition", "FALSE_POSITIVE"),
+            "cleared_by": row.get("cleared_by"),
+            "cleared_at": cleared_at_str,
+            "expires_at": expires_at_str,
+            "notes": row.get("notes")
+        }
+        if entity_name:
+            _LOCAL_WHITELIST_STORE[f"{tenant_id}:{rule_upper}:{entity_name.strip().lower()}"] = db_entry
+        if customer_id:
+            _LOCAL_WHITELIST_STORE[f"{tenant_id}:{rule_upper}:cust:{customer_id}"] = db_entry
+
+        await _hydrate_redis_l2(tenant_id, rule_upper, entity_name, customer_id, expires_at_val, now, db_entry)
+        return True
+    except Exception as e:
+        logger.debug(f"Whitelist database lookup bypassed: {e}")
+        return False
 
 
 async def is_entity_whitelisted(
@@ -201,144 +395,49 @@ async def is_entity_whitelisted(
     rule_upper = rule_name.strip().upper()
     now = datetime.now(timezone.utc)
 
-    # ── Level 1: In-Memory L1 Fast-Path Cache ─────────────────────────────────
-    if entity_name:
-        cache_key = f"{tenant_id}:{rule_upper}:{entity_name.strip().lower()}"
-        cached = _LOCAL_WHITELIST_STORE.get(cache_key)
-        if not cached:
-            cached = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:*:{entity_name.strip().lower()}")
-        if cached:
-            exp = cached.get("expires_at")
-            if not exp or datetime.fromisoformat(exp.replace("Z", UTC_OFFSET_SUFFIX)) > now:
-                return True
+    if _check_l1_whitelist(tenant_id, rule_upper, entity_name, customer_id, now):
+        return True
+    if await _check_l2_whitelist(tenant_id, rule_upper, entity_name, customer_id, now):
+        return True
+    return await _check_l3_db_whitelist(tenant_id, rule_upper, entity_name, customer_id, now, conn=conn)
 
-    if customer_id:
-        cached_cust = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:{rule_upper}:cust:{customer_id}")
-        if not cached_cust:
-            cached_cust = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:*:cust:{customer_id}")
-        if cached_cust:
-            exp = cached_cust.get("expires_at")
-            if not exp or datetime.fromisoformat(exp.replace("Z", UTC_OFFSET_SUFFIX)) > now:
-                return True
 
-    # ── Level 2: Distributed Redis L2 Cache ───────────────────────────────────
+def _handle_whitelist_pubsub_message(msg: Optional[dict]) -> None:
+    if not msg or msg.get("type") != "message":
+        return
     try:
-        redis = await get_async_redis_client()
-        if redis:
-            keys_to_check = []
-            if entity_name:
-                norm_name = entity_name.strip().lower()
-                keys_to_check.append((cache_key, _build_redis_key(tenant_id, rule_upper, norm_name)))
-                keys_to_check.append((f"{tenant_id}:*:{norm_name}", _build_redis_key(tenant_id, "*", norm_name)))
-            if customer_id:
-                keys_to_check.append((f"{tenant_id}:{rule_upper}:cust:{customer_id}", _build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True)))
-                keys_to_check.append((f"{tenant_id}:*:cust:{customer_id}", _build_redis_key(tenant_id, "*", customer_id, is_customer=True)))
+        data = json.loads(msg["data"])
+        action = data.get("action")
+        if action == "CLEAR":
+            _LOCAL_WHITELIST_STORE.clear()
+            logger.info("Cleared L1 whitelist cache via Redis broadcast.")
+        elif action == "SYNC":
+            _sync_local_whitelist_entry(data)
+        elif action == "INVALIDATE":
+            k = data.get("cache_key")
+            if k and k in _LOCAL_WHITELIST_STORE:
+                del _LOCAL_WHITELIST_STORE[k]
+    except Exception as parse_err:
+        logger.debug(f"Failed to parse whitelist pubsub message: {parse_err}")
 
-            for l1_key, r_key in keys_to_check:
-                raw_val = await redis.get(r_key)
-                if raw_val:
-                    entry = json.loads(raw_val)
-                    exp = entry.get("expires_at")
-                    if not exp or datetime.fromisoformat(exp.replace("Z", UTC_OFFSET_SUFFIX)) > now:
-                        # Hydrate L1 cache for subsequent local calls
-                        _LOCAL_WHITELIST_STORE[l1_key] = entry
-                        return True
-    except Exception as e:
-        logger.debug(f"Redis L2 whitelist lookup bypassed: {e}")
 
-    # ── Level 3: PostgreSQL Database Source of Truth ──────────────────────────
-    try:
-        query_sql = """
-            SELECT id, tenant_id, customer_id, matched_entity_name, matched_rule,
-                   disposition, cleared_by, cleared_at, expires_at, notes
-            FROM whitelisted_entities
-            WHERE tenant_id = $1::uuid
-              AND disposition = 'FALSE_POSITIVE'
-              AND (matched_rule = $2 OR matched_rule = '*')
-              AND (
-                  (LOWER(matched_entity_name) = LOWER($3))
-                  OR ($4::text IS NOT NULL AND customer_id = $4::text)
-              )
-              AND (expires_at IS NULL OR expires_at > NOW())
-            LIMIT 1;
-        """
-        row = None
-        if conn is not None and hasattr(conn, "fetchrow"):
-            row = await conn.fetchrow(
-                query_sql,
-                str(tenant_id),
-                rule_upper,
-                entity_name.strip() if entity_name else "",
-                str(customer_id) if customer_id else None
-            )
-        else:
-            async with get_async_db_read_conn(tenant_id=tenant_id) as db_conn:
-                if hasattr(db_conn, "fetchrow"):
-                    row = await db_conn.fetchrow(
-                        query_sql,
-                        str(tenant_id),
-                        rule_upper,
-                        entity_name.strip() if entity_name else "",
-                        str(customer_id) if customer_id else None
-                    )
+def _sync_local_whitelist_entry(data: dict) -> None:
+    entry = data.get("entry")
+    if not entry:
+        return
+    k1 = data.get("cache_key")
+    if k1:
+        _LOCAL_WHITELIST_STORE[k1] = entry
+    k2 = data.get("cust_cache_key")
+    if k2:
+        _LOCAL_WHITELIST_STORE[k2] = entry
 
-        if row:
-            cleared_at_val = row.get("cleared_at")
-            expires_at_val = row.get("expires_at")
 
-            if hasattr(cleared_at_val, "isoformat"):
-                cleared_at_str = cleared_at_val.isoformat()
-            elif cleared_at_val:
-                cleared_at_str = str(cleared_at_val)
-            else:
-                cleared_at_str = None
-
-            if hasattr(expires_at_val, "isoformat"):
-                expires_at_str = expires_at_val.isoformat()
-            elif expires_at_val:
-                expires_at_str = str(expires_at_val)
-            else:
-                expires_at_str = None
-
-            db_entry = {
-                "id": str(row["id"]),
-                "tenant_id": str(row["tenant_id"]),
-                "customer_id": row.get("customer_id"),
-                "matched_entity_name": row.get("matched_entity_name"),
-                "matched_rule": row.get("matched_rule"),
-                "disposition": row.get("disposition", "FALSE_POSITIVE"),
-                "cleared_by": row.get("cleared_by"),
-                "cleared_at": cleared_at_str,
-                "expires_at": expires_at_str,
-                "notes": row.get("notes")
-            }
-            # Hydrate L1 Cache
-            if entity_name:
-                _LOCAL_WHITELIST_STORE[f"{tenant_id}:{rule_upper}:{entity_name.strip().lower()}"] = db_entry
-            if customer_id:
-                _LOCAL_WHITELIST_STORE[f"{tenant_id}:{rule_upper}:cust:{customer_id}"] = db_entry
-
-            # Hydrate L2 Redis Cache asynchronously
-            try:
-                redis = await get_async_redis_client()
-                if redis:
-                    ttl = DEFAULT_WHITELIST_CACHE_TTL
-                    if expires_at_val and hasattr(expires_at_val, "__sub__"):
-                        delta = int((expires_at_val - now).total_seconds())
-                        if delta > 0:
-                            ttl = delta
-                    if entity_name:
-                        await redis.setex(_build_redis_key(tenant_id, rule_upper, entity_name), ttl, json.dumps(db_entry))
-                    if customer_id:
-                        await redis.setex(_build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True), ttl, json.dumps(db_entry))
-            except Exception:
-                pass
-
-            return True
-    except Exception as e:
-        logger.debug(f"Whitelist database lookup bypassed: {e}")
-
-    return False
+async def _consume_whitelist_pubsub_messages(pubsub, shutdown_event: Optional[asyncio.Event]) -> None:
+    while shutdown_event is None or not shutdown_event.is_set():
+        msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+        _handle_whitelist_pubsub_message(msg)
+        await asyncio.sleep(0.5)
 
 
 async def start_redis_whitelist_listener(shutdown_event: Optional[asyncio.Event] = None) -> None:
@@ -355,31 +454,7 @@ async def start_redis_whitelist_listener(shutdown_event: Optional[asyncio.Event]
             pubsub = redis.pubsub()
             await pubsub.subscribe(WHITELIST_PUBSUB_CHANNEL)
             logger.info(f"Subscribed to Redis whitelist invalidation channel '{WHITELIST_PUBSUB_CHANNEL}'")
-            while shutdown_event is None or not shutdown_event.is_set():
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if msg and msg.get("type") == "message":
-                    try:
-                        data = json.loads(msg["data"])
-                        action = data.get("action")
-                        if action == "CLEAR":
-                            _LOCAL_WHITELIST_STORE.clear()
-                            logger.info("Cleared L1 whitelist cache via Redis broadcast.")
-                        elif action == "SYNC":
-                            entry = data.get("entry")
-                            if entry:
-                                k1 = data.get("cache_key")
-                                if k1:
-                                    _LOCAL_WHITELIST_STORE[k1] = entry
-                                k2 = data.get("cust_cache_key")
-                                if k2:
-                                    _LOCAL_WHITELIST_STORE[k2] = entry
-                        elif action == "INVALIDATE":
-                            k = data.get("cache_key")
-                            if k and k in _LOCAL_WHITELIST_STORE:
-                                del _LOCAL_WHITELIST_STORE[k]
-                    except Exception as parse_err:
-                        logger.debug(f"Failed to parse whitelist pubsub message: {parse_err}")
-                await asyncio.sleep(0.5)
+            await _consume_whitelist_pubsub_messages(pubsub, shutdown_event)
         except Exception as e:
             logger.debug(f"Redis whitelist listener encountered transient error: {e}")
             await asyncio.sleep(5)

@@ -16,6 +16,7 @@ spec:
       labels:
         app: aml-elasticsearch
     spec:
+      automountServiceAccountToken: false
       containers:
       - name: elasticsearch
         image: elasticsearch:8.11.0
@@ -70,9 +71,11 @@ spec:
           requests:
             cpu: "500m"
             memory: "2Gi"
+            ephemeral-storage: "512Mi"
           limits:
             cpu: "2000m"
             memory: "4Gi"
+            ephemeral-storage: "1Gi"
         volumeMounts:
         - name: elasticsearch-data
           mountPath: /usr/share/elasticsearch/data

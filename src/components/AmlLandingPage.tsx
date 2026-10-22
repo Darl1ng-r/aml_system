@@ -80,6 +80,24 @@ const CONNECTIONS = [
   { from: 7, to: 8, type: 'low', label: 'Commercial Settlement' },
 ];
 
+const getNodeBadgeClass = (type: string) => {
+  if (type === 'high') return 'bg-[#C1443B]/20 text-[#C1443B]';
+  if (type === 'med') return 'bg-[#C98A2E]/20 text-[#C98A2E]';
+  return 'bg-[#4C7A5E]/20 text-[#4C7A5E]';
+};
+
+const getNodeHexColor = (type: string) => {
+  if (type === 'high') return '#C1443B';
+  if (type === 'med') return '#C98A2E';
+  return '#4C7A5E';
+};
+
+const getNodeBgColor = (type: string) => {
+  if (type === 'high') return 'bg-[#C1443B]';
+  if (type === 'med') return 'bg-[#C98A2E]';
+  return 'bg-[#4C7A5E]';
+};
+
 // ─────────────────────────────────────────────────────────────
 // THREE.JS INTERACTIVE 3D MONEY FLOW COMPONENT WITH 2D FALLBACK
 // ─────────────────────────────────────────────────────────────
@@ -220,7 +238,7 @@ const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
       });
 
       // Connections & Traveling Pulse particles
-      CONNECTIONS.forEach((conn) => {
+      CONNECTIONS.forEach((conn, connIdx) => {
         const startNode = FINANCIAL_NODES[conn.from];
         const endNode = FINANCIAL_NODES[conn.to];
 
@@ -253,7 +271,11 @@ const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
         const particleGeo = new THREE.SphereGeometry(0.8, 8, 8);
         const particleMat = new THREE.MeshBasicMaterial({ color: arcColor });
         const particleMesh = new THREE.Mesh(particleGeo, particleMat);
-        particleMesh.userData = { curve, t: Math.random(), speed: 0.005 + Math.random() * 0.005 };
+        particleMesh.userData = {
+          curve,
+          t: (connIdx * 0.37) % 1,
+          speed: 0.005 + ((connIdx * 0.003) % 0.005),
+        };
         particlesGroup.add(particleMesh);
       });
 
@@ -391,15 +413,7 @@ const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
               >
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-bold">{node.code}</span>
-                  <span
-                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                      node.type === 'high'
-                        ? 'bg-[#C1443B]/20 text-[#C1443B]'
-                        : node.type === 'med'
-                        ? 'bg-[#C98A2E]/20 text-[#C98A2E]'
-                        : 'bg-[#4C7A5E]/20 text-[#4C7A5E]'
-                    }`}
-                  >
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${getNodeBadgeClass(node.type)}`}>
                     <span>Risk {node.risk}</span>
                   </span>
                 </div>
@@ -455,14 +469,7 @@ const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
           {hoveredNode ? (
             <span
               className="font-bold"
-              style={{
-                color:
-                  hoveredNode.type === 'high'
-                    ? '#C1443B'
-                    : hoveredNode.type === 'med'
-                    ? '#C98A2E'
-                    : '#4C7A5E',
-              }}
+              style={{ color: getNodeHexColor(hoveredNode.type) }}
             >
               AUDIT TARGET: {hoveredNode.name} ({hoveredNode.code}) · Risk: {hoveredNode.risk}
             </span>
@@ -519,6 +526,28 @@ const ThreeJsMoneyFlowGraph: React.FC<ThreeJsMoneyFlowGraphProps> = ({
   );
 };
 
+const getRecommendationMessage = (risk: number) => {
+  if (risk >= 80) {
+    return (
+      <div className="text-[#C1443B]">
+        ⚠ Block SWIFT release immediately. Generate FinCEN SAR XML filing package for review.
+      </div>
+    );
+  }
+  if (risk >= 50) {
+    return (
+      <div className="text-[#C98A2E]">
+        ⚡ Route to L2 Investigator for Enhanced Due Diligence (EDD) source-of-wealth inquiry.
+      </div>
+    );
+  }
+  return (
+    <div className="text-[#4C7A5E]">
+      ✓ Within statistical baseline parameters. Instant clearing clearance granted.
+    </div>
+  );
+};
+
 // ─────────────────────────────────────────────────────────────
 // INTERACTIVE COMPLIANCE ANOMALY & RULE ENGINE SIMULATOR
 // ─────────────────────────────────────────────────────────────
@@ -541,8 +570,15 @@ const RuleEngineSimulator: React.FC = () => {
     return Math.min(score, 99);
   }, [wireAmount, ruleStructuring, ruleVelocity, ruleOffshore, ruleDormant]);
 
-  const riskTier = calculatedRisk >= 80 ? 'CRITICAL ALERT' : calculatedRisk >= 50 ? 'MEDIUM SUSPICION' : 'APPROVED PASS';
-  const riskColor = calculatedRisk >= 80 ? '#C1443B' : calculatedRisk >= 50 ? '#C98A2E' : '#4C7A5E';
+  let riskTier = 'APPROVED PASS';
+  let riskColor = '#4C7A5E';
+  if (calculatedRisk >= 80) {
+    riskTier = 'CRITICAL ALERT';
+    riskColor = '#C1443B';
+  } else if (calculatedRisk >= 50) {
+    riskTier = 'MEDIUM SUSPICION';
+    riskColor = '#C98A2E';
+  }
 
   return (
     <div className="rounded-xl p-6 bg-white border border-[#DAD3C3] shadow-sm">
@@ -676,19 +712,7 @@ const RuleEngineSimulator: React.FC = () => {
                 <div>
                   <strong>Recommended MLRO Action:</strong>
                 </div>
-                {calculatedRisk >= 80 ? (
-                  <div className="text-[#C1443B]">
-                    ⚠ Block SWIFT release immediately. Generate FinCEN SAR XML filing package for review.
-                  </div>
-                ) : calculatedRisk >= 50 ? (
-                  <div className="text-[#C98A2E]">
-                    ⚡ Route to L2 Investigator for Enhanced Due Diligence (EDD) source-of-wealth inquiry.
-                  </div>
-                ) : (
-                  <div className="text-[#4C7A5E]">
-                    ✓ Within statistical baseline parameters. Instant clearing clearance granted.
-                  </div>
-                )}
+                {getRecommendationMessage(calculatedRisk)}
               </div>
             </div>
           </div>
@@ -1143,15 +1167,7 @@ export const AmlLandingPage: React.FC = () => {
               >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#DAD3C3]">
                   <div className="flex items-center gap-2">
-                    <span
-                      className={`w-3 h-3 rounded-full ${
-                        selectedNode.type === 'high'
-                          ? 'bg-[#C1443B]'
-                          : selectedNode.type === 'med'
-                          ? 'bg-[#C98A2E]'
-                          : 'bg-[#4C7A5E]'
-                      }`}
-                    />
+                    <span className={`w-3 h-3 rounded-full ${getNodeBgColor(selectedNode.type)}`} />
                     <strong className="text-sm text-[#1B1F2B]">{selectedNode.name} ({selectedNode.code})</strong>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1645,27 +1661,28 @@ export const AmlLandingPage: React.FC = () => {
             className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#1B1F2B]/80 backdrop-blur-md"
             role="dialog"
             aria-modal="true"
-            aria-label="Sentinel AML Cockpit Case Walkthrough Video"
-            tabIndex={-1}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') setVideoModalOpen(false);
-            }}
-            onClick={(e: React.MouseEvent<HTMLDivElement>) => {
-              if (e.target === e.currentTarget) setVideoModalOpen(false);
-            }}
+            aria-labelledby="video-modal-title"
           >
+            <button
+              type="button"
+              className="fixed inset-0 w-full h-full cursor-default bg-transparent"
+              onClick={() => setVideoModalOpen(false)}
+              aria-label="Close modal backdrop"
+              tabIndex={-1}
+            />
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="relative w-full max-w-3xl bg-white rounded-xl overflow-hidden border-2 border-[#DAD3C3] shadow-2xl"
+              className="relative w-full max-w-3xl bg-white rounded-xl overflow-hidden border-2 border-[#DAD3C3] shadow-2xl z-10"
             >
               <div className="flex items-center justify-between px-4 py-3 bg-[#1B1F2B] border-b border-[#2B3040] text-white">
                 <div className="flex items-center gap-2 text-xs font-mono">
                   <PlayCircle className="w-4 h-4 text-[#4C7A5E]" />
-                  <span>Sentinel AML Cockpit — Live Case Investigation Walkthrough</span>
+                  <span id="video-modal-title">Sentinel AML Cockpit — Live Case Investigation Walkthrough</span>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setVideoModalOpen(false)}
                   aria-label="Close video modal"
                   className="text-slate-400 hover:text-white focus:outline-none"
