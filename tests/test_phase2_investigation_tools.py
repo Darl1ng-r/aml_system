@@ -374,11 +374,13 @@ async def test_audit_log_vault_query_and_export(auditor_token):
 # ── 7. System Health & Queue Lag Telemetry ────────────────────────────────────
 
 @pytest.mark.anyio
-async def test_system_and_queue_health():
+async def test_system_and_queue_health(admin_token):
     """Verify GET /api/v1/health/system and GET /api/v1/admin/queue-health."""
     mock_pool = MagicMock()
     mock_pool._size = 10
     mock_pool._free = 8
+    mock_pool.get_size.return_value = 10
+    mock_pool.get_idle_size.return_value = 8
 
     mock_conn = AsyncMock()
     mock_conn.fetchval.return_value = 1
@@ -387,18 +389,19 @@ async def test_system_and_queue_health():
     mock_ctx.__aexit__.return_value = None
     mock_pool.acquire.return_value = mock_ctx
 
+    headers = {"Authorization": f"Bearer {admin_token}"}
     with patch("database.postgres.db_pool", mock_pool), \
          patch("database.postgres.get_async_db_conn", return_value=mock_ctx):
 
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             # 1. System health
-            res_sys = await ac.get("/api/v1/health/system")
+            res_sys = await ac.get("/api/v1/health/system", headers=headers)
             assert res_sys.status_code == 200
             assert "services" in res_sys.json()
 
             # 2. Queue health
-            res_q = await ac.get("/api/v1/admin/queue-health")
+            res_q = await ac.get("/api/v1/admin/queue-health", headers=headers)
             assert res_q.status_code == 200
             assert res_q.json()["status"] == "HEALTHY"
             assert "kafka_topics" in res_q.json()

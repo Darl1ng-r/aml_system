@@ -41,30 +41,37 @@ def _parse_neo4j_node(node) -> dict | None:
 
 def _parse_neo4j_records(records: list[dict]) -> dict:
     nodes = {}
+    element_id_to_node_id = {}
     edges = []
     edge_ids = set()
 
     for rec in records:
-        s_parsed = _parse_neo4j_node(rec.get("start"))
+        start_raw = rec.get("start")
+        s_parsed = _parse_neo4j_node(start_raw)
         if s_parsed:
             nodes[s_parsed["id"]] = s_parsed
+            element_id_to_node_id[str(start_raw.element_id)] = s_parsed["id"]
 
-        c_parsed = _parse_neo4j_node(rec.get("connected"))
+        conn_raw = rec.get("connected")
+        c_parsed = _parse_neo4j_node(conn_raw)
         if c_parsed:
             nodes[c_parsed["id"]] = c_parsed
+            element_id_to_node_id[str(conn_raw.element_id)] = c_parsed["id"]
 
         rels = rec.get("r")
         rel_list = rels if isinstance(rels, list) else [rels]
         for rel in rel_list:
             if not rel:
                 continue
-            rel_id = f"{rel.start_node_element_id}_{rel.end_node_element_id}"
+            src_id = element_id_to_node_id.get(str(rel.start_node_element_id), str(rel.start_node_element_id))
+            dst_id = element_id_to_node_id.get(str(rel.end_node_element_id), str(rel.end_node_element_id))
+            rel_id = f"{src_id}_{dst_id}"
             if rel_id not in edge_ids:
                 edge_ids.add(rel_id)
                 edges.append({
                     "id": rel_id,
-                    "source": str(rel.start_node_element_id),
-                    "target": str(rel.end_node_element_id),
+                    "source": src_id,
+                    "target": dst_id,
                     "type": rel.type,
                     "properties": dict(rel)
                 })

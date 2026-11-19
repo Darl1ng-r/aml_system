@@ -450,12 +450,14 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/api-client.js"></script>
   <script>
     let activeDraftId = null;
     let activeAlertId = null;
     let activeFormat = 'FINCEN';
     let lastGeneratedXml = '';
+    let activeDraftStatus = 'DRAFT';
+    let isDirty = false;
 
     function showToast(msg) {
       const t = document.getElementById('toast');
@@ -473,7 +475,7 @@
       activeAlertId = urlParams.get('alert_id') || '00000000-0000-0000-0000-000000000001';
 
       const pathSegments = window.location.pathname.split('/');
-      if (pathSegments.length >= 4 && pathSegments[1] === 'sar' && pathSegments[2] === 'draft') {
+      if (pathSegments.length >= 4 && pathSegments[1] === 'sar' && (pathSegments[2] === 'draft' || pathSegments[2] === 'drafts')) {
         activeDraftId = pathSegments[3];
       }
 
@@ -492,14 +494,16 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
       }
 
       document.getElementById('narrativeText').addEventListener('input', () => {
+        isDirty = true;
         updateCharCounter();
         document.getElementById('autosaveStatus').innerText = '● Unsaved changes';
         document.getElementById('autosaveStatus').style.color = 'var(--accent-amber)';
       });
 
-      // Auto-save interval every 30 seconds
+      // Auto-save interval every 30 seconds (only when dirty and editable)
       setInterval(() => {
-        if (document.getElementById('narrativeText').value.length > 10) {
+        const editable = activeDraftStatus === 'DRAFT' || activeDraftStatus === 'REJECTED';
+        if (isDirty && editable && document.getElementById('narrativeText').value.length >= 10) {
           saveDraft(true);
         }
       }, 30000);
@@ -517,9 +521,11 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
         const data = await res.json();
         
         document.getElementById('ctxDraftId').innerText = data.draft_id.slice(0, 8);
-        document.getElementById('ctxStatus').innerText = data.status;
+        activeDraftStatus = data.status || 'DRAFT';
+        document.getElementById('ctxStatus').innerText = activeDraftStatus;
         document.getElementById('ctxAuthor').innerText = data.drafted_by_username || 'Analyst';
         document.getElementById('narrativeText').value = data.narrative || '';
+        isDirty = false;
         activeAlertId = data.alert_id;
 
         if (data.alert_details) {
@@ -571,13 +577,20 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
     async function generateAiNarrative() {
       showToast('Synthesizing 5-part FinCEN regulatory narrative...');
       try {
+        const senderEl = document.getElementById('ctxSenderAcc');
+        const receiverEl = document.getElementById('ctxReceiverAcc');
+        const amountEl = document.getElementById('ctxAmount');
+        const ruleEl = document.getElementById('ctxRule');
+        const senderText = senderEl ? senderEl.innerText.trim() : '';
+        const receiverText = receiverEl ? receiverEl.innerText.trim() : '';
+
         const payload = {
           alert_id: activeAlertId,
-          subject_name: document.getElementById('ctxSubject').innerText !== 'Loading...' ? document.getElementById('ctxSubject').innerText : null,
-          account_number: document.getElementById('ctxAccount').innerText !== 'Loading...' ? document.getElementById('ctxAccount').innerText : null,
-          amount: Number.parseFloat((document.getElementById('ctxAmount').innerText || '0').replace(/[^0-9.]/g, '')) || 45000.0,
+          subject_name: receiverText && receiverText !== 'Loading...' && receiverText !== 'N/A' ? receiverText : null,
+          account_number: senderText && senderText !== 'Loading...' && senderText !== 'N/A' ? senderText : null,
+          amount: Number.parseFloat((amountEl ? amountEl.innerText : '0').replace(/[^0-9.]/g, '')) || 45000.0,
           currency: 'USD',
-          typologies: [document.getElementById('ctxRule').innerText]
+          typologies: [ruleEl ? ruleEl.innerText : 'STRUCTURING_SMURFING']
         };
 
         const res = await fetch('/api/v1/fincen/sar/generate-narrative', {
@@ -630,6 +643,7 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
           document.getElementById('ctxDraftId').innerText = activeDraftId.slice(0, 8);
         }
 
+        isDirty = false;
         document.getElementById('autosaveStatus').innerText = '● All changes saved';
         document.getElementById('autosaveStatus').style.color = 'var(--accent-emerald)';
         if (!isSilent) showToast('Draft saved successfully.');
@@ -673,13 +687,6 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
       a.download = `sar_${activeFormat.toLowerCase()}_${new Date().toISOString().slice(0,10)}.xml`;
       a.click();
       URL.revokeObjectURL(url);
-    }
-
-    function logout() {
-      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
-      localStorage.clear();
-      sessionStorage.clear();
-      window.location.href = '/login';
     }
 
     window.addEventListener('DOMContentLoaded', initEditor);

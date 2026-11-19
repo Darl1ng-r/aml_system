@@ -1421,7 +1421,10 @@ def generate_sar_xml(alert_data, justification: str) -> str:
     """
     Generates a regulatory FinCEN-compatible Suspicious Activity Report XML payload
     """
-    alert_id, rule_name, threat, score, amt, curr, ts, s_acc, s_owner, r_acc, r_owner = alert_data
+    if len(alert_data) == 13:
+        alert_id, _tx_id, rule_name, threat, score, _status, amt, curr, ts, s_acc, s_owner, r_acc, r_owner = alert_data
+    else:
+        alert_id, rule_name, threat, score, amt, curr, ts, s_acc, s_owner, r_acc, r_owner = alert_data
 
     # Build XML structure
     root = ET.Element("SuspiciousActivityReport")
@@ -1439,7 +1442,7 @@ def generate_sar_xml(alert_data, justification: str) -> str:
     transaction = ET.SubElement(root, "Transaction")
     ET.SubElement(transaction, "Amount").text = str(amt)
     ET.SubElement(transaction, "Currency").text = curr
-    ET.SubElement(transaction, "Timestamp").text = ts.isoformat()
+    ET.SubElement(transaction, "Timestamp").text = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
 
     sender = ET.SubElement(transaction, "Sender")
     ET.SubElement(sender, "AccountNumber").text = s_acc

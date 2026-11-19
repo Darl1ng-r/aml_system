@@ -15,6 +15,9 @@
   <!-- Core Stylesheet -->
   <link rel="stylesheet" href="/static/style.css">
 
+  <!-- Shared API Client (CSRF + HttpOnly Cookies + Logout) -->
+  <script src="/static/api-client.js"></script>
+
   <!-- Lucide Icon Library -->
   <script src="/static/lucide.min.js" defer></script>
 
@@ -450,16 +453,6 @@
       }
     }
 
-    function logout() {
-      document.cookie = 'access_token=; Max-Age=0; path=/;';
-      sessionStorage.clear();
-      localStorage.removeItem('auth_session_active');
-      localStorage.removeItem('jwt_token');
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('username');
-      localStorage.removeItem('role');
-      window.location.href = '/login';
-    }
   </script>
 
 </body>

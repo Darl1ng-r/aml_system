@@ -24,6 +24,7 @@ from typing import Optional
 from fastapi import APIRouter, Header, Request, Depends
 from fastapi.responses import JSONResponse
 from config import settings
+from services.auth import RoleChecker
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,9 @@ async def readiness(
 
 
 @router.get("/api/v1/health/system")
-async def get_system_topology_health():
+async def get_system_topology_health(
+    current_user: dict = Depends(RoleChecker(["ADMIN", "SUPER_ADMIN"]))
+):
     """
     Exposes complete institutional component health, pool utilization,
     latencies, and service status for the Admin System Health command center.
@@ -189,11 +192,21 @@ async def get_system_topology_health():
         if db_pool:
             async with db_pool.acquire() as conn:
                 await conn.fetchval(SQL_PING_QUERY)
+            pool_size = (
+                db_pool.get_size()
+                if callable(getattr(db_pool, "get_size", None))
+                else getattr(db_pool, "_size", None)
+            )
+            free_conns = (
+                db_pool.get_idle_size()
+                if callable(getattr(db_pool, "get_idle_size", None))
+                else getattr(db_pool, "_free", None)
+            )
             services["postgres"] = {
                 "status": "UP",
                 "latency_ms": round((time.monotonic() - t0) * 1000, 1),
-                "pool_size": getattr(db_pool, "_size", 10),
-                "free_connections": getattr(db_pool, "_free", 8)
+                "pool_size": pool_size,
+                "free_connections": free_conns
             }
         else:
             services["postgres"] = {"status": "DEGRADED", "detail": "Pool not initialized"}
@@ -269,7 +282,9 @@ async def get_system_topology_health():
 
 
 @router.get("/api/v1/admin/queue-health")
-async def get_queue_health():
+async def get_queue_health(
+    current_user: dict = Depends(RoleChecker(["ADMIN", "SUPER_ADMIN"]))
+):
     """
     Returns Kafka / Redpanda consumer lag metrics, partition offsets,
     and ingestion backpressure state for streaming data feeds.

@@ -52,6 +52,7 @@ class SARDraftCreate(BaseModel):
     narrative: str = Field(..., min_length=10, max_length=10000)
     xml_payload: str | None = None
     case_id: str | None = None
+    status: str = Field("DRAFT", pattern=r"^(DRAFT|PENDING_MLRO_REVIEW)$")
 
     @field_validator("narrative", mode="before")
     @classmethod
@@ -429,20 +430,25 @@ async def create_sar_draft(
             INSERT INTO sar_drafts (
                 tenant_id, alert_id, case_id, drafted_by, drafted_by_username,
                 status, narrative, xml_payload
-            ) VALUES ($1, $2, $3, $4, $5, 'PENDING_MLRO_REVIEW', $6, $7)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING id;
             """,
             uuid.UUID(str(tenant_id)), alert_uuid, case_uuid,
             user_uuid,
             current_user.get("username", "analyst"),
+            payload.status,
             payload.narrative, payload.xml_payload
         )
 
         return {
             "draft_id": str(draft_id),
             "alert_id": payload.alert_id,
-            "status": "PENDING_MLRO_REVIEW",
-            "message": "SAR draft created successfully. Awaiting compliance officer / MLRO review."
+            "status": payload.status,
+            "message": (
+                "SAR draft submitted for MLRO review."
+                if payload.status == "PENDING_MLRO_REVIEW"
+                else "SAR draft saved."
+            )
         }
 
 

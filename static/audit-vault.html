@@ -398,7 +398,7 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/api-client.js"></script>
   <script>
     let auditRecords = [];
 
@@ -447,8 +447,8 @@
           <td class="mono" style="font-size:0.7rem; color:var(--text-muted);">${r.actor_role}</td>
           <td><span class="action-tag">${r.action}</span></td>
           <td class="mono" style="font-size:0.7rem;">${r.resource_type}</td>
-          <td class="mono" style="font-size:0.7rem; color:var(--accent-blue);">${r.resource_id.slice(0,12)}</td>
-          <td class="mono" style="font-size:0.725rem; color:var(--text-dim);">${r.actor_ip || '127.0.0.1'}</td>
+          <td class="mono" style="font-size:0.7rem; color:var(--accent-blue);">${r.resource_id ? String(r.resource_id).slice(0,12) : '—'}</td>
+          <td class="mono" style="font-size:0.725rem; color:var(--text-dim);">${r.actor_ip || 'Internal'}</td>
           <td style="text-align:right;">
             <button class="btn" style="padding:2px 8px; font-size:0.7rem;" onclick="viewDiff('${r.id}')">Inspect Diff ➔</button>
           </td>
@@ -545,13 +545,6 @@
         btn.disabled = false;
         spinner.style.display = 'none';
       }
-    }
-
-    function logout() {
-      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
-      localStorage.clear();
-      sessionStorage.clear();
-      window.location.href = '/login';
     }
 
     window.addEventListener('DOMContentLoaded', loadAuditLogs);

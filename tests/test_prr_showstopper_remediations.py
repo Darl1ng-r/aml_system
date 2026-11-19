@@ -81,10 +81,11 @@ async def test_outbox_fetch_atomically_transitions_to_processing_with_lease():
 @pytest.mark.asyncio
 async def test_queue_health_reports_degraded_when_database_fails():
     """Verify /api/v1/admin/queue-health reports status DEGRADED with error details on DB failure."""
+    headers = {"Authorization": f"Bearer {make_token('ADMIN')}"}
     with patch("database.postgres.get_async_db_conn", side_effect=RuntimeError("PostgreSQL connection pool exhausted")):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
-            res = await ac.get("/api/v1/admin/queue-health")
+            res = await ac.get("/api/v1/admin/queue-health", headers=headers)
             assert res.status_code == 200
             data = res.json()
             assert data["status"] == "DEGRADED"

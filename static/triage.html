@@ -15,6 +15,9 @@
   <!-- Core Stylesheet with Cache Busting -->
   <link rel="stylesheet" href="/static/style.css?v=20261014.5">
 
+  <!-- Shared API Client (CSRF + HttpOnly Cookies + Logout) -->
+  <script src="/static/api-client.js"></script>
+
   <!-- Lucide Icon Library -->
   <script src="/static/lucide.min.js" defer></script>
 
@@ -799,12 +802,17 @@
 
       const q = (document.getElementById('triage-search-input').value || '').toLowerCase();
       if (q) {
-        filtered = filtered.filter(a =>
-          (a.id || '').toLowerCase().includes(q) ||
-          (a.rule_name || '').toLowerCase().includes(q) ||
-          (a.subject_account_id || '').toLowerCase().includes(q) ||
-          (a.owner_name || '').toLowerCase().includes(q)
-        );
+        filtered = filtered.filter(a => {
+          const tx = a.transaction || {};
+          const acct = a.subject_account_id || tx.sender || '';
+          const owner = a.owner_name || tx.sender_name || '';
+          return (
+            (a.id || '').toLowerCase().includes(q) ||
+            (a.rule_name || '').toLowerCase().includes(q) ||
+            acct.toLowerCase().includes(q) ||
+            owner.toLowerCase().includes(q)
+          );
+        });
       }
 
       if (filtered.length === 0) {
@@ -813,6 +821,14 @@
       }
 
       tbody.innerHTML = filtered.map(a => {
+        const tx = a.transaction || {};
+        const ownerName = a.owner_name || tx.sender_name || 'Account Holder';
+        const subjectAcct = a.subject_account_id || tx.sender || 'ACC-****';
+        const amountVal = a.amount != null ? a.amount : (tx.amount != null ? tx.amount : 0);
+        const assigneeLabel = (a.assignee && a.assignee !== 'Unassigned')
+          ? a.assignee
+          : (a.assigned_officer_id ? 'Assigned' : null);
+
         const sevClass = (a.threat_level || 'LOW').toLowerCase();
         const score = Math.round(Number(a.ai_risk_score || 0) * 100);
         let scoreClass = 'low';
@@ -830,14 +846,14 @@
             <td style="font-family:var(--font-data); font-weight:600;">#${a.id.substring(0,8)}</td>
             <td><span class="rule-tag">${a.rule_name || 'MONITORING_HIT'}</span></td>
             <td>
-              <div style="font-weight:600;">${a.owner_name || 'Account Holder'}</div>
-              <div style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${a.subject_account_id || 'ACC-****'}</div>
+              <div style="font-weight:600;">${ownerName}</div>
+              <div style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${subjectAcct}</div>
             </td>
-            <td style="font-family:var(--font-data); font-weight:600;">$${Number(a.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+            <td style="font-family:var(--font-data); font-weight:600;">$${Number(amountVal).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
             <td><span class="score-badge ${sevClass}">● ${a.threat_level || 'LOW'}</span></td>
             <td><span class="score-badge ${scoreClass}">${score}%</span></td>
             <td><span style="font-size:11px; font-weight:600; text-transform:uppercase;">${a.status || 'OPEN'}</span></td>
-            <td><span style="font-size:12px; color:var(--ink-soft);">${a.assigned_officer_id ? 'Assigned' : '<span style="color:#D97706;">Unclaimed</span>'}</span></td>
+            <td><span style="font-size:12px; color:var(--ink-soft);">${assigneeLabel ? assigneeLabel : '<span style="color:#D97706;">Unclaimed</span>'}</span></td>
             <td id="lock-col-${a.id}">--</td>
             <td style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${dateStr}</td>
           </tr>
@@ -866,6 +882,13 @@
     }
 
     async function selectAlert(alertId) {
+      // Release previous alert lock before switching
+      if (selectedAlert && selectedAlert.id !== alertId && currentLockToken) {
+        const prevId = selectedAlert.id;
+        currentLockToken = null;
+        fetch(`/api/v1/locks/ALERT/${prevId}`, { method: 'DELETE' }).catch(() => {});
+      }
+
       selectedAlert = allAlerts.find(a => a.id === alertId);
       renderAlertsTable();
 
@@ -936,8 +959,12 @@
         `;
       }
 
+      const tx = alert.transaction || {};
+      const drawerAmount = alert.amount != null ? alert.amount : (tx.amount != null ? tx.amount : 0);
+      const drawerSender = alert.subject_account_id || tx.sender || 'N/A';
+      const drawerReceiver = alert.counterparty_account_id || tx.receiver || 'N/A';
       const score = Math.round(Number(alert.ai_risk_score || 0) * 100);
-      const explanation = alert.explainability_payload || 'Triggered pattern matched regulatory compliance thresholds.';
+      const explanation = alert.explainability_payload || alert.explainability || 'Triggered pattern matched regulatory compliance thresholds.';
 
       document.getElementById('drawer-content-area').innerHTML = `
         ${lockBannerHtml}
@@ -950,7 +977,7 @@
           <div class="info-grid">
             <div>
               <div class="info-label">Amount</div>
-              <div class="info-value">$${Number(alert.amount || 0).toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+              <div class="info-value">$${Number(drawerAmount).toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
             </div>
             <div>
               <div class="info-label">Threat Level</div>
@@ -958,11 +985,11 @@
             </div>
             <div>
               <div class="info-label">Account</div>
-              <div class="info-value">${alert.subject_account_id || 'ACC-8912'}</div>
+              <div class="info-value">${drawerSender}</div>
             </div>
             <div>
               <div class="info-label">Counterparty</div>
-              <div class="info-value">${alert.counterparty_account_id || 'EXTERNAL-BANK'}</div>
+              <div class="info-value">${drawerReceiver}</div>
             </div>
           </div>
         </div>
@@ -1105,29 +1132,34 @@
 
     function setupWebSocket() {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${proto}//${window.location.host}/ws/live-stream`);
+      const token = localStorage.getItem('jwt_token') || localStorage.getItem('access_token');
+      const wsUrl = token
+        ? `${proto}//${window.location.host}/ws/live-stream?token=${encodeURIComponent(token)}`
+        : `${proto}//${window.location.host}/ws/live-stream`;
+      const ws = new WebSocket(wsUrl);
+      let pingTimer = null;
+
+      ws.onopen = () => {
+        pingTimer = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+        }, 30000);
+      };
+
       ws.onmessage = (event) => {
         try {
+          if (event.data === 'pong') return;
           const msg = JSON.parse(event.data);
-          if (msg.event === 'ALERT_CREATED' || msg.event === 'ALERT_ESCALATED') {
+          if (msg.event === 'NEW_ALERT' || msg.event === 'ALERT_CREATED' || msg.event === 'ALERT_ESCALATED' || msg.event === 'ALERT_RESOLVED') {
             fetchAlerts();
           }
         } catch (e) {
-          // Ignore non-JSON heartbeat or malformed socket frames
           console.debug('Ignoring non-JSON or invalid WebSocket payload:', e);
         }
       };
-    }
 
-    function logout() {
-      document.cookie = 'access_token=; Max-Age=0; path=/;';
-      sessionStorage.clear();
-      localStorage.removeItem('auth_session_active');
-      localStorage.removeItem('jwt_token');
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('username');
-      localStorage.removeItem('role');
-      window.location.href = '/login';
+      ws.onclose = () => {
+        if (pingTimer) clearInterval(pingTimer);
+      };
     }
 
     function toggleTriageAppMenu(force) {
@@ -1161,7 +1193,12 @@
 
     window.addEventListener('beforeunload', () => {
       if (selectedAlert && currentLockToken) {
-        navigator.sendBeacon(`/api/v1/locks/ALERT/${selectedAlert.id}`);
+        fetch(`/api/v1/locks/ALERT/${selectedAlert.id}`, {
+          method: 'DELETE',
+          keepalive: true,
+          credentials: 'include',
+          headers: { 'X-CSRF-Protection': '1' }
+        }).catch(() => {});
       }
     });
   </script>

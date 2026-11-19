@@ -342,7 +342,7 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/api-client.js"></script>
   <script>
     let network = null;
     let nodesDataSet = null;
@@ -524,12 +524,13 @@
     async function runCycleDetection() {
       try {
         const res = await fetch('/api/v1/network/analysis', { credentials: 'include' });
-        if (!res.ok) throw new Error('Analysis query failed');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        showToast(`Cycle Analysis Complete: ${data.cycles ? data.cycles.length : 1} circular transit loop highlighted.`);
+        const flows = Array.isArray(data.circular_flows) ? data.circular_flows : [];
+        showToast(`Cycle Analysis Complete: ${flows.length} circular transit loop${flows.length === 1 ? '' : 's'} detected.`);
       } catch (err) {
         console.error('Failed to query cycle detection API:', err);
-        showToast('Tarjan Cycle Analysis: Circular money flow detected (1 -> 2 -> 3 -> 4 -> 5 -> 1).');
+        showToast('Cycle analysis failed: ' + err.message);
       }
     }
 
@@ -539,13 +540,6 @@
       } else {
         window.location.href = '/customers';
       }
-    }
-
-    function logout() {
-      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
-      localStorage.clear();
-      sessionStorage.clear();
-      window.location.href = '/login';
     }
 
     window.addEventListener('DOMContentLoaded', initNetwork);

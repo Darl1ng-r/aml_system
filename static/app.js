@@ -843,13 +843,20 @@ function updatePaginationControls(totalCount) {
     const start = totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1;
     const end = Math.min(currentPage * pageSize, totalCount);
 
-    document.getElementById('pagination-start').innerText = start;
-    document.getElementById('pagination-end').innerText = end;
-    document.getElementById('pagination-total').innerText = totalCount;
-    document.getElementById('current-page-display').innerText = `Page ${currentPage} of ${totalPages}`;
+    const startEl = document.getElementById('pagination-start');
+    const endEl = document.getElementById('pagination-end');
+    const totalEl = document.getElementById('pagination-total');
+    const pageEl = document.getElementById('current-page-display');
+    const prevBtn = document.getElementById('prev-page-btn');
+    const nextBtn = document.getElementById('next-page-btn');
 
-    document.getElementById('prev-page-btn').disabled = (currentPage === 1);
-    document.getElementById('next-page-btn').disabled = (currentPage === totalPages);
+    if (startEl) startEl.innerText = start;
+    if (endEl) endEl.innerText = end;
+    if (totalEl) totalEl.innerText = totalCount;
+    if (pageEl) pageEl.innerText = `Page ${currentPage} of ${totalPages}`;
+
+    if (prevBtn) prevBtn.disabled = (currentPage === 1);
+    if (nextBtn) nextBtn.disabled = (currentPage === totalPages);
 }
 
 function prevPage() {
@@ -876,10 +883,10 @@ function renderInbox(alertsList) {
     const activeCases = alertsList.filter(a => a.status === 'NEW' || a.status === 'OPEN');
 
     if (activeCases.length === 0) {
-        empty.style.display = 'flex';
+        if (empty) empty.style.display = 'flex';
         return;
     }
-    empty.style.display = 'none';
+    if (empty) empty.style.display = 'none';
 
     activeCases.forEach(alert => {
         const tr = document.createElement('tr');
@@ -1701,7 +1708,7 @@ async function expandGraphNode(nodeId) {
         return;
     }
     try {
-        const response = await fetch(`${BASE_URL}/api/v1/network/expand/${nodeId}`, {
+        const response = await fetch(`${BASE_URL}/api/v1/network/expand/${encodeURIComponent(nodeId)}`, {
             headers: getAuthHeaders()
         });
         if (!response.ok) throw new Error(`Network expand request failed with HTTP ${response.status}`);

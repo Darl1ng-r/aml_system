@@ -336,7 +336,7 @@
 
   <div class="toast" id="toast"></div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/api-client.js"></script>
   <script>
     function showToast(msg) {
       const t = document.getElementById('toast');
@@ -396,13 +396,6 @@
       } catch (err) {
         showToast('Error saving settings: ' + err.message);
       }
-    }
-
-    function logout() {
-      document.cookie = "access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 UTC;";
-      localStorage.clear();
-      sessionStorage.clear();
-      window.location.href = '/login';
     }
 
     window.addEventListener('DOMContentLoaded', loadRiskAppetite);
