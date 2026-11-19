@@ -11,6 +11,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
@@ -51,16 +52,67 @@ class EvidenceCreatePayload(BaseModel):
     content_type: Optional[str] = DEFAULT_CONTENT_TYPE
 
 
+async def _resolve_case_uuid(
+    conn,
+    raw_uuid: uuid.UUID,
+    tenant_id,
+    current_user: dict,
+    auto_create: bool = False
+) -> uuid.UUID:
+    """
+    Resolves either a direct `cases.id` UUID or an `alerts.id` UUID (passed by the
+    alert cockpit) to its linked `cases.id`, creating a linked case on upload if needed.
+    """
+    if not hasattr(conn, "fetchval"):
+        return raw_uuid
+    try:
+        existing_case = await conn.fetchval("SELECT id FROM cases WHERE id = $1;", raw_uuid)
+        if isinstance(existing_case, uuid.UUID):
+            return existing_case
+
+        linked_case = await conn.fetchval(
+            "SELECT case_id FROM case_alerts WHERE alert_id = $1 LIMIT 1;",
+            raw_uuid
+        )
+        if isinstance(linked_case, uuid.UUID):
+            return linked_case
+
+        if auto_create:
+            alert_exists = await conn.fetchval("SELECT id FROM alerts WHERE id = $1;", raw_uuid)
+            if isinstance(alert_exists, uuid.UUID):
+                new_case_id = uuid.uuid4()
+                case_num = f"CASE-{str(new_case_id)[:8].upper()}"
+                await conn.execute(
+                    """
+                    INSERT INTO cases (id, tenant_id, case_number, title, status, priority, assigned_username)
+                    VALUES ($1, $2, $3, $4, 'INVESTIGATING', 'HIGH', $5);
+                    """,
+                    new_case_id,
+                    uuid.UUID(str(tenant_id)),
+                    case_num,
+                    f"Investigation for Alert {str(raw_uuid)[:8]}",
+                    current_user.get("username", "Investigator")
+                )
+                await conn.execute(
+                    "INSERT INTO case_alerts (case_id, alert_id) VALUES ($1, $2) ON CONFLICT DO NOTHING;",
+                    new_case_id, raw_uuid
+                )
+                return new_case_id
+    except Exception:
+        return raw_uuid
+    return raw_uuid
+
+
 @router.get("", response_model=List[EvidenceMetadata])
 async def list_case_evidence(
     case_id: str,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
 ):
     """
-    List all evidence attachments registered to an AML case.
+    List all evidence attachments registered to an AML case (accepts case UUID or linked alert UUID).
     """
     try:
-        case_uuid = uuid.UUID(case_id)
+        raw_uuid = uuid.UUID(case_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid case ID format")
 
@@ -68,6 +120,7 @@ async def list_case_evidence(
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            case_uuid = await _resolve_case_uuid(conn, raw_uuid, tenant_id, current_user, auto_create=False)
             rows = await conn.fetch(
                 """
                 SELECT id, case_id, filename, content_type, file_size, storage_key,
@@ -143,6 +196,7 @@ async def upload_case_evidence(
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            resolved_case_uuid = await _resolve_case_uuid(conn, case_uuid, tenant_id, current_user, auto_create=True)
             await conn.execute(
                 """
                 INSERT INTO case_evidence (
@@ -151,7 +205,7 @@ async def upload_case_evidence(
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
                 """,
-                evidence_id, case_uuid, uuid.UUID(str(tenant_id)),
+                evidence_id, resolved_case_uuid, uuid.UUID(str(tenant_id)),
                 safe_filename, file.content_type or DEFAULT_CONTENT_TYPE,
                 file_size, stored_path, user_uuid, username, safe_description, parsed_tags
             )
@@ -180,6 +234,40 @@ async def upload_case_evidence(
         raise HTTPException(status_code=500, detail=f"Failed to record evidence: {e}")
 
 
+@router.get("/{evidence_id}/download")
+async def download_case_evidence(
+    case_id: str,
+    evidence_id: str,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
+):
+    """Downloads a stored evidence attachment for an AML case."""
+    try:
+        raw_uuid = uuid.UUID(case_id)
+        ev_uuid = uuid.UUID(evidence_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        resolved_case_uuid = await _resolve_case_uuid(conn, raw_uuid, tenant_id, current_user, auto_create=False)
+        row = await conn.fetchrow(
+            "SELECT storage_key, filename, content_type FROM case_evidence WHERE id = $1 AND case_id = $2;",
+            ev_uuid, resolved_case_uuid
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Evidence not found")
+
+    storage_key = row["storage_key"]
+    if not storage_key or not os.path.exists(storage_key):
+        raise HTTPException(status_code=404, detail="Evidence file missing from storage")
+
+    return FileResponse(
+        path=storage_key,
+        filename=row["filename"],
+        media_type=row["content_type"] or DEFAULT_CONTENT_TYPE
+    )
+
+
 @router.delete("/{evidence_id}")
 async def delete_case_evidence(
     case_id: str,
@@ -190,7 +278,7 @@ async def delete_case_evidence(
     Removes an evidence attachment from a case (authorized investigator/MLRO only).
     """
     try:
-        case_uuid = uuid.UUID(case_id)
+        raw_uuid = uuid.UUID(case_id)
         ev_uuid = uuid.UUID(evidence_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid UUID format")
@@ -199,6 +287,7 @@ async def delete_case_evidence(
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            case_uuid = await _resolve_case_uuid(conn, raw_uuid, tenant_id, current_user, auto_create=False)
             row = await conn.fetchrow(
                 """
                 SELECT storage_key, filename FROM case_evidence

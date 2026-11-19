@@ -422,14 +422,18 @@
         </div>
       </div>
 
+      <div id="rejectionBanner" style="display:none; background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.4); color:#fca5a5; padding:10px 14px; border-radius:6px; font-size:0.8rem; margin-bottom:0.75rem;">
+        <strong>MLRO Rejection Feedback:</strong> <span id="rejectionReasonText"></span>
+      </div>
+
       <label for="narrativeText" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">Suspicious Activity Narrative Text</label>
       <textarea id="narrativeText" class="narrative-textarea" placeholder="Enter exhaustive narrative of suspicious transactions, unusual velocity spikes, structuring patterns, or counterparty connections..." aria-label="Suspicious Activity Narrative Text"></textarea>
 
       <div class="btn-row">
-        <button class="btn btn-secondary" onclick="generateAiNarrative()" style="border-color:rgba(125,211,252,0.4); color:#7dd3fc;">✨ AI Generate Narrative</button>
+        <button id="btnAiNarrative" class="btn btn-secondary" onclick="generateAiNarrative()" style="border-color:rgba(125,211,252,0.4); color:#7dd3fc;">✨ AI Generate Narrative</button>
         <button class="btn btn-secondary" onclick="generatePreview()">Generate Live XML Preview</button>
-        <button class="btn btn-primary" onclick="saveDraft()">Save Draft</button>
-        <button class="btn btn-submit" onclick="submitForReview()">Submit for MLRO Review ➔</button>
+        <button id="btnSaveDraft" class="btn btn-primary" onclick="saveDraft()">Save Draft</button>
+        <button id="btnSubmitReview" class="btn btn-submit" onclick="submitForReview()">Submit for MLRO Review ➔</button>
       </div>
     </div>
 
@@ -484,6 +488,9 @@
       } else {
         document.getElementById('ctxDraftId').innerText = 'NEW DRAFT';
         document.getElementById('ctxAuthor').innerText = document.getElementById('navUsername').innerText;
+        if (urlParams.get('alert_id')) {
+          await loadAlertContext(activeAlertId);
+        }
         document.getElementById('narrativeText').value = 
 `SUSPICIOUS ACTIVITY REPORT NARRATIVE
 Subject Organization / Individual exhibits repetitive structured transactions consistently just below statutory thresholds.
@@ -514,6 +521,53 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
       document.getElementById('charCounter').innerText = `${len.toLocaleString()} / 10,000 characters`;
     }
 
+    async function loadAlertContext(alertId) {
+      try {
+        const res = await fetch(`/api/v1/alerts/${encodeURIComponent(alertId)}/details`, { credentials: 'include' });
+        if (!res.ok) return;
+        const det = await res.json();
+        const a = det.alert || det;
+        if (a.rule_name) document.getElementById('ctxRule').innerText = a.rule_name;
+        if (a.threat_level) document.getElementById('ctxThreat').innerText = a.threat_level;
+        if (a.ai_risk_score != null) document.getElementById('ctxScore').innerText = `${Math.round(Number(a.ai_risk_score) * 100)}%`;
+        const tx = det.transaction || a.transaction || {};
+        if (tx.amount != null) document.getElementById('ctxAmount').innerText = `${Number(tx.amount).toLocaleString()} ${tx.currency || 'USD'}`;
+        if (tx.sender || det.entity?.account_number) document.getElementById('ctxSenderAcc').innerText = tx.sender || det.entity.account_number;
+        if (tx.receiver) document.getElementById('ctxReceiverAcc').innerText = tx.receiver;
+      } catch (e) {
+        console.debug('Could not pre-load alert context:', e);
+      }
+    }
+
+    function applyReadOnlyState(statusVal, rejectionReason) {
+      const isLocked = statusVal === 'APPROVED' || statusVal === 'FILED';
+      const textarea = document.getElementById('narrativeText');
+      if (textarea) textarea.readOnly = isLocked;
+      ['btnAiNarrative', 'btnSaveDraft', 'btnSubmitReview'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) {
+          b.disabled = isLocked;
+          b.style.opacity = isLocked ? '0.45' : '';
+          b.style.cursor = isLocked ? 'not-allowed' : '';
+        }
+      });
+      if (isLocked) {
+        document.getElementById('autosaveStatus').innerText = `● Locked (${statusVal})`;
+        document.getElementById('autosaveStatus').style.color = 'var(--accent-emerald)';
+      }
+
+      const rejBanner = document.getElementById('rejectionBanner');
+      const rejText = document.getElementById('rejectionReasonText');
+      if (rejBanner && rejText) {
+        if (statusVal === 'REJECTED' && rejectionReason) {
+          rejText.innerText = rejectionReason;
+          rejBanner.style.display = 'block';
+        } else {
+          rejBanner.style.display = 'none';
+        }
+      }
+    }
+
     async function loadDraft(draftId) {
       try {
         const res = await fetch(`/api/v1/fincen/sar/drafts/${draftId}`, { credentials: 'include' });
@@ -527,6 +581,7 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
         document.getElementById('narrativeText').value = data.narrative || '';
         isDirty = false;
         activeAlertId = data.alert_id;
+        applyReadOnlyState(activeDraftStatus, data.rejection_reason);
 
         if (data.alert_details) {
           document.getElementById('ctxRule').innerText = data.alert_details.rule_name;

@@ -208,13 +208,27 @@ async def _fetch_customer_ubo(acc_num: str, owner_name: str, customer_id: str) -
     return ubo_nodes
 
 
-def _calculate_customer_risk_factors(swift_bic: str | None, tx_count: int, risk_score: float) -> dict:
-    high_risk_bic = bool(swift_bic and len(swift_bic) >= 6 and swift_bic[4:6] in ["RU", "IR", "KP", "SY"])
+def _calculate_customer_risk_factors(
+    swift_bic: str | None,
+    tx_count: int,
+    risk_score: float,
+    pep_match_count: int = 0,
+    alerts: list[dict] | None = None
+) -> dict:
+    high_risk_bic = bool(swift_bic and len(swift_bic) >= 6 and swift_bic[4:6] in ["RU", "IR", "KP", "SY", "MM", "YE", "VE"])
+    alert_rules = [str(a.get("rule_name", "")).upper() for a in (alerts or [])]
+    has_pep_alert = any("PEP" in r or "SANCTION" in r for r in alert_rules)
+    has_media_alert = any("ADVERSE" in r or "MEDIA" in r or "SANCTION" in r for r in alert_rules)
+
+    pep_risk = 0.90 if (pep_match_count > 0 or has_pep_alert) else 0.05
+    adverse_media_risk = 0.80 if has_media_alert else 0.05
+
     return {
         "jurisdiction_risk": 0.85 if high_risk_bic else 0.15,
         "velocity_risk": min(1.0, tx_count * 0.08),
-        "pep_risk": 0.90 if risk_score > 0.85 else 0.10,
-        "adverse_media_risk": 0.75 if risk_score > 0.80 else 0.05,
+        "pep_risk": pep_risk,
+        "adverse_media_risk": adverse_media_risk,
+        "pep_hits": pep_match_count,
         "composite_score": risk_score
     }
 
@@ -262,9 +276,23 @@ async def get_customer_dossier(
         recent_txs, monthly_trend, alerts, edd_records = await _fetch_customer_activity(
             conn, acc_num, acc_uuid
         )
+        pep_match_count = 0
+        try:
+            if owner_name and hasattr(conn, "fetchval"):
+                raw_pep = await conn.fetchval(
+                    "SELECT COUNT(*) FROM pep_entities WHERE name ILIKE $1;",
+                    f"%{owner_name.strip()}%"
+                )
+                if isinstance(raw_pep, (int, float)):
+                    pep_match_count = int(raw_pep)
+        except Exception:
+            pep_match_count = 0
 
     ubo_nodes = await _fetch_customer_ubo(acc_num, owner_name, id)
-    risk_factors = _calculate_customer_risk_factors(acc["swift_bic"], len(recent_txs), risk_score)
+    risk_factors = _calculate_customer_risk_factors(
+        acc["swift_bic"], len(recent_txs), risk_score,
+        pep_match_count=pep_match_count, alerts=alerts
+    )
 
     # Mask sensitive details if role is AUDITOR
     is_auditor = current_user.get("role") in ["AUDITOR", "GLOBAL_AUDITOR"]

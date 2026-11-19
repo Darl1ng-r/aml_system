@@ -72,22 +72,71 @@ async def trigger_cdd_rescreen(
 
 @router.get("/status")
 async def get_watchlist_status(
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR", "MLRO"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
-    Returns active watchlist provider statuses and dataset record statistics.
+    Returns live watchlist provider statuses and real dataset record statistics
+    from PostgreSQL (pep_entities) and Elasticsearch (sanctions_list / pep_entities).
     """
+    from database.postgres import get_async_db_read_conn
+    from database.elasticsearch_db import get_async_elasticsearch_client
+    from services.auth import enforce_tenant_data_scope
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    pg_pep_count = 0
+    pg_last_sync = None
+    pg_status = "UNAVAILABLE"
     try:
-        return {
-            "status": "ONLINE",
-            "providers": [
-                {"name": "U.S. Treasury OFAC SDN List", "type": "Live XML Feed", "status": "SYNCED", "active_records": 14820},
-                {"name": "Refinitiv World-Check Global", "type": "API Gateway", "status": "CONNECTED", "active_records": 85400},
-                {"name": "Dow Jones Risk & Compliance", "type": "API Feed", "status": "CONNECTED", "active_records": 62100}
-            ],
-            "last_synced_at": datetime.now(timezone.utc).isoformat()
-        }
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+            pg_pep_count = int(await conn.fetchval("SELECT COUNT(*) FROM pep_entities;") or 0)
+            pg_last_sync = await conn.fetchval("SELECT MAX(created_at) FROM pep_entities;")
+            pg_status = "SYNCED" if pg_pep_count > 0 else "EMPTY"
     except Exception as e:
-        logger.exception("Failed to query watchlist status")
-        raise HTTPException(status_code=500, detail=f"Failed to query status: {str(e)}")
+        logger.warning(f"PostgreSQL pep_entities status query failed: {e}")
+
+    es_sanctions_count = 0
+    es_pep_count = 0
+    es_status = "OFFLINE"
+    try:
+        es = await get_async_elasticsearch_client()
+        if es:
+            try:
+                s_res = await es.count(index="sanctions_list")
+                es_sanctions_count = int(s_res.get("count", 0))
+            except Exception:
+                es_sanctions_count = 0
+            try:
+                p_res = await es.count(index="pep_entities")
+                es_pep_count = int(p_res.get("count", 0))
+            except Exception:
+                es_pep_count = 0
+            es_status = "CONNECTED"
+    except Exception as e:
+        logger.warning(f"Elasticsearch watchlist count query failed: {e}")
+
+    overall = "ONLINE" if (pg_status == "SYNCED" or es_status == "CONNECTED") else "DEGRADED"
+    return {
+        "status": overall,
+        "providers": [
+            {
+                "name": "OFAC / UN / EU Sanctions Index (Elasticsearch)",
+                "type": "Live Search Index",
+                "status": es_status,
+                "active_records": es_sanctions_count
+            },
+            {
+                "name": "Global PEP Registry (PostgreSQL pg_trgm)",
+                "type": "Relational Watchlist",
+                "status": pg_status,
+                "active_records": pg_pep_count
+            },
+            {
+                "name": "PEP Search Mirror (Elasticsearch)",
+                "type": "Fuzzy Phonetic Index",
+                "status": es_status,
+                "active_records": es_pep_count
+            }
+        ],
+        "last_synced_at": pg_last_sync.isoformat() if pg_last_sync else None
+    }

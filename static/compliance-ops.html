@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Compliance Operations Hub | AML Sentinel</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #0f1117;
+      --bg-panel: #161922;
+      --bg-card: #1c202c;
+      --border-subtle: #282d3e;
+      --text-main: #e2e8f0;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --accent-blue: #3b82f6;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-crimson: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-dark);
+      color: var(--text-main);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+    }
+    .navbar {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border-subtle);
+      height: 56px;
+      padding: 0 1.5rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 30;
+    }
+    .nav-brand { font-weight: 700; display: flex; align-items: center; gap: 0.5rem; color: #fff; text-decoration: none; }
+    .nav-links { display: flex; gap: 1rem; align-items: center; }
+    .nav-link { color: var(--text-muted); text-decoration: none; font-size: 0.82rem; font-weight: 500; }
+    .nav-link:hover, .nav-link.active { color: #fff; }
+    .user-pill { display: flex; align-items: center; gap: 0.6rem; font-size: 0.8rem; color: var(--text-muted); }
+    .container { max-width: 1320px; margin: 0 auto; padding: 1.5rem; }
+    .header-row { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1.25rem; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.25rem; border-bottom: 1px solid var(--border-subtle); padding-bottom: 0.75rem; }
+    .tab-btn {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      padding: 0.45rem 0.9rem;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tab-btn.active { background: var(--accent-blue); color: #fff; border-color: var(--accent-blue); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+    .card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 1.15rem;
+      margin-bottom: 1rem;
+    }
+    .card-title { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.85rem; color: #fff; display: flex; justify-content: space-between; align-items: center; }
+    .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.65rem; }
+    label { display: block; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 0.25rem; }
+    input, select, textarea {
+      width: 100%;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      color: #fff;
+      border-radius: 6px;
+      padding: 0.45rem 0.65rem;
+      font-size: 0.82rem;
+      font-family: inherit;
+    }
+    .btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      color: #fff;
+      padding: 0.45rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-primary { background: var(--accent-blue); border-color: var(--accent-blue); }
+    .btn-emerald { background: var(--accent-emerald); border-color: var(--accent-emerald); color: #052e16; }
+    .btn-danger { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.4); color: #fca5a5; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border-subtle); }
+    th { font-size: 0.7rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.04em; }
+    .mono { font-family: 'IBM Plex Mono', monospace; }
+    pre.json-box {
+      background: #0a0c12;
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 0.75rem;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.75rem;
+      color: #cbd5e1;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #1e293b;
+      border: 1px solid var(--accent-blue);
+      color: #fff;
+      padding: 0.7rem 1rem;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      display: none;
+      z-index: 99;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div style="display:flex; align-items:center; gap:1.5rem;">
+      <a href="/dashboard" class="nav-brand"><span>🛡️</span> AML Sentinel</a>
+      <div class="nav-links">
+        <a href="/dashboard" class="nav-link">Cockpit</a>
+        <a href="/triage" class="nav-link">Triage</a>
+        <a href="/customers" class="nav-link">Customer 360</a>
+        <a href="/sar/queue" class="nav-link" data-role="MLRO,ADMIN">SAR Queue</a>
+        <a href="/compliance/ops" class="nav-link active">Operations Hub</a>
+        <a href="/audit/logs" class="nav-link" data-role="AUDITOR,GLOBAL_AUDITOR,MLRO,ADMIN">Audit Vault</a>
+      </div>
+    </div>
+    <div class="user-pill">
+      <span id="navUsername">User</span>
+      <span id="navRole" class="mono" style="font-size:0.7rem; padding:2px 6px; background:var(--bg-card); border-radius:4px;">—</span>
+      <button class="btn" onclick="logout()" style="padding:3px 8px; font-size:0.75rem;">Sign Out</button>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="header-row">
+      <div>
+        <h1 style="font-size:1.35rem; font-weight:700;">Compliance Operations Hub</h1>
+        <p style="font-size:0.82rem; color:var(--text-muted); margin-top:4px;">Live operational console for Case Management, Transactions, KYC Onboarding, CTR Filings, Regulatory Reports, Privacy/DSAR, and SIEM Forwarding.</p>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('cases', this)">Case Management</button>
+      <button class="tab-btn" onclick="switchTab('transactions', this)">Transactions</button>
+      <button class="tab-btn" onclick="switchTab('onboarding', this)">KYC Onboarding</button>
+      <button class="tab-btn" onclick="switchTab('ctr', this)">CTR Filings</button>
+      <button class="tab-btn" onclick="switchTab('reports', this)">Compliance Reports &amp; Watchlists</button>
+      <button class="tab-btn" onclick="switchTab('privacy', this)">Privacy &amp; Legal Holds</button>
+      <button class="tab-btn" onclick="switchTab('siem', this)" data-role="ADMIN">SIEM Forwarder</button>
+    </div>
+
+    <!-- 1. CASE MANAGEMENT -->
+    <section id="panel-cases" class="panel active">
+      <div class="card">
+        <div class="card-title">Create Investigation Case</div>
+        <form onsubmit="createCase(event)" class="form-grid">
+          <div><label for="caseTitle">Title</label><input id="caseTitle" required minlength="3" placeholder="Offshore Structuring Ring"></div>
+          <div><label for="casePriority">Priority</label>
+            <select id="casePriority"><option>MEDIUM</option><option>HIGH</option><option>CRITICAL</option><option>LOW</option></select>
+          </div>
+          <div><label for="caseNarrative">Initial Narrative</label><input id="caseNarrative" placeholder="Summary of linked alerts..."></div>
+          <div style="display:flex; align-items:flex-end;"><button type="submit" class="btn btn-primary" style="width:100%;">Create Case</button></div>
+        </form>
+      </div>
+      <div class="card">
+        <div class="card-title">
+          <span>Active Cases Registry</span>
+          <button class="btn" onclick="loadCases()">Refresh</button>
+        </div>
+        <table>
+          <thead><tr><th>Case #</th><th>Title</th><th>Status</th><th>Priority</th><th>Assignee</th><th>Actions</th></tr></thead>
+          <tbody id="casesTbody"><tr><td colspan="6" style="color:var(--text-dim); text-align:center;">Loading cases...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 2. TRANSACTIONS -->
+    <section id="panel-transactions" class="panel">
+      <div class="card">
+        <div class="card-title">Ingest &amp; Score Live Transaction</div>
+        <form onsubmit="ingestTransaction(event)" class="form-grid">
+          <div><label for="txSender">Sender Account</label><input id="txSender" required placeholder="ACC_SENDER_001"></div>
+          <div><label for="txReceiver">Receiver Account</label><input id="txReceiver" required placeholder="ACC_RECV_002"></div>
+          <div><label for="txAmount">Amount</label><input id="txAmount" type="number" step="0.01" min="0.01" required placeholder="9500.00"></div>
+          <div><label for="txCurrency">Currency (3-letter)</label><input id="txCurrency" value="USD" maxlength="3" required></div>
+          <div><label for="txCountry">Country (ISO2)</label><input id="txCountry" value="US" maxlength="3"></div>
+          <div style="display:flex; align-items:flex-end;"><button type="submit" class="btn btn-primary" style="width:100%;">Ingest Transaction</button></div>
+        </form>
+      </div>
+      <div class="card">
+        <div class="card-title"><span>Recent Transactions</span><button class="btn" onclick="loadTransactions()">Refresh</button></div>
+        <table>
+          <thead><tr><th>ID</th><th>Sender</th><th>Receiver</th><th>Amount</th><th>Status</th><th>Timestamp</th></tr></thead>
+          <tbody id="txTbody"><tr><td colspan="6" style="color:var(--text-dim); text-align:center;">Click Refresh or open tab to load...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 3. ONBOARDING -->
+    <section id="panel-onboarding" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">Onboard Individual Account</div>
+          <form onsubmit="onboardIndividual(event)" class="form-grid">
+            <div><label for="indName">Full Legal Name</label><input id="indName" required placeholder="Jane Doe"></div>
+            <div><label for="indAcc">Account Number</label><input id="indAcc" required placeholder="ACC-IND-1001"></div>
+            <div><label for="indBic">SWIFT/BIC (optional)</label><input id="indBic" placeholder="DEUTDEDDFXX"></div>
+            <div><label for="indDob">DOB (YYYY-MM-DD)</label><input id="indDob" placeholder="1985-04-12"></div>
+            <div style="grid-column:1/-1;"><button type="submit" class="btn btn-primary">Onboard Individual</button></div>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-title">Onboard Corporate Entity</div>
+          <form onsubmit="onboardCorporate(event)" class="form-grid">
+            <div><label for="corpName">Company Name</label><input id="corpName" required placeholder="Global Trade Holdings LLC"></div>
+            <div><label for="corpReg">Registration #</label><input id="corpReg" required placeholder="REG-99812"></div>
+            <div><label for="corpAcc">Account Number</label><input id="corpAcc" required placeholder="ACC-CORP-2001"></div>
+            <div><label for="corpBic">SWIFT/BIC (optional)</label><input id="corpBic" placeholder="CHASUS33XXX"></div>
+            <div style="grid-column:1/-1;"><button type="submit" class="btn btn-primary">Onboard Corporate</button></div>
+          </form>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span>Onboarded Accounts</span><button class="btn" onclick="loadAccounts()">Refresh</button></div>
+        <table>
+          <thead><tr><th>Account #</th><th>Owner</th><th>SWIFT/BIC</th><th>Risk Score</th><th>Status</th></tr></thead>
+          <tbody id="accountsTbody"><tr><td colspan="5" style="color:var(--text-dim); text-align:center;">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 4. CTR FILINGS -->
+    <section id="panel-ctr" class="panel">
+      <div class="card">
+        <div class="card-title"><span>Currency Transaction Reports (CTR &gt; $10,000)</span><button class="btn" onclick="loadCtrFilings()">Refresh</button></div>
+        <table>
+          <thead><tr><th>Filing ID</th><th>Account</th><th>Total Amount</th><th>Status</th><th>Filing Date</th><th>Action</th></tr></thead>
+          <tbody id="ctrTbody"><tr><td colspan="6" style="color:var(--text-dim); text-align:center;">Loading CTR filings...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 5. COMPLIANCE REPORTS & WATCHLISTS -->
+    <section id="panel-reports" class="panel">
+      <div class="card">
+        <div class="card-title"><span>Live Regulatory Reports &amp; Watchlist Providers</span><button class="btn btn-primary" onclick="loadReportsAndWatchlist()">Fetch Live Snapshots</button></div>
+        <div class="grid-2">
+          <div><label>SAR Summary (/api/v1/reports/sar-summary)</label><pre id="repSar" class="json-box">Loading...</pre></div>
+          <div><label>CTR Summary (/api/v1/reports/ctr-summary)</label><pre id="repCtr" class="json-box">Loading...</pre></div>
+          <div><label>Alert-to-SAR Conversion (/api/v1/reports/conversion-rates)</label><pre id="repConv" class="json-box">Loading...</pre></div>
+          <div><label>KYC Verification Status (/api/v1/reports/kyc-status)</label><pre id="repKyc" class="json-box">Loading...</pre></div>
+          <div style="grid-column:1/-1;"><label>Live Watchlist Status (/api/v1/watchlist/status)</label><pre id="repWatchlist" class="json-box">Loading...</pre></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. PRIVACY & LEGAL HOLDS -->
+    <section id="panel-privacy" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">GDPR / CCPA DSAR Data Export</div>
+          <div style="display:flex; gap:0.5rem; margin-bottom:0.75rem;">
+            <input id="dsarAccount" placeholder="Account Number (e.g. DE8937040044)">
+            <button class="btn btn-primary" onclick="runDsarExport()">Export DSAR</button>
+          </div>
+          <pre id="dsarOutput" class="json-box">Enter an account number to export data subject records.</pre>
+        </div>
+        <div class="card">
+          <div class="card-title">Place / Release Regulatory Legal Hold</div>
+          <form onsubmit="createLegalHold(event)" class="form-grid" style="margin-bottom:1rem;">
+            <div><label for="lhAccountId">Account UUID</label><input id="lhAccountId" required placeholder="UUID"></div>
+            <div><label for="lhRef">Order Reference</label><input id="lhRef" required minlength="3" placeholder="SUBPOENA-2026-01"></div>
+            <div style="grid-column:1/-1;"><label for="lhReason">Justification</label><input id="lhReason" required minlength="5" placeholder="Pending regulatory retention subpoena"></div>
+            <div style="grid-column:1/-1;"><button type="submit" class="btn btn-danger">Place Legal Hold</button></div>
+          </form>
+          <div style="display:flex; gap:0.5rem;">
+            <input id="lhReleaseId" placeholder="Legal Hold UUID to release">
+            <button class="btn" onclick="releaseLegalHold()">Release Hold</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7. SIEM FORWARDER -->
+    <section id="panel-siem" class="panel">
+      <div class="card">
+        <div class="card-title"><span>SIEM Event Forwarder (Splunk HEC / QRadar / Sentinel)</span><button class="btn" onclick="loadSiemStatus()">Refresh Status</button></div>
+        <pre id="siemStatusBox" class="json-box" style="margin-bottom:1rem;">Loading SIEM status...</pre>
+        <form onsubmit="saveSiemConfig(event)" class="form-grid">
+          <div><label for="siemUrl">Destination URL</label><input id="siemUrl" required placeholder="https://splunk.internal:8088/services/collector"></div>
+          <div><label for="siemFormat">Format</label>
+            <select id="siemFormat"><option>SPLUNK_HEC</option><option>CEF_SYSLOG</option><option>AZURE_SENTINEL</option></select>
+          </div>
+          <div><label for="siemToken">Auth Token</label><input id="siemToken" type="password" placeholder="HEC token"></div>
+          <div><label for="siemEnabled">Enabled</label>
+            <select id="siemEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select>
+          </div>
+          <div style="grid-column:1/-1; display:flex; gap:0.5rem;">
+            <button type="submit" class="btn btn-primary">Save SIEM Config</button>
+            <button type="button" class="btn btn-emerald" onclick="testSiemForwarder()">Send Test Event</button>
+          </div>
+        </form>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="/static/api-client.js"></script>
+  <script>
+    const DEFAULT_TENANT = '00000000-0000-0000-0000-000000000001';
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.innerText = msg;
+      t.style.display = 'block';
+      setTimeout(() => { t.style.display = 'none'; }, 3500);
+    }
+
+    function switchTab(tab, btn) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+      const panel = document.getElementById('panel-' + tab);
+      if (panel) panel.classList.add('active');
+
+      if (tab === 'cases') loadCases();
+      else if (tab === 'transactions') loadTransactions();
+      else if (tab === 'onboarding') loadAccounts();
+      else if (tab === 'ctr') loadCtrFilings();
+      else if (tab === 'reports') loadReportsAndWatchlist();
+      else if (tab === 'siem') loadSiemStatus();
+    }
+
+    async function apiJson(url, opts = {}) {
+      const res = await fetch(url, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      return data;
+    }
+
+    // 1. Cases
+    async function loadCases() {
+      const tbody = document.getElementById('casesTbody');
+      try {
+        const data = await apiJson('/api/v1/cases');
+        const items = Array.isArray(data) ? data : (data.items || []);
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-dim);">No cases found.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(c => `
+          <tr>
+            <td class="mono">${c.case_number || String(c.id).slice(0,8)}</td>
+            <td style="font-weight:600; color:#fff;">${c.title}</td>
+            <td>${c.status}</td>
+            <td>${c.priority}</td>
+            <td>${c.assigned_username || 'Unassigned'}</td>
+            <td style="display:flex; gap:6px;">
+              <button class="btn" style="padding:2px 8px; font-size:0.72rem;" onclick="addCaseNote('${c.id}')">+ Note</button>
+              ${c.status !== 'CLOSED' ? `<button class="btn btn-danger" style="padding:2px 8px; font-size:0.72rem;" onclick="closeCase('${c.id}')">Close</button>` : ''}
+            </td>
+          </tr>
+        `).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--accent-crimson);">${e.message}</td></tr>`;
+      }
+    }
+
+    async function createCase(e) {
+      e.preventDefault();
+      try {
+        await apiJson('/api/v1/cases', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: document.getElementById('caseTitle').value.trim(),
+            priority: document.getElementById('casePriority').value,
+            narrative: document.getElementById('caseNarrative').value.trim() || null
+          })
+        });
+        document.getElementById('caseTitle').value = '';
+        document.getElementById('caseNarrative').value = '';
+        showToast('Case created successfully.');
+        loadCases();
+      } catch (err) { showToast(err.message); }
+    }
+
+    async function addCaseNote(caseId) {
+      const note = prompt('Enter investigation note:');
+      if (!note || note.trim().length < 2) return;
+      try {
+        await apiJson(`/api/v1/cases/${caseId}/notes`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ note: note.trim() })
+        });
+        showToast('Investigation note appended.');
+      } catch (err) { showToast(err.message); }
+    }
+
+    async function closeCase(caseId) {
+      const reason = prompt('Closure reason (FALSE_POSITIVE, SAR_FILED, LAW_ENFORCEMENT_REFERRAL, CLOSED_CLEARED):', 'CLOSED_CLEARED');
+      if (!reason) return;
+      const notes = prompt('Closing notes (min 3 chars):');
+      if (!notes || notes.trim().length < 3) return;
+      try {
+        await apiJson(`/api/v1/cases/${caseId}/close`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ closure_reason: reason.trim(), closing_notes: notes.trim() })
+        });
+        showToast('Case closed.');
+        loadCases();
+      } catch (err) { showToast(err.message); }
+    }
+
+    // 2. Transactions
+    async function loadTransactions() {
+      const tbody = document.getElementById('txTbody');
+      try {
+        const data = await apiJson('/api/v1/transactions');
+        const items = Array.isArray(data) ? data : (data.items || []);
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-dim);">No transactions recorded.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(t => `
+          <tr>
+            <td class="mono">${String(t.id || t.transaction_id || '').slice(0,8)}</td>
+            <td class="mono">${t.sender_account || '—'}</td>
+            <td class="mono">${t.receiver_account || '—'}</td>
+            <td class="mono">${Number(t.amount || 0).toLocaleString()} ${t.currency || 'USD'}</td>
+            <td>${t.status || 'INGESTED'}</td>
+            <td class="mono">${(t.timestamp || '').slice(0,19).replace('T',' ')}</td>
+          </tr>
+        `).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--accent-crimson);">${e.message}</td></tr>`;
+      }
+    }
+
+    async function ingestTransaction(e) {
+      e.preventDefault();
+      try {
+        const res = await apiJson('/api/v1/transactions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sender_account: document.getElementById('txSender').value.trim(),
+            receiver_account: document.getElementById('txReceiver').value.trim(),
+            amount: Number.parseFloat(document.getElementById('txAmount').value),
+            currency: document.getElementById('txCurrency').value.trim().toUpperCase(),
+            country: document.getElementById('txCountry').value.trim().toUpperCase() || null,
+            timestamp: new Date().toISOString()
+          })
+        });
+        showToast(`Transaction scored: status=${res.status || 'INGESTED'}`);
+        loadTransactions();
+      } catch (err) { showToast(err.message); }
+    }
+
+    // 3. Onboarding
+    async function loadAccounts() {
+      const tbody = document.getElementById('accountsTbody');
+      try {
+        const data = await apiJson('/api/v1/onboard/accounts');
+        const items = Array.isArray(data) ? data : (data.items || []);
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-dim);">No onboarded accounts found.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(a => `
+          <tr>
+            <td class="mono">${a.account_number}</td>
+            <td style="font-weight:600; color:#fff;">${a.owner_name || '—'}</td>
+            <td class="mono">${a.swift_bic || 'N/A'}</td>
+            <td class="mono">${a.risk_score != null ? Math.round(Number(a.risk_score) * 100) + '%' : '—'}</td>
+            <td>${a.status || 'ACTIVE'}</td>
+          </tr>
+        `).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--accent-crimson);">${e.message}</td></tr>`;
+      }
+    }
+
+    async function onboardIndividual(e) {
+      e.preventDefault();
+      try {
+        await apiJson('/api/v1/onboard/accounts/individual', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tenant_id: DEFAULT_TENANT,
+            name: document.getElementById('indName').value.trim(),
+            account_number: document.getElementById('indAcc').value.trim(),
+            swift_bic: document.getElementById('indBic').value.trim().toUpperCase() || null,
+            date_of_birth: document.getElementById('indDob').value.trim() || null
+          })
+        });
+        showToast('Individual account onboarded.');
+        loadAccounts();
+      } catch (err) { showToast(err.message); }
+    }
+
+    async function onboardCorporate(e) {
+      e.preventDefault();
+      try {
+        await apiJson('/api/v1/onboard/accounts/corporate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tenant_id: DEFAULT_TENANT,
+            company_name: document.getElementById('corpName').value.trim(),
+            registration_number: document.getElementById('corpReg').value.trim(),
+            account_number: document.getElementById('corpAcc').value.trim(),
+            swift_bic: document.getElementById('corpBic').value.trim().toUpperCase() || null,
+            ubos: []
+          })
+        });
+        showToast('Corporate entity onboarded.');
+        loadAccounts();
+      } catch (err) { showToast(err.message); }
+    }
+
+    // 4. CTR Filings
+    async function loadCtrFilings() {
+      const tbody = document.getElementById('ctrTbody');
+      try {
+        const data = await apiJson('/api/v1/ctr/filings');
+        const items = Array.isArray(data) ? data : (data.items || []);
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-dim);">No CTR filings found.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(f => `
+          <tr>
+            <td class="mono">${String(f.id).slice(0,8)}</td>
+            <td class="mono">${f.account_number || f.account_id || '—'}</td>
+            <td class="mono">$${Number(f.total_amount || 0).toLocaleString()}</td>
+            <td>${f.status}</td>
+            <td class="mono">${(f.filing_date || f.created_at || '').slice(0,10)}</td>
+            <td>${f.status !== 'FILED' ? `<button class="btn btn-emerald" style="padding:2px 8px; font-size:0.72rem;" onclick="submitCtr('${f.id}')">Submit CTR</button>` : 'Filed'}</td>
+          </tr>
+        `).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--accent-crimson);">${e.message}</td></tr>`;
+      }
+    }
+
+    async function submitCtr(id) {
+      try {
+        await apiJson(`/api/v1/ctr/filings/${id}/submit`, { method: 'POST' });
+        showToast('CTR filing submitted.');
+        loadCtrFilings();
+      } catch (err) { showToast(err.message); }
+    }
+
+    // 5. Reports & Watchlists
+    async function loadReportsAndWatchlist() {
+      const targets = [
+        ['repSar', '/api/v1/reports/sar-summary'],
+        ['repCtr', '/api/v1/reports/ctr-summary'],
+        ['repConv', '/api/v1/reports/conversion-rates'],
+        ['repKyc', '/api/v1/reports/kyc-status'],
+        ['repWatchlist', '/api/v1/watchlist/status']
+      ];
+      await Promise.all(targets.map(async ([elId, url]) => {
+        const el = document.getElementById(elId);
+        try {
+          const data = await apiJson(url);
+          el.innerText = JSON.stringify(data, null, 2);
+        } catch (err) {
+          el.innerText = `Error: ${err.message}`;
+        }
+      }));
+    }
+
+    // 6. Privacy & Legal Holds
+    async function runDsarExport() {
+      const acc = document.getElementById('dsarAccount').value.trim();
+      if (!acc) return;
+      const out = document.getElementById('dsarOutput');
+      try {
+        const data = await apiJson(`/api/v1/privacy/dsar/export/${encodeURIComponent(acc)}`);
+        out.innerText = JSON.stringify(data, null, 2);
+      } catch (err) {
+        out.innerText = `Error: ${err.message}`;
+      }
+    }
+
+    async function createLegalHold(e) {
+      e.preventDefault();
+      try {
+        const res = await apiJson('/api/v1/privacy/legal-holds', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            account_id: document.getElementById('lhAccountId').value.trim(),
+            reference_number: document.getElementById('lhRef').value.trim(),
+            reason: document.getElementById('lhReason').value.trim()
+          })
+        });
+        showToast(`Legal Hold placed (ID: ${res.id || 'OK'})`);
+      } catch (err) { showToast(err.message); }
+    }
+
+    async function releaseLegalHold() {
+      const holdId = document.getElementById('lhReleaseId').value.trim();
+      if (!holdId) return;
+      try {
+        await apiJson(`/api/v1/privacy/legal-holds/${encodeURIComponent(holdId)}`, { method: 'DELETE' });
+        showToast('Legal Hold released.');
+      } catch (err) { showToast(err.message); }
+    }
+
+    // 7. SIEM
+    async function loadSiemStatus() {
+      const box = document.getElementById('siemStatusBox');
+      try {
+        const data = await apiJson('/api/v1/admin/siem/status');
+        box.innerText = JSON.stringify(data, null, 2);
+        if (data.destination_url) document.getElementById('siemUrl').value = data.destination_url;
+        if (data.format) document.getElementById('siemFormat').value = data.format;
+        if (typeof data.enabled === 'boolean') document.getElementById('siemEnabled').value = String(data.enabled);
+      } catch (err) {
+        box.innerText = `Error: ${err.message}`;
+      }
+    }
+
+    async function saveSiemConfig(e) {
+      e.preventDefault();
+      try {
+        await apiJson('/api/v1/admin/siem/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            enabled: document.getElementById('siemEnabled').value === 'true',
+            destination_url: document.getElementById('siemUrl').value.trim(),
+            format: document.getElementById('siemFormat').value,
+            auth_token: document.getElementById('siemToken').value || undefined
+          })
+        });
+        showToast('SIEM configuration saved.');
+        loadSiemStatus();
+      } catch (err) { showToast(err.message); }
+    }
+
+    async function testSiemForwarder() {
+      try {
+        const res = await apiJson('/api/v1/admin/siem/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            destination_url: document.getElementById('siemUrl').value.trim() || null,
+            auth_token: document.getElementById('siemToken').value || null
+          })
+        });
+        showToast(res.message || 'SIEM test event dispatched.');
+      } catch (err) { showToast(err.message); }
+    }
+
+    window.addEventListener('DOMContentLoaded', loadCases);
+  </script>
+</body>
+</html>

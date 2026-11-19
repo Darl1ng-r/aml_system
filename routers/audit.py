@@ -189,15 +189,28 @@ async def verify_audit_hash_chain(
                 "verified_at": datetime.now(timezone.utc).isoformat()
             }
 
-        prev_hash = "GENESIS_ROOT_CHAIN_00000000000000000000000000000000"
+        from services.audit import GENESIS_AUDIT_HASH, compute_audit_record_hash
+        prev_hash = GENESIS_AUDIT_HASH
         genesis_hash = prev_hash
         persisted_hash_count = 0
 
         for r in rows:
             raw_details = r["details"]
-            det_str = json.dumps(raw_details, sort_keys=True) if isinstance(raw_details, dict) else str(raw_details or "{}")
-            record_payload = f"{prev_hash}:{r['id']}:{r['created_at'].isoformat() if r['created_at'] else ''}:{r['actor_id']}:{r['action']}:{r['resource_type']}:{r['resource_id']}:{det_str}"
-            expected_hash = hashlib.sha256(record_payload.encode("utf-8")).hexdigest()
+            if isinstance(raw_details, str):
+                try:
+                    raw_details = json.loads(raw_details)
+                except Exception:
+                    pass
+            created_iso = r["created_at"].isoformat() if r["created_at"] else ""
+            expected_hash = compute_audit_record_hash(
+                prev_hash=prev_hash,
+                created_at_iso=created_iso,
+                actor_id=r["actor_id"],
+                action=r["action"],
+                resource_type=r["resource_type"],
+                resource_id=r["resource_id"],
+                details=raw_details
+            )
 
             stored_prev = r["prev_hash"] if "prev_hash" in r else None
             stored_hash = r["record_hash"] if "record_hash" in r else None

@@ -395,14 +395,14 @@
                     <button type="submit" id="btn-signup-submit" class="btn btn-success" style="width: 100%; margin-top: 0.5rem;">Register Analyst Profile</button>
                 </form>
 
-                <!-- Federated SSO Identity Providers -->
+                <!-- Federated SSO Identity Providers (requires OIDC IdP configuration) -->
                 <div style="margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--panel-edge, #DAD3C3); text-align: center;">
-                    <span style="font-size: 11px; color: var(--ink-soft, #4B4F5A); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Or sign in with your enterprise provider</span>
+                    <span style="font-size: 11px; color: var(--ink-soft, #4B4F5A); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Enterprise SSO (IdP not configured in this environment)</span>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px;">
-                        <button type="button" id="btn-sso-google" class="btn btn-secondary" style="font-size: 12px; padding: 8px 10px;">
+                        <button type="button" id="btn-sso-google" class="btn btn-secondary" disabled title="Configure OIDC Identity Provider to enable Google SSO" style="font-size: 12px; padding: 8px 10px; opacity: 0.5; cursor: not-allowed;">
                             Google SSO
                         </button>
-                        <button type="button" id="btn-sso-github" class="btn btn-secondary" style="font-size: 12px; padding: 8px 10px;">
+                        <button type="button" id="btn-sso-github" class="btn btn-secondary" disabled title="Configure OIDC Identity Provider to enable GitHub SSO" style="font-size: 12px; padding: 8px 10px; opacity: 0.5; cursor: not-allowed;">
                             GitHub Corp
                         </button>
                     </div>

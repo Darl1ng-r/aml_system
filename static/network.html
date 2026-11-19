@@ -291,7 +291,8 @@
 
     <!-- Network Canvas -->
     <div id="demoModeBanner" style="display:none; position:absolute; top:75px; left:50%; transform:translateX(-50%); z-index:20; background:rgba(180, 83, 9, 0.95); color:#fff; padding:6px 16px; border-radius:6px; font-size:12px; font-weight:600; box-shadow:0 4px 14px rgba(0,0,0,0.5); border:1px solid #f59e0b;">
-      ⚠ DEMO TOPOLOGY: Entity not found in Neo4j graph database. Rendering synthetic demonstrator topology.
+      ⚠ NO LIVE GRAPH RECORDS: Entity not found in Neo4j/PostgreSQL.
+      <button onclick="createDemoGraph(document.getElementById('targetEntityInput').value.trim() || 'DEMO')" style="margin-left:10px; background:#fff; color:#92400e; border:none; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:700; cursor:pointer;">Load Sample Demo</button>
     </div>
     <div id="networkCanvas"></div>
 
@@ -417,24 +418,28 @@
         return;
       }
 
+      const hopEl = document.getElementById('hopSelect');
+      const hops = hopEl ? Number.parseInt(hopEl.value, 10) || 2 : 2;
+
       try {
-        const res = await fetch(`/api/v1/network/expand/${encodeURIComponent(entityId)}`, { credentials: 'include' });
-        if (!res.ok) throw new Error('Graph query failed');
+        const res = await fetch(`/api/v1/network/expand/${encodeURIComponent(entityId)}?hops=${hops}`, { credentials: 'include' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         
         const rawNodes = data.nodes || [];
         const rawEdges = data.edges || [];
 
-        function getNodeColor(isTarget, nodeType) {
-          if (isTarget) return '#ef4444';
+        function getNodeColor(isTarget, nodeType, riskVal) {
+          if (isTarget || riskVal === 'CRITICAL') return '#ef4444';
+          if (riskVal === 'HIGH') return '#f59e0b';
           if (nodeType === 'Company') return '#3b82f6';
           return '#10b981';
         }
 
         // Build vis nodes
-        const visNodes = rawNodes.map((n, i) => {
-          const isTarget = n.id === entityId || (n.label && n.label.includes(entityId));
-          const color = getNodeColor(isTarget, n.type);
+        const visNodes = rawNodes.map((n) => {
+          const isTarget = n.id === entityId || (n.label && n.label.includes(entityId)) || (n.properties && n.properties.account_number === entityId);
+          const color = getNodeColor(isTarget, n.type, n.properties && n.properties.risk);
           return {
             id: n.id,
             label: n.label || n.id,
@@ -445,29 +450,39 @@
           };
         });
 
-        // If backend returned empty graph, create demo interconnected topology for visualization
+        nodesDataSet.clear();
+        edgesDataSet.clear();
+
         if (visNodes.length === 0) {
-          createDemoGraph(entityId);
+          const banner = document.getElementById('demoModeBanner');
+          if (banner) banner.style.display = 'block';
+          showToast(`No graph connections found for "${entityId}".`);
           return;
         }
 
-        nodesDataSet.clear();
-        edgesDataSet.clear();
         nodesDataSet.add(visNodes);
         edgesDataSet.add(rawEdges.map(e => ({
           from: e.source,
           to: e.target,
-          label: e.properties && e.properties.amount ? `$${e.properties.amount}` : '',
+          amount: e.properties && e.properties.amount ? Number(e.properties.amount) : 0,
+          edgeType: e.type || 'TRANSFERS_TO',
+          label: e.properties && e.properties.amount ? `$${Number(e.properties.amount).toLocaleString()}` : (e.type || ''),
           font: { size: 10, color: '#94a3b8' }
         })));
 
         const banner = document.getElementById('demoModeBanner');
         if (banner) banner.style.display = 'none';
 
-        showToast(`Graph expanded: ${visNodes.length} live Neo4j nodes loaded.`);
+        const targetNode = visNodes.find(n => n.size === 24) || visNodes[0];
+        if (targetNode) displayNodeDetails(targetNode);
+        showToast(`Graph expanded (${hops}-hop): ${visNodes.length} live nodes, ${rawEdges.length} edges.`);
       } catch (err) {
-        console.error('Failed to query live Neo4j graph topology:', err);
-        createDemoGraph(entityId);
+        console.error('Failed to query live graph topology:', err);
+        nodesDataSet.clear();
+        edgesDataSet.clear();
+        const banner = document.getElementById('demoModeBanner');
+        if (banner) banner.style.display = 'block';
+        showToast('Graph query failed: ' + err.message);
       }
     }
 
@@ -503,14 +518,24 @@
       selectedNodeId = node.id;
       document.getElementById('dLabel').innerText = node.label;
       document.getElementById('dType').innerText = node.type;
-      document.getElementById('dId').innerText = node.id;
+      document.getElementById('dId').innerText = (node.properties && node.properties.account_number) || node.id;
       document.getElementById('dRisk').innerText = (node.properties && node.properties.risk) ? node.properties.risk : 'STANDARD';
+
+      const allEdges = edgesDataSet ? edgesDataSet.get() : [];
+      const incoming = allEdges.filter(e => e.to === node.id);
+      const outgoing = allEdges.filter(e => e.from === node.id);
+      const counterparties = new Set([
+        ...incoming.map(e => e.from),
+        ...outgoing.map(e => e.to)
+      ]);
+      const totalFlow = [...incoming, ...outgoing].reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+      const hopVal = (document.getElementById('hopSelect') || {}).value || '2';
 
       const edgeInfo = document.getElementById('edgeInfoContainer');
       edgeInfo.innerHTML = `
-        <div class="info-row"><span class="info-label">Active Hops:</span><span class="info-val">Direct (1-Hop)</span></div>
-        <div class="info-row"><span class="info-label">Counterparties:</span><span class="info-val">3 Connected</span></div>
-        <div class="info-row"><span class="info-label">Transit Velocity:</span><span class="info-val" style="color:var(--accent-crimson)">Layering Detected</span></div>
+        <div class="info-row"><span class="info-label">Query Depth:</span><span class="info-val">${hopVal}-Hop Traversal</span></div>
+        <div class="info-row"><span class="info-label">Counterparties:</span><span class="info-val">${counterparties.size} Connected (${incoming.length} in / ${outgoing.length} out)</span></div>
+        <div class="info-row"><span class="info-label">Observed Flow:</span><span class="info-val">$${totalFlow.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span></div>
       `;
     }
 

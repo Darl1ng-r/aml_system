@@ -232,6 +232,7 @@
             <a href="/sar/editor" class="dropdown-item"><i data-lucide="file-text"></i> SAR Draft Editor</a>
             <a href="/sar/queue" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="send"></i> SAR Filing Queue</a>
             <a href="/network" class="dropdown-item"><i data-lucide="share-2"></i> Graph Explorer</a>
+            <a href="/compliance/ops" class="dropdown-item"><i data-lucide="briefcase"></i> Compliance Operations Hub</a>
             <button type="button" class="dropdown-item" onclick="openModal('sandbox-modal'); toggleAppMenu(false);"><i data-lucide="scan-search"></i> Watchlist Screening</button>
             <button type="button" class="dropdown-item" onclick="openModal('str-modal'); toggleAppMenu(false);"><i data-lucide="package"></i> Regulatory STR Batches</button>
             
@@ -616,13 +617,13 @@
           </div>
           <div class="metric-card">
             <span class="metric-label">Avg. Resolution Time</span>
-            <span class="metric-value">4.2 <span style="font-size:12px; font-weight:500;">hrs</span></span>
-            <span class="metric-trend">↓ 18% vs last cycle</span>
+            <span class="metric-value"><span id="metric-avg-resolution">—</span> <span style="font-size:12px; font-weight:500;">hrs</span></span>
+            <span class="metric-trend">Live PostgreSQL SLA</span>
           </div>
           <div class="metric-card">
             <span class="metric-label">Escalation Rate</span>
-            <span class="metric-value">12.8%</span>
-            <span class="metric-trend down">↑ +1.2% this month</span>
+            <span class="metric-value" id="metric-escalation-rate">—</span>
+            <span class="metric-trend">Escalated &amp; SAR Share</span>
           </div>
           <div class="metric-card">
             <span class="metric-label">Critical Pending</span>
@@ -891,6 +892,12 @@
       const el = document.getElementById(id);
       if (el) {
         el.style.display = 'flex';
+        if (id === 'str-modal' && typeof loadSTRBatches === 'function') {
+          void loadSTRBatches();
+        }
+        if (id === 'executive-modal' && typeof loadDashboardAnalytics === 'function') {
+          void loadDashboardAnalytics();
+        }
         if (window.lucide) lucide.createIcons();
       }
     }
@@ -919,8 +926,15 @@
         if (content) content.style.display = (k === tabKey) ? 'block' : 'none';
       });
 
-      if (tabKey === 'network' && typeof fitVisGraph === 'function') {
-        setTimeout(() => fitVisGraph(), 50);
+      if (tabKey === 'network') {
+        if (typeof renderVisNetworkGraph === 'function' && window._lastGraphData) {
+          const curAlert = (typeof activeAlerts !== 'undefined' && typeof activeAlertId !== 'undefined')
+            ? activeAlerts.find(a => a.alert_id === activeAlertId)
+            : null;
+          setTimeout(() => renderVisNetworkGraph(window._lastGraphData, curAlert, 'vis-graph-full-container'), 50);
+        } else if (typeof fitVisGraph === 'function') {
+          setTimeout(() => fitVisGraph(), 50);
+        }
       }
       if (tabKey === 'evidence') {
         loadCaseEvidence();
@@ -1046,7 +1060,10 @@
                 ${ev.description || 'No description'} · <span style="font-family:var(--font-data);">${(ev.file_size/1024).toFixed(1)} KB</span> · Uploaded by ${ev.uploaded_by_name}
               </div>
             </div>
-            <div>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <a href="/api/v1/cases/${caseId}/evidence/${ev.id}/download" target="_blank" style="border:1px solid var(--panel-edge); color:var(--ink); padding:4px 8px; border-radius:var(--r-sm); font-size:11px; text-decoration:none;">
+                Download
+              </a>
               <button onclick="deleteEvidence('${caseId}', '${ev.id}')" style="background:none; border:1px solid #FECACA; color:#DC2626; padding:4px 8px; border-radius:var(--r-sm); font-size:11px; cursor:pointer;">
                 Remove
               </button>

@@ -327,6 +327,7 @@
           <button class="tab-pill active" onclick="filterStatus('')">All Filings</button>
           <button class="tab-pill" onclick="filterStatus('PENDING_MLRO_REVIEW')">Pending Review</button>
           <button class="tab-pill" onclick="filterStatus('APPROVED')">Approved</button>
+          <button class="tab-pill" onclick="filterStatus('FILED')">Filed</button>
           <button class="tab-pill" onclick="filterStatus('REJECTED')">Rejected</button>
         </div>
         <span style="font-size:0.75rem; color:var(--text-dim);" id="tableCount">Showing 0 drafts</span>
@@ -339,6 +340,7 @@
             <th>Linked Alert / Case</th>
             <th>Author</th>
             <th>Status</th>
+            <th>FinCEN Tracking ID</th>
             <th>Narrative Excerpt</th>
             <th>Reviewed By</th>
             <th>Created At</th>
@@ -346,7 +348,7 @@
           </tr>
         </thead>
         <tbody id="draftsTableBody">
-          <tr><td colspan="8" style="text-align:center; padding:2rem; color:var(--text-dim);">Loading filings queue...</td></tr>
+          <tr><td colspan="9" style="text-align:center; padding:2rem; color:var(--text-dim);">Loading filings queue...</td></tr>
         </tbody>
       </table>
     </div>
@@ -443,7 +445,7 @@
 
       const tbody = document.getElementById('draftsTableBody');
       if (!allDrafts.length) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:2rem; color:var(--text-dim);">No filings found in queue.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:2rem; color:var(--text-dim);">No filings found in queue.</td></tr>';
         return;
       }
 
@@ -452,7 +454,11 @@
         const excerpt = formatNarrativeExcerpt(d.narrative);
         const dateStr = d.created_at ? d.created_at.slice(0, 16).replace('T', ' ') : '-';
         const isPending = d.status === 'PENDING_MLRO_REVIEW';
+        const isApproved = d.status === 'APPROVED';
         const referenceId = getQueueReferenceId(d);
+        const trackingCell = d.fincen_tracking_id
+          ? `<span class="mono" style="color:var(--accent-emerald); font-size:0.75rem;">${d.fincen_tracking_id}</span>`
+          : '<span style="color:var(--text-dim);">—</span>';
 
         return `
           <tr>
@@ -460,21 +466,51 @@
             <td class="mono">${referenceId}</td>
             <td>${d.drafted_by_username || 'Analyst'}</td>
             <td><span class="status-badge ${statusClass}">${d.status}</span></td>
+            <td>${trackingCell}</td>
             <td style="color:var(--text-muted); max-width:240px;">${excerpt}</td>
             <td>${d.reviewed_by_username || '-'}</td>
             <td class="mono" style="font-size:0.75rem; color:var(--text-dim);">${dateStr}</td>
             <td style="text-align:right;">
               <div style="display:inline-flex; gap:0.4rem;">
-                <a href="/sar/draft/${d.draft_id}" class="btn-action" title="Open Editor">Edit</a>
+                <a href="/sar/draft/${d.draft_id}" class="btn-action" title="Open Editor">View</a>
                 ${isPending ? `
                   <button class="btn-action btn-approve" onclick="openReviewModal('${d.draft_id}', 'APPROVE')">Approve</button>
                   <button class="btn-action btn-reject" onclick="openReviewModal('${d.draft_id}', 'REJECT')">Reject</button>
+                ` : ''}
+                ${isApproved && d.alert_id ? `
+                  <button class="btn-action btn-approve" onclick="submitApprovedToFinCEN('${d.draft_id}', '${d.alert_id}', this)">File FinCEN</button>
                 ` : ''}
               </div>
             </td>
           </tr>
         `;
       }).join('');
+    }
+
+    async function submitApprovedToFinCEN(draftId, alertId, btnEl) {
+      if (!confirm('Electronically transmit this approved SAR draft to the FinCEN BSA E-Filing Gateway?')) return;
+      if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerText = 'Filing...';
+      }
+      try {
+        const res = await fetch('/api/v1/fincen/sars', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify({ alert_id: alertId, draft_id: draftId })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `FinCEN filing failed (HTTP ${res.status})`);
+        showToast(`FinCEN Filing Confirmed: ${data.fincen_tracking_id || 'ACCEPTED'}`);
+        fetchQueue();
+      } catch (err) {
+        showToast('FinCEN Filing Error: ' + err.message);
+        if (btnEl) {
+          btnEl.disabled = false;
+          btnEl.innerText = 'File FinCEN';
+        }
+      }
     }
 
     function filterStatus(status) {
@@ -484,7 +520,8 @@
           (status === '' && idx === 0) ||
           (status === 'PENDING_MLRO_REVIEW' && idx === 1) ||
           (status === 'APPROVED' && idx === 2) ||
-          (status === 'REJECTED' && idx === 3)
+          (status === 'FILED' && idx === 3) ||
+          (status === 'REJECTED' && idx === 4)
         );
       });
       fetchQueue();

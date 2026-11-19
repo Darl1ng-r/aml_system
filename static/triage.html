@@ -1112,7 +1112,11 @@
     }
 
     function openCaseCockpit() {
-      window.location.href = '/dashboard';
+      if (selectedAlert && selectedAlert.id) {
+        window.location.href = `/dashboard?alert_id=${encodeURIComponent(selectedAlert.id)}`;
+      } else {
+        window.location.href = '/dashboard';
+      }
     }
 
     function closeDrawer() {

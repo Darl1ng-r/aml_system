@@ -106,16 +106,15 @@ const validateAuthInputs = (
   return null;
 };
 
-const storeAuthTokens = (data: { access_token?: string; username: string; role: string }) => {
+const storeAuthTokens = (data: { access_token?: string; username?: string; role?: string }) => {
   if (typeof window === 'undefined') return;
+  // Session JWTs live in HttpOnly; SameSite=Strict cookies; avoid persisting raw tokens in localStorage
   sessionStorage.setItem('auth_active', 'true');
   localStorage.setItem('auth_session_active', 'true');
-  if (data.access_token) {
-    localStorage.setItem('jwt_token', data.access_token);
-    localStorage.setItem('access_token', data.access_token);
-  }
-  localStorage.setItem('username', data.username);
-  localStorage.setItem('role', data.role);
+  localStorage.removeItem('jwt_token');
+  localStorage.removeItem('access_token');
+  if (data.username) localStorage.setItem('username', data.username);
+  if (data.role) localStorage.setItem('role', data.role);
 };
 
 const executeLoginApi = async (apiBaseUrl: string, username: string, password: string) => {
@@ -244,6 +243,11 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
         ? await executeLoginApi(apiBaseUrl, username, password)
         : await executeRegisterApi(apiBaseUrl, username, password, tenantId);
 
+      if (data.mfa_required && data.mfa_ticket) {
+        setErrorMessage('Two-factor authentication (TOTP) is required for this account. Please sign in at /login to complete MFA verification.');
+        return;
+      }
+
       storeAuthTokens(data);
 
       const welcomeMsg = mode === 'login'
@@ -266,12 +270,8 @@ export const EnterpriseAuth: React.FC<EnterpriseAuthProps> = ({
   };
 
   const handleSsoClick = (provider: 'google' | 'github') => {
-    setErrorMessage(null);
-    setSuccessMessage(`Redirecting to institutional ${provider.toUpperCase()} Identity Provider (PKCE)...`);
-    // Redirect or trigger SSO endpoint
-    setTimeout(() => {
-      window.location.href = `${apiBaseUrl}/api/v1/auth/sso/${provider}`;
-    }, 600);
+    setSuccessMessage(null);
+    setErrorMessage(`Institutional ${provider.toUpperCase()} SSO is not configured on this backend. Use username/password authentication.`);
   };
 
   let submitButtonContent: React.ReactNode;

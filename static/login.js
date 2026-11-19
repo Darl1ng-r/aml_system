@@ -524,17 +524,17 @@
             btnCancelMfa.addEventListener('click', cancelMfa);
         }
 
-        // 6. SSO Buttons
+        // 6. SSO Buttons (disabled until OIDC IdP is configured)
         const btnGoogle = document.getElementById('btn-sso-google');
         const btnGithub = document.getElementById('btn-sso-github');
         if (btnGoogle) {
             btnGoogle.addEventListener('click', () => {
-                showSuccess('Connecting to Google Enterprise IDP (OAuth2 PKCE flow)...');
+                showError('Google Enterprise SSO is not configured on this deployment. Please sign in with your credentials.');
             });
         }
         if (btnGithub) {
             btnGithub.addEventListener('click', () => {
-                showSuccess('Connecting to GitHub Corporate IDP (OAuth2 PKCE flow)...');
+                showError('GitHub Corporate SSO is not configured on this deployment. Please sign in with your credentials.');
             });
         }
 

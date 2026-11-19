@@ -608,4 +608,14 @@ def read_risk_appetite(request: Request):
     return FileResponse("static/risk-appetite.html")
 
 
+@app.get("/compliance/ops", response_class=FileResponse)
+@app.get("/ops", response_class=FileResponse)
+def read_compliance_ops(request: Request):
+    """Server-side cookie authentication guard for Compliance Operations Hub."""
+    token = request.cookies.get("access_token")
+    if not token:
+        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
+    return FileResponse("static/compliance-ops.html")
+
+
 

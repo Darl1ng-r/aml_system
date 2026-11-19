@@ -372,10 +372,24 @@
     // 7. Bind Range Slider for Fuzzy Sensitivity
     const threshSlider = document.getElementById('demo-thresh-slider');
     const threshLabel = document.getElementById('demo-thresh-label');
+    const threshResult = document.getElementById('demo-thresh-result');
     if (threshSlider && threshLabel) {
-      threshSlider.addEventListener('input', function () {
-        threshLabel.textContent = `${this.value}% Match Limit`;
-      });
+      const updateDemoMatch = () => {
+        const limit = Number.parseInt(threshSlider.value, 10);
+        threshLabel.textContent = `${limit}% Match Limit`;
+        if (threshResult) {
+          const sampleScore = 92;
+          if (sampleScore >= limit) {
+            threshResult.textContent = `→ OFAC SDN Blocklist Hit (${sampleScore}% ≥ ${limit}%)`;
+            threshResult.className = 'text-risk-high block font-semibold';
+          } else {
+            threshResult.textContent = `→ Cleared Below Threshold (${sampleScore}% < ${limit}%)`;
+            threshResult.className = 'text-risk-low block font-semibold';
+          }
+        }
+      };
+      threshSlider.addEventListener('input', updateDemoMatch);
+      updateDemoMatch();
     }
 
     // 8. Global Keyboard Shortcuts

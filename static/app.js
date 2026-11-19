@@ -535,21 +535,23 @@ function switchTab(tabId, btn) {
 
 // ── Dynamic Dashboard Analytics & Chart.js ─────────────────────────────────────
 async function loadDashboardAnalytics() {
-    if (mockMode) {
-        renderMockCharts();
-        return;
-    }
-
     try {
         const response = await fetch(`${BASE_URL}/api/v1/metrics/dashboard`, {
             headers: getAuthHeaders()
         });
         if (!response.ok) throw new Error(`Dashboard metrics request failed with HTTP ${response.status}`);
         const metrics = await response.json();
+        if (mockMode) setMockMode(false);
 
         // 1. KPI Cards
-        document.getElementById('metric-active-cases').innerText = metrics.active_cases || 0;
-        document.getElementById('metric-critical-cases').innerText = metrics.critical_cases || 0;
+        const activeEl = document.getElementById('metric-active-cases');
+        const critEl = document.getElementById('metric-critical-cases');
+        const avgResEl = document.getElementById('metric-avg-resolution');
+        const escRateEl = document.getElementById('metric-escalation-rate');
+        if (activeEl) activeEl.innerText = metrics.active_cases || 0;
+        if (critEl) critEl.innerText = metrics.critical_cases || 0;
+        if (avgResEl) avgResEl.innerText = metrics.avg_resolution_hours != null ? metrics.avg_resolution_hours : '0.0';
+        if (escRateEl) escRateEl.innerText = metrics.escalation_rate != null ? `${metrics.escalation_rate}%` : '0.0%';
 
         // 2. Render Chart.js Daily Trend Line Chart
         renderDailyTrendChart(metrics.daily_trend.labels, metrics.daily_trend.data);
@@ -561,9 +563,7 @@ async function loadDashboardAnalytics() {
         renderLeaderboard(metrics.analyst_leaderboard);
 
     } catch (e) {
-        setMockMode(true);
-        log(`Failed to fetch dashboard metrics: ${e.message}. Rendering mock analytics.`, 'warn');
-        renderMockCharts();
+        log(`Failed to fetch dashboard metrics: ${e.message}.`, 'warn');
     }
 }
 
@@ -789,13 +789,20 @@ function buildAlertsUrl() {
 }
 
 function _applyLoadedAlerts(data, xTotalCount) {
+    if (mockMode) setMockMode(false);
     totalAlertsCount = xTotalCount ? Number.parseInt(xTotalCount, 10) : data.length;
     activeAlerts = Array.isArray(data) ? data.map(mapApiAlertToClientModel) : [];
 
     renderInbox(activeAlerts);
     renderQueueRail();
     if (activeAlerts.length > 0) {
-        const currentId = (activeAlertId && activeAlerts.some(a => a.alert_id === activeAlertId)) ? activeAlertId : activeAlerts[0].alert_id;
+        const urlAlertId = new URLSearchParams(window.location.search).get('alert_id');
+        let currentId = activeAlerts[0].alert_id;
+        if (urlAlertId && activeAlerts.some(a => a.alert_id === urlAlertId)) {
+            currentId = urlAlertId;
+        } else if (activeAlertId && activeAlerts.some(a => a.alert_id === activeAlertId)) {
+            currentId = activeAlertId;
+        }
         selectCase(currentId);
     }
     updatePaginationControls(totalAlertsCount);
@@ -1579,21 +1586,22 @@ async function loadGraphData(alertId, alert) {
         const graphData = await response.json();
         renderVisNetworkGraph(graphData, alert);
     } catch (e) {
-        log(`Failed to fetch graph data from Neo4j: ${e.message}. Rendering mock topology.`, 'warn');
-        renderMockGraph(alert);
+        log(`Failed to fetch graph data from Neo4j: ${e.message}.`, 'warn');
+        renderVisNetworkGraph({ nodes: [], edges: [] }, alert);
     }
 }
 
 // ── Interactive Vis.js Force-Directed Graph Rendering ─────────────────────────
 let _visRetryCount = 0;
-function renderVisNetworkGraph(graphData, alert) {
-    const container = document.getElementById('vis-graph-container');
+let visFullNetworkInstance = null;
+function renderVisNetworkGraph(graphData, alert, targetContainerId = 'vis-graph-container') {
+    const container = document.getElementById(targetContainerId);
     if (!container) return;
 
     if (typeof vis === 'undefined' || !vis.DataSet || !vis.Network) {
         if (_visRetryCount < 10) {
             _visRetryCount++;
-            setTimeout(() => renderVisNetworkGraph(graphData, alert), 200);
+            setTimeout(() => renderVisNetworkGraph(graphData, alert, targetContainerId), 200);
             return;
         }
         // Fallback: Render informative SVG state when external library fails or is delayed
@@ -1608,7 +1616,7 @@ function renderVisNetworkGraph(graphData, alert) {
                 </svg>
                 <div style="font-weight:600; color:var(--ink); margin-bottom:4px;">Network Topology Canvas Standby</div>
                 <div style="font-size:11px; max-width:280px; margin-bottom:10px;">Graph rendering engine connecting or delayed by network filter.</div>
-                <button class="topbar-btn" onclick="_visRetryCount=0; renderVisNetworkGraph(window._lastGraphData || {}, null);" style="border:1px solid var(--panel-edge); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer;">
+                <button class="topbar-btn" onclick="_visRetryCount=0; renderVisNetworkGraph(window._lastGraphData || {}, null, '${targetContainerId}');" style="border:1px solid var(--panel-edge); padding:4px 10px; border-radius:4px; font-size:11px; cursor:pointer;">
                     Retry Connection
                 </button>
             </div>
@@ -1623,7 +1631,12 @@ function renderVisNetworkGraph(graphData, alert) {
     const rawEdges = graphData.edges || [];
 
     if (rawNodes.length === 0) {
-        renderMockGraph(alert);
+        container.innerHTML = `
+            <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; color:var(--ink-soft); font-size:12px; text-align:center; padding:16px;">
+                <div style="font-weight:600; color:var(--ink); margin-bottom:4px;">No Connected Graph Topology Found</div>
+                <div style="font-size:11px; max-width:280px;">No multi-hop relationships are currently indexed for this alert in Neo4j/PostgreSQL.</div>
+            </div>
+        `;
         return;
     }
 
@@ -1706,13 +1719,18 @@ function renderVisNetworkGraph(graphData, alert) {
         interaction: { hover: true, zoomView: true, dragView: true }
     };
 
-    if (visNetworkInstance) {
-        visNetworkInstance.destroy();
+    let activeInstance;
+    if (targetContainerId === 'vis-graph-full-container') {
+        if (visFullNetworkInstance) visFullNetworkInstance.destroy();
+        visFullNetworkInstance = new vis.Network(container, data, options);
+        activeInstance = visFullNetworkInstance;
+    } else {
+        if (visNetworkInstance) visNetworkInstance.destroy();
+        visNetworkInstance = new vis.Network(container, data, options);
+        activeInstance = visNetworkInstance;
     }
 
-    visNetworkInstance = new vis.Network(container, data, options);
-
-    visNetworkInstance.on('selectNode', (params) => {
+    activeInstance.on('selectNode', (params) => {
         const selectedId = params.nodes[0];
         const targetNode = visNodes.find(n => n.id === selectedId);
         if (targetNode) {
@@ -2154,9 +2172,8 @@ async function runSandboxScreening(event) {
         renderSandboxVerdict(result, thresholdVal);
 
     } catch (e) {
-        log(`API screening error (${e.message}). Running offline lookup...`, 'warn');
-        setMockMode(true);
-        void runSandboxScreening(event);
+        log(`API screening error: ${e.message}`, 'error');
+        alert(`Screening request failed: ${e.message}`);
     }
 }
 

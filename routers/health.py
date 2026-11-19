@@ -307,9 +307,14 @@ async def get_queue_health(
     from database.postgres import get_async_db_conn
     from config import TRANSACTIONS_TOPIC
 
-    # Check pending & in-flight outbox messages in PostgreSQL
+    # Check pending & in-flight outbox messages and live 60s publish rate in PostgreSQL
+    import asyncio
+    from config import KAFKA_BOOTSTRAP_SERVERS
+
     pending_outbox = 0
     outbox_error = None
+    tx_rate_per_sec = 0.0
+    alert_rate_per_sec = 0.0
     try:
         async with get_async_db_conn() as conn:
             pending_outbox = await conn.fetchval(
@@ -317,22 +322,52 @@ async def get_queue_health(
             )
             if pending_outbox is None:
                 pending_outbox = 0
+            try:
+                published_60s = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM transactional_outbox
+                    WHERE status = 'PUBLISHED' AND updated_at >= NOW() - INTERVAL '60 seconds';
+                    """
+                )
+                if isinstance(published_60s, (int, float)):
+                    tx_rate_per_sec = round(float(published_60s) / 60.0, 2)
+                alerts_60s = await conn.fetchval(
+                    "SELECT COUNT(*) FROM alerts WHERE created_at >= NOW() - INTERVAL '60 seconds';"
+                )
+                if isinstance(alerts_60s, (int, float)):
+                    alert_rate_per_sec = round(float(alerts_60s) / 60.0, 2)
+            except Exception:
+                pass
     except Exception as e:
         logger.exception("Failed to query queue health from transactional_outbox")
         outbox_error = str(e)
         pending_outbox = -1
 
+    # Probe live Kafka / Redpanda broker connectivity
+    broker_reachable = False
+    try:
+        first_broker = str(KAFKA_BOOTSTRAP_SERVERS).split(",")[0].strip()
+        host, port_str = (first_broker.rsplit(":", 1) if ":" in first_broker else (first_broker, "9092"))
+        _r, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port_str)), timeout=1.0)
+        writer.close()
+        await writer.wait_closed()
+        broker_reachable = True
+    except Exception:
+        broker_reachable = False
+
+    cg_status = "HEALTHY" if broker_reachable else "BROKER_UNREACHABLE"
     topics = [
         {
             "topic": TRANSACTIONS_TOPIC,
             "partitions": 3,
             "replication_factor": 1,
+            "broker_reachable": broker_reachable,
             "consumer_groups": [
                 {
                     "group_id": "aml_scoring_workers",
-                    "total_lag": 0,
-                    "status": "HEALTHY",
-                    "messages_per_sec": 142.5
+                    "total_lag": max(0, pending_outbox) if pending_outbox >= 0 else None,
+                    "status": cg_status,
+                    "messages_per_sec": tx_rate_per_sec
                 }
             ]
         },
@@ -340,12 +375,13 @@ async def get_queue_health(
             "topic": "aml.alerts.created",
             "partitions": 3,
             "replication_factor": 1,
+            "broker_reachable": broker_reachable,
             "consumer_groups": [
                 {
                     "group_id": "aml_alert_dispatchers",
-                    "total_lag": 0,
-                    "status": "HEALTHY",
-                    "messages_per_sec": 4.2
+                    "total_lag": 0 if broker_reachable else None,
+                    "status": cg_status,
+                    "messages_per_sec": alert_rate_per_sec
                 }
             ]
         }

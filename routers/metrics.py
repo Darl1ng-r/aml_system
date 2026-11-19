@@ -234,9 +234,33 @@ async def get_dashboard_metrics(
                     "risk_tier": _determine_risk_tier(active)
                 })
 
+            # 1b. Real Resolution Time & Escalation Rate (replaces static Executive Modal KPIs)
+            avg_res_hours = 0.0
+            escalation_rate = 0.0
+            try:
+                raw_avg = await conn.fetchval(
+                    """
+                    SELECT AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) / 3600.0)
+                    FROM alerts
+                    WHERE status LIKE 'CLOSED%' AND updated_at IS NOT NULL AND created_at IS NOT NULL AND updated_at >= created_at;
+                    """
+                )
+                if isinstance(raw_avg, (int, float)):
+                    avg_res_hours = round(float(raw_avg), 1)
+                total_alerts_all = await conn.fetchval("SELECT COUNT(*) FROM alerts;")
+                escalated_alerts = await conn.fetchval(
+                    "SELECT COUNT(*) FROM alerts WHERE status IN ('ESCALATED', 'CLOSED_SAR');"
+                )
+                if isinstance(total_alerts_all, (int, float)) and total_alerts_all > 0 and isinstance(escalated_alerts, (int, float)):
+                    escalation_rate = round((float(escalated_alerts) / float(total_alerts_all)) * 100.0, 1)
+            except Exception:
+                pass
+
             return {
                 "active_cases": active_cases or 0,
                 "critical_cases": critical_cases or 0,
+                "avg_resolution_hours": avg_res_hours,
+                "escalation_rate": escalation_rate,
                 "daily_trend": {
                     "labels": list(days_map.keys()),
                     "data": list(days_map.values())

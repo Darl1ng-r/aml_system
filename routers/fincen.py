@@ -35,12 +35,12 @@ router = APIRouter(prefix="/api/v1/fincen", tags=["FinCEN E-Filing"])
 
 class FinCENSubmissionRequest(BaseModel):
     alert_id: str
-    sar_xml: str = Field(..., min_length=10, max_length=100000)
+    sar_xml: str | None = Field(default=None, max_length=100000)
     draft_id: str | None = None
 
     @field_validator("sar_xml", mode="before")
     @classmethod
-    def sanitize_xml(cls, v: str) -> str:
+    def sanitize_xml(cls, v: str | None) -> str | None:
         if isinstance(v, str):
             import re
             return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufeff]", "", v).strip()
@@ -286,7 +286,7 @@ async def submit_sar_to_fincen(
     request: Request,
     payload: FinCENSubmissionRequest,
     response: Response = None,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    current_user: dict = Depends(RoleChecker(["ADMIN", "MLRO", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
     """
@@ -343,6 +343,30 @@ async def submit_sar_to_fincen(
         raise
     except Exception as db_err:
         logger.warning(f"Pre-flight filing check warning: {db_err}")
+
+    # 3b. Resolve XML payload from approved SAR draft when not passed inline
+    if not payload.sar_xml or len(payload.sar_xml) < 10:
+        resolved_xml = None
+        if draft_to_validate and hasattr(draft_to_validate, "get"):
+            resolved_xml = draft_to_validate.get("xml_payload")
+        if not resolved_xml and payload.draft_id:
+            try:
+                async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                    d_row = await conn.fetchrow(
+                        "SELECT xml_payload, narrative FROM sar_drafts WHERE id = $1;",
+                        uuid.UUID(payload.draft_id)
+                    )
+                    if d_row:
+                        resolved_xml = d_row.get("xml_payload") or (
+                            f"<SuspiciousActivityReport><Header><ReportID>{payload.alert_id}</ReportID></Header>"
+                            f"<ActivitySummary><Description>{sanitize_text(d_row.get('narrative') or 'Approved SAR filing')}</Description></ActivitySummary>"
+                            f"</SuspiciousActivityReport>"
+                        )
+            except Exception:
+                pass
+        if not resolved_xml:
+            raise HTTPException(status_code=400, detail="SAR XML payload is required for FinCEN filing.")
+        payload.sar_xml = resolved_xml
 
     # 4. Electronic submission to FinCEN gateway
     receipt = await _execute_fincen_gateway_submission(payload, alert_uuid, tenant_id, idemp_key)
@@ -462,12 +486,24 @@ async def list_sar_drafts(
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         if status_filter:
             rows = await conn.fetch(
-                "SELECT * FROM sar_drafts WHERE tenant_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 100;",
+                """
+                SELECT s.*, a.fincen_tracking_id, a.fincen_filing_status
+                FROM sar_drafts s
+                LEFT JOIN alerts a ON s.alert_id = a.id
+                WHERE s.tenant_id = $1 AND s.status = $2
+                ORDER BY s.created_at DESC LIMIT 100;
+                """,
                 uuid.UUID(str(tenant_id)), status_filter.upper()
             )
         else:
             rows = await conn.fetch(
-                "SELECT * FROM sar_drafts WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 100;",
+                """
+                SELECT s.*, a.fincen_tracking_id, a.fincen_filing_status
+                FROM sar_drafts s
+                LEFT JOIN alerts a ON s.alert_id = a.id
+                WHERE s.tenant_id = $1
+                ORDER BY s.created_at DESC LIMIT 100;
+                """,
                 uuid.UUID(str(tenant_id))
             )
         return [
@@ -480,6 +516,8 @@ async def list_sar_drafts(
                 "narrative": r["narrative"],
                 "reviewed_by_username": r["reviewed_by_username"],
                 "rejection_reason": r["rejection_reason"],
+                "fincen_tracking_id": r["fincen_tracking_id"] if "fincen_tracking_id" in r else None,
+                "fincen_filing_status": r["fincen_filing_status"] if "fincen_filing_status" in r else None,
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None
             }
             for r in rows
