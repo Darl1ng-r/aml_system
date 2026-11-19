@@ -1,973 +1,543 @@
 <!DOCTYPE html>
-<html lang="en" class="scroll-smooth">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Sentinel AML — Empowering Financial Transparency. Real-time Cognitive Anti-Money Laundering, Multi-Hop UBO Graph Analytics, and Automated FinCEN / goAML Regulatory E-Filing." />
-  <meta name="theme-color" content="#121417" />
-  <title>Sentinel AML | Empowering Financial Transparency &amp; Real-Time Crime Intelligence</title>
+  <meta name="description" content="Sentinel AML — Empowering Financial Transparency. Ultra-clean real-time anti-money laundering surveillance, multi-hop UBO graph discovery, and FinCEN / goAML regulatory filing." />
+  <meta name="theme-color" content="#141517" />
+  <title>Sentinel AML — Empowering Financial Transparency</title>
 
-  <!-- Typography: Plus Jakarta Sans (Editorial Display), Inter (UI), JetBrains Mono (Telemetry) -->
+  <!-- Crisp Editorial Typography: Plus Jakarta Sans, Inter, JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
 
-  <!-- Preload Hero LCP Asset (WebP) -->
+  <!-- Preload Hero LCP Asset -->
   <link rel="preload" as="image" href="/static/images/aml_hero_editorial.webp" type="image/webp" fetchpriority="high" />
 
-  <!-- Compiled Tailwind CSS + Editorial Architecture Tokens -->
-  <link rel="stylesheet" href="/static/landing.css" />
+  <!-- Refined Minimalist Design System (cache-busted) -->
+  <link rel="stylesheet" href="/static/landing.css?v=20261119-minimal" />
 
-  <!-- Non-blocking Icon Set -->
+  <!-- Deferred Icon Library -->
   <script src="https://unpkg.com/lucide@0.344.0/dist/umd/lucide.min.js" defer></script>
 </head>
-<body class="ed-outer-canvas antialiased selection:bg-[#0A4941] selection:text-white min-h-screen flex flex-col py-3 sm:py-6 px-2 sm:px-6 lg:px-10">
+<body class="minimal-canvas">
 
-  <!-- Accessibility Skip Link -->
-  <a href="#main-content" class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:bg-[#121417] focus:text-white focus:px-4 focus:py-2.5 focus:rounded-xl focus:shadow-lg font-semibold text-sm">
-    Skip to main content
-  </a>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
 
-  <!-- ===================================================================== -->
-  <!-- ARCHITECTURAL SHELL CARD (Inspired by Money Solutions & NavSav Refs)  -->
-  <!-- ===================================================================== -->
-  <div class="ed-shell-card max-w-7xl w-full mx-auto flex-1 flex flex-col">
+  <div class="page-stack">
 
-    <!-- 1. FLOATING EDITORIAL NAVIGATION HEADER -->
-    <header class="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-black/5">
-      <div class="max-w-7xl mx-auto px-5 sm:px-8 lg:px-12 h-20 flex items-center justify-between gap-4">
-        <!-- Brand Mark -->
-        <a href="/landing" class="flex items-center gap-3 group focus:outline-none">
-          <div class="w-10 h-10 rounded-xl bg-[#121417] flex items-center justify-center text-white shadow-sm group-hover:bg-[#0A4941] transition-colors">
-            <i data-lucide="shield-check" class="w-5 h-5 text-[#F4D078]"></i>
-          </div>
-          <div class="flex flex-col">
-            <span class="font-display font-extrabold text-base tracking-tight text-[#111315] uppercase leading-none">Sentinel AML</span>
-            <span class="font-mono text-[10px] text-[#586069] tracking-widest uppercase mt-1">Financial Crime OS</span>
-          </div>
-        </a>
+    <!-- =================================================================== -->
+    <!-- SECTION 1: NAVSAV-INSPIRED ARCHITECTURAL HERO FRAME                 -->
+    <!-- Full-bleed rounded frame · Sculpted center white notch · Glass dock -->
+    <!-- =================================================================== -->
+    <section class="ns-hero-frame" aria-label="Sentinel AML Hero">
+      <!-- Dynamic Hero Background Image -->
+      <div class="ns-hero-bg">
+        <picture>
+          <source id="ns-hero-bg-webp" srcset="/static/images/aml_hero_editorial.webp" type="image/webp" />
+          <img
+            id="ns-hero-bg-img"
+            src="/static/images/aml_hero_editorial.jpg"
+            alt="Senior compliance executives collaborating in a minimalist glass architectural headquarters"
+            width="1280"
+            height="720"
+            fetchpriority="high"
+            decoding="async"
+          />
+        </picture>
+      </div>
+      <div class="ns-hero-scrim" aria-hidden="true"></div>
 
-        <!-- Center Pill Navigation Links -->
-        <nav aria-label="Primary Navigation" class="hidden lg:flex items-center gap-1.5 bg-[#F4F3EF] p-1.5 rounded-full border border-black/5">
-          <a href="#realtime-radar" class="px-4 py-1.5 rounded-full text-xs font-semibold text-[#111315] hover:bg-white hover:shadow-sm transition-all">Real-Time Engine</a>
-          <a href="#features" class="px-4 py-1.5 rounded-full text-xs font-semibold text-[#586069] hover:text-[#111315] hover:bg-white transition-all">Key Features</a>
-          <a href="#threejs-section" class="px-4 py-1.5 rounded-full text-xs font-semibold text-[#586069] hover:text-[#111315] hover:bg-white transition-all">3D UBO Topology</a>
-          <a href="#global-impact" class="px-4 py-1.5 rounded-full text-xs font-semibold text-[#586069] hover:text-[#111315] hover:bg-white transition-all">Impact Telemetry</a>
-          <a href="#pricing" class="px-4 py-1.5 rounded-full text-xs font-semibold text-[#586069] hover:text-[#111315] hover:bg-white transition-all">Licensing</a>
+      <!-- Top Bar with Sculpted Center White Notch -->
+      <header class="ns-topbar">
+        <!-- Left Translucent Pill Navigation -->
+        <nav class="ns-nav-pills" aria-label="Primary Navigation">
+          <a href="#editorial-overview" class="ns-glass-pill">Overview</a>
+          <a href="#architecture" class="ns-glass-pill">Architecture</a>
+          <a href="#features" class="ns-glass-pill">Features</a>
+          <a href="#threejs-section" class="ns-glass-pill">Topology</a>
         </nav>
 
-        <!-- Right Auth & High-Contrast Pill CTA -->
-        <div class="flex items-center gap-3">
-          <a href="/login" class="hidden sm:inline-flex items-center text-xs font-semibold text-[#111315] hover:text-[#0A4941] px-3 py-2 transition-colors">
-            Sign In
+        <!-- Center Sculpted White Notch Brand Mark -->
+        <a href="/landing" class="ns-brand-notch" aria-label="Sentinel AML Home">
+          <span class="ns-brand-mark">
+            <i data-lucide="shield-check" style="width:16px;height:16px;"></i>
+            <span>Sentinel</span>
+          </span>
+          <span class="ns-brand-sub">AML Engine</span>
+        </a>
+
+        <!-- Right Utility & Dark CTA Pill -->
+        <div class="ns-topbar-right">
+          <a href="/login" class="ns-glass-pill" style="display:inline-flex;">
+            <i data-lucide="lock" style="width:13px;height:13px;"></i>
+            <span>Sign In</span>
           </a>
-          <a href="/triage" class="pill-cta-dark" aria-label="Launch Case Cockpit">
-            <span class="circle-arrow" aria-hidden="true">↗</span>
-            <span>Launch Case Cockpit</span>
+          <a href="/triage" class="ns-cta-pill">
+            <span>Launch Cockpit</span>
+            <span class="ns-cta-circle" aria-hidden="true">↗</span>
           </a>
-          <button type="button" data-action="toggle-mobile-menu" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="mobile-menu" class="lg:hidden p-2.5 rounded-full border border-black/10 text-[#111315] hover:bg-[#F4F3EF] transition-colors">
-            <i data-lucide="menu" class="w-5 h-5"></i>
+          <button
+            type="button"
+            class="ns-mobile-toggle"
+            data-action="toggle-mobile-menu"
+            aria-label="Toggle navigation menu"
+            aria-expanded="false"
+            aria-controls="mobile-menu"
+          >
+            <i data-lucide="menu" style="width:18px;height:18px;"></i>
           </button>
         </div>
+      </header>
+
+      <!-- Mobile Dropdown Drawer -->
+      <div id="mobile-menu" class="ns-mobile-drawer hidden">
+        <a href="#editorial-overview">Overview</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#features">Key Features</a>
+        <a href="#threejs-section">3D Topology</a>
+        <a href="/login">Sign In</a>
+        <a href="/compliance/ops">Compliance Ops Hub ↗</a>
       </div>
 
-      <!-- Mobile Dropdown Menu -->
-      <div id="mobile-menu" class="hidden lg:hidden bg-white border-b border-black/10 px-6 py-5 space-y-3 shadow-xl">
-        <a href="#realtime-radar" class="block py-2 text-sm font-semibold text-[#111315] border-b border-black/5">Real-Time Engine</a>
-        <a href="#features" class="block py-2 text-sm font-semibold text-[#111315] border-b border-black/5">Key Features</a>
-        <a href="#threejs-section" class="block py-2 text-sm font-semibold text-[#111315] border-b border-black/5">3D UBO Topology</a>
-        <a href="#global-impact" class="block py-2 text-sm font-semibold text-[#111315] border-b border-black/5">Impact Telemetry</a>
-        <a href="#pricing" class="block py-2 text-sm font-semibold text-[#111315] border-b border-black/5">Sovereign Licensing</a>
-        <div class="pt-3 flex flex-wrap items-center gap-3">
-          <a href="/login" class="px-4 py-2.5 rounded-full border border-black/15 text-xs font-bold text-[#111315]">Sign In</a>
-          <a href="/login#register" class="px-4 py-2.5 rounded-full bg-[#0A4941] text-white text-xs font-bold">Provision Analyst Seat</a>
-          <a href="/compliance/ops" class="px-4 py-2.5 rounded-full bg-[#121417] text-white text-xs font-bold">Compliance Ops Hub ↗</a>
-        </div>
+      <!-- Center Display Headline -->
+      <div class="ns-hero-center">
+        <h1 class="ns-hero-title">
+          We protect your<br />ledgers<span class="ns-accent-dot">.</span>
+        </h1>
+        <p class="ns-hero-sub">
+          Every corridor, every wire. Screened in real time across 140+ financial crime typologies in under 42ms.
+        </p>
       </div>
-    </header>
 
-    <main id="main-content" class="flex-1">
-
-      <!-- ===================================================================== -->
-      <!-- SECTION 1: EDITORIAL SPLIT HERO (Reference 2: "Money Solutions")      -->
-      <!-- ===================================================================== -->
-      <section class="bg-white pt-10 pb-14 sm:pt-14 sm:pb-20 px-5 sm:px-8 lg:px-14 border-b border-black/5">
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
-
-          <!-- Left Column: Staggered Editorial Display Typography & Pill CTA -->
-          <div class="lg:col-span-6 space-y-7">
-            <div class="inline-flex items-center gap-2.5 px-3.5 py-1.5 rounded-full bg-[#F4F3EF] border border-black/10">
-              <span class="w-2 h-2 rounded-full bg-[#0A4941] animate-pulse"></span>
-              <span class="font-mono text-[11px] font-semibold uppercase tracking-wider text-[#111315]">FATF · FinCEN BSA · UNODC goAML v5.0 Certified</span>
-            </div>
-
-            <!-- Staggered Display Headline matching Reference 2 ("Empowering Financial Transparency") -->
-            <h1 class="font-display text-4xl sm:text-5xl lg:text-[3.65rem] font-extrabold text-[#111315] tracking-tight leading-[1.06]">
-              <span class="block sm:pl-6">Empowering</span>
-              <span class="block">Financial</span>
-              <span class="block sm:pl-8 text-[#0A4941]">Transparency.</span>
-            </h1>
-
-            <!-- Editorial Quote Block with Bold Highlights -->
-            <p class="text-base sm:text-lg text-[#586069] leading-relaxed max-w-xl">
-              &ldquo;An institutional anti-money laundering and financial crime platform that <strong class="text-[#111315] font-semibold">detects, prevents, and reports suspicious financial activities</strong> in under 42 milliseconds — safeguarding sovereign and tier-1 banking corridors from <strong class="text-[#111315] font-semibold">illicit transactions and criminal exploitation</strong>.&rdquo;
-            </p>
-
-            <!-- Action Bar: Dark Pill CTA with Circular White Arrow + Live Walkthrough Trigger -->
-            <div class="flex flex-wrap items-center gap-4 pt-2">
-              <a href="/triage" class="pill-cta-dark">
-                <span class="circle-arrow" aria-hidden="true">→</span>
-                <span>Enter Live Triage Cockpit</span>
-              </a>
-              <button type="button" data-action="open-video-modal" class="inline-flex items-center gap-2.5 px-5 py-3 rounded-full bg-[#F4F3EF] hover:bg-[#E7E5DF] text-[#111315] text-xs font-bold border border-black/10 transition-all cursor-pointer">
-                <span class="w-6 h-6 rounded-full bg-[#121417] text-white inline-flex items-center justify-center">
-                  <i data-lucide="play" class="w-3 h-3 fill-current"></i>
-                </span>
-                <span>Interactive Walkthrough (1:45)</span>
-              </button>
-            </div>
-
-            <!-- Institutional Trust Metrics Strip -->
-            <div class="pt-4 grid grid-cols-3 gap-4 border-t border-black/10 max-w-lg">
-              <div>
-                <div class="font-display font-extrabold text-xl sm:text-2xl text-[#111315] font-mono">&lt;42ms</div>
-                <div class="text-[11px] text-[#586069] font-medium">P95 Scoring Latency</div>
-              </div>
-              <div>
-                <div class="font-display font-extrabold text-xl sm:text-2xl text-[#0A4941] font-mono">99.98%</div>
-                <div class="text-[11px] text-[#586069] font-medium">Deterministic Recall</div>
-              </div>
-              <div>
-                <div class="font-display font-extrabold text-xl sm:text-2xl text-[#111315] font-mono">SHA-256</div>
-                <div class="text-[11px] text-[#586069] font-medium">Tamper-Evident Audit</div>
-              </div>
-            </div>
+      <!-- Bottom Row: Minimal Proof Stat + Clean Scroll Cue -->
+      <div class="ns-hero-bottom">
+        <!-- Left Proof Stat & Avatar Pill -->
+        <div class="ns-proof-block">
+          <div class="ns-proof-stat">140+</div>
+          <div class="ns-proof-caption">
+            FATF &amp; FinCEN typologies active across correspondent hubs
           </div>
-
-          <!-- Right Column: Chamfered Architectural Photography Frame + Floating Agent Pill + Scroll Indicator -->
-          <div class="lg:col-span-6 relative">
-            <div class="relative mx-auto max-w-xl lg:max-w-none">
-              <!-- Chamfered Frame (Diagonal top-left & bottom-right corners matching Reference 2) -->
-              <div class="chamfer-photo-frame shadow-2xl border border-black/10 bg-[#121417]">
-                <picture>
-                  <source srcset="/static/images/aml_hero_editorial.webp" type="image/webp" />
-                  <img
-                    src="/static/images/aml_hero_editorial.jpg"
-                    alt="Three senior compliance officers reviewing cross-border wire intelligence in a sunlit glass architectural headquarters"
-                    width="1280"
-                    height="720"
-                    fetchpriority="high"
-                    decoding="async"
-                    class="w-full h-[340px] sm:h-[420px] object-cover object-center block"
-                  />
-                </picture>
-              </div>
-
-              <!-- Floating Bottom-Left Glass Pill: "Professional Agents / Compliance Officers" (Reference 1 & 2) -->
-              <div class="absolute bottom-5 left-5 z-10 flex items-center gap-3 px-4 py-2.5 rounded-full bg-[#121417]/85 backdrop-blur-md text-white border border-white/15 shadow-xl">
-                <span class="text-xs font-semibold tracking-tight pl-1">FIU Compliance Officers</span>
-                <div class="flex -space-x-2">
-                  <span class="w-7 h-7 rounded-full bg-[#0A4941] border-2 border-[#121417] flex items-center justify-center text-[10px] font-bold text-[#F4D078]">ML</span>
-                  <span class="w-7 h-7 rounded-full bg-[#C98A2E] border-2 border-[#121417] flex items-center justify-center text-[10px] font-bold text-[#121417]">JD</span>
-                  <span class="w-7 h-7 rounded-full bg-[#3D5A80] border-2 border-[#121417] flex items-center justify-center text-[10px] font-bold text-white">SR</span>
-                </div>
-              </div>
-
-              <!-- Bottom-Right Circular "Scroll ↓" Indicator (Reference 2) -->
-              <a href="#dark-editorial-bento" aria-label="Scroll to editorial overview" class="absolute -bottom-3 right-3 z-10 flex flex-col items-center gap-1 group">
-                <span class="text-[10px] font-mono font-semibold uppercase tracking-widest text-[#586069] group-hover:text-[#111315]">Scroll</span>
-                <span class="w-11 h-11 rounded-full bg-white border border-black/15 shadow-md flex items-center justify-center text-[#111315] group-hover:bg-[#121417] group-hover:text-white transition-all">
-                  ↓
-                </span>
-              </a>
-            </div>
-          </div>
-
-        </div>
-
-        <!-- ===================================================================== -->
-        <!-- NAVSAV-STYLE ARCHITECTURAL SHOWCASE DOCK (Reference 1 Integration)    -->
-        <!-- ===================================================================== -->
-        <div class="mt-14 pt-10 border-t border-black/5">
-          <div class="relative rounded-3xl overflow-hidden border border-black/10 shadow-xl bg-[#121417]">
-            <picture>
-              <source srcset="/static/images/aml_warm_cockpit.webp" type="image/webp" />
-              <img
-                src="/static/images/aml_warm_cockpit.jpg"
-                alt="Sentinel AML Cognitive Investigator Cockpit interface in an institutional trading room"
-                width="1024"
-                height="559"
-                loading="lazy"
-                decoding="async"
-                class="w-full h-[300px] sm:h-[380px] object-cover object-center opacity-75"
-              />
-            </picture>
-            <!-- Atmospheric Gradient Overlay -->
-            <div class="absolute inset-0 bg-gradient-to-t from-[#121417] via-[#121417]/45 to-transparent"></div>
-
-            <!-- Floating Center White Status Pill (Reference 1: "● Dwelling $450K covered") -->
-            <div class="absolute top-5 left-1/2 -translate-x-1/2 z-10">
-              <div class="glass-pill-light px-4 py-2 rounded-full flex items-center gap-2.5 whitespace-nowrap">
-                <span class="w-3.5 h-3.5 rounded-full bg-[#121417] flex items-center justify-center">
-                  <span class="w-1.5 h-1.5 rounded-full bg-[#F4D078]"></span>
-                </span>
-                <span class="text-xs font-bold text-[#111315]">Cognitive Engine v4.2</span>
-                <span class="text-xs text-[#586069] font-mono">$48.5B+ Wire Volume Screened</span>
-              </div>
-            </div>
-
-            <!-- Bottom Dock Content: Left Social Proof + Right Floating Quick-Jump Cards (Reference 1) -->
-            <div class="relative z-10 p-6 sm:p-8 flex flex-col lg:flex-row lg:items-end justify-between gap-6 -mt-24 sm:-mt-32">
-              <!-- Left Social Proof & Avatar Badge -->
-              <div class="space-y-2 text-white">
-                <div class="font-display text-3xl sm:text-4xl font-extrabold tracking-tight">140+ Typologies</div>
-                <p class="text-xs sm:text-sm text-white/80 max-w-xs leading-snug">
-                  Pre-calibrated FATF, FinCEN &amp; EU 6AMLD scenarios running concurrently across every wire hop.
-                </p>
-              </div>
-
-              <!-- Right Floating Glassmorphic Dock with Thumbnail Action Cards -->
-              <div class="glass-dock p-3 rounded-2xl flex flex-wrap sm:flex-nowrap items-center gap-3 max-w-2xl">
-                <!-- Primary Highlight Card inside Dock -->
-                <a href="/triage" class="flex items-center gap-3.5 bg-white/10 hover:bg-white/15 transition-colors p-2.5 pr-4 rounded-xl border border-white/15 flex-1 min-w-[210px] group">
-                  <picture class="shrink-0">
-                    <source srcset="/static/images/aml_bento_investigator.webp" type="image/webp" />
-                    <img src="/static/images/aml_bento_investigator.jpg" alt="Triage Queue" width="64" height="48" loading="lazy" class="w-14 h-12 rounded-lg object-cover" />
-                  </picture>
-                  <div class="flex-1 min-w-0">
-                    <div class="text-xs font-bold text-white truncate">L1/L2 Case Triage</div>
-                    <div class="text-[11px] text-white/70 truncate">SHAP Attribution · SLA Locks</div>
-                    <div class="text-xs font-mono font-bold text-[#F4D078] mt-0.5">Live Queue →</div>
-                  </div>
-                  <span class="w-8 h-8 rounded-full bg-[#F4D078] text-[#111315] font-bold flex items-center justify-center shrink-0 group-hover:translate-x-0.5 transition-transform">→</span>
-                </a>
-
-                <!-- Mini Visual Quick-Jump Cards -->
-                <a href="/network" class="relative w-24 h-20 rounded-xl overflow-hidden border border-white/15 group shrink-0">
-                  <picture>
-                    <source srcset="/static/images/aml_bento_terminal.webp" type="image/webp" />
-                    <img src="/static/images/aml_bento_terminal.jpg" alt="UBO Graph" width="96" height="80" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition-transform" />
-                  </picture>
-                  <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent flex items-end p-2">
-                    <span class="text-[10px] font-bold text-white leading-tight">⬡ UBO Graph</span>
-                  </div>
-                </a>
-
-                <a href="/sar/queue" class="relative w-24 h-20 rounded-xl overflow-hidden border border-white/15 group shrink-0">
-                  <picture>
-                    <source srcset="/static/images/aml_feature_briefing.webp" type="image/webp" />
-                    <img src="/static/images/aml_feature_briefing.jpg" alt="SAR Filing" width="96" height="80" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition-transform" />
-                  </picture>
-                  <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent flex items-end p-2">
-                    <span class="text-[10px] font-bold text-white leading-tight">⚡ goAML SAR</span>
-                  </div>
-                </a>
-
-                <a href="/compliance/ops" class="relative w-24 h-20 rounded-xl overflow-hidden border border-white/15 group shrink-0">
-                  <picture>
-                    <source srcset="/static/images/aml_landing_hero.webp" type="image/webp" />
-                    <img src="/static/images/aml_landing_hero.jpg" alt="Ops Hub" width="96" height="80" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition-transform" />
-                  </picture>
-                  <div class="absolute inset-0 bg-gradient-to-t from-black/85 via-black/30 to-transparent flex items-end p-2">
-                    <span class="text-[10px] font-bold text-white leading-tight">🛡 Ops Hub</span>
-                  </div>
-                </a>
-              </div>
-            </div>
+          <div class="ns-avatar-pill" aria-label="Active Compliance Officers">
+            <span class="ns-avatar-chip" style="background:#141517;">ML</span>
+            <span class="ns-avatar-chip" style="background:#3A3E47;">JD</span>
+            <span class="ns-avatar-chip" style="background:#636871;">SR</span>
           </div>
         </div>
-      </section>
 
-      <!-- ===================================================================== -->
-      <!-- SECTION 2: DEEP CHARCOAL EDITORIAL BENTO (Reference 2 Dark Band)      -->
-      <!-- ===================================================================== -->
-      <section id="dark-editorial-bento" class="bg-[#121417] text-white py-16 sm:py-24 px-5 sm:px-8 lg:px-14">
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
+        <!-- Right Minimalist Scroll Cue -->
+        <a href="#editorial-overview" class="ns-glass-pill" style="padding:11px 20px;">
+          <span>Explore Platform</span>
+          <span aria-hidden="true">↓</span>
+        </a>
+      </div>
+    </section>
 
-          <!-- Left Editorial Narrative & Outline Pill CTA -->
-          <div class="lg:col-span-5 space-y-6">
-            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-[#F4D078] font-mono text-[11px] uppercase tracking-widest">
-              <span>Institutional Architecture</span>
-            </div>
+    <!-- =================================================================== -->
+    <!-- MAIN EDITORIAL SHELL (MONEY SOLUTIONS MINIMALIST ARCHITECTURE)      -->
+    <!-- =================================================================== -->
+    <main id="main-content" class="ms-editorial-shell">
 
-            <h2 class="font-display text-2xl sm:text-3xl lg:text-4xl font-extrabold tracking-tight text-white leading-tight">
-              Precision forensics engineered to dismantle multi-layered laundering networks.
+      <!-- SECTION 2: PURE WHITE STAGGERED EDITORIAL SPLIT (Reference 2 Top) -->
+      <section id="editorial-overview" class="ms-white-band">
+        <div class="ms-split-grid">
+          <!-- Left: Staggered Typography, Quote & High-Contrast Pill CTA -->
+          <div>
+            <h2 class="ms-stagger-title">
+              <span class="ms-stagger-line-1">Empowering</span>
+              <span class="ms-stagger-line-2">Financial</span>
+              <span class="ms-stagger-line-3">Transparency</span>
             </h2>
 
-            <p class="text-sm sm:text-base text-white/75 leading-relaxed">
-              Anti-money laundering (AML) and financial crime solutions are engineered to detect, prevent, and combat illicit capital flows. Sentinel leverages hybrid deterministic rules, <strong class="text-white font-semibold">XGBoost + Graph Neural Network ensembles</strong>, and cryptographic hash-chained audit logs to identify smurfing rings, trade-based money laundering, and sanctioned shell structures before settlement completes.
+            <p class="ms-editorial-quote">
+              &ldquo;An anti-money laundering and financial crime platform that <strong>detects, prevents, and reports suspicious financial activities</strong>, ensuring regulatory compliance and safeguarding banking corridors from <strong>illicit transactions and criminal exploitation</strong>.&rdquo;
             </p>
 
-            <p class="text-xs sm:text-sm text-white/60 leading-relaxed">
-              By unifying real-time wire interception, dual-control Risk Appetite governance, and automated FinCEN BSA / UNODC goAML XML serialization, Sentinel protects tier-1 financial institutions from regulatory penalties and balance-sheet exposure.
-            </p>
-
-            <div class="pt-2 flex flex-wrap items-center gap-4">
-              <a href="/compliance/ops" class="inline-flex items-center gap-2.5 px-6 py-3 rounded-full border border-white/30 hover:border-white hover:bg-white hover:text-[#121417] text-xs font-bold tracking-wide transition-all">
-                <span>Explore Compliance Ops Hub</span>
-                <span aria-hidden="true">↗</span>
+            <div class="ms-cta-row">
+              <a href="/triage" class="ms-pill-cta">
+                <span class="ms-pill-cta-circle" aria-hidden="true">→</span>
+                <span>Enter Case Cockpit</span>
               </a>
-              <a href="/ml/governance" class="inline-flex items-center gap-2 text-xs font-semibold text-[#F4D078] hover:underline">
-                <span>Inspect ML Model Governance</span>
-                <span aria-hidden="true">→</span>
-              </a>
+              <button type="button" class="ms-ghost-btn" data-action="open-video-modal">
+                <i data-lucide="play" style="width:14px;height:14px;"></i>
+                <span>Walkthrough (1:45)</span>
+              </button>
             </div>
           </div>
 
-          <!-- Right 3-Photo Hyper-Real Bento Collage (Matching Reference 2 Lower Band) -->
-          <div class="lg:col-span-7 grid grid-cols-1 sm:grid-cols-12 gap-5">
-
-            <!-- Left Tall Portrait Card (7 cols on sm) -->
-            <div class="sm:col-span-7 relative rounded-2xl overflow-hidden border border-white/10 bg-[#1B1E23] group min-h-[340px] sm:min-h-[420px]">
+          <!-- Right: Chamfered Diagonal Photo + Floating Agent Pill + Scroll ↓ -->
+          <div class="ms-chamfer-wrap">
+            <div class="ms-chamfer-frame">
               <picture>
                 <source srcset="/static/images/aml_feature_briefing.webp" type="image/webp" />
                 <img
                   src="/static/images/aml_feature_briefing.jpg"
-                  alt="Compliance data scientists and strategists mapping KYC and AML risk workflows on a glass board"
+                  alt="Compliance strategists reviewing KYC and AML risk workflows in a minimalist private bank boardroom"
                   width="1200"
                   height="896"
                   loading="lazy"
                   decoding="async"
-                  class="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500"
                 />
               </picture>
-              <div class="absolute inset-0 bg-gradient-to-t from-[#121417] via-[#121417]/25 to-transparent"></div>
-              <div class="absolute bottom-4 left-4 right-4 p-4 rounded-xl bg-[#121417]/85 backdrop-blur-md border border-white/10">
-                <div class="flex items-center justify-between">
-                  <span class="font-mono text-[10px] uppercase tracking-widest text-[#F4D078]">4-Eyes Maker-Checker</span>
-                  <span class="font-mono text-[10px] text-emerald-400">● SHA-256 Verified</span>
-                </div>
-                <div class="font-display font-bold text-sm text-white mt-1">Executive Risk Appetite &amp; Typology Calibration</div>
+            </div>
+
+            <div class="ms-agents-pill">
+              <span>Compliance Officers</span>
+              <div class="ms-agents-avatars" aria-hidden="true">
+                <span style="background:#2A2D34;color:#FFFFFF;">AK</span>
+                <span style="background:#454A54;color:#FFFFFF;">EL</span>
+                <span style="background:#F5A623;color:#141517;">MR</span>
               </div>
             </div>
 
-            <!-- Right Stacked 2-Photo Column (5 cols on sm) -->
-            <div class="sm:col-span-5 flex flex-col gap-5">
-              <!-- Top Stacked Photo: Cryptographic Terminal & Wire Telemetry -->
-              <div class="relative rounded-2xl overflow-hidden border border-white/10 bg-[#1B1E23] group flex-1 min-h-[195px]">
-                <picture>
-                  <source srcset="/static/images/aml_bento_terminal.webp" type="image/webp" />
-                  <img
-                    src="/static/images/aml_bento_terminal.jpg"
-                    alt="High-DPI security laptop displaying green and amber cryptographic SHA-256 audit hash chains and SWIFT wire logs"
-                    width="1200"
-                    height="896"
-                    loading="lazy"
-                    decoding="async"
-                    class="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500"
-                  />
-                </picture>
-                <div class="absolute inset-0 bg-gradient-to-t from-[#121417]/90 via-transparent to-transparent"></div>
-                <div class="absolute bottom-3 left-3 right-3">
-                  <span class="font-mono text-[10px] text-emerald-400 uppercase tracking-wider block">Immutable Ledger</span>
-                  <span class="font-display font-bold text-xs text-white">Tamper-Evident Audit Hash Chain</span>
-                </div>
-              </div>
-
-              <!-- Bottom Stacked Photo: Investigator Dual-Monitor Graph Workstation -->
-              <div class="relative rounded-2xl overflow-hidden border border-white/10 bg-[#1B1E23] group flex-1 min-h-[195px]">
-                <picture>
-                  <source srcset="/static/images/aml_bento_investigator.webp" type="image/webp" />
-                  <img
-                    src="/static/images/aml_bento_investigator.jpg"
-                    alt="Financial crime investigator analyzing multi-hop transaction graphs and SHAP risk heatmaps on dual monitors"
-                    width="1200"
-                    height="896"
-                    loading="lazy"
-                    decoding="async"
-                    class="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500"
-                  />
-                </picture>
-                <div class="absolute inset-0 bg-gradient-to-t from-[#121417]/90 via-transparent to-transparent"></div>
-                <div class="absolute bottom-3 left-3 right-3">
-                  <span class="font-mono text-[10px] text-[#F4D078] uppercase tracking-wider block">Explainable AI (XAI)</span>
-                  <span class="font-display font-bold text-xs text-white">Per-Alert SHAP Feature Attribution</span>
-                </div>
-              </div>
-            </div>
-
-          </div>
-
-        </div>
-      </section>
-
-      <!-- ===================================================================== -->
-      <!-- SECTION 3: LIVE GLOBAL LAUNDERING COUNTER & PASTEL KPI BENTO (Ref 3)  -->
-      <!-- ===================================================================== -->
-      <section id="global-impact" class="bg-white py-16 sm:py-24 px-5 sm:px-8 lg:px-14 border-b border-black/5">
-        <div class="max-w-4xl mx-auto text-center space-y-4">
-          <div class="font-mono text-[11px] font-bold uppercase tracking-widest text-[#0A4941]">
-            LIVE GLOBAL FINANCIAL CRIME TELEMETRY
-          </div>
-          <h2 class="font-display text-3xl sm:text-4xl lg:text-5xl font-extrabold text-[#111315] tracking-tight leading-tight">
-            <span id="global-laundered-counter" class="font-mono text-[#0A4941] tabular-nums">$213,239</span> laundered globally<br class="hidden sm:inline" />
-            since loading this page.
-          </h2>
-          <p class="text-sm sm:text-base text-[#586069] max-w-2xl mx-auto leading-relaxed">
-            According to UNODC estimates, over <strong class="text-[#111315] font-semibold">$2 trillion</strong> in illicit proceeds is laundered through global banking corridors every year — yet legacy rule engines seize less than 1%. At Sentinel, we engineer deterministic + cognitive barriers to intercept criminal capital in real time.
-          </p>
-        </div>
-
-        <!-- 3 Pastel Bento KPI Cards matching Reference 3 ("Sentinels": 140+, 52%, 34.2%) -->
-        <div class="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6 max-w-5xl mx-auto">
-
-          <!-- Card 1: Warm Cream Pastel (#FDF6EA) -->
-          <div class="kpi-pastel-amber rounded-2xl p-7 sm:p-8 flex flex-col justify-between space-y-4 shadow-sm hover:shadow-md transition-shadow">
-            <div class="space-y-2">
-              <div class="font-mono text-[10px] font-bold uppercase tracking-widest text-[#8A5A12]">
-                CUSTOMIZE YOUR MONITORING WITH
-              </div>
-              <div class="font-display text-4xl sm:text-5xl font-extrabold text-[#111315] tracking-tight font-mono">
-                140+
-              </div>
-            </div>
-            <p class="text-xs sm:text-sm text-[#4A4F55] leading-relaxed">
-              Risk-based transaction monitoring rules pre-loaded with FATF, FinCEN, and Basel AML scenarios — dynamically adaptable to your institution’s risk appetite matrix.
-            </p>
-          </div>
-
-          <!-- Card 2: Soft Mint Pastel (#EAF8F3) -->
-          <div class="kpi-pastel-mint rounded-2xl p-7 sm:p-8 flex flex-col justify-between space-y-4 shadow-sm hover:shadow-md transition-shadow">
-            <div class="space-y-2">
-              <div class="font-mono text-[10px] font-bold uppercase tracking-widest text-[#0A4941]">
-                REDUCE ANALYST WORKLOAD BY
-              </div>
-              <div class="font-display text-4xl sm:text-5xl font-extrabold text-[#111315] tracking-tight font-mono">
-                52%
-              </div>
-            </div>
-            <p class="text-xs sm:text-sm text-[#4A4F55] leading-relaxed">
-              Automated L1/L2 dossier assembly, multi-hop UBO resolution, and one-click goAML v5.0 / FinCEN XML generation let investigators focus on detection rather than manual data entry.
-            </p>
-          </div>
-
-          <!-- Card 3: Soft Lavender Pastel (#F2F0FC) -->
-          <div class="kpi-pastel-lavender rounded-2xl p-7 sm:p-8 flex flex-col justify-between space-y-4 shadow-sm hover:shadow-md transition-shadow">
-            <div class="space-y-2">
-              <div class="font-mono text-[10px] font-bold uppercase tracking-widest text-[#483D8B]">
-                DECREASE FALSE POSITIVES BY
-              </div>
-              <div class="font-display text-4xl sm:text-5xl font-extrabold text-[#111315] tracking-tight font-mono">
-                34.2%
-              </div>
-            </div>
-            <p class="text-xs sm:text-sm text-[#4A4F55] leading-relaxed">
-              Combine deterministic velocity thresholds with supervised XGBoost ensembles, SHAP attribution, and Champion/Challenger shadow scoring to suppress benign noise.
-            </p>
-          </div>
-
-        </div>
-      </section>
-
-      <!-- ===================================================================== -->
-      <!-- SECTION 4: SENTINELS EMERALD REAL-TIME DETECTION & KYC RADAR (Ref 3)  -->
-      <!-- ===================================================================== -->
-      <section id="realtime-radar" class="sentinels-emerald-surface py-16 sm:py-24 px-5 sm:px-8 lg:px-14 relative overflow-hidden">
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
-
-          <!-- Left Column: Semi-Circular / Arched Framing + Live Phonetic KYC Simulator -->
-          <div class="lg:col-span-6 space-y-6">
-            <!-- Arched Editorial Image Container inspired by Reference 3 ("Sentinels") -->
-            <div class="relative rounded-2xl sm:rounded-r-[140px] overflow-hidden border border-white/15 shadow-2xl bg-[#04221E]">
-              <picture>
-                <source srcset="/static/images/aml_bento_investigator.webp" type="image/webp" />
-                <img
-                  src="/static/images/aml_bento_investigator.jpg"
-                  alt="Real-time transaction monitoring and network graph inspection"
-                  width="1200"
-                  height="896"
-                  loading="lazy"
-                  decoding="async"
-                  class="w-full h-64 sm:h-72 object-cover object-center"
-                />
-              </picture>
-              <div class="absolute inset-0 bg-gradient-to-r from-[#062F2A]/85 via-transparent to-transparent"></div>
-              <div class="absolute bottom-4 left-5 right-5 flex items-center justify-between text-xs font-mono text-white">
-                <span class="px-3 py-1 rounded-full bg-black/50 backdrop-blur-md border border-white/15 text-[#F4D078]">● SWIFT MT103 / ISO 20022 Interceptor</span>
-                <span class="px-3 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 font-bold">38ms P95</span>
-              </div>
-            </div>
-
-            <!-- Interactive Phonetic KYC/KYB Fuzzy Sensitivity Sandbox (Preserves #demo-thresh-slider IDs) -->
-            <div class="rounded-2xl bg-black/25 backdrop-blur-md border border-white/15 p-5 sm:p-6 space-y-4">
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <span class="font-mono text-[10px] uppercase tracking-widest text-[#F4D078] block">Interactive Sandbox</span>
-                  <h3 class="font-display font-bold text-sm sm:text-base text-white">Phonetic KYC / OFAC SDN Fuzzy Threshold Tuner</h3>
-                </div>
-                <span id="demo-thresh-label" class="font-mono text-xs font-bold px-3 py-1 rounded-full bg-white/10 text-[#F4D078] border border-white/15">85% Match Limit</span>
-              </div>
-
-              <div class="space-y-2">
-                <label for="demo-thresh-slider" class="sr-only">Fuzzy Match Threshold Percentage</label>
-                <input
-                  id="demo-thresh-slider"
-                  type="range"
-                  min="70"
-                  max="99"
-                  value="85"
-                  class="w-full accent-[#F4D078] cursor-pointer h-2 rounded-lg bg-white/20"
-                />
-                <div class="flex justify-between text-[11px] font-mono text-white/70">
-                  <span>70% (Broad Dragnet)</span>
-                  <span>Candidate: &ldquo;T. Varga Maritime Ltd&rdquo; (92% Jaro-Winkler)</span>
-                  <span>99% (Exact Match)</span>
-                </div>
-              </div>
-
-              <div class="p-3.5 rounded-xl bg-white/95 text-[#111315] font-mono text-xs flex items-center justify-between">
-                <span class="font-semibold text-[#586069]">Live Decision Output:</span>
-                <span id="demo-thresh-result" class="text-risk-high block font-semibold">→ OFAC SDN Blocklist Hit (92% ≥ 85%)</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Right Column: "Detect Money Laundering in Real Time." + Warm Gold Pill CTA -->
-          <div class="lg:col-span-6 space-y-6">
-            <div class="font-mono text-xs font-bold uppercase tracking-widest text-[#F4D078]">
-              STREAMING COGNITIVE SURVEILLANCE
-            </div>
-
-            <h2 class="font-display text-3xl sm:text-4xl lg:text-5xl font-extrabold text-white tracking-tight leading-[1.08]">
-              Detect Money Laundering in Real Time.
-            </h2>
-
-            <p class="text-base text-white/80 leading-relaxed max-w-xl">
-              AML transaction monitoring engineered for fast, auditable, and confident compliance decisions. Screen every wire against 140+ behavioral scenarios, phonetic sanctions indices, and cyclic UBO graph patterns before funds leave your correspondent ledger.
-            </p>
-
-            <!-- 3 Capability Pills inspired by Reference 3 Left Callouts -->
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
-              <div class="p-4 rounded-xl bg-white/10 border border-white/15 space-y-1.5">
-                <div class="w-8 h-8 rounded-lg bg-[#F4D078]/20 text-[#F4D078] flex items-center justify-center">
-                  <i data-lucide="activity" class="w-4 h-4"></i>
-                </div>
-                <div class="font-display font-bold text-xs text-white">Pre-Settlement Hold</div>
-                <div class="text-[11px] text-white/70">Sub-50ms synchronous API decisioning</div>
-              </div>
-
-              <div class="p-4 rounded-xl bg-white/10 border border-white/15 space-y-1.5">
-                <div class="w-8 h-8 rounded-lg bg-emerald-400/20 text-emerald-300 flex items-center justify-center">
-                  <i data-lucide="git-branch" class="w-4 h-4"></i>
-                </div>
-                <div class="font-display font-bold text-xs text-white">Post-Event Forensics</div>
-                <div class="text-[11px] text-white/70">Temporal smurfing &amp; structuring replay</div>
-              </div>
-
-              <div class="p-4 rounded-xl bg-white/10 border border-white/15 space-y-1.5">
-                <div class="w-8 h-8 rounded-lg bg-sky-400/20 text-sky-300 flex items-center justify-center">
-                  <i data-lucide="cpu" class="w-4 h-4"></i>
-                </div>
-                <div class="font-display font-bold text-xs text-white">Data-Driven AML &amp; ML</div>
-                <div class="text-[11px] text-white/70">SHAP explainability &amp; drift telemetry</div>
-              </div>
-            </div>
-
-            <div class="pt-3 flex flex-wrap items-center gap-4">
-              <a href="/triage" class="pill-cta-gold">
-                <span>Launch Real-Time Monitor</span>
-                <span aria-hidden="true">→</span>
-              </a>
-              <a href="/rules" class="inline-flex items-center gap-2 px-5 py-3 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-bold border border-white/20 transition-all">
-                <span>Configure 140+ Rules Engine</span>
-                <span aria-hidden="true">↗</span>
-              </a>
-            </div>
-          </div>
-
-        </div>
-
-        <!-- Bottom Protocol & Regulatory rail strip (Reference 3 logo bar aesthetic) -->
-        <div class="mt-14 pt-6 border-t border-white/15 flex flex-wrap items-center justify-between gap-4 text-xs font-mono uppercase tracking-widest text-white/60">
-          <span>SWIFT ISO 20022</span>
-          <span>•</span>
-          <span>FEDWIRE FUNDS</span>
-          <span>•</span>
-          <span>SEPA INSTANT</span>
-          <span>•</span>
-          <span>OFAC SDN / EU CONS</span>
-          <span>•</span>
-          <span>UNODC goAML v5.0</span>
-          <span>•</span>
-          <span>FINCEN BSA E-FILING</span>
-        </div>
-      </section>
-
-      <!-- ===================================================================== -->
-      <!-- SECTION 5: TALL EDITORIAL "KEY FEATURES" CARDS (Reference 2 Right)    -->
-      <!-- ===================================================================== -->
-      <section id="features" class="bg-white py-16 sm:py-24 px-5 sm:px-8 lg:px-14 border-b border-black/5">
-        <div class="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-12">
-          <div class="space-y-3">
-            <div class="font-mono text-[11px] font-bold uppercase tracking-widest text-[#0A4941]">
-              MODULAR COMPLIANCE ARCHITECTURE
-            </div>
-            <h2 class="font-display text-3xl sm:text-4xl font-extrabold text-[#111315] tracking-tight">
-              Key Features
-            </h2>
-          </div>
-          <p class="text-sm sm:text-base text-[#586069] max-w-xl leading-relaxed">
-            Key features include real-time transaction monitoring, explainable AI risk scoring, multi-hop beneficial ownership discovery, and automated regulatory reporting across global FIU schemas.
-          </p>
-        </div>
-
-        <!-- 4 Tall Rounded Cards alternating Dark Charcoal (#121417) and Warm Stone (#ECEAE4) -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-
-          <!-- Feature Card 1: Dark Charcoal -->
-          <article class="feature-card-dark p-6 flex flex-col justify-between min-h-[410px]">
-            <div class="space-y-3">
-              <span class="font-mono text-[10px] uppercase tracking-widest text-[#F4D078]">01 / SURVEILLANCE</span>
-              <h3 class="font-display text-xl font-bold text-white leading-snug">
-                Real-time transaction monitoring
-              </h3>
-              <p class="text-xs text-white/70 leading-relaxed">
-                Sub-50ms velocity, structuring, and corridor anomaly detection with automatic investigator lock management.
-              </p>
-            </div>
-            <div class="mt-5 relative rounded-2xl overflow-hidden border border-white/10">
-              <picture>
-                <source srcset="/static/images/aml_bento_terminal.webp" type="image/webp" />
-                <img src="/static/images/aml_bento_terminal.jpg" alt="Real-time wire monitoring terminal" width="600" height="448" loading="lazy" class="w-full h-44 object-cover" />
-              </picture>
-              <a href="/triage" aria-label="Open Real-Time Triage" class="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-white text-[#111315] font-bold flex items-center justify-center shadow-lg hover:scale-105 transition-transform">
-                ↗
-              </a>
-            </div>
-          </article>
-
-          <!-- Feature Card 2: Warm Stone -->
-          <article class="feature-card-stone p-6 flex flex-col justify-between min-h-[410px]">
-            <div class="space-y-3">
-              <span class="font-mono text-[10px] uppercase tracking-widest text-[#0A4941] font-bold">02 / EXPLAINABLE AI</span>
-              <h3 class="font-display text-xl font-bold text-[#111315] leading-snug">
-                Advanced SHAP risk scoring
-              </h3>
-              <p class="text-xs text-[#586069] leading-relaxed">
-                Every risk score decomposes into transparent SHAP feature attributions with Champion/Challenger drift alerts.
-              </p>
-            </div>
-            <div class="mt-5 relative rounded-2xl overflow-hidden border border-black/10">
-              <picture>
-                <source srcset="/static/images/aml_bento_investigator.webp" type="image/webp" />
-                <img src="/static/images/aml_bento_investigator.jpg" alt="Advanced risk scoring workstation" width="600" height="448" loading="lazy" class="w-full h-44 object-cover" />
-              </picture>
-              <a href="/ml/governance" aria-label="Open ML Governance" class="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-[#121417] text-white font-bold flex items-center justify-center shadow-lg hover:scale-105 transition-transform">
-                ↗
-              </a>
-            </div>
-          </article>
-
-          <!-- Feature Card 3: Dark Charcoal -->
-          <article class="feature-card-dark p-6 flex flex-col justify-between min-h-[410px]">
-            <div class="space-y-3">
-              <span class="font-mono text-[10px] uppercase tracking-widest text-[#F4D078]">03 / GRAPH FORENSICS</span>
-              <h3 class="font-display text-xl font-bold text-white leading-snug">
-                Multi-hop UBO network discovery
-              </h3>
-              <p class="text-xs text-white/70 leading-relaxed">
-                Uncover circular layering, shell nominees, and sanction evasion pathways across 7+ cross-border hops.
-              </p>
-            </div>
-            <div class="mt-5 relative rounded-2xl overflow-hidden border border-white/10">
-              <picture>
-                <source srcset="/static/images/aml_warm_cockpit.webp" type="image/webp" />
-                <img src="/static/images/aml_warm_cockpit.jpg" alt="Multi-hop UBO network topology" width="600" height="448" loading="lazy" class="w-full h-44 object-cover" />
-              </picture>
-              <a href="/network" aria-label="Open Network Graph" class="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-white text-[#111315] font-bold flex items-center justify-center shadow-lg hover:scale-105 transition-transform">
-                ↗
-              </a>
-            </div>
-          </article>
-
-          <!-- Feature Card 4: Warm Stone -->
-          <article class="feature-card-stone p-6 flex flex-col justify-between min-h-[410px]">
-            <div class="space-y-3">
-              <span class="font-mono text-[10px] uppercase tracking-widest text-[#0A4941] font-bold">04 / REGULATORY FILING</span>
-              <h3 class="font-display text-xl font-bold text-[#111315] leading-snug">
-                Automated FinCEN &amp; goAML SARs
-              </h3>
-              <p class="text-xs text-[#586069] leading-relaxed">
-                AI-drafted narratives validated against strict XSD schemas for one-click FinCEN BSA and UNODC goAML e-filing.
-              </p>
-            </div>
-            <div class="mt-5 relative rounded-2xl overflow-hidden border border-black/10">
-              <picture>
-                <source srcset="/static/images/aml_feature_briefing.webp" type="image/webp" />
-                <img src="/static/images/aml_feature_briefing.jpg" alt="Regulatory compliance briefing" width="600" height="448" loading="lazy" class="w-full h-44 object-cover" />
-              </picture>
-              <a href="/sar/queue" aria-label="Open SAR Queue" class="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-[#121417] text-white font-bold flex items-center justify-center shadow-lg hover:scale-105 transition-transform">
-                ↗
-              </a>
-            </div>
-          </article>
-
-        </div>
-      </section>
-
-      <!-- ===================================================================== -->
-      <!-- SECTION 6: INTERACTIVE 3D CORRIDOR TOPOLOGY (#threejs-section)        -->
-      <!-- ===================================================================== -->
-      <section id="threejs-section" class="bg-[#121417] text-white py-16 sm:py-24 px-5 sm:px-8 lg:px-14 border-b border-white/10">
-        <div class="flex flex-col lg:flex-row lg:items-end justify-between gap-6 mb-8">
-          <div class="space-y-2">
-            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-[#F4D078] font-mono text-[11px] uppercase tracking-widest">
-              <span>WebGL Spatial Forensics</span>
-            </div>
-            <h2 class="font-display text-2xl sm:text-3xl lg:text-4xl font-extrabold text-white tracking-tight">
-              Interactive 3D Cross-Border Liquidity &amp; Secrecy Shell Topology
-            </h2>
-            <p class="text-xs sm:text-sm text-white/70 max-w-2xl">
-              Inspect live correspondent clearing nodes across New York, London, Zurich, Cayman Islands, and Panama. Rotate, zoom, or isolate high-risk offshore layering rings.
-            </p>
-          </div>
-
-          <!-- 3D Controls Bar -->
-          <div class="flex flex-wrap items-center gap-2.5">
-            <button id="btn-3d-rotate" type="button" class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-xs font-mono text-white transition-colors cursor-pointer">
-              <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
-              <span>Auto-Rotate: ON</span>
-            </button>
-            <button id="btn-3d-isolate" type="button" class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#C1443B]/25 hover:bg-[#C1443B]/40 border border-[#C1443B]/50 text-xs font-mono text-rose-200 transition-colors cursor-pointer">
-              <i data-lucide="crosshair" class="w-3.5 h-3.5"></i>
-              <span>Isolate Secrecy Ring</span>
-            </button>
-            <button id="btn-3d-reset" type="button" class="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-xs font-mono text-white transition-colors cursor-pointer">
-              <i data-lucide="maximize-2" class="w-3.5 h-3.5"></i>
-              <span>Reset Camera</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 3D Canvas Container -->
-        <div class="relative rounded-3xl overflow-hidden border border-white/15 bg-[#1B1F2B] shadow-2xl">
-          <div id="threejs-canvas-wrapper" class="w-full h-[380px] sm:h-[460px] cursor-grab active:cursor-grabbing" aria-label="Interactive 3D Global Banking Node Topology"></div>
-
-          <!-- Bottom Telemetry Bar inside 3D Viewport -->
-          <div class="px-5 py-3.5 bg-[#121417]/90 backdrop-blur-md border-t border-white/10 flex flex-wrap items-center justify-between gap-4 text-xs font-mono">
-            <div id="threejs-hover-readout" class="text-white/80 font-semibold">
-              Hover over any banking node to audit...
-            </div>
-            <div class="flex items-center gap-4 text-[11px]">
-              <span class="inline-flex items-center gap-1.5 text-emerald-400"><span class="w-2 h-2 rounded-full bg-[#4C7A5E]"></span> Tier-1 Clearing</span>
-              <span class="inline-flex items-center gap-1.5 text-amber-300"><span class="w-2 h-2 rounded-full bg-[#C98A2E]"></span> VASP / Aggregator</span>
-              <span class="inline-flex items-center gap-1.5 text-rose-400"><span class="w-2 h-2 rounded-full bg-[#C1443B]"></span> Secrecy Shell Hit</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- ===================================================================== -->
-      <!-- SECTION 7: BENEFITS & SOVEREIGN DEPLOYMENT LICENSING (#pricing)       -->
-      <!-- ===================================================================== -->
-      <section id="pricing" class="bg-white py-16 sm:py-24 px-5 sm:px-8 lg:px-14">
-        <div class="max-w-3xl mx-auto text-center space-y-3 mb-14">
-          <div class="font-mono text-[11px] font-bold uppercase tracking-widest text-[#0A4941]">
-            INSTITUTIONAL DEPLOYMENT MODELS
-          </div>
-          <h2 class="font-display text-3xl sm:text-4xl font-extrabold text-[#111315] tracking-tight">
-            Sovereign &amp; Enterprise Licensing
-          </h2>
-          <p class="text-sm sm:text-base text-[#586069]">
-            Deploy Sentinel AML in your dedicated VPC, air-gapped central bank enclave, or Kubernetes cluster with full source-level cryptographic auditability.
-          </p>
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-7 max-w-6xl mx-auto">
-
-          <!-- Tier 1: Commercial FinTech / VASP -->
-          <div class="rounded-3xl border border-black/10 bg-[#F9F8F6] p-8 flex flex-col justify-between space-y-6">
-            <div class="space-y-4">
-              <span class="font-mono text-[11px] font-bold uppercase tracking-widest text-[#586069]">TIER I · FINTECH &amp; VASP</span>
-              <h3 class="font-display text-2xl font-extrabold text-[#111315]">Regional Institution</h3>
-              <p class="text-xs text-[#586069] leading-relaxed">
-                For licensed electronic money institutions, payment processors, and digital asset exchanges.
-              </p>
-              <ul class="space-y-2.5 pt-2 text-xs text-[#111315]">
-                <li class="flex items-center gap-2"><span class="text-[#0A4941] font-bold">✓</span> Up to 25M screened transactions / month</li>
-                <li class="flex items-center gap-2"><span class="text-[#0A4941] font-bold">✓</span> 140+ pre-calibrated RBA typology rules</li>
-                <li class="flex items-center gap-2"><span class="text-[#0A4941] font-bold">✓</span> Phonetic OFAC, UN, EU &amp; HMT screening</li>
-                <li class="flex items-center gap-2"><span class="text-[#0A4941] font-bold">✓</span> Automated goAML v5.0 &amp; FinCEN SAR XML</li>
-              </ul>
-            </div>
-            <a href="/login#register" class="w-full py-3.5 px-5 rounded-full border border-[#121417] text-[#111315] hover:bg-[#121417] hover:text-white text-xs font-bold text-center transition-colors">
-              Provision Regional Sandbox →
+            <a href="#architecture" class="ms-scroll-indicator" aria-label="Scroll to architecture overview">
+              <span>Scroll</span>
+              <span class="ms-scroll-circle" aria-hidden="true">↓</span>
             </a>
           </div>
+        </div>
+      </section>
 
-          <!-- Tier 2: Tier-1 Banking Group (Highlighted Emerald Surface) -->
-          <div class="rounded-3xl sentinels-emerald-surface p-8 flex flex-col justify-between space-y-6 shadow-2xl relative">
-            <div class="space-y-4">
-              <div class="flex items-center justify-between">
-                <span class="font-mono text-[11px] font-bold uppercase tracking-widest text-[#F4D078]">TIER II · COMMERCIAL BANKING</span>
-                <span class="px-2.5 py-0.5 rounded-full bg-[#F4D078] text-[#111315] font-mono text-[10px] font-bold">MOST DEPLOYED</span>
-              </div>
-              <h3 class="font-display text-2xl font-extrabold text-white">Tier-1 Correspondent</h3>
-              <p class="text-xs text-white/80 leading-relaxed">
-                Full cognitive surveillance suite with multi-hop Neo4j UBO resolution and 4-eyes Maker-Checker governance.
-              </p>
-              <ul class="space-y-2.5 pt-2 text-xs text-white">
-                <li class="flex items-center gap-2"><span class="text-[#F4D078] font-bold">✓</span> Unlimited SWIFT / Fedwire / SEPA throughput</li>
-                <li class="flex items-center gap-2"><span class="text-[#F4D078] font-bold">✓</span> Supervised XGBoost + SHAP attribution engine</li>
-                <li class="flex items-center gap-2"><span class="text-[#F4D078] font-bold">✓</span> Champion / Challenger shadow scoring</li>
-                <li class="flex items-center gap-2"><span class="text-[#F4D078] font-bold">✓</span> SHA-256 tamper-evident audit hash chain</li>
-              </ul>
+      <!-- SECTION 3: DEEP OBSIDIAN CONTRAST BAND & 3-PHOTO BENTO (Ref 2) -->
+      <section id="architecture" class="ms-dark-band">
+        <div class="ms-dark-grid">
+          <!-- Left Minimalist Narrative -->
+          <div>
+            <div class="ms-eyebrow">
+              <span class="ms-eyebrow-dot" aria-hidden="true"></span>
+              <span>Institutional Forensics</span>
             </div>
-            <a href="/triage" class="pill-cta-gold w-full justify-center py-3.5">
-              <span>Launch Full Enterprise Cockpit</span>
+            <h2 class="ms-dark-heading">
+              Deterministic precision paired with explainable machine intelligence.
+            </h2>
+            <p class="ms-dark-copy">
+              Sentinel AML unifies real-time SWIFT &amp; Fedwire interception, supervised XGBoost ensembles with per-alert SHAP attribution, and cryptographic SHA-256 hash-chained audit logs. By eliminating noisy rule fatigue while preserving 100% deterministic recall on sanctioned entities, compliance teams spend less time clearing false positives and more time dismantling laundering rings.
+            </p>
+            <a href="/compliance/ops" class="ms-dark-outline-btn">
+              <span>Explore Ops Hub</span>
               <span aria-hidden="true">↗</span>
             </a>
           </div>
 
-          <!-- Tier 3: Sovereign FIU & Central Bank -->
-          <div class="rounded-3xl border border-black/10 bg-[#121417] text-white p-8 flex flex-col justify-between space-y-6">
-            <div class="space-y-4">
-              <span class="font-mono text-[11px] font-bold uppercase tracking-widest text-[#F4D078]">TIER III · NATIONAL ENCLAVE</span>
-              <h3 class="font-display text-2xl font-extrabold text-white">Sovereign FIU &amp; Central Bank</h3>
-              <p class="text-xs text-white/70 leading-relaxed">
-                Air-gapped on-premise deployment for national Financial Intelligence Units and systemic clearing houses.
-              </p>
-              <ul class="space-y-2.5 pt-2 text-xs text-white/90">
-                <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Air-gapped Kubernetes / HSM key custody</li>
-                <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Cross-institution federation &amp; typology sharing</li>
-                <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Custom national goAML &amp; central bank schemas</li>
-                <li class="flex items-center gap-2"><span class="text-emerald-400 font-bold">✓</span> Dedicated Principal Financial Crime Engineers</li>
-              </ul>
+          <!-- Right 3-Photo Asymmetric Bento Grid -->
+          <div class="ms-bento-grid">
+            <div class="ms-bento-tall">
+              <picture>
+                <source srcset="/static/images/aml_hero_editorial.webp" type="image/webp" />
+                <img
+                  src="/static/images/aml_hero_editorial.jpg"
+                  alt="Executive risk committee reviewing AML governance controls"
+                  width="1280"
+                  height="720"
+                  loading="lazy"
+                  decoding="async"
+                />
+              </picture>
+              <div class="ms-bento-caption">
+                <span class="ms-bento-tag">4-Eyes Governance</span>
+                <span class="ms-bento-title">Maker-Checker Risk Appetite</span>
+              </div>
             </div>
-            <a href="/compliance/ops" class="w-full py-3.5 px-5 rounded-full bg-white/10 hover:bg-white hover:text-[#121417] border border-white/20 text-white text-xs font-bold text-center transition-colors">
-              Inspect Sovereign Ops Center ↗
-            </a>
-          </div>
 
+            <div class="ms-bento-stack">
+              <div class="ms-bento-small">
+                <picture>
+                  <source srcset="/static/images/aml_bento_terminal.webp" type="image/webp" />
+                  <img
+                    src="/static/images/aml_bento_terminal.jpg"
+                    alt="Cryptographic SHA-256 audit ledger and SWIFT wire telemetry terminal"
+                    width="1200"
+                    height="896"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </picture>
+                <div class="ms-bento-caption">
+                  <span class="ms-bento-tag">SHA-256 Chain</span>
+                  <span class="ms-bento-title">Tamper-Evident Audit Log</span>
+                </div>
+              </div>
+
+              <div class="ms-bento-small">
+                <picture>
+                  <source srcset="/static/images/aml_bento_investigator.webp" type="image/webp" />
+                  <img
+                    src="/static/images/aml_bento_investigator.jpg"
+                    alt="Financial crime analyst inspecting multi-hop graph networks"
+                    width="1200"
+                    height="896"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </picture>
+                <div class="ms-bento-caption">
+                  <span class="ms-bento-tag">Explainable AI</span>
+                  <span class="ms-bento-title">Per-Alert SHAP Telemetry</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
-    </main>
+      <!-- SECTION 4: KEY FEATURES — ALTERNATING OBSIDIAN & STONE CARDS -->
+      <section id="features" class="ms-features-band">
+        <div class="ms-features-head">
+          <h2 class="ms-section-title">Key Features</h2>
+          <p class="ms-section-sub">
+            Built for clarity under regulatory scrutiny: real-time monitoring, explainable risk scoring, multi-hop UBO discovery, and one-click FinCEN / goAML reporting.
+          </p>
+        </div>
 
-    <!-- ===================================================================== -->
-    <!-- INSTITUTIONAL FOOTER                                                  -->
-    <!-- ===================================================================== -->
-    <footer class="bg-[#121417] text-white/75 border-t border-white/10 px-5 sm:px-8 lg:px-14 py-12">
-      <div class="grid grid-cols-1 md:grid-cols-12 gap-8 pb-10 border-b border-white/10">
-        <div class="md:col-span-5 space-y-3">
-          <div class="flex items-center gap-3">
-            <div class="w-8 h-8 rounded-lg bg-[#0A4941] flex items-center justify-center text-[#F4D078] font-bold">S</div>
-            <span class="font-display font-extrabold text-base text-white tracking-tight uppercase">Sentinel AML</span>
+        <div class="ms-feature-grid">
+          <!-- Card 1: Obsidian -->
+          <article class="ms-feature-card ms-feature-card--dark">
+            <div>
+              <span class="ms-feature-num">01 · Surveillance</span>
+              <h3 class="ms-feature-name">Real-time transaction monitoring</h3>
+              <p class="ms-feature-desc">Sub-50ms velocity, structuring, and corridor interception with SLA case locking.</p>
+            </div>
+            <div class="ms-feature-media">
+              <picture>
+                <source srcset="/static/images/aml_bento_terminal.webp" type="image/webp" />
+                <img src="/static/images/aml_bento_terminal.jpg" alt="Real-time wire surveillance" width="600" height="448" loading="lazy" />
+              </picture>
+              <a href="/triage" class="ms-feature-arrow" aria-label="Open Real-time Triage">↗</a>
+            </div>
+          </article>
+
+          <!-- Card 2: Warm Stone -->
+          <article class="ms-feature-card ms-feature-card--stone">
+            <div>
+              <span class="ms-feature-num">02 · Intelligence</span>
+              <h3 class="ms-feature-name">Advanced risk scoring</h3>
+              <p class="ms-feature-desc">Supervised XGBoost scoring with transparent SHAP attribution and drift monitoring.</p>
+            </div>
+            <div class="ms-feature-media">
+              <picture>
+                <source srcset="/static/images/aml_bento_investigator.webp" type="image/webp" />
+                <img src="/static/images/aml_bento_investigator.jpg" alt="Advanced SHAP risk scoring" width="600" height="448" loading="lazy" />
+              </picture>
+              <a href="/ml/governance" class="ms-feature-arrow" aria-label="Open ML Governance">↗</a>
+            </div>
+          </article>
+
+          <!-- Card 3: Obsidian -->
+          <article class="ms-feature-card ms-feature-card--dark">
+            <div>
+              <span class="ms-feature-num">03 · Forensics</span>
+              <h3 class="ms-feature-name">Multi-hop UBO discovery</h3>
+              <p class="ms-feature-desc">Expose cyclic layering, nominee directors, and offshore secrecy chains across 7+ hops.</p>
+            </div>
+            <div class="ms-feature-media">
+              <picture>
+                <source srcset="/static/images/aml_warm_cockpit.webp" type="image/webp" />
+                <img src="/static/images/aml_warm_cockpit.jpg" alt="UBO network graph" width="600" height="448" loading="lazy" />
+              </picture>
+              <a href="/network" class="ms-feature-arrow" aria-label="Open UBO Network Graph">↗</a>
+            </div>
+          </article>
+
+          <!-- Card 4: Warm Stone -->
+          <article class="ms-feature-card ms-feature-card--stone">
+            <div>
+              <span class="ms-feature-num">04 · Reporting</span>
+              <h3 class="ms-feature-name">Automated SAR &amp; goAML filing</h3>
+              <p class="ms-feature-desc">XSD-validated FinCEN BSA and UNODC goAML v5.0 XML serialization in one click.</p>
+            </div>
+            <div class="ms-feature-media">
+              <picture>
+                <source srcset="/static/images/aml_feature_briefing.webp" type="image/webp" />
+                <img src="/static/images/aml_feature_briefing.jpg" alt="Regulatory SAR filing" width="600" height="448" loading="lazy" />
+              </picture>
+              <a href="/sar/queue" class="ms-feature-arrow" aria-label="Open SAR Queue">↗</a>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- SECTION 5: INTERACTIVE 3D TOPOLOGY & PHONETIC KYC TUNER -->
+      <section id="threejs-section" class="ms-lab-band">
+        <div class="ms-lab-header">
+          <div>
+            <div class="ms-eyebrow">
+              <span class="ms-eyebrow-dot" aria-hidden="true"></span>
+              <span>Live Spatial Telemetry</span>
+            </div>
+            <h2 class="ms-dark-heading" style="margin-bottom:8px;">
+              Cross-Border Liquidity &amp; Secrecy Shell Topology
+            </h2>
+            <p class="ms-dark-copy" style="margin-bottom:0;max-width:580px;">
+              Inspect correspondent clearing pathways across New York, London, Zurich, Cayman Islands, and Panama.
+            </p>
           </div>
-          <p class="text-xs text-white/60 max-w-sm leading-relaxed">
-            Cognitive Financial Crime Intelligence, Multi-Hop Beneficial Ownership Forensics, and Automated Regulatory Reporting for Sovereign &amp; Tier-1 Institutions.
-          </p>
+
+          <div class="ms-lab-controls">
+            <button id="btn-3d-rotate" type="button" class="ms-ctrl-btn">
+              <i data-lucide="rotate-cw" style="width:13px;height:13px;"></i>
+              <span>Auto-Rotate: ON</span>
+            </button>
+            <button id="btn-3d-isolate" type="button" class="ms-ctrl-btn ms-ctrl-btn--alert">
+              <i data-lucide="crosshair" style="width:13px;height:13px;"></i>
+              <span>Isolate Secrecy Ring</span>
+            </button>
+            <button id="btn-3d-reset" type="button" class="ms-ctrl-btn">
+              <i data-lucide="maximize-2" style="width:13px;height:13px;"></i>
+              <span>Reset View</span>
+            </button>
+          </div>
         </div>
 
-        <div class="md:col-span-2 space-y-2 text-xs">
-          <div class="font-mono text-[10px] font-bold uppercase tracking-widest text-[#F4D078]">Workspaces</div>
-          <ul class="space-y-1.5">
-            <li><a href="/triage" class="hover:text-white transition-colors">Case Triage Cockpit</a></li>
-            <li><a href="/network" class="hover:text-white transition-colors">UBO Network Graph</a></li>
-            <li><a href="/sar/queue" class="hover:text-white transition-colors">SAR Filing Queue</a></li>
-            <li><a href="/compliance/ops" class="hover:text-white transition-colors">Compliance Ops Hub</a></li>
-          </ul>
+        <div class="ms-canvas-card">
+          <div id="threejs-canvas-wrapper" class="ms-canvas-viewport" aria-label="Interactive 3D Banking Node Topology"></div>
+          <div class="ms-canvas-bar">
+            <div id="threejs-hover-readout">Hover over any banking node to audit...</div>
+            <div style="display:flex;gap:16px;font-size:11px;">
+              <span>● Tier-1 Clearing</span>
+              <span style="color:#F5A623;">● VASP Corridor</span>
+              <span style="color:#F87171;">● Secrecy Shell Hit</span>
+            </div>
+          </div>
         </div>
 
-        <div class="md:col-span-2 space-y-2 text-xs">
-          <div class="font-mono text-[10px] font-bold uppercase tracking-widest text-[#F4D078]">Governance</div>
-          <ul class="space-y-1.5">
-            <li><a href="/rules" class="hover:text-white transition-colors">RBA Rules Engine</a></li>
-            <li><a href="/ml/governance" class="hover:text-white transition-colors">ML &amp; SHAP Governance</a></li>
-            <li><a href="/audit" class="hover:text-white transition-colors">SHA-256 Audit Ledger</a></li>
-            <li><a href="/admin" class="hover:text-white transition-colors">System Administration</a></li>
-          </ul>
+        <!-- Compact Phonetic KYC / OFAC SDN Fuzzy Sensitivity Tuner -->
+        <div class="ms-kyc-strip">
+          <div>
+            <div class="ms-eyebrow" style="margin-bottom:6px;">
+              <span class="ms-eyebrow-dot" aria-hidden="true"></span>
+              <span>Phonetic KYC Sandbox</span>
+            </div>
+            <div class="font-editorial" style="font-size:15px;font-weight:600;color:#FFFFFF;">
+              OFAC SDN Fuzzy Match Sensitivity
+            </div>
+            <div style="font-size:12px;color:var(--ink-on-dark-muted);margin-top:3px;">
+              Candidate: &ldquo;T. Varga Maritime Ltd&rdquo; (92% Jaro-Winkler)
+            </div>
+          </div>
+
+          <div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+              <label for="demo-thresh-slider" style="font-size:11.5px;color:var(--ink-on-dark-muted);">Threshold</label>
+              <span id="demo-thresh-label" class="font-telemetry" style="font-size:12px;font-weight:700;color:#F5A623;">85% Match Limit</span>
+            </div>
+            <input id="demo-thresh-slider" class="ms-slider" type="range" min="70" max="99" value="85" />
+          </div>
+
+          <div class="ms-verdict-box">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-muted);margin-bottom:4px;">Live Decision</div>
+            <span id="demo-thresh-result" style="color:#F87171;font-weight:600;">→ OFAC SDN Blocklist Hit (92% ≥ 85%)</span>
+          </div>
         </div>
+      </section>
 
-        <div class="md:col-span-3 space-y-2 text-xs">
-          <div class="font-mono text-[10px] font-bold uppercase tracking-widest text-[#F4D078]">Regulatory Standards</div>
-          <p class="text-[11px] text-white/60 leading-relaxed">
-            Compliant with FATF Rec. 10/11/20, FinCEN BSA XML 2.0, UNODC goAML v5.0, EU 6AMLD, and ISO/IEC 27001 controls.
-          </p>
-        </div>
-      </div>
+      <!-- SECTION 6: MINIMALIST FOOTER -->
+      <footer class="ms-footer">
+        <div class="ms-footer-grid">
+          <div>
+            <div class="ns-brand-mark" style="margin-bottom:10px;">
+              <i data-lucide="shield-check" style="width:17px;height:17px;"></i>
+              <span>Sentinel AML</span>
+            </div>
+            <p style="font-size:13px;line-height:1.65;max-width:300px;color:var(--ink-secondary);">
+              Cognitive financial crime intelligence, multi-hop UBO forensics, and automated regulatory reporting for tier-1 institutions.
+            </p>
+          </div>
 
-      <div class="pt-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] font-mono text-white/50">
-        <span>© 2026 Sentinel AML Systems Inc. All rights reserved.</span>
-        <span> Engine Build v4.2.0-enterprise · SHA-256 Integrity Active</span>
-      </div>
-    </footer>
+          <div>
+            <div class="ms-footer-heading">Workspaces</div>
+            <div class="ms-footer-links">
+              <a href="/triage">Case Triage</a>
+              <a href="/network">UBO Graph</a>
+              <a href="/sar/queue">SAR Filing Queue</a>
+              <a href="/compliance/ops">Compliance Ops</a>
+            </div>
+          </div>
 
-  </div>
+          <div>
+            <div class="ms-footer-heading">Governance</div>
+            <div class="ms-footer-links">
+              <a href="/rules">RBA Rules Engine</a>
+              <a href="/ml/governance">ML &amp; SHAP</a>
+              <a href="/audit">SHA-256 Audit</a>
+              <a href="/admin">Administration</a>
+            </div>
+          </div>
 
-  <!-- ===================================================================== -->
-  <!-- ACCESSIBLE INTERACTIVE WALKTHROUGH MODAL (#video-walkthrough-modal)   -->
-  <!-- ===================================================================== -->
-  <div
-    id="video-walkthrough-modal"
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="walkthrough-modal-title"
-    class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm items-center justify-center p-4"
-  >
-    <div class="bg-[#121417] text-white border border-white/15 rounded-3xl max-w-3xl w-full overflow-hidden shadow-2xl">
-      <div class="px-6 py-4 border-b border-white/10 flex items-center justify-between">
-        <div class="flex items-center gap-2.5">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          <h3 id="walkthrough-modal-title" class="font-display font-bold text-sm sm:text-base">
-            Sentinel AML — End-to-End Investigation &amp; SAR E-Filing Walkthrough
-          </h3>
-        </div>
-        <button
-          type="button"
-          data-action="close-video-modal"
-          aria-label="Close walkthrough modal"
-          class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-sm cursor-pointer"
-        >
-          ✕
-        </button>
-      </div>
-
-      <div class="p-6 space-y-5">
-        <div class="relative rounded-2xl overflow-hidden border border-white/10 bg-black">
-          <picture>
-            <source srcset="/static/images/aml_warm_cockpit.webp" type="image/webp" />
-            <img src="/static/images/aml_warm_cockpit.jpg" alt="Sentinel AML Cockpit Walkthrough Preview" width="1024" height="559" loading="lazy" class="w-full h-64 sm:h-80 object-cover opacity-85" />
-          </picture>
-          <div class="absolute inset-0 bg-gradient-to-t from-[#121417] via-transparent to-transparent flex flex-col justify-end p-6">
-            <span class="font-mono text-[11px] text-[#F4D078] uppercase tracking-widest">Step-by-Step Forensic Workflow</span>
-            <p class="font-display font-bold text-lg text-white mt-1">
-              From Sub-42ms SWIFT Interception to Cryptographically Signed goAML v5.0 XML
+          <div>
+            <div class="ms-footer-heading">Compliance Standards</div>
+            <p style="font-size:12.5px;line-height:1.65;color:var(--ink-secondary);">
+              FATF Rec. 10/11/20 · FinCEN BSA XML 2.0 · UNODC goAML v5.0 · EU 6AMLD · ISO/IEC 27001.
             </p>
           </div>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-          <div class="p-3.5 rounded-xl bg-white/5 border border-white/10">
-            <div class="font-mono text-[#F4D078] font-bold">01 · Wire Scoring</div>
-            <p class="text-white/70 mt-1">Hybrid deterministic + XGBoost scoring with SHAP feature attribution.</p>
+        <div class="ms-footer-bottom">
+          <span>© 2026 Sentinel AML Systems Inc.</span>
+          <span>Build v4.2.0-enterprise · SHA-256 Integrity Active</span>
+        </div>
+      </footer>
+
+    </main>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- ACCESSIBLE WALKTHROUGH MODAL (#video-walkthrough-modal)               -->
+  <!-- ===================================================================== -->
+  <div
+    id="video-walkthrough-modal"
+    class="ms-modal-backdrop hidden"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="walkthrough-modal-title"
+  >
+    <div class="ms-modal-card">
+      <div class="ms-modal-head">
+        <div class="font-editorial" id="walkthrough-modal-title" style="font-size:15px;font-weight:700;">
+          Sentinel AML — Platform Walkthrough
+        </div>
+        <button type="button" class="ms-modal-close" data-action="close-video-modal" aria-label="Close modal">✕</button>
+      </div>
+      <div class="ms-modal-body">
+        <picture>
+          <source srcset="/static/images/aml_warm_cockpit.webp" type="image/webp" />
+          <img
+            src="/static/images/aml_warm_cockpit.jpg"
+            alt="Sentinel AML investigator workspace preview"
+            width="1024"
+            height="559"
+            loading="lazy"
+            style="width:100%;height:260px;object-fit:cover;border-radius:16px;"
+          />
+        </picture>
+        <div class="ms-modal-steps">
+          <div class="ms-modal-step">
+            <div class="font-telemetry" style="font-size:11px;font-weight:700;margin-bottom:4px;">01 · Intercept</div>
+            <div style="font-size:12px;color:var(--ink-secondary);">Sub-42ms hybrid deterministic + XGBoost scoring.</div>
           </div>
-          <div class="p-3.5 rounded-xl bg-white/5 border border-white/10">
-            <div class="font-mono text-emerald-300 font-bold">02 · UBO Graph</div>
-            <p class="text-white/70 mt-1">Multi-hop cycle detection and beneficial owner de-layering.</p>
+          <div class="ms-modal-step">
+            <div class="font-telemetry" style="font-size:11px;font-weight:700;margin-bottom:4px;">02 · Resolve</div>
+            <div style="font-size:12px;color:var(--ink-secondary);">Multi-hop UBO de-layering and SHAP attribution.</div>
           </div>
-          <div class="p-3.5 rounded-xl bg-white/5 border border-white/10">
-            <div class="font-mono text-sky-300 font-bold">03 · 1-Click SAR</div>
-            <p class="text-white/70 mt-1">XSD-validated FinCEN &amp; UNODC goAML XML regulatory submission.</p>
+          <div class="ms-modal-step">
+            <div class="font-telemetry" style="font-size:11px;font-weight:700;margin-bottom:4px;">03 · File</div>
+            <div style="font-size:12px;color:var(--ink-secondary);">XSD-validated FinCEN &amp; goAML v5.0 XML export.</div>
           </div>
         </div>
-
-        <div class="flex flex-wrap items-center justify-end gap-3 pt-2">
-          <button type="button" data-action="close-video-modal" class="px-5 py-2.5 rounded-full border border-white/20 text-xs font-bold text-white/80 hover:text-white cursor-pointer">
-            Close Preview
-          </button>
-          <a href="/triage" class="pill-cta-gold">
-            <span>Open Live Case Triage Now</span>
-            <span aria-hidden="true">↗</span>
+        <div style="display:flex;justify-content:flex-end;gap:10px;">
+          <button type="button" class="ms-ghost-btn" data-action="close-video-modal">Close</button>
+          <a href="/triage" class="ms-pill-cta">
+            <span class="ms-pill-cta-circle" aria-hidden="true">→</span>
+            <span>Open Live Triage</span>
           </a>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- Deferred Three.js & Landing Page Controller Scripts -->
+  <!-- Deferred Three.js & Landing Page Controller -->
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js" defer></script>
-  <script src="/static/landing.js" defer></script>
+  <script src="/static/landing.js?v=20261119-minimal" defer></script>
 </body>
 </html>

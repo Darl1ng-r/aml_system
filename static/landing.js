@@ -38,7 +38,79 @@
   window.closeVideoWalkthroughModal = closeVideoWalkthroughModal;
   window.toggleMobileMenu = toggleMobileMenu;
 
-  // --- Sentinels Real-Time Global Laundering Counter (Reference 3) ---
+  // --- NavSav Interactive Hero Dock Controller ---
+  function initHeroModuleDock() {
+    const modules = {
+      triage: {
+        title: 'Case Triage',
+        meta: 'L1/L2 Queue · SHAP Attribution',
+        kpi: '38ms',
+        unit: 'P95',
+        href: '/triage',
+        thumb: '/static/images/aml_bento_investigator.jpg',
+        pinLabel: 'Wire Guard',
+        pinMetric: '$48.5B+ screened'
+      },
+      network: {
+        title: 'UBO Network Graph',
+        meta: 'Multi-Hop Shell & Cycle Detection',
+        kpi: '7-Hop',
+        unit: 'depth',
+        href: '/network',
+        thumb: '/static/images/aml_feature_briefing.jpg',
+        pinLabel: 'Graph Forensics',
+        pinMetric: '1,240 rings mapped'
+      },
+      sar: {
+        title: 'goAML & FinCEN SAR',
+        meta: '1-Click XSD-Validated XML Filing',
+        kpi: '100%',
+        unit: 'XSD pass',
+        href: '/sar/queue',
+        thumb: '/static/images/aml_bento_terminal.jpg',
+        pinLabel: 'Regulatory E-File',
+        pinMetric: 'SHA-256 chained'
+      }
+    };
+
+    const buttons = document.querySelectorAll('[data-dock-module]');
+    if (!buttons.length) return;
+
+    const elImg = document.getElementById('ns-dock-active-img');
+    const elTitle = document.getElementById('ns-dock-active-title');
+    const elMeta = document.getElementById('ns-dock-active-meta');
+    const elKpi = document.getElementById('ns-dock-active-kpi');
+    const elUnit = document.getElementById('ns-dock-active-unit');
+    const elLink = document.getElementById('ns-dock-active-link');
+    const elPinLabel = document.getElementById('ns-pin-label');
+    const elPinMetric = document.getElementById('ns-pin-metric');
+
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-dock-module');
+        const cfg = modules[key];
+        if (!cfg) return;
+
+        buttons.forEach((b) => {
+          b.classList.remove('is-active');
+          b.setAttribute('aria-pressed', 'false');
+        });
+        btn.classList.add('is-active');
+        btn.setAttribute('aria-pressed', 'true');
+
+        if (elImg) elImg.src = cfg.thumb;
+        if (elTitle) elTitle.textContent = cfg.title;
+        if (elMeta) elMeta.textContent = cfg.meta;
+        if (elKpi) elKpi.textContent = cfg.kpi;
+        if (elUnit) elUnit.textContent = cfg.unit;
+        if (elLink) elLink.setAttribute('href', cfg.href);
+        if (elPinLabel) elPinLabel.textContent = cfg.pinLabel;
+        if (elPinMetric) elPinMetric.textContent = cfg.pinMetric;
+      });
+    });
+  }
+
+  // --- Sentinels Real-Time Global Laundering Counter (Optional if element present) ---
   function initGlobalLaunderingCounter() {
     const counterEl = document.getElementById('global-laundered-counter');
     if (!counterEl) return;
@@ -360,7 +432,8 @@
       window.lucide.createIcons();
     }
 
-    // 2. Initialize Live Global Laundering Counter
+    // 2. Initialize Interactive Hero Module Dock & Optional Counter
+    initHeroModuleDock();
     initGlobalLaunderingCounter();
 
     // 3. Initialize Three.js Graph
@@ -430,10 +503,10 @@
           const sampleScore = 92;
           if (sampleScore >= limit) {
             threshResult.textContent = `→ OFAC SDN Blocklist Hit (${sampleScore}% ≥ ${limit}%)`;
-            threshResult.className = 'text-risk-high block font-semibold';
+            threshResult.style.color = '#F87171';
           } else {
             threshResult.textContent = `→ Cleared Below Threshold (${sampleScore}% < ${limit}%)`;
-            threshResult.className = 'text-risk-low block font-semibold';
+            threshResult.style.color = '#34D399';
           }
         }
       };
