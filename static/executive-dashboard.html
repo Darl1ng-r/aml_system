@@ -412,10 +412,10 @@
         document.getElementById('kpiOpenCases').innerText = k.open_cases || 0;
         document.getElementById('kpiSars').innerText = k.sars_filed_mtd || 0;
         document.getElementById('kpiFp').innerText = k.false_positive_rate || '0.0%';
-        document.getElementById('kpiTurnaround').innerText = `${k.median_triage_hours || 3.8}h`;
+        document.getElementById('kpiTurnaround').innerText = `${k.median_triage_hours != null ? k.median_triage_hours : 0}h`;
 
         // 2. Trend Chart
-        const trend = data.daily_trend || { labels: ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], data: [12,19,8,15,22,14,18] };
+        const trend = data.daily_trend || { labels: [], data: [] };
         const maxVal = Math.max(...trend.data, 1);
         const trendEl = document.getElementById('trendChart');
         trendEl.innerHTML = trend.labels.map((lbl, i) => {
@@ -452,7 +452,7 @@
         if (breachItems.length) {
           slaTbody.innerHTML = breachItems.map(b => `
             <tr>
-              <td class="mono"><a href="/dashboard" style="color:var(--accent-blue); text-decoration:none;">${b.alert_id.slice(0,8)}</a></td>
+              <td class="mono"><a href="/dashboard?alert_id=${encodeURIComponent(b.alert_id)}" style="color:var(--accent-blue); text-decoration:none;">${b.alert_id.slice(0,8)}</a></td>
               <td>${b.rule_name}</td>
               <td><span class="status-badge badge-red">${b.threat_level}</span></td>
               <td class="mono" style="color:var(--accent-crimson);">${b.age_hours}h</td>
@@ -481,10 +481,24 @@
 
       } catch (err) {
         showToast('Error loading metrics: ' + err.message);
+        const errHtml = '<div style="color:var(--accent-crimson); padding:1rem 0;">Unable to load live metrics.</div>';
+        const trendEl = document.getElementById('trendChart');
+        const typoEl = document.getElementById('typologyList');
+        const slaTbody = document.getElementById('slaTableBody');
+        const teamTbody = document.getElementById('teamTableBody');
+        if (trendEl && trendEl.innerText.includes('Loading')) trendEl.innerHTML = errHtml;
+        if (typoEl && typoEl.innerText.includes('Loading')) typoEl.innerHTML = errHtml;
+        if (slaTbody && slaTbody.innerText.includes('Loading')) slaTbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:1rem; color:var(--accent-crimson);">Unable to load SLA breaches.</td></tr>';
+        if (teamTbody && teamTbody.innerText.includes('Loading')) teamTbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:1rem; color:var(--accent-crimson);">Unable to load leaderboard.</td></tr>';
       }
     }
 
-    window.addEventListener('DOMContentLoaded', loadExecutiveDashboard);
+    window.addEventListener('DOMContentLoaded', () => {
+      loadExecutiveDashboard();
+      setInterval(() => {
+        if (!document.hidden) loadExecutiveDashboard();
+      }, 30000);
+    });
   </script>
 </body>
 </html>

@@ -332,6 +332,8 @@
         renderUsers();
       } catch (e) {
         console.error('Error fetching users', e);
+        const tbody = document.getElementById('users-table-body');
+        if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:30px; color:var(--risk-high);">Failed to load users: ${e.message || 'Unauthorized'}</td></tr>`;
       }
     }
 
@@ -356,6 +358,8 @@
                 <option value="L2_INVESTIGATOR" ${role === 'L2_INVESTIGATOR' ? 'selected' : ''}>L2_INVESTIGATOR</option>
                 <option value="MLRO" ${role === 'MLRO' ? 'selected' : ''}>MLRO</option>
                 <option value="ADMIN" ${role === 'ADMIN' ? 'selected' : ''}>ADMIN</option>
+                <option value="TENANT_ADMIN" ${role === 'TENANT_ADMIN' ? 'selected' : ''}>TENANT_ADMIN</option>
+                <option value="SUPER_ADMIN" ${role === 'SUPER_ADMIN' ? 'selected' : ''}>SUPER_ADMIN</option>
                 <option value="AUDITOR" ${role === 'AUDITOR' ? 'selected' : ''}>AUDITOR</option>
                 <option value="ANALYST" ${role === 'ANALYST' ? 'selected' : ''}>ANALYST (Legacy)</option>
               </select>
@@ -392,11 +396,14 @@
           alert('Role updated and sessions rotated!');
           await fetchUsers();
         } else {
-          alert('Failed to update user role.');
+          const err = await res.json().catch(() => ({}));
+          alert(`Failed to update user role: ${err.detail || res.status}`);
+          await fetchUsers();
         }
       } catch (e) {
         console.error('Error updating user role:', e);
         alert('Error updating user role: ' + (e.message || e));
+        await fetchUsers();
       }
     }
 
@@ -441,6 +448,8 @@
         });
         if (res.ok) {
           alert(`User ${username} provisioned successfully with role ${role}!`);
+          document.getElementById('prov-username').value = '';
+          document.getElementById('prov-password').value = '';
           closeProvisionModal();
           await fetchUsers();
         } else {

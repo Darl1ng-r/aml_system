@@ -385,6 +385,8 @@
         renderRules();
       } catch (e) {
         console.error('Error fetching rules', e);
+        const container = document.getElementById('rules-cards-container');
+        if (container) container.innerHTML = `<div style="padding:40px; color:var(--risk-high); grid-column:1/-1;">Failed to load rule configurations: ${e.message || 'Unauthorized'}</div>`;
       }
     }
 
@@ -446,10 +448,17 @@
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({enabled: enabled, change_reason: `Toggled ${enabled ? 'ON' : 'OFF'} in Rule Builder`})
         });
-        if (!res.ok) alert('Failed to toggle rule state');
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(`Failed to toggle rule state: ${err.detail || res.status}`);
+          await fetchRules();
+        } else {
+          await fetchRules();
+        }
       } catch (e) {
         console.error('Network error updating rule:', e);
         alert('Network error updating rule: ' + (e.message || e));
+        await fetchRules();
       }
     }
 
@@ -466,8 +475,10 @@
         if (input) {
           let v = input.value.trim();
           if (Array.isArray(rule.config[k])) {
-            newConfig[k] = v.split(',').map(s => s.trim());
-          } else if (!Number.isNaN(Number(v))) {
+            newConfig[k] = v ? v.split(',').map(s => s.trim()).filter(Boolean) : [];
+          } else if (v === 'true' || v === 'false') {
+            newConfig[k] = (v === 'true');
+          } else if (v !== '' && !Number.isNaN(Number(v))) {
             newConfig[k] = Number(v);
           } else {
             newConfig[k] = v;

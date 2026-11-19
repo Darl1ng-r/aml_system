@@ -939,7 +939,14 @@
     function renderDrawer(alert, lockState) {
       document.getElementById('drawer-alert-id').innerText = `ALERT #${alert.id.substring(0, 8)}`;
       document.getElementById('drawer-alert-crumb').innerText = `${alert.rule_name || 'Monitoring Hit'} · ${alert.status}`;
-      document.getElementById('drawer-actions-panel').style.display = 'flex';
+      const actionsPanel = document.getElementById('drawer-actions-panel');
+      actionsPanel.style.display = 'flex';
+      const isReadOnly = Boolean(lockState && lockState.other);
+      actionsPanel.querySelectorAll('button').forEach(btn => {
+        btn.disabled = isReadOnly;
+        btn.style.opacity = isReadOnly ? '0.5' : '';
+        btn.style.cursor = isReadOnly ? 'not-allowed' : '';
+      });
 
       let lockBannerHtml = '';
       if (lockState && lockState.other) {

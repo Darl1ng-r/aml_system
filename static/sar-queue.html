@@ -386,22 +386,27 @@
       setTimeout(() => { t.style.display = 'none'; }, 3000);
     }
 
+    let queueAbort = null;
+
     async function fetchQueue() {
       applyRoleBasedVisibility();
+      if (queueAbort) queueAbort.abort();
+      queueAbort = new AbortController();
       try {
         const url = activeFilter ? `/api/v1/fincen/sar/drafts?status_filter=${activeFilter}` : '/api/v1/fincen/sar/drafts';
-        const res = await fetch(url, { credentials: 'include' });
+        const res = await fetch(url, { credentials: 'include', signal: queueAbort.signal });
         if (!res.ok) throw new Error('Failed to load queue');
         allDrafts = await res.json();
         renderQueue();
       } catch (err) {
+        if (err.name === 'AbortError') return;
         showToast('Error loading queue: ' + err.message);
       }
     }
 
     function getStatusClass(status) {
       if (status === 'PENDING_MLRO_REVIEW') return 'status-pending';
-      if (status === 'APPROVED') return 'status-approved';
+      if (status === 'APPROVED' || status === 'FILED') return 'status-approved';
       if (status === 'REJECTED') return 'status-rejected';
       return 'status-draft';
     }
@@ -420,17 +425,20 @@
     }
 
     function renderQueue() {
-      let pending = 0, approved = 0, rejected = 0;
-      allDrafts.forEach(d => {
-        if (d.status === 'PENDING_MLRO_REVIEW') pending++;
-        else if (d.status === 'APPROVED' || d.status === 'FILED') approved++;
-        else if (d.status === 'REJECTED') rejected++;
-      });
+      // Only overwrite top-level KPI summary cards when viewing the unfiltered queue
+      if (!activeFilter) {
+        let pending = 0, approved = 0, rejected = 0;
+        allDrafts.forEach(d => {
+          if (d.status === 'PENDING_MLRO_REVIEW') pending++;
+          else if (d.status === 'APPROVED' || d.status === 'FILED') approved++;
+          else if (d.status === 'REJECTED') rejected++;
+        });
 
-      document.getElementById('kpiPending').innerText = pending;
-      document.getElementById('kpiApproved').innerText = approved;
-      document.getElementById('kpiRejected').innerText = rejected;
-      document.getElementById('kpiTotal').innerText = allDrafts.length;
+        document.getElementById('kpiPending').innerText = pending;
+        document.getElementById('kpiApproved').innerText = approved;
+        document.getElementById('kpiRejected').innerText = rejected;
+        document.getElementById('kpiTotal').innerText = allDrafts.length;
+      }
       document.getElementById('tableCount').innerText = `Showing ${allDrafts.length} drafts`;
 
       const tbody = document.getElementById('draftsTableBody');
@@ -485,9 +493,12 @@
     function openReviewModal(draftId, action) {
       pendingModalDraftId = draftId;
       pendingModalAction = action;
+      const reasonInput = document.getElementById('rejectionReason');
+      if (reasonInput) reasonInput.value = '';
       document.getElementById('modalTitle').innerText = action === 'APPROVE' ? 'Approve SAR Filing' : 'Reject SAR Draft';
       document.getElementById('rejectReasonBlock').style.display = action === 'REJECT' ? 'block' : 'none';
       const submitBtn = document.getElementById('modalSubmitBtn');
+      submitBtn.disabled = false;
       submitBtn.innerText = action === 'APPROVE' ? 'Confirm Approval' : 'Confirm Rejection';
       submitBtn.className = action === 'APPROVE' ? 'btn-action btn-approve' : 'btn-action btn-reject';
       document.getElementById('reviewModal').style.display = 'flex';
@@ -495,6 +506,8 @@
 
     function closeModal() {
       document.getElementById('reviewModal').style.display = 'none';
+      const reasonInput = document.getElementById('rejectionReason');
+      if (reasonInput) reasonInput.value = '';
       pendingModalDraftId = null;
       pendingModalAction = null;
     }
@@ -505,6 +518,9 @@
         showToast('Please provide rejection justification (min 5 chars).');
         return;
       }
+
+      const submitBtn = document.getElementById('modalSubmitBtn');
+      if (submitBtn) submitBtn.disabled = true;
 
       try {
         const res = await fetch(`/api/v1/fincen/sar/drafts/${pendingModalDraftId}/review`, {
@@ -518,8 +534,8 @@
         });
 
         if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || 'Review action failed');
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `Review action failed (HTTP ${res.status})`);
         }
 
         showToast(`SAR draft ${pendingModalAction.toLowerCase()}d successfully.`);
@@ -527,6 +543,8 @@
         fetchQueue();
       } catch (err) {
         showToast(err.message);
+      } finally {
+        if (submitBtn) submitBtn.disabled = false;
       }
     }
 

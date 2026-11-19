@@ -582,16 +582,23 @@
       `).join('');
     }
 
+    let customerSearchTimer = null;
+    let customerListAbort = null;
+    let dossierAbort = null;
+
     async function loadCustomerList(search = '') {
+      if (customerListAbort) customerListAbort.abort();
+      customerListAbort = new AbortController();
       try {
         if (!customerListCache.length) renderSkeletonCustomerList();
         const url = search ? `/api/v1/customers?search=${encodeURIComponent(search)}` : '/api/v1/customers';
-        const res = await fetch(url, { credentials: 'include' });
+        const res = await fetch(url, { credentials: 'include', signal: customerListAbort.signal });
         if (!res.ok) throw new Error('Failed to load customers');
         const data = await res.json();
         customerListCache = data.items || [];
         renderCustomerList();
       } catch (err) {
+        if (err.name === 'AbortError') return;
         showToast('Error loading customer list: ' + err.message);
       }
     }
@@ -616,7 +623,8 @@
 
     function handleSearch() {
       const q = document.getElementById('customerSearch').value;
-      loadCustomerList(q);
+      clearTimeout(customerSearchTimer);
+      customerSearchTimer = setTimeout(() => loadCustomerList(q), 300);
     }
 
     function selectCustomer(id) {
@@ -763,8 +771,10 @@
     }
 
     async function loadDossier(id) {
+      if (dossierAbort) dossierAbort.abort();
+      dossierAbort = new AbortController();
       try {
-        const res = await fetch(`/api/v1/customers/${id}/dossier`, { credentials: 'include' });
+        const res = await fetch(`/api/v1/customers/${id}/dossier`, { credentials: 'include', signal: dossierAbort.signal });
         if (!res.ok) throw new Error('Failed to load dossier');
         const d = await res.json();
         activeCustomerData = d;
@@ -799,6 +809,7 @@
 
         document.getElementById('networkGraphLink').href = `/network/${d.account_number}`;
       } catch (err) {
+        if (err.name === 'AbortError') return;
         showToast('Error loading dossier: ' + err.message);
       }
     }

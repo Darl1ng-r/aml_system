@@ -362,6 +362,13 @@
           <tr><td colspan="8" style="text-align:center; padding:2rem; color:var(--text-dim);">Loading audit trail...</td></tr>
         </tbody>
       </table>
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:0.75rem 1rem; border-top:1px solid var(--border-subtle); font-size:0.75rem; color:var(--text-muted);">
+        <span id="auditPageInfo" class="mono">Page 1</span>
+        <div style="display:flex; gap:0.5rem;">
+          <button id="auditPrevBtn" class="btn" style="padding:4px 10px; font-size:0.75rem;" onclick="changeAuditPage(-1)" disabled>← Previous</button>
+          <button id="auditNextBtn" class="btn" style="padding:4px 10px; font-size:0.75rem;" onclick="changeAuditPage(1)" disabled>Next →</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -401,6 +408,9 @@
   <script src="/static/api-client.js"></script>
   <script>
     let auditRecords = [];
+    let currentAuditPage = 1;
+    let totalAuditPages = 1;
+    let auditAbort = null;
 
     function showToast(msg) {
       const t = document.getElementById('toast');
@@ -409,27 +419,49 @@
       setTimeout(() => { t.style.display = 'none'; }, 3000);
     }
 
-    async function loadAuditLogs() {
+    function changeAuditPage(delta) {
+      const next = currentAuditPage + delta;
+      if (next < 1 || next > totalAuditPages) return;
+      currentAuditPage = next;
+      loadAuditLogs(false);
+    }
+
+    async function loadAuditLogs(resetPage = true) {
       applyRoleBasedVisibility();
+      if (resetPage) currentAuditPage = 1;
+      if (auditAbort) auditAbort.abort();
+      auditAbort = new AbortController();
 
       const actor = document.getElementById('actorFilter').value.trim();
       const action = document.getElementById('actionFilter').value;
       const resource = document.getElementById('resourceFilter').value;
 
-      let url = '/api/v1/audit/logs?limit=50';
+      let url = `/api/v1/audit/logs?limit=50&page=${currentAuditPage}`;
       if (actor) url += `&actor=${encodeURIComponent(actor)}`;
       if (action) url += `&action=${encodeURIComponent(action)}`;
       if (resource) url += `&resource_type=${encodeURIComponent(resource)}`;
 
       try {
-        const res = await fetch(url, { credentials: 'include' });
-        if (!res.ok) throw new Error('Failed to query audit logs');
+        const res = await fetch(url, { credentials: 'include', signal: auditAbort.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         auditRecords = data.items || [];
-        document.getElementById('logCount').innerText = `${data.total || 0} records indexed`;
+        const total = Number(data.total || 0);
+        const limit = Number(data.limit || 50);
+        totalAuditPages = Math.max(1, Math.ceil(total / limit));
+        document.getElementById('logCount').innerText = `${total} records indexed`;
+        const pageInfo = document.getElementById('auditPageInfo');
+        if (pageInfo) pageInfo.innerText = `Page ${currentAuditPage} of ${totalAuditPages} (${total} total)`;
+        const prevBtn = document.getElementById('auditPrevBtn');
+        const nextBtn = document.getElementById('auditNextBtn');
+        if (prevBtn) prevBtn.disabled = currentAuditPage <= 1;
+        if (nextBtn) nextBtn.disabled = currentAuditPage >= totalAuditPages;
         renderAuditTable();
       } catch (err) {
+        if (err.name === 'AbortError') return;
         showToast('Error querying audit logs: ' + err.message);
+        const tbody = document.getElementById('auditTableBody');
+        if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:2rem; color:var(--accent-crimson);">Failed to load audit logs.</td></tr>';
       }
     }
 

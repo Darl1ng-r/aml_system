@@ -1066,9 +1066,21 @@ function filterInboxTable() {
 
 let caseLockHeartbeat = null;
 let currentCaseLockToken = null;
+let currentLockedCaseId = null;
+
+function _setCaseEditingDisabled(disabled) {
+    ['btn-approve-case', 'btn-escalate-case', 'btn-block-case', 'inbox-justification', 'mobile-inbox-justification']
+        .forEach((id) => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = Boolean(disabled);
+        });
+}
 
 function _handleCaseLockConflict(data, banner, textEl, timerEl, forceBtn) {
     const holder = data?.detail?.lock_info?.locked_by_name || 'another investigator';
+    currentCaseLockToken = null;
+    currentLockedCaseId = null;
+    _setCaseEditingDisabled(true);
     if (banner) {
         banner.style.display = 'flex';
         banner.style.background = '#FEF2F2';
@@ -1085,6 +1097,8 @@ function _handleCaseLockConflict(data, banner, textEl, timerEl, forceBtn) {
 
 function _handleCaseLockAcquired(data, banner, textEl, timerEl, forceBtn, caseId) {
     currentCaseLockToken = data.lock?.lock_token;
+    currentLockedCaseId = caseId;
+    _setCaseEditingDisabled(false);
     if (banner) {
         banner.style.display = 'flex';
         banner.style.background = '#FFFBEB';
@@ -1095,12 +1109,25 @@ function _handleCaseLockAcquired(data, banner, textEl, timerEl, forceBtn, caseId
     if (timerEl) timerEl.innerText = 'Session lock renews in 5:00 (active)';
     if (forceBtn) forceBtn.style.display = 'none';
 
-    caseLockHeartbeat = setInterval(() => {
-        void fetch(`${BASE_URL}/api/v1/locks/ALERT/${caseId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ lock_token: currentCaseLockToken, ttl_seconds: 300 })
-        }).catch(err => console.warn('Case lock heartbeat error:', err));
+    caseLockHeartbeat = setInterval(async () => {
+        try {
+            const hbRes = await fetch(`${BASE_URL}/api/v1/locks/ALERT/${caseId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ lock_token: currentCaseLockToken, ttl_seconds: 300 })
+            });
+            if (!hbRes.ok) {
+                clearInterval(caseLockHeartbeat);
+                caseLockHeartbeat = null;
+                currentCaseLockToken = null;
+                currentLockedCaseId = null;
+                _setCaseEditingDisabled(true);
+                if (textEl) textEl.innerHTML = '⚠️ <strong>Case edit lock expired or was revoked</strong> — Reload case to re-acquire.';
+                if (timerEl) timerEl.innerText = 'Read-Only Mode';
+            }
+        } catch (err) {
+            console.warn('Case lock heartbeat error:', err);
+        }
     }, 60000);
 }
 
@@ -1108,6 +1135,15 @@ async function acquireCaseLock(caseId) {
     if (caseLockHeartbeat) {
         clearInterval(caseLockHeartbeat);
         caseLockHeartbeat = null;
+    }
+    if (currentLockedCaseId && currentLockedCaseId !== caseId && currentCaseLockToken) {
+        const prevId = currentLockedCaseId;
+        currentLockedCaseId = null;
+        currentCaseLockToken = null;
+        fetch(`${BASE_URL}/api/v1/locks/ALERT/${prevId}`, {
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        }).catch(() => {});
     }
     const banner = document.getElementById('case-lock-banner');
     const textEl = document.getElementById('case-lock-status-text');
@@ -1132,6 +1168,17 @@ async function acquireCaseLock(caseId) {
         console.warn('Case lock acquisition error:', e);
     }
 }
+
+window.addEventListener('beforeunload', () => {
+    if (currentLockedCaseId && currentCaseLockToken) {
+        fetch(`${BASE_URL}/api/v1/locks/ALERT/${currentLockedCaseId}`, {
+            method: 'DELETE',
+            keepalive: true,
+            credentials: 'include',
+            headers: getAuthHeaders()
+        }).catch(() => {});
+    }
+});
 
 async function forceUnlockCurrentCase() {
     if (!activeAlertId) return;
