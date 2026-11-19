@@ -154,16 +154,29 @@ async def verify_audit_hash_chain(
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, created_at, actor_id, action, resource_type, resource_id, details
-                FROM audit_log
-                WHERE tenant_id = $1
-                ORDER BY created_at ASC, id ASC
-                LIMIT 5000;
-                """,
-                uuid.UUID(str(tenant_id))
-            )
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, created_at, actor_id, action, resource_type, resource_id, details,
+                           prev_hash, record_hash
+                    FROM audit_log
+                    WHERE tenant_id = $1
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT 5000;
+                    """,
+                    uuid.UUID(str(tenant_id))
+                )
+            except Exception:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, created_at, actor_id, action, resource_type, resource_id, details
+                    FROM audit_log
+                    WHERE tenant_id = $1
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT 5000;
+                    """,
+                    uuid.UUID(str(tenant_id))
+                )
 
         if not rows:
             return {
@@ -172,22 +185,53 @@ async def verify_audit_hash_chain(
                 "genesis_hash": "GENESIS_EMPTY_CHAIN_00000000000000000000000000000000",
                 "chain_head": "GENESIS_EMPTY_CHAIN_00000000000000000000000000000000",
                 "tampered": False,
+                "tampered_record_id": None,
                 "verified_at": datetime.now(timezone.utc).isoformat()
             }
 
         prev_hash = "GENESIS_ROOT_CHAIN_00000000000000000000000000000000"
         genesis_hash = prev_hash
+        persisted_hash_count = 0
 
         for r in rows:
             raw_details = r["details"]
             det_str = json.dumps(raw_details, sort_keys=True) if isinstance(raw_details, dict) else str(raw_details or "{}")
             record_payload = f"{prev_hash}:{r['id']}:{r['created_at'].isoformat() if r['created_at'] else ''}:{r['actor_id']}:{r['action']}:{r['resource_type']}:{r['resource_id']}:{det_str}"
-            curr_hash = hashlib.sha256(record_payload.encode("utf-8")).hexdigest()
-            prev_hash = curr_hash
+            expected_hash = hashlib.sha256(record_payload.encode("utf-8")).hexdigest()
+
+            stored_prev = r["prev_hash"] if "prev_hash" in r else None
+            stored_hash = r["record_hash"] if "record_hash" in r else None
+
+            if stored_prev is not None and stored_prev != prev_hash:
+                return {
+                    "status": "TAMPERED",
+                    "verified_records": len(rows),
+                    "genesis_hash": genesis_hash,
+                    "chain_head": prev_hash,
+                    "tampered": True,
+                    "tampered_record_id": str(r["id"]),
+                    "reason": "Broken prev_hash link in audit chain",
+                    "verified_at": datetime.now(timezone.utc).isoformat()
+                }
+            if stored_hash is not None:
+                persisted_hash_count += 1
+                if stored_hash != expected_hash:
+                    return {
+                        "status": "TAMPERED",
+                        "verified_records": len(rows),
+                        "genesis_hash": genesis_hash,
+                        "chain_head": prev_hash,
+                        "tampered": True,
+                        "tampered_record_id": str(r["id"]),
+                        "reason": "Stored SHA-256 record_hash mismatch",
+                        "verified_at": datetime.now(timezone.utc).isoformat()
+                    }
+            prev_hash = expected_hash
 
         return {
             "status": "VALID",
             "verified_records": len(rows),
+            "persisted_hashes_verified": persisted_hash_count,
             "genesis_hash": genesis_hash,
             "chain_head": prev_hash,
             "tampered": False,
@@ -205,7 +249,7 @@ async def export_audit_logs(
     actor: Optional[str] = None,
     action: Optional[str] = None,
     resource_type: Optional[str] = None,
-    current_user: dict = Depends(RoleChecker(["AUDITOR", "GLOBAL_AUDITOR", "ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "MLRO"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
     """Exports audit logs for regulatory submission or forensic archiving with digital checksum."""

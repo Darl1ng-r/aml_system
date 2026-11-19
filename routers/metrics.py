@@ -272,10 +272,23 @@ async def _fetch_executive_counts(conn: Any) -> dict:
     fps_closed = await conn.fetchval(
         "SELECT COUNT(*) FROM alerts WHERE status = 'CLOSED_FALSE_POSITIVE';"
     )
+    median_triage = await conn.fetchval(
+        """
+        SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (updated_at - created_at)) / 3600.0
+        )
+        FROM alerts
+        WHERE status LIKE 'CLOSED%'
+          AND updated_at IS NOT NULL
+          AND created_at IS NOT NULL
+          AND updated_at >= created_at;
+        """
+    )
 
     t_closed = int(total_closed or 0)
     f_closed = int(fps_closed or 0)
     fp_rate = round((f_closed / t_closed * 100), 1) if t_closed > 0 else 0.0
+    median_hours = round(float(median_triage), 1) if median_triage is not None else 0.0
 
     return {
         "alerts_24h": int(alerts_24h or 0),
@@ -283,7 +296,7 @@ async def _fetch_executive_counts(conn: Any) -> dict:
         "open_cases": int(open_cases or 0),
         "sars_filed_mtd": int(sars_mtd or 0),
         "false_positive_rate": f"{fp_rate}%",
-        "median_triage_hours": 3.8
+        "median_triage_hours": median_hours
     }
 
 

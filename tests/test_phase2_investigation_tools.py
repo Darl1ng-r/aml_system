@@ -298,6 +298,7 @@ async def test_executive_compliance_metrics(mlro_token):
         8,    # sars_filed_mtd
         100,  # total_closed
         12,   # fps_closed
+        2.4,  # median_triage_hours
         3,    # breach_24h
         1,    # breach_48h
         0     # breach_72h

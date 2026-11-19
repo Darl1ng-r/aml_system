@@ -264,14 +264,29 @@ async def get_system_topology_health(
     except Exception as e:
         services["neo4j"] = {"status": "DOWN", "error": str(e)}
 
-    # 5. Redpanda / Kafka Messaging Bus
+    # 5. Redpanda / Kafka Messaging Bus (live TCP reachability probe)
     from config import KAFKA_BOOTSTRAP_SERVERS, TRANSACTIONS_TOPIC
-    services["redpanda"] = {
-        "status": "UP",
-        "bootstrap_servers": KAFKA_BOOTSTRAP_SERVERS,
-        "default_topic": TRANSACTIONS_TOPIC,
-        "mode": "STREAMING_AIOKAFKA"
-    }
+    try:
+        t0 = time.monotonic()
+        first_broker = str(KAFKA_BOOTSTRAP_SERVERS).split(",")[0].strip()
+        host, port_str = (first_broker.rsplit(":", 1) if ":" in first_broker else (first_broker, "9092"))
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port_str)), timeout=1.5)
+        writer.close()
+        await writer.wait_closed()
+        services["redpanda"] = {
+            "status": "UP",
+            "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+            "bootstrap_servers": KAFKA_BOOTSTRAP_SERVERS,
+            "default_topic": TRANSACTIONS_TOPIC,
+            "mode": "STREAMING_AIOKAFKA"
+        }
+    except Exception as e:
+        services["redpanda"] = {
+            "status": "DOWN",
+            "bootstrap_servers": KAFKA_BOOTSTRAP_SERVERS,
+            "default_topic": TRANSACTIONS_TOPIC,
+            "error": str(e)
+        }
 
     all_up = all(s.get("status") == "UP" for s in services.values())
     return {

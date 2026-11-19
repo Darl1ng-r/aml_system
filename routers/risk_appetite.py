@@ -63,6 +63,30 @@ async def get_risk_appetite_settings(
     tenant_id = enforce_tenant_data_scope(current_user)
     t_key = str(tenant_id)
 
+    try:
+        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT config, updated_by, updated_at
+                FROM risk_appetite_settings
+                WHERE tenant_id = $1;
+                """,
+                uuid.UUID(t_key)
+            )
+        if row:
+            cfg = row["config"]
+            if isinstance(cfg, str):
+                cfg = json.loads(cfg)
+            result = dict(_DEFAULT_APPETITE)
+            result.update(cfg or {})
+            result["updated_by"] = row["updated_by"] or result["updated_by"]
+            result["updated_at"] = row["updated_at"].isoformat() if row["updated_at"] else result["updated_at"]
+            result["tenant_id"] = t_key
+            _tenant_appetite_cache[t_key] = result
+            return result
+    except Exception as e:
+        logger.warning(f"PostgreSQL risk_appetite read fallback to cache: {e}")
+
     if t_key in _tenant_appetite_cache:
         return _tenant_appetite_cache[t_key]
 
@@ -77,17 +101,49 @@ async def update_risk_appetite_settings(
     _rate_limit=Depends(RateLimiter(limit=20, window=60))
 ):
     """
-    Updates institutional risk appetite thresholds.
+    Updates institutional risk appetite thresholds in PostgreSQL.
     Audited with before/after state diff under FFIEC regulatory mandate.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
     t_key = str(tenant_id)
     before_state = _tenant_appetite_cache.get(t_key, dict(_DEFAULT_APPETITE))
 
+    now_utc = datetime.now(timezone.utc)
+    updated_by = current_user.get("username", "admin")
     updated_data = payload.model_dump()
-    updated_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    updated_data["updated_by"] = current_user.get("username", "admin")
+    updated_data["updated_at"] = now_utc.isoformat()
+    updated_data["updated_by"] = updated_by
     updated_data["tenant_id"] = t_key
+
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            existing = await conn.fetchrow(
+                "SELECT config FROM risk_appetite_settings WHERE tenant_id = $1;",
+                uuid.UUID(t_key)
+            )
+            if existing and existing["config"]:
+                before_state = (
+                    json.loads(existing["config"])
+                    if isinstance(existing["config"], str)
+                    else dict(existing["config"])
+                )
+
+            await conn.execute(
+                """
+                INSERT INTO risk_appetite_settings (tenant_id, config, updated_by, updated_at)
+                VALUES ($1, $2::jsonb, $3, $4)
+                ON CONFLICT (tenant_id) DO UPDATE
+                SET config = EXCLUDED.config,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = EXCLUDED.updated_at;
+                """,
+                uuid.UUID(t_key),
+                json.dumps(updated_data),
+                updated_by,
+                now_utc
+            )
+    except Exception as e:
+        logger.warning(f"PostgreSQL risk_appetite write fallback to cache: {e}")
 
     _tenant_appetite_cache[t_key] = updated_data
 

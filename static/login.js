@@ -260,13 +260,11 @@
                 return;
             }
 
-            // Successful Login
+            // Successful Login (auth tokens are stored in HttpOnly; SameSite=Strict cookies)
             showSuccess('Authentication successful! Initializing console...');
             localStorage.setItem('auth_session_active', 'true');
-            if (data.access_token) {
-                localStorage.setItem('jwt_token', data.access_token);
-                localStorage.setItem('access_token', data.access_token);
-            }
+            localStorage.removeItem('jwt_token');
+            localStorage.removeItem('access_token');
             if (data.username) localStorage.setItem('username', data.username);
             if (data.role) localStorage.setItem('role', data.role);
             sessionStorage.setItem('auth_active', 'true');
@@ -359,10 +357,8 @@
 
             showSuccess('Account registered successfully! Redirecting to dashboard...');
             localStorage.setItem('auth_session_active', 'true');
-            if (data.access_token) {
-                localStorage.setItem('jwt_token', data.access_token);
-                localStorage.setItem('access_token', data.access_token);
-            }
+            localStorage.removeItem('jwt_token');
+            localStorage.removeItem('access_token');
             if (data.username) localStorage.setItem('username', data.username);
             if (data.role) localStorage.setItem('role', data.role);
             sessionStorage.setItem('auth_active', 'true');
@@ -418,10 +414,8 @@
 
             showSuccess('Verification approved! Launching session...');
             localStorage.setItem('auth_session_active', 'true');
-            if (data.access_token) {
-                localStorage.setItem('jwt_token', data.access_token);
-                localStorage.setItem('access_token', data.access_token);
-            }
+            localStorage.removeItem('jwt_token');
+            localStorage.removeItem('access_token');
             if (data.username) localStorage.setItem('username', data.username);
             if (data.role) localStorage.setItem('role', data.role);
             sessionStorage.setItem('auth_active', 'true');
@@ -481,6 +475,11 @@
     // ── Bind All Event Listeners on DOM Ready ────────────────────────────────
     function attachListeners() {
         checkExistingSession();
+
+        // Deep-link support for /login#register
+        if (window.location.hash === '#register' || window.location.hash === '#signup') {
+            switchTab('signup');
+        }
 
         // 1. Tab switches
         const tabLogin = document.getElementById('tab-login');
