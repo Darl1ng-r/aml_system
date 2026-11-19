@@ -56,3 +56,150 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #9B9384;
 }
+
+
+/* ── Editorial Redesign Tokens (NavSav + Money Solutions + Sentinels) ── */
+:root {
+  --ed-bg-outer: #EAE6DF;
+  --ed-surface: #FFFFFF;
+  --ed-charcoal: #121417;
+  --ed-charcoal-card: #1A1D22;
+  --ed-emerald-deep: #073B35;
+  --ed-emerald-mid: #0D594F;
+  --ed-emerald-glow: #157A6E;
+  --ed-gold-pill: #F7D99C;
+  --ed-stone: #ECEAE4;
+  --ed-ink: #111315;
+  --ed-muted: #525866;
+}
+
+.ed-outer-canvas {
+  background-color: var(--ed-bg-outer);
+  background-image: radial-gradient(rgba(17, 19, 21, 0.05) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.ed-shell-card {
+  background: var(--ed-surface);
+  border-radius: 28px;
+  box-shadow: 0 24px 70px -12px rgba(15, 18, 24, 0.14), 0 0 0 1px rgba(17, 19, 21, 0.07);
+  overflow: hidden;
+}
+
+/* Chamfered diagonal editorial photo frame (Reference 2: Money Solutions) */
+.chamfer-photo-frame {
+  position: relative;
+  border-radius: 24px;
+  overflow: hidden;
+  clip-path: polygon(14% 0%, 100% 0%, 100% 84%, 86% 100%, 0% 100%, 0% 16%);
+  box-shadow: 0 20px 45px -10px rgba(17, 19, 21, 0.18);
+}
+
+/* Pill CTA with embedded circular arrow badge (References 1 & 2) */
+.pill-cta-dark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--ed-charcoal);
+  color: #FFFFFF;
+  padding: 0.45rem 1.25rem 0.45rem 0.5rem;
+  border-radius: 9999px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s ease, box-shadow 0.18s ease;
+}
+.pill-cta-dark:hover {
+  background: #232730;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 25px -6px rgba(17, 19, 21, 0.35);
+}
+.pill-cta-dark .circle-arrow {
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  background: #FFFFFF;
+  color: var(--ed-charcoal);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease;
+}
+.pill-cta-dark:hover .circle-arrow {
+  transform: translateX(2px) rotate(-15deg);
+}
+
+.pill-cta-gold {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: var(--ed-gold-pill);
+  color: #062925;
+  padding: 0.65rem 1.35rem;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 0.85rem;
+  transition: transform 0.18s ease, filter 0.18s ease;
+}
+.pill-cta-gold:hover {
+  filter: brightness(1.04);
+  transform: translateY(-1px);
+}
+
+/* Sentinels Emerald Radial Hero/Section Surface (Reference 3) */
+.sentinels-emerald-surface {
+  background: radial-gradient(circle at 82% 22%, rgba(26, 140, 125, 0.42) 0%, transparent 55%),
+              linear-gradient(135deg, #062F2A 0%, #0A4941 52%, #073731 100%);
+  color: #FFFFFF;
+}
+
+/* NavSav Glassmorphic Floating Dock & Pills (Reference 1) */
+.glass-dock {
+  background: rgba(18, 20, 23, 0.72);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+.glass-pill-light {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(17, 19, 21, 0.08);
+  box-shadow: 0 10px 30px -5px rgba(17, 19, 21, 0.15);
+}
+
+/* Pastel KPI Bento Cards (Reference 3: Sentinels) */
+.kpi-pastel-amber {
+  background: #FDF6EA;
+  border: 1px solid #F3E3C6;
+}
+.kpi-pastel-mint {
+  background: #EAF8F3;
+  border: 1px solid #C8EBE0;
+}
+.kpi-pastel-lavender {
+  background: #F2F0FC;
+  border: 1px solid #DCD7F6;
+}
+
+/* Tall Feature Cards (Reference 2: Money Solutions) */
+.feature-card-dark {
+  background: var(--ed-charcoal);
+  color: #FFFFFF;
+  border-radius: 22px;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease;
+}
+.feature-card-dark:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 22px 44px -12px rgba(18, 20, 23, 0.38);
+}
+.feature-card-stone {
+  background: var(--ed-stone);
+  color: var(--ed-ink);
+  border-radius: 22px;
+  border: 1px solid rgba(17, 19, 21, 0.08);
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease;
+}
+.feature-card-stone:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 22px 44px -12px rgba(18, 20, 23, 0.14);
+}

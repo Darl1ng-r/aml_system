@@ -1,12 +1,13 @@
 /**
  * Sentinel AML — Landing Page Scripts
  * Packaged as a standalone module to comply with strict Content-Security-Policy (CSP)
+ * Optimized for Core Web Vitals (INP / Main-Thread Budget / Zero Offscreen GPU Drain)
  */
 
 (function () {
   'use strict';
 
-  // --- Modal Controllers ---
+  // --- Modal & Mobile Navigation Controllers ---
   function openVideoWalkthroughModal() {
     const modal = document.getElementById('video-walkthrough-modal');
     if (modal) {
@@ -26,21 +27,53 @@
   function toggleMobileMenu() {
     const menu = document.getElementById('mobile-menu');
     if (menu) {
-      menu.classList.toggle('hidden');
+      const isHidden = menu.classList.toggle('hidden');
+      document.querySelectorAll('[data-action="toggle-mobile-menu"]').forEach((btn) => {
+        btn.setAttribute('aria-expanded', String(!isHidden));
+      });
     }
   }
 
-  // Expose to window for backwards compatibility if needed
   window.openVideoWalkthroughModal = openVideoWalkthroughModal;
   window.closeVideoWalkthroughModal = closeVideoWalkthroughModal;
   window.toggleMobileMenu = toggleMobileMenu;
 
-  // --- Three.js 3D Financial Network Topology ---
+  // --- Sentinels Real-Time Global Laundering Counter (Reference 3) ---
+  function initGlobalLaunderingCounter() {
+    const counterEl = document.getElementById('global-laundered-counter');
+    if (!counterEl) return;
+
+    const baseAmount = 213239;
+    // UNODC ~$2T/year estimate (~$63,419/sec globally); paced smoothly at 10Hz
+    const ratePerSecond = 14850;
+    const startTimestamp = performance.now();
+    let isCounterVisible = true;
+
+    if ('IntersectionObserver' in window) {
+      const obs = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          isCounterVisible = entry.isIntersecting;
+        });
+      }, { threshold: 0.05 });
+      obs.observe(counterEl);
+    }
+
+    setInterval(() => {
+      if (!isCounterVisible || document.hidden) return;
+      const elapsedSeconds = (performance.now() - startTimestamp) / 1000;
+      const currentTotal = Math.floor(baseAmount + elapsedSeconds * ratePerSecond);
+      counterEl.textContent = '$' + currentTotal.toLocaleString('en-US');
+    }, 120);
+  }
+
+  // --- Three.js 3D Financial Network Topology (Viewport-Aware & Zero-GC Loop) ---
   let scene, camera, renderer, controls;
   let nodesGroup, arcsGroup, particlesGroup;
   let autoRotate = true;
+  let is3DViewportVisible = false;
   let raycaster, mouse;
   let nodeMeshes = [];
+  let tempVec3 = null;
 
   const financialNodes = [
     { name: "New York Fedwire Clearing", city: "US", x: -45, y: 15, z: 10, type: "low", code: "US-NYC", risk: "12%" },
@@ -71,7 +104,8 @@
     if (!container || typeof THREE === 'undefined') return;
 
     const width = container.clientWidth || 800;
-    const height = container.clientHeight || 480;
+    const height = container.clientHeight || 460;
+    tempVec3 = new THREE.Vector3();
 
     // 1. Scene Setup
     scene = new THREE.Scene();
@@ -104,7 +138,7 @@
     }
 
     // 5. Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
     scene.add(ambientLight);
 
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -120,40 +154,41 @@
     scene.add(particlesGroup);
 
     // 7. Ambient Lattice Wireframe Globe
-    const globeGeo = new THREE.SphereGeometry(50, 24, 24);
+    const globeGeo = new THREE.SphereGeometry(50, 20, 20);
     const globeMat = new THREE.MeshBasicMaterial({
       color: 0x2B3040,
       wireframe: true,
       transparent: true,
       opacity: 0.25
     });
-    const globeMesh = new THREE.Mesh(globeGeo, globeMat);
-    scene.add(globeMesh);
+    scene.add(new THREE.Mesh(globeGeo, globeMat));
 
-    // 8. Create Nodes
+    // 8. Shared Geometries for Nodes & Particles (reduces GPU memory)
+    const highRiskSphereGeo = new THREE.SphereGeometry(3.5, 16, 16);
+    const stdSphereGeo = new THREE.SphereGeometry(2.5, 16, 16);
+    const sharedParticleGeo = new THREE.SphereGeometry(0.8, 8, 8);
+    const haloRingGeo = new THREE.RingGeometry(4.5, 5.2, 24);
+
     nodeMeshes = [];
     financialNodes.forEach((data) => {
-      let nodeColor = 0x4C7A5E; // low green
-      if (data.type === 'high') nodeColor = 0xC1443B; // high red
-      if (data.type === 'med') nodeColor = 0xC98A2E;  // med amber
+      let nodeColor = 0x4C7A5E;
+      if (data.type === 'high') nodeColor = 0xC1443B;
+      if (data.type === 'med') nodeColor = 0xC98A2E;
 
-      const sphereGeo = new THREE.SphereGeometry(data.type === 'high' ? 3.5 : 2.5, 16, 16);
       const sphereMat = new THREE.MeshStandardMaterial({
         color: nodeColor,
         roughness: 0.3,
         metalness: 0.2
       });
-      const mesh = new THREE.Mesh(sphereGeo, sphereMat);
+      const mesh = new THREE.Mesh(data.type === 'high' ? highRiskSphereGeo : stdSphereGeo, sphereMat);
       mesh.position.set(data.x, data.y, data.z);
       mesh.userData = data;
       nodesGroup.add(mesh);
       nodeMeshes.push(mesh);
 
-      // Halo Ring around High-Risk Nodes
       if (data.type === 'high') {
-        const ringGeo = new THREE.RingGeometry(4.5, 5.2, 24);
         const ringMat = new THREE.MeshBasicMaterial({ color: 0xC1443B, side: THREE.DoubleSide, transparent: true, opacity: 0.7 });
-        const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+        const ringMesh = new THREE.Mesh(haloRingGeo, ringMat);
         ringMesh.position.set(data.x, data.y, data.z);
         ringMesh.lookAt(camera.position);
         nodesGroup.add(ringMesh);
@@ -173,7 +208,7 @@
       midVec.y += distance * 0.35;
 
       const curve = new THREE.QuadraticBezierCurve3(startVec, midVec, endVec);
-      const points = curve.getPoints(36);
+      const points = curve.getPoints(32);
       const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
 
       let arcColor = 0x3D5A80;
@@ -183,19 +218,16 @@
       const lineMat = new THREE.LineBasicMaterial({
         color: arcColor,
         transparent: true,
-        opacity: conn.type === 'high' ? 0.85 : 0.45,
-        linewidth: conn.type === 'high' ? 2 : 1
+        opacity: conn.type === 'high' ? 0.85 : 0.45
       });
 
       const arcLine = new THREE.Line(lineGeo, lineMat);
       arcLine.userData = { curve: curve, type: conn.type };
       arcsGroup.add(arcLine);
 
-      // Traveling pulse particle
-      const particleGeo = new THREE.SphereGeometry(0.8, 8, 8);
       const particleMat = new THREE.MeshBasicMaterial({ color: arcColor });
-      const particleMesh = new THREE.Mesh(particleGeo, particleMat);
-      particleMesh.userData = { curve: curve, t: Math.random(), speed: 0.005 + Math.random() * 0.005 };
+      const particleMesh = new THREE.Mesh(sharedParticleGeo, particleMat);
+      particleMesh.userData = { curve: curve, t: Math.random(), speed: 0.004 + Math.random() * 0.004 };
       particlesGroup.add(particleMesh);
     });
 
@@ -203,9 +235,25 @@
     raycaster = new THREE.Raycaster();
     mouse = new THREE.Vector2();
 
-    container.addEventListener('mousemove', onMouseMove, false);
-    window.addEventListener('resize', onWindowResize, false);
+    container.addEventListener('mousemove', onMouseMove, { passive: true });
+    window.addEventListener('resize', onWindowResize, { passive: true });
 
+    // Pause WebGL render loop when offscreen to keep main thread & GPU cool
+    if ('IntersectionObserver' in window) {
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          is3DViewportVisible = entry.isIntersecting;
+        });
+      }, { threshold: 0.05 });
+      observer.observe(container);
+    } else {
+      is3DViewportVisible = true;
+    }
+
+    // Render initial frame immediately
+    if (renderer && scene && camera) {
+      renderer.render(scene, camera);
+    }
     animate();
   }
 
@@ -223,11 +271,11 @@
     if (intersects.length > 0) {
       const d = intersects[0].object.userData;
       if (readout) {
-        const colorClass = d.type === 'high' ? '#C1443B' : (d.type === 'med' ? '#C98A2E' : '#4C7A5E');
+        const colorClass = d.type === 'high' ? '#F87171' : (d.type === 'med' ? '#F4D078' : '#34D399');
         readout.innerHTML = `<span style="color:${colorClass}">AUDIT TARGET: ${d.name} (${d.code}) · Risk: ${d.risk}</span>`;
       }
-    } else {
-      if (readout) readout.innerText = "Hover over any banking node to audit...";
+    } else if (readout) {
+      readout.innerText = "Hover over any banking node to audit...";
     }
   }
 
@@ -261,7 +309,7 @@
 
     const readout = document.getElementById('threejs-hover-readout');
     if (readout) {
-      readout.innerHTML = `<span style="color:#C1443B; font-weight:bold;">ALERT ISOLATION: Cayman Islands &amp; Panama Secrecy Shell Ring Active</span>`;
+      readout.innerHTML = `<span style="color:#F87171; font-weight:bold;">ALERT ISOLATION: Cayman Islands &amp; Panama Secrecy Shell Ring Active</span>`;
     }
   }
 
@@ -279,6 +327,8 @@
   function animate() {
     requestAnimationFrame(animate);
 
+    if (!is3DViewportVisible || document.hidden) return;
+
     if (autoRotate && scene) {
       scene.rotation.y += 0.002;
     }
@@ -287,13 +337,15 @@
       controls.update();
     }
 
-    if (particlesGroup) {
-      particlesGroup.children.forEach((p) => {
+    if (particlesGroup && tempVec3) {
+      const children = particlesGroup.children;
+      for (let i = 0; i < children.length; i++) {
+        const p = children[i];
         p.userData.t += p.userData.speed;
         if (p.userData.t > 1) p.userData.t = 0;
-        const pos = p.userData.curve.getPoint(p.userData.t);
-        p.position.copy(pos);
-      });
+        p.userData.curve.getPoint(p.userData.t, tempVec3);
+        p.position.copy(tempVec3);
+      }
     }
 
     if (renderer && scene && camera) {
@@ -308,10 +360,13 @@
       window.lucide.createIcons();
     }
 
-    // 2. Initialize Three.js Graph
+    // 2. Initialize Live Global Laundering Counter
+    initGlobalLaunderingCounter();
+
+    // 3. Initialize Three.js Graph
     initThreeJS();
 
-    // 3. Bind Modal Open Triggers
+    // 4. Bind Modal Open Triggers
     document.querySelectorAll('[data-action="open-video-modal"]').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.preventDefault();
@@ -319,7 +374,7 @@
       });
     });
 
-    // 4. Bind Modal Close Triggers
+    // 5. Bind Modal Close Triggers
     document.querySelectorAll('[data-action="close-video-modal"]').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.preventDefault();
@@ -336,7 +391,7 @@
       });
     }
 
-    // 5. Bind Mobile Menu Trigger & Links
+    // 6. Bind Mobile Menu Trigger & Links
     document.querySelectorAll('[data-action="toggle-mobile-menu"]').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.preventDefault();
@@ -353,23 +408,17 @@
       });
     });
 
-    // 6. Bind 3D Canvas Controls
+    // 7. Bind 3D Canvas Controls
     const btnRotate = document.getElementById('btn-3d-rotate');
-    if (btnRotate) {
-      btnRotate.addEventListener('click', toggle3DRotation);
-    }
+    if (btnRotate) btnRotate.addEventListener('click', toggle3DRotation);
 
     const btnIsolate = document.getElementById('btn-3d-isolate');
-    if (btnIsolate) {
-      btnIsolate.addEventListener('click', isolateHighRiskNodes);
-    }
+    if (btnIsolate) btnIsolate.addEventListener('click', isolateHighRiskNodes);
 
     const btnReset = document.getElementById('btn-3d-reset');
-    if (btnReset) {
-      btnReset.addEventListener('click', reset3DCamera);
-    }
+    if (btnReset) btnReset.addEventListener('click', reset3DCamera);
 
-    // 7. Bind Range Slider for Fuzzy Sensitivity
+    // 8. Bind Range Slider for Phonetic KYC / OFAC SDN Fuzzy Sensitivity
     const threshSlider = document.getElementById('demo-thresh-slider');
     const threshLabel = document.getElementById('demo-thresh-label');
     const threshResult = document.getElementById('demo-thresh-result');
@@ -392,7 +441,7 @@
       updateDemoMatch();
     }
 
-    // 8. Global Keyboard Shortcuts
+    // 9. Global Keyboard Shortcuts
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         closeVideoWalkthroughModal();
