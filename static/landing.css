@@ -49,11 +49,20 @@ body.minimal-canvas {
 }
 
 .font-editorial {
-  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+  font-family: 'Manrope', 'Inter', system-ui, sans-serif;
 }
 
 .font-telemetry {
   font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+h1, h2, h3 {
+  text-wrap: balance;
+}
+
+p {
+  text-wrap: pretty;
 }
 
 /* Skip link for keyboard accessibility */
@@ -92,7 +101,7 @@ body.minimal-canvas {
   background: var(--bg-obsidian);
   border: 6px solid var(--bg-white);
   box-shadow: var(--shadow-diffuse);
-  min-height: 660px;
+  min-height: 600px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -101,7 +110,7 @@ body.minimal-canvas {
 
 @media (min-width: 1024px) {
   .ns-hero-frame {
-    min-height: 760px;
+    min-height: min(86vh, 700px);
   }
 }
 
@@ -230,17 +239,18 @@ body.minimal-canvas {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Manrope', 'Inter', sans-serif;
   font-weight: 800;
   font-size: 15px;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.025em;
   color: var(--ink-primary);
 }
 
 .ns-brand-sub {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 9px;
-  letter-spacing: 0.14em;
+  font-weight: 600;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--ink-muted);
 }
@@ -341,17 +351,17 @@ body.minimal-canvas {
   position: relative;
   z-index: 10;
   text-align: center;
-  padding: 52px 20px 28px;
-  max-width: 880px;
+  padding: 28px 20px 44px;
+  max-width: 860px;
   margin: 0 auto;
 }
 
 .ns-hero-title {
-  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
-  font-size: clamp(2.85rem, 6.4vw, 5.25rem);
+  font-family: 'Manrope', 'Inter', sans-serif;
+  font-size: clamp(2.85rem, 6vw, 4.9rem);
   font-weight: 600;
   letter-spacing: -0.04em;
-  line-height: 1.02;
+  line-height: 1.03;
   color: #FFFFFF;
   text-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
 }
@@ -451,7 +461,8 @@ body.minimal-canvas {
 }
 
 .ns-proof-stat {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-family: 'Manrope', sans-serif;
   font-size: 2.4rem;
   font-weight: 700;
   letter-spacing: -0.03em;
@@ -543,7 +554,7 @@ body.minimal-canvas {
 }
 
 .ns-dock-title {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Manrope', sans-serif;
   font-size: 14px;
   font-weight: 700;
   color: #FFFFFF;
@@ -562,7 +573,7 @@ body.minimal-canvas {
 }
 
 .ns-dock-kpi {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Manrope', sans-serif;
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -691,8 +702,8 @@ body.minimal-canvas {
 
 /* Staggered Geometric Display Headline (Reference 2: "Empowering / Financial / Transparency") */
 .ms-stagger-title {
-  font-family: 'Plus Jakarta Sans', sans-serif;
-  font-size: clamp(2.4rem, 4.4vw, 3.65rem);
+  font-family: 'Manrope', sans-serif;
+  font-size: clamp(2.15rem, 3.8vw, 3.2rem);
   font-weight: 600;
   letter-spacing: -0.035em;
   line-height: 1.08;
@@ -940,7 +951,7 @@ body.minimal-canvas {
 }
 
 .ms-eyebrow {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.14em;
@@ -960,7 +971,7 @@ body.minimal-canvas {
 }
 
 .ms-dark-heading {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Manrope', sans-serif;
   font-size: clamp(1.75rem, 2.8vw, 2.35rem);
   font-weight: 600;
   letter-spacing: -0.03em;
@@ -1066,7 +1077,7 @@ body.minimal-canvas {
 }
 
 .ms-bento-title {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Manrope', sans-serif;
   font-size: 13.5px;
   font-weight: 600;
   color: #FFFFFF;
@@ -1100,7 +1111,7 @@ body.minimal-canvas {
 }
 
 .ms-section-title {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Manrope', sans-serif;
   font-size: clamp(2rem, 3.6vw, 2.75rem);
   font-weight: 600;
   letter-spacing: -0.035em;
@@ -1177,7 +1188,7 @@ body.minimal-canvas {
 }
 
 .ms-feature-name {
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Manrope', sans-serif;
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.025em;
@@ -1244,140 +1255,113 @@ body.minimal-canvas {
 }
 
 /* ==========================================================================
-   SECTION 5: INTERACTIVE FORENSICS (3D TOPOLOGY + PHONETIC KYC TUNER)
+   SECTION 5: MONOCHROME OBSIDIAN BENEFITS BAND (Reference 2 Lower Section)
    ========================================================================== */
-.ms-lab-band {
+.ms-benefits-band {
   background: var(--bg-obsidian);
   color: #FFFFFF;
   padding: 72px 24px;
 }
 
 @media (min-width: 768px) {
-  .ms-lab-band {
+  .ms-benefits-band {
     padding: 88px 48px;
   }
 }
 
 @media (min-width: 1024px) {
-  .ms-lab-band {
+  .ms-benefits-band {
     padding: 96px 64px;
   }
 }
 
-.ms-lab-header {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  margin-bottom: 32px;
+.ms-benefits-head {
+  text-align: center;
+  max-width: 600px;
+  margin: 0 auto 56px;
 }
 
-@media (min-width: 1024px) {
-  .ms-lab-header {
-    flex-direction: row;
-    align-items: flex-end;
-    justify-content: space-between;
+.ms-benefits-head h2 {
+  font-family: 'Manrope', sans-serif;
+  font-size: clamp(2rem, 3.6vw, 2.75rem);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  color: #FFFFFF;
+  margin: 0 0 14px;
+}
+
+.ms-benefits-head p {
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: var(--ink-on-dark-muted);
+}
+
+.ms-benefits-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+
+@media (min-width: 768px) {
+  .ms-benefits-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 
-.ms-lab-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.ms-ctrl-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 9px 15px;
-  border-radius: 9999px;
+.ms-benefit-card {
+  background: var(--bg-obsidian-elevated);
   border: 1px solid var(--border-dark);
-  background: rgba(255, 255, 255, 0.05);
-  color: rgba(255, 255, 255, 0.88);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11.5px;
-  cursor: pointer;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+  border-radius: var(--radius-card);
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 24px;
+  transition: transform 0.24s var(--ease-out-expo), border-color 0.2s ease;
 }
 
-.ms-ctrl-btn:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.28);
+.ms-benefit-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(255, 255, 255, 0.26);
 }
 
-.ms-ctrl-btn--alert {
-  border-color: rgba(245, 166, 35, 0.35);
+.ms-benefit-metric {
+  font-variant-numeric: tabular-nums;
+  font-family: 'Manrope', sans-serif;
+  font-size: clamp(2.1rem, 3vw, 2.7rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: #FFFFFF;
+  line-height: 1;
+}
+
+.ms-benefit-metric span {
   color: var(--accent-amber);
 }
 
-.ms-ctrl-btn--alert:hover {
-  background: rgba(245, 166, 35, 0.14);
+.ms-benefit-title {
+  font-family: 'Manrope', sans-serif;
+  font-size: 17px;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin: 0 0 8px;
 }
 
-.ms-canvas-card {
-  border-radius: var(--radius-card);
-  overflow: hidden;
-  border: 1px solid var(--border-dark);
-  background: #1B1F2B;
+.ms-benefit-copy {
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--ink-on-dark-muted);
 }
 
-.ms-canvas-viewport {
-  width: 100%;
-  height: 400px;
-  cursor: grab;
-}
-
-.ms-canvas-viewport:active {
-  cursor: grabbing;
-}
-
-.ms-canvas-bar {
+.ms-benefits-cta {
+  margin-top: 48px;
+  padding-top: 36px;
+  border-top: 1px solid var(--border-dark);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 20px;
-  background: rgba(20, 21, 23, 0.92);
-  border-top: 1px solid var(--border-dark);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  color: var(--ink-on-dark-muted);
-}
-
-/* Compact Phonetic KYC Threshold Strip */
-.ms-kyc-strip {
-  margin-top: 24px;
-  padding: 24px 26px;
-  border-radius: var(--radius-card);
-  border: 1px solid var(--border-dark);
-  background: var(--bg-obsidian-elevated);
-  display: grid;
-  grid-template-columns: 1fr;
   gap: 20px;
-  align-items: center;
-}
-
-@media (min-width: 1024px) {
-  .ms-kyc-strip {
-    grid-template-columns: 1.1fr 1.2fr 1fr;
-    gap: 28px;
-  }
-}
-
-.ms-slider {
-  width: 100%;
-  accent-color: var(--accent-amber);
-  cursor: pointer;
-}
-
-.ms-verdict-box {
-  padding: 12px 16px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border-dark);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
 }
 
 /* ==========================================================================
@@ -1416,7 +1400,7 @@ body.minimal-canvas {
 }
 
 .ms-footer-heading {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Inter', sans-serif;
   font-size: 10.5px;
   font-weight: 600;
   text-transform: uppercase;
@@ -1537,4 +1521,14 @@ button:focus-visible,
 input:focus-visible {
   outline: 2px solid var(--accent-amber);
   outline-offset: 2px;
+}
+
+/* Tactile Active Press States (UI/UX Component Checklist) */
+.ns-cta-pill:active,
+.ns-glass-pill:active,
+.ms-pill-cta:active,
+.ms-ghost-btn:active,
+.ms-dark-outline-btn:active,
+.ms-feature-arrow:active {
+  transform: scale(0.98);
 }

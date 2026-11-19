@@ -7,16 +7,16 @@
   <meta name="theme-color" content="#141517" />
   <title>Sentinel AML — Empowering Financial Transparency</title>
 
-  <!-- Crisp Editorial Typography: Plus Jakarta Sans, Inter, JetBrains Mono -->
+  <!-- Crisp Editorial Typography: Manrope (Architectural Display), Inter (UI), JetBrains Mono (Metrics) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
 
   <!-- Preload Hero LCP Asset -->
   <link rel="preload" as="image" href="/static/images/aml_hero_editorial.webp" type="image/webp" fetchpriority="high" />
 
   <!-- Refined Minimalist Design System (cache-busted) -->
-  <link rel="stylesheet" href="/static/landing.css?v=20261119-minimal" />
+  <link rel="stylesheet" href="/static/landing.css?v=20261119-v3" />
 
   <!-- Deferred Icon Library -->
   <script src="https://unpkg.com/lucide@0.344.0/dist/umd/lucide.min.js" defer></script>
@@ -56,7 +56,7 @@
           <a href="#editorial-overview" class="ns-glass-pill">Overview</a>
           <a href="#architecture" class="ns-glass-pill">Architecture</a>
           <a href="#features" class="ns-glass-pill">Features</a>
-          <a href="#threejs-section" class="ns-glass-pill">Topology</a>
+          <a href="#benefits" class="ns-glass-pill">Benefits</a>
         </nav>
 
         <!-- Center Sculpted White Notch Brand Mark -->
@@ -96,7 +96,7 @@
         <a href="#editorial-overview">Overview</a>
         <a href="#architecture">Architecture</a>
         <a href="#features">Key Features</a>
-        <a href="#threejs-section">3D Topology</a>
+        <a href="#benefits">Benefits</a>
         <a href="/login">Sign In</a>
         <a href="/compliance/ops">Compliance Ops Hub ↗</a>
       </div>
@@ -144,6 +144,10 @@
         <div class="ms-split-grid">
           <!-- Left: Staggered Typography, Quote & High-Contrast Pill CTA -->
           <div>
+            <div class="ms-eyebrow">
+              <span class="ms-eyebrow-dot" aria-hidden="true"></span>
+              <span>Mission &amp; Mandate</span>
+            </div>
             <h2 class="ms-stagger-title">
               <span class="ms-stagger-line-1">Empowering</span>
               <span class="ms-stagger-line-2">Financial</span>
@@ -224,12 +228,12 @@
           <div class="ms-bento-grid">
             <div class="ms-bento-tall">
               <picture>
-                <source srcset="/static/images/aml_hero_editorial.webp" type="image/webp" />
+                <source srcset="/static/images/aml_arch_headquarters.webp" type="image/webp" />
                 <img
-                  src="/static/images/aml_hero_editorial.jpg"
-                  alt="Executive risk committee reviewing AML governance controls"
-                  width="1280"
-                  height="720"
+                  src="/static/images/aml_arch_headquarters.jpg"
+                  alt="Minimalist European private bank architectural glass atrium overlooking a calm river at dusk"
+                  width="1200"
+                  height="896"
                   loading="lazy"
                   decoding="async"
                 />
@@ -332,8 +336,8 @@
             </div>
             <div class="ms-feature-media">
               <picture>
-                <source srcset="/static/images/aml_warm_cockpit.webp" type="image/webp" />
-                <img src="/static/images/aml_warm_cockpit.jpg" alt="UBO network graph" width="600" height="448" loading="lazy" />
+                <source srcset="/static/images/aml_arch_headquarters.webp" type="image/webp" />
+                <img src="/static/images/aml_arch_headquarters.jpg" alt="Private banking network infrastructure" width="600" height="448" loading="lazy" />
               </picture>
               <a href="/network" class="ms-feature-arrow" aria-label="Open UBO Network Graph">↗</a>
             </div>
@@ -357,76 +361,69 @@
         </div>
       </section>
 
-      <!-- SECTION 5: INTERACTIVE 3D TOPOLOGY & PHONETIC KYC TUNER -->
-      <section id="threejs-section" class="ms-lab-band">
-        <div class="ms-lab-header">
-          <div>
-            <div class="ms-eyebrow">
-              <span class="ms-eyebrow-dot" aria-hidden="true"></span>
-              <span>Live Spatial Telemetry</span>
+      <!-- SECTION 5: MONOCHROME OBSIDIAN BENEFITS BAND (Reference 2) -->
+      <section id="benefits" class="ms-benefits-band">
+        <div class="ms-benefits-head">
+          <div class="ms-eyebrow" style="justify-content:center;">
+            <span class="ms-eyebrow-dot" aria-hidden="true"></span>
+            <span>Measurable Impact</span>
+          </div>
+          <h2>Benefits</h2>
+          <p>
+            AML and financial crime infrastructure engineered to cut alert noise, accelerate regulatory reporting, and protect institutional integrity without operational drag.
+          </p>
+        </div>
+
+        <div class="ms-benefits-grid">
+          <div class="ms-benefit-card">
+            <div class="ms-benefit-metric">52<span>%</span></div>
+            <div>
+              <h3 class="ms-benefit-title">Lower investigator workload</h3>
+              <p class="ms-benefit-copy">
+                Automated dossier assembly, multi-hop UBO resolution, and SLA-aware triage eliminate hours of manual spreadsheet reconciliation per case.
+              </p>
             </div>
-            <h2 class="ms-dark-heading" style="margin-bottom:8px;">
-              Cross-Border Liquidity &amp; Secrecy Shell Topology
-            </h2>
-            <p class="ms-dark-copy" style="margin-bottom:0;max-width:580px;">
-              Inspect correspondent clearing pathways across New York, London, Zurich, Cayman Islands, and Panama.
-            </p>
           </div>
 
-          <div class="ms-lab-controls">
-            <button id="btn-3d-rotate" type="button" class="ms-ctrl-btn">
-              <i data-lucide="rotate-cw" style="width:13px;height:13px;"></i>
-              <span>Auto-Rotate: ON</span>
-            </button>
-            <button id="btn-3d-isolate" type="button" class="ms-ctrl-btn ms-ctrl-btn--alert">
-              <i data-lucide="crosshair" style="width:13px;height:13px;"></i>
-              <span>Isolate Secrecy Ring</span>
-            </button>
-            <button id="btn-3d-reset" type="button" class="ms-ctrl-btn">
-              <i data-lucide="maximize-2" style="width:13px;height:13px;"></i>
-              <span>Reset View</span>
-            </button>
+          <div class="ms-benefit-card">
+            <div class="ms-benefit-metric">34<span>.2%</span></div>
+            <div>
+              <h3 class="ms-benefit-title">Fewer false positives</h3>
+              <p class="ms-benefit-copy">
+                Hybrid deterministic rules paired with explainable XGBoost scoring suppress benign noise while maintaining strict sanctions recall.
+              </p>
+            </div>
+          </div>
+
+          <div class="ms-benefit-card">
+            <div class="ms-benefit-metric">&lt;42<span>ms</span></div>
+            <div>
+              <h3 class="ms-benefit-title">Pre-settlement interception</h3>
+              <p class="ms-benefit-copy">
+                Screen cross-border SWIFT, Fedwire, and SEPA instructions synchronously before illicit funds clear correspondent accounts.
+              </p>
+            </div>
           </div>
         </div>
 
-        <div class="ms-canvas-card">
-          <div id="threejs-canvas-wrapper" class="ms-canvas-viewport" aria-label="Interactive 3D Banking Node Topology"></div>
-          <div class="ms-canvas-bar">
-            <div id="threejs-hover-readout">Hover over any banking node to audit...</div>
-            <div style="display:flex;gap:16px;font-size:11px;">
-              <span>● Tier-1 Clearing</span>
-              <span style="color:#F5A623;">● VASP Corridor</span>
-              <span style="color:#F87171;">● Secrecy Shell Hit</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Compact Phonetic KYC / OFAC SDN Fuzzy Sensitivity Tuner -->
-        <div class="ms-kyc-strip">
+        <div class="ms-benefits-cta">
           <div>
-            <div class="ms-eyebrow" style="margin-bottom:6px;">
-              <span class="ms-eyebrow-dot" aria-hidden="true"></span>
-              <span>Phonetic KYC Sandbox</span>
+            <div class="font-editorial" style="font-size:20px;font-weight:600;color:#FFFFFF;letter-spacing:-0.02em;">
+              Ready to inspect the live compliance workspace?
             </div>
-            <div class="font-editorial" style="font-size:15px;font-weight:600;color:#FFFFFF;">
-              OFAC SDN Fuzzy Match Sensitivity
-            </div>
-            <div style="font-size:12px;color:var(--ink-on-dark-muted);margin-top:3px;">
-              Candidate: &ldquo;T. Varga Maritime Ltd&rdquo; (92% Jaro-Winkler)
+            <div style="font-size:13.5px;color:var(--ink-on-dark-muted);margin-top:4px;">
+              Access real-time case triage, UBO graph discovery, and automated goAML filing.
             </div>
           </div>
-
-          <div>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-              <label for="demo-thresh-slider" style="font-size:11.5px;color:var(--ink-on-dark-muted);">Threshold</label>
-              <span id="demo-thresh-label" class="font-telemetry" style="font-size:12px;font-weight:700;color:#F5A623;">85% Match Limit</span>
-            </div>
-            <input id="demo-thresh-slider" class="ms-slider" type="range" min="70" max="99" value="85" />
-          </div>
-
-          <div class="ms-verdict-box">
-            <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-muted);margin-bottom:4px;">Live Decision</div>
-            <span id="demo-thresh-result" style="color:#F87171;font-weight:600;">→ OFAC SDN Blocklist Hit (92% ≥ 85%)</span>
+          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+            <a href="/compliance/ops" class="ms-dark-outline-btn">
+              <span>Compliance Ops Hub</span>
+              <span aria-hidden="true">↗</span>
+            </a>
+            <a href="/triage" class="ns-cta-pill" style="background:#FFFFFF;color:#141517;border-color:#FFFFFF;">
+              <span>Launch Case Cockpit</span>
+              <span class="ns-cta-circle" style="background:#141517;color:#FFFFFF;" aria-hidden="true">↗</span>
+            </a>
           </div>
         </div>
       </section>
@@ -500,12 +497,12 @@
       </div>
       <div class="ms-modal-body">
         <picture>
-          <source srcset="/static/images/aml_warm_cockpit.webp" type="image/webp" />
+          <source srcset="/static/images/aml_bento_investigator.webp" type="image/webp" />
           <img
-            src="/static/images/aml_warm_cockpit.jpg"
+            src="/static/images/aml_bento_investigator.jpg"
             alt="Sentinel AML investigator workspace preview"
-            width="1024"
-            height="559"
+            width="1200"
+            height="896"
             loading="lazy"
             style="width:100%;height:260px;object-fit:cover;border-radius:16px;"
           />
@@ -535,9 +532,7 @@
     </div>
   </div>
 
-  <!-- Deferred Three.js & Landing Page Controller -->
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js" defer></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js" defer></script>
-  <script src="/static/landing.js?v=20261119-minimal" defer></script>
+  <!-- Deferred Landing Page Controller -->
+  <script src="/static/landing.js?v=20261119-v2" defer></script>
 </body>
 </html>
