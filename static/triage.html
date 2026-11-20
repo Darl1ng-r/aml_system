@@ -585,6 +585,10 @@
         <button class="pill-btn" onclick="setStatusFilter('NEW', this)">New</button>
         <button class="pill-btn" onclick="setStatusFilter('IN_REVIEW', this)">In Review</button>
         <button class="pill-btn" onclick="setStatusFilter('ESCALATED', this)">Escalated</button>
+
+        <span style="font-size:11px; font-weight:700; color:var(--ink-soft); margin:0 4px 0 12px;">VIEWS:</span>
+        <button class="pill-btn" id="preset-critical-unassigned" onclick="applyTriagePreset('CRITICAL_UNASSIGNED')">Critical Unassigned</button>
+        <button class="pill-btn" id="preset-entity-grouped" onclick="toggleEntityGroupedView(this)">Entity Grouped</button>
       </div>
 
       <div style="display:flex; align-items:center; gap:8px;">
@@ -607,7 +611,7 @@
           <table class="triage-table">
             <thead>
               <tr>
-                <th style="width: 32px;"></th>
+                <th style="width: 32px;"><input type="checkbox" id="triage-select-all" aria-label="Select all visible alerts" onchange="toggleSelectAllAlerts(this.checked)"></th>
                 <th>Alert ID</th>
                 <th>Rule Fired</th>
                 <th>Subject / Account</th>
@@ -672,18 +676,54 @@
 
   </div>
 
+  <!-- Floating Bulk Triage Action Bar (P1-3) -->
+  <div id="triage-bulk-bar" style="display:none; position:fixed; bottom:20px; left:50%; transform:translateX(-50%); z-index:990; background:#141517; color:#FFFFFF; padding:10px 16px; border-radius:12px; box-shadow:0 16px 36px rgba(20,21,23,0.35); align-items:center; gap:10px; flex-wrap:wrap;">
+    <span id="triage-bulk-count" style="font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:700; color:#F5A623;">0 selected</span>
+    <button type="button" class="pill-btn" style="background:#FFFFFF; color:#141517;" onclick="executeBulkTriageAction('CLAIM')">Claim Selected</button>
+    <button type="button" class="pill-btn" style="background:#F5A623; color:#141517; border-color:#F5A623;" onclick="executeBulkTriageAction('CORRELATE_CASE')">Correlate into Entity Case</button>
+    <button type="button" class="pill-btn" style="background:#3D1A1A; color:#FCA5A5; border-color:rgba(239,68,68,0.4);" onclick="executeBulkTriageAction('CLOSE_FALSE_POSITIVE')">Dismiss False Positives</button>
+    <button type="button" class="pill-btn" style="background:transparent; color:#CBD5E1; border-color:rgba(255,255,255,0.2);" onclick="clearBulkSelection()">Clear</button>
+  </div>
+
   <!-- Client-Side Triage Logic -->
   <script>
     let allAlerts = [];
     let currentSeverity = 'ALL';
     let currentStatus = 'ACTIVE';
+    let entityGroupedMode = false;
+    let selectedAlertIds = new Set();
     let selectedAlert = null;
     let lockHeartbeatInterval = null;
     let currentLockToken = null;
 
+    function syncFiltersToUrl() {
+      const params = new URLSearchParams(window.location.search);
+      if (currentSeverity && currentSeverity !== 'ALL') params.set('severity', currentSeverity); else params.delete('severity');
+      if (currentStatus && currentStatus !== 'ACTIVE') params.set('status', currentStatus); else params.delete('status');
+      const qVal = (document.getElementById('triage-search-input')?.value || '').trim();
+      if (qVal) params.set('search', qVal); else params.delete('search');
+      if (entityGroupedMode) params.set('group', 'entity'); else params.delete('group');
+      const qs = params.toString();
+      window.history.replaceState(null, '', qs ? `${window.location.pathname}?${qs}` : window.location.pathname);
+    }
+
+    function hydrateFiltersFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('severity')) currentSeverity = params.get('severity').toUpperCase();
+      if (params.get('status')) currentStatus = params.get('status').toUpperCase();
+      if (params.get('search')) {
+        const inp = document.getElementById('triage-search-input');
+        if (inp) inp.value = params.get('search');
+      }
+      entityGroupedMode = params.get('group') === 'entity';
+      const grpBtn = document.getElementById('preset-entity-grouped');
+      if (grpBtn) grpBtn.classList.toggle('active', entityGroupedMode);
+    }
+
     document.addEventListener('DOMContentLoaded', async () => {
       if (window.lucide) lucide.createIcons();
       decodeUserRole();
+      hydrateFiltersFromUrl();
       await fetchAlerts();
       setupWebSocket();
     });
@@ -838,9 +878,10 @@
         const isSelected = selectedAlert && selectedAlert.id === a.id;
         const dateStr = a.created_at ? new Date(a.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--';
 
+        const isChecked = selectedAlertIds.has(a.id);
         return `
           <tr class="${isSelected ? 'selected' : ''}" onclick="selectAlert('${a.id}')">
-            <td><input type="checkbox" aria-label="Select alert #${a.id.substring(0,8)}" onclick="event.stopPropagation()"></td>
+            <td><input type="checkbox" class="triage-row-cb" data-alert-id="${a.id}" aria-label="Select alert #${a.id.substring(0,8)}" ${isChecked ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleAlertSelection('${a.id}', this.checked)"></td>
             <td style="font-family:var(--font-data); font-weight:600;">#${a.id.substring(0,8)}</td>
             <td><span class="rule-tag">${a.rule_name || 'MONITORING_HIT'}</span></td>
             <td>
@@ -861,17 +902,150 @@
       if (window.lucide) lucide.createIcons();
     }
 
+    function updateBulkBar() {
+      const bar = document.getElementById('triage-bulk-bar');
+      const cnt = document.getElementById('triage-bulk-count');
+      if (!bar || !cnt) return;
+      const n = selectedAlertIds.size;
+      cnt.textContent = `${n} selected`;
+      bar.style.display = n > 0 ? 'flex' : 'none';
+    }
+
+    function toggleAlertSelection(alertId, checked) {
+      if (checked) selectedAlertIds.add(alertId);
+      else selectedAlertIds.delete(alertId);
+      updateBulkBar();
+    }
+
+    function toggleSelectAllAlerts(checked) {
+      document.querySelectorAll('.triage-row-cb').forEach(cb => {
+        const id = cb.getAttribute('data-alert-id');
+        cb.checked = checked;
+        if (id) {
+          if (checked) selectedAlertIds.add(id);
+          else selectedAlertIds.delete(id);
+        }
+      });
+      updateBulkBar();
+    }
+
+    function clearBulkSelection() {
+      selectedAlertIds.clear();
+      const master = document.getElementById('triage-select-all');
+      if (master) master.checked = false;
+      document.querySelectorAll('.triage-row-cb').forEach(cb => { cb.checked = false; });
+      updateBulkBar();
+    }
+
+    async function executeBulkTriageAction(action) {
+      const ids = Array.from(selectedAlertIds);
+      if (!ids.length) return;
+      let justification = `Bulk ${action} via Triage Power-Queue`;
+      if (action === 'CLOSE_FALSE_POSITIVE') {
+        const reason = await window.SentinelDialog.prompt(
+          `Provide audit justification for dismissing ${ids.length} alert(s) as False Positive:`,
+          '',
+          { title: 'Bulk Dismiss False Positives' }
+        );
+        if (!reason || reason.trim().length < 5) return;
+        justification = reason.trim();
+      }
+      try {
+        const res = await fetch('/api/v1/alerts/bulk-action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ alert_ids: ids, action, justification })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        showToast(data.message || `Bulk action ${action} completed.`);
+        clearBulkSelection();
+        await fetchAlerts();
+      } catch (err) {
+        await window.SentinelDialog.alert(err.message || 'Bulk action failed.', { title: 'Bulk Triage Error' });
+      }
+    }
+
+    function applyTriagePreset(preset) {
+      if (preset === 'CRITICAL_UNASSIGNED') {
+        currentSeverity = 'CRITICAL';
+        currentStatus = 'ACTIVE';
+        entityGroupedMode = false;
+        syncFiltersToUrl();
+        renderAlertsTable();
+        showToast('Applied preset: Critical Active Alerts');
+      }
+    }
+
+    async function toggleEntityGroupedView(btn) {
+      entityGroupedMode = !entityGroupedMode;
+      if (btn) btn.classList.toggle('active', entityGroupedMode);
+      syncFiltersToUrl();
+      if (!entityGroupedMode) {
+        renderAlertsTable();
+        return;
+      }
+      const tbody = document.getElementById('alerts-table-body');
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
+      try {
+        const res = await fetch('/api/v1/alerts/grouped-by-entity', { credentials: 'include' });
+        if (!res.ok) throw new Error('Failed to load entity groups');
+        const data = await res.json();
+        const entities = data.entities || [];
+        if (!entities.length) {
+          tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding:30px; color:var(--ink-soft);">No active entity alert clusters.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = entities.map(ent => `
+          <tr>
+            <td></td>
+            <td style="font-family:var(--font-data); font-weight:700;">${Number(ent.alert_count)} alerts</td>
+            <td><span class="rule-tag">${esc((ent.rules_fired || []).slice(0, 2).join(', ') || 'MULTI_RULE')}</span></td>
+            <td>
+              <div style="font-weight:700;">${esc(ent.owner_name || 'Entity')}</div>
+              <div style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${esc(ent.account_number)}</div>
+            </td>
+            <td style="font-family:var(--font-data); font-weight:600;">$${Number(ent.total_exposure_usd || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+            <td><span class="score-badge critical">CLUSTER</span></td>
+            <td><span class="score-badge critical">${Math.round(Number(ent.max_risk_score || 0) * 100)}%</span></td>
+            <td>${ent.active_case_id ? '<span style="color:var(--risk-low);font-weight:700;">LINKED CASE</span>' : 'UNCORRELATED'}</td>
+            <td colspan="3">
+              <button type="button" class="pill-btn active" onclick="correlateEntityCluster(${esc(JSON.stringify(ent.alert_ids || []))})">Merge into Entity Case</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    async function correlateEntityCluster(alertIds) {
+      try {
+        const res = await fetch('/api/v1/cases/correlate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ alert_ids: alertIds })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        showToast(`Correlated ${data.processed_alerts} alerts into ${(data.cases || []).length} entity case(s).`);
+        toggleEntityGroupedView(document.getElementById('preset-entity-grouped'));
+      } catch (err) {
+        await window.SentinelDialog.alert(err.message, { title: 'Correlation Failed' });
+      }
+    }
+
     function setSeverityFilter(sev, btn) {
       currentSeverity = sev;
-      btn.parentElement.querySelectorAll('.pill-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
+      entityGroupedMode = false;
+      syncFiltersToUrl();
       renderAlertsTable();
     }
 
     function setStatusFilter(stat, btn) {
       currentStatus = stat;
-      btn.parentElement.querySelectorAll('.pill-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
+      entityGroupedMode = false;
+      syncFiltersToUrl();
       renderAlertsTable();
     }
 
@@ -879,6 +1053,7 @@
     function handleSearch() {
       if (_triageSearchTimer) window.clearTimeout(_triageSearchTimer);
       _triageSearchTimer = window.setTimeout(() => {
+        syncFiltersToUrl();
         renderAlertsTable();
       }, 200);
     }

@@ -478,6 +478,7 @@ function initWebSocket() {
 
         liveWebSocket.onopen = () => {
             wsReconnectAttempts = 0;
+            if (window.SentinelShell) window.SentinelShell.setConnectionState('connected');
             log('Established live WebSocket connection for event feeds.', 'success');
             // 30-second periodic heartbeat ping to prevent proxy idle timeouts
             if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
@@ -515,6 +516,12 @@ function initWebSocket() {
             const jitter = (Date.now() % 1000);
             const retryDelay = Math.round(baseDelay + jitter);
             wsReconnectAttempts++;
+            if (window.SentinelShell) {
+                window.SentinelShell.setConnectionState(
+                    wsReconnectAttempts >= 3 ? 'offline' : 'reconnecting',
+                    `Live stream disconnected — retrying in ${(retryDelay / 1000).toFixed(0)}s`
+                );
+            }
             log(`WebSocket feed disconnected. Reconnecting in ${(retryDelay / 1000).toFixed(1)}s...`, 'warn');
             setTimeout(initWebSocket, retryDelay);
         };

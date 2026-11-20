@@ -217,5 +217,12 @@
         if (avatarBtn && savedUser) {
             avatarBtn.setAttribute('title', `Signed in as ${savedUser}${savedRole ? ' (' + savedRole + ')' : ''}`);
         }
+        // P1-3 / P1-4 / P1-6: Auto-mount shared Cmd+K palette, Notification Bell & WS Reconnect Banner across all 14 views
+        if (!window.__SENTINEL_SHELL_INIT__ && !document.querySelector('script[src*="sentinel-shell.js"]')) {
+            const s = document.createElement('script');
+            s.src = '/static/sentinel-shell.js?v=20261121-p1';
+            s.defer = true;
+            document.head.appendChild(s);
+        }
     });
 })();

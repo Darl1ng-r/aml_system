@@ -95,6 +95,68 @@ async def list_customers(
         }
 
 
+@router.post("/pkyc/rescreen-delta")
+async def trigger_pkyc_delta_rescreen(
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=10, window=60)),
+):
+    """
+    Perpetual KYC (pKYC) Delta Rescreening (P1-5):
+    Re-screens active customer accounts against OFAC/UN/EU sanctions & PEP watchlists
+    and generates EDD alerts + MLRO notifications on material risk changes.
+    """
+    from services.pkyc_and_qa import run_pkyc_delta_rescreen
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    es = None
+    try:
+        es = await get_async_elasticsearch_client()
+    except Exception:
+        es = None
+
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        return await run_pkyc_delta_rescreen(
+            conn=conn,
+            tenant_id=tenant_id,
+            triggered_by=current_user.get("username", "mlro"),
+            limit=limit,
+            es_client=es,
+        )
+
+
+@router.get("/pkyc/runs")
+async def list_pkyc_rescreen_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR", "SUPER_ADMIN"])),
+):
+    """Returns audit history of Perpetual KYC delta rescreening sweeps."""
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, triggered_by, accounts_scanned, material_changes_found,
+                   alerts_generated, started_at, completed_at
+            FROM pkyc_rescreen_runs
+            ORDER BY started_at DESC
+            LIMIT $1;
+            """,
+            limit,
+        )
+    return [
+        {
+            "run_id": str(r["id"]),
+            "triggered_by": r["triggered_by"],
+            "accounts_scanned": int(r["accounts_scanned"] or 0),
+            "material_changes_found": int(r["material_changes_found"] or 0),
+            "alerts_generated": int(r["alerts_generated"] or 0),
+            "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+            "completed_at": r["completed_at"].isoformat() if r["completed_at"] else None,
+        }
+        for r in (rows or [])
+    ]
+
+
 async def _fetch_customer_activity(conn, acc_num: str, acc_uuid: uuid.UUID):
     tx_rows = await conn.fetch(
         """

@@ -1778,3 +1778,46 @@ svg.lucide, i[data-lucide] {
     width: 95vw;
   }
 }
+
+/* ── P1-6: Tablet & Mobile Responsive MLRO / Triage Breakpoints ──────────── */
+@media (max-width: 1024px) {
+  .triage-kpis, .kpi-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  .triage-body {
+    flex-direction: column;
+    overflow: visible;
+  }
+  .sentinel-topbar-center .nav-pills {
+    gap: 2px;
+  }
+  .sentinel-topbar-center .nav-pill {
+    padding: 5px 8px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 768px) {
+  .triage-kpis, .kpi-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .triage-controls, .table-header {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 10px;
+  }
+  .search-box {
+    width: 100% !important;
+  }
+  .table-container, .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .sentinel-topbar-center {
+    display: none;
+  }
+  .btn-action, .btn-approve, .btn-reject {
+    min-height: 36px;
+    padding: 6px 12px;
+  }
+}

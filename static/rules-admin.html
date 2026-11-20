@@ -457,12 +457,21 @@
               ${paramInputsHtml}
             </div>
 
-            <div class="rule-meta-bar">
-              <div>
+            <div class="rule-meta-bar" style="flex-wrap:wrap; gap:8px;">
+              <div style="display:flex; align-items:center; gap:8px;">
                 <span style="font-weight:600;">v${r.version}</span> · Updated by ${r.updated_by_name || 'SYSTEM'}
+                <select id="mode-${r.rule_name}" aria-label="Rule mode for ${r.rule_name}" onchange="changeRuleMode('${r.rule_name}', this.value)" style="font-size:11px; padding:2px 6px; border-radius:6px; border:1px solid var(--panel-edge); background:#F5F4F0; font-family:var(--font-data);">
+                  <option value="ACTIVE" ${(r.mode || 'ACTIVE') === 'ACTIVE' ? 'selected' : ''}>ACTIVE</option>
+                  <option value="SHADOW" ${(r.mode || 'ACTIVE') === 'SHADOW' ? 'selected' : ''}>SHADOW</option>
+                  <option value="DISABLED" ${(r.mode || 'ACTIVE') === 'DISABLED' ? 'selected' : ''}>DISABLED</option>
+                </select>
               </div>
-              <button class="btn-save" onclick="saveRuleConfig('${r.rule_name}')">Save</button>
+              <div style="display:flex; gap:6px;">
+                <button type="button" class="btn-save" style="background:#F5F4F0; color:#141517; border:1px solid var(--panel-edge);" onclick="backtestRule('${r.rule_name}')">Backtest 30d</button>
+                <button type="button" class="btn-save" onclick="saveRuleConfig('${r.rule_name}')">Save</button>
+              </div>
             </div>
+            <div id="backtest-out-${r.rule_name}" style="display:none; margin-top:10px; padding:10px; border-radius:8px; background:#F5F4F0; border:1px solid var(--panel-edge); font-size:12px; font-family:var(--font-data);"></div>
           </div>
         `;
       }).join('');
@@ -491,16 +500,10 @@
       }
     }
 
-    async function saveRuleConfig(ruleName) {
-      const rule = rulesData.find(r => r.rule_name === ruleName);
-      if (!rule) return;
-
-      const reason = await window.SentinelDialog.prompt('Enter audit reason for modifying rule threshold:', '', { title: 'Rule Configuration Audit' });
-      if (!reason) return;
-
+    function collectRuleConfigInputs(rule) {
       const newConfig = {};
       Object.keys(rule.config || {}).forEach(k => {
-        const input = document.getElementById(`input-${ruleName}-${k}`);
+        const input = document.getElementById(`input-${rule.rule_name}-${k}`);
         if (input) {
           let v = input.value.trim();
           if (Array.isArray(rule.config[k])) {
@@ -514,6 +517,66 @@
           }
         }
       });
+      return newConfig;
+    }
+
+    async function changeRuleMode(ruleName, mode) {
+      try {
+        const res = await fetch(`/api/v1/rules/${encodeURIComponent(ruleName)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, change_reason: `Switched rule mode to ${mode} via Rule Builder` })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          await window.SentinelDialog.alert(err.detail || `Failed to switch mode (HTTP ${res.status})`, { title: 'Mode Update Failed' });
+        } else {
+          window.SentinelDialog.toast(`Rule ${ruleName} set to ${mode} mode.`, 'success');
+        }
+        await fetchRules();
+      } catch (e) {
+        await window.SentinelDialog.alert(e.message || 'Network error changing rule mode.', { title: 'Error' });
+      }
+    }
+
+    async function backtestRule(ruleName) {
+      const rule = rulesData.find(r => r.rule_name === ruleName);
+      if (!rule) return;
+      const out = document.getElementById(`backtest-out-${ruleName}`);
+      if (out) {
+        out.style.display = 'block';
+        out.textContent = 'Running read-only 30-day historical replay...';
+      }
+      try {
+        const candidateConfig = collectRuleConfigInputs(rule);
+        const res = await fetch(`/api/v1/rules/${encodeURIComponent(ruleName)}/backtest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ candidate_config: candidateConfig, lookback_days: 30, sample_limit: 2000 })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (out) {
+          const sign = data.delta_hits > 0 ? '+' : '';
+          out.innerHTML = `
+            <div style="font-weight:700; margin-bottom:4px;">30d Backtest (${Number(data.transactions_evaluated)} txs replayed)</div>
+            <div>Champion Hits: <strong>${Number(data.champion_hits)}</strong> → Challenger Hits: <strong>${Number(data.challenger_hits)}</strong> (${sign}${Number(data.delta_hits)} / ${sign}${Number(data.delta_pct)}%)</div>
+            <div style="color:var(--ink-soft); margin-top:3px;">Captured SARs: ${Number(data.captured_historical_sars)} · Missed SARs: ${Number(data.missed_historical_sars)} · Avoided FPs: ${Number(data.avoided_false_positives)}</div>
+          `;
+        }
+      } catch (e) {
+        if (out) out.textContent = `Backtest failed: ${e.message}`;
+      }
+    }
+
+    async function saveRuleConfig(ruleName) {
+      const rule = rulesData.find(r => r.rule_name === ruleName);
+      if (!rule) return;
+
+      const reason = await window.SentinelDialog.prompt('Enter audit reason for modifying rule threshold:', '', { title: 'Rule Configuration Audit' });
+      if (!reason) return;
+
+      const newConfig = collectRuleConfigInputs(rule);
 
       try {
         const res = await fetch(`/api/v1/rules/${ruleName}`, {

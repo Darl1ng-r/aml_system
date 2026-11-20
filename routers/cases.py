@@ -72,6 +72,42 @@ class CaseCloseRequest(BaseModel):
         return sanitize_text(v)
 
 
+class CaseCorrelateRequest(BaseModel):
+    alert_ids: List[str] = Field(..., min_length=1, max_length=100)
+    window_days: int = Field(default=7, ge=1, le=90)
+
+
+@router.post("/correlate")
+async def correlate_alerts_into_cases(
+    payload: CaseCorrelateRequest,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
+):
+    """
+    Entity-Centric Case Auto-Correlation (P1-1):
+    Merges related alerts sharing the same subject account within `window_days`
+    into unified entity cases instead of spawning duplicate per-alert cases.
+    """
+    from services.case_correlation import batch_correlate_alerts
+
+    for aid in payload.alert_ids:
+        try:
+            uuid.UUID(aid)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid alert UUID: {aid}")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        return await batch_correlate_alerts(
+            conn=conn,
+            tenant_id=tenant_id,
+            alert_ids=payload.alert_ids,
+            actor_id=current_user.get("id"),
+            actor_username=current_user.get("username", "analyst"),
+            window_days=payload.window_days,
+        )
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_case(
     payload: CaseCreateRequest,

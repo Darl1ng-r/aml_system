@@ -265,6 +265,70 @@ async def _build_alert_graph_from_neo4j(neo4j_driver, sender: str, receiver: str
     return {"nodes": nodes, "edges": edges}
 
 
+@router.get("/grouped-by-entity")
+async def list_alerts_grouped_by_entity(
+    limit: int = Query(default=50, ge=1, le=100),
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
+):
+    """
+    Entity-Centric Alert Grouping (P1-1):
+    Clusters open/active alerts by subject account so investigators can triage
+    an entire entity's exposure in one view and merge them into a single entity case.
+    """
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT
+                s.id AS subject_account_id,
+                s.account_number,
+                s.owner_name,
+                COUNT(a.id) AS alert_count,
+                MAX(a.ai_risk_score) AS max_risk_score,
+                COALESCE(SUM(COALESCE(t.amount_base_usd, t.amount)), 0) AS total_exposure_usd,
+                ARRAY_AGG(a.id::text ORDER BY a.created_at DESC) AS alert_ids,
+                ARRAY_AGG(DISTINCT a.rule_name) AS rules_fired,
+                MAX(a.created_at) AS latest_alert_at,
+                (
+                    SELECT c.id::text
+                    FROM cases c
+                    WHERE c.subject_account_id = s.id
+                      AND c.status IN ('OPEN', 'INVESTIGATING', 'PENDING_EDD')
+                    ORDER BY c.created_at DESC
+                    LIMIT 1
+                ) AS active_case_id
+            FROM alerts a
+            JOIN transactions t ON a.transaction_id = t.id
+            JOIN accounts s ON t.sender_account_id = s.id
+            WHERE a.status IN ('OPEN', 'IN_REVIEW', 'ESCALATED')
+            GROUP BY s.id, s.account_number, s.owner_name
+            ORDER BY COUNT(a.id) DESC, MAX(a.ai_risk_score) DESC
+            LIMIT $1;
+            """,
+            limit,
+        )
+
+    return {
+        "total_entities": len(rows or []),
+        "entities": [
+            {
+                "subject_account_id": str(r["subject_account_id"]),
+                "account_number": r["account_number"],
+                "owner_name": r["owner_name"],
+                "alert_count": int(r["alert_count"] or 0),
+                "max_risk_score": float(r["max_risk_score"] or 0.0),
+                "total_exposure_usd": float(r["total_exposure_usd"] or 0.0),
+                "alert_ids": list(r["alert_ids"] or []),
+                "rules_fired": [x for x in (r["rules_fired"] or []) if x],
+                "latest_alert_at": r["latest_alert_at"].isoformat() if r["latest_alert_at"] else None,
+                "active_case_id": r["active_case_id"],
+            }
+            for r in (rows or [])
+        ],
+    }
+
+
 @router.get("/{id}/graph")
 async def get_alert_graph(
     id: str,
@@ -563,7 +627,7 @@ async def escalate_alert(
                     user_uuid = None
 
             alert_row = await conn.fetchrow(
-                "SELECT id, status FROM alerts WHERE id = $1;",
+                "SELECT id, status, transaction_id, rule_name, threat_level FROM alerts WHERE id = $1;",
                 alert_uuid
             )
             if not alert_row:
@@ -600,6 +664,40 @@ async def escalate_alert(
             except Exception as esc_err:
                 logger.warning(f"Could not persist alert_escalations entry: {esc_err}")
 
+            # P1-1: Auto-correlate escalated alert into an existing/new unified entity case
+            correlated_case = None
+            try:
+                tx_id = _get_row_field(alert_row, "transaction_id")
+                if tx_id and isinstance(tx_id, (uuid.UUID, str)):
+                    tx_uuid_val = uuid.UUID(str(tx_id))
+                    subj_row = await conn.fetchrow(
+                        """
+                        SELECT t.sender_account_id, acc.owner_name, acc.account_number
+                        FROM transactions t
+                        LEFT JOIN accounts acc ON t.sender_account_id = acc.id
+                        WHERE t.id = $1;
+                        """,
+                        tx_uuid_val,
+                    )
+                    subj_acc_id = _get_row_field(subj_row, "sender_account_id") if subj_row else None
+                    if subj_acc_id and isinstance(subj_acc_id, (uuid.UUID, str)):
+                        from services.case_correlation import correlate_alert_to_entity_case
+                        owner = _get_row_field(subj_row, "owner_name") or _get_row_field(subj_row, "account_number") or str(subj_acc_id)[:8]
+                        rname = _get_row_field(alert_row, "rule_name") or "ESCALATED_ALERT"
+                        tlevel = _get_row_field(alert_row, "threat_level") or "HIGH"
+                        correlated_case = await correlate_alert_to_entity_case(
+                            conn=conn,
+                            tenant_id=tenant_id,
+                            alert_id=alert_uuid,
+                            subject_account_id=subj_acc_id,
+                            title=f"Entity Investigation: {owner} ({rname})",
+                            priority=tlevel,
+                            actor_id=user_uuid,
+                            actor_username=current_user.get("username", "Analyst"),
+                        )
+            except Exception as corr_err:
+                logger.debug(f"Auto-correlation skipped on escalation: {corr_err}")
+
             # Audit log
             from observability.logging import log_audit_event
             log_audit_event(
@@ -612,7 +710,8 @@ async def escalate_alert(
                 tenant_id=tenant_id,
                 details={
                     "username": current_user["username"],
-                    "justification": justification
+                    "justification": justification,
+                    "correlated_case": correlated_case,
                 }
             )
 
@@ -624,14 +723,18 @@ async def escalate_alert(
                 "alert_id": id,
                 "status": "ESCALATED",
                 "escalated_by": current_user["username"],
-                "justification": justification
+                "justification": justification,
+                "correlated_case": correlated_case,
             }, target_tenant_id=str(tenant_id))
 
-            return {
+            resp_body = {
                 "alert_id": id,
                 "status": "ESCALATED",
                 "message": f"Alert {id} successfully escalated to Senior Review Committee."
             }
+            if correlated_case:
+                resp_body["correlated_case"] = correlated_case
+            return resp_body
     except HTTPException:
         raise
     except Exception as e:
@@ -1094,13 +1197,14 @@ async def get_alert_details(
 
 class BulkAlertAction(BaseModel):
     alert_ids: List[str] = Field(..., min_length=1, max_length=100)
-    action: str = Field(..., pattern=r"^(CLOSE_SAR|CLOSE_FALSE_POSITIVE)$")
-    justification: str = Field(..., min_length=5, max_length=2000)
+    action: str = Field(..., pattern=r"^(CLOSE_SAR|CLOSE_FALSE_POSITIVE|CLAIM|ASSIGN|CORRELATE_CASE)$")
+    justification: str = Field(default="Batch triage action", min_length=3, max_length=2000)
+    assignee_username: str | None = Field(default=None, max_length=120)
 
     @field_validator("justification", mode="before")
     @classmethod
     def sanitize_justification(cls, v: str) -> str:
-        return sanitize_text(v)
+        return sanitize_text(v) if v else "Batch triage action"
 
 
 def _filter_valid_alert_transitions(rows, status: str) -> tuple[list, list]:
@@ -1199,13 +1303,21 @@ async def _dispatch_bulk_resolution_events(count: int, valid_ids: list, current_
 @router.post("/bulk-action")
 async def bulk_resolve_alerts(
     payload: BulkAlertAction,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ADMIN", "ANALYST", "MLRO"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
     """
-    Executes atomic batch resolution for up to 100 alerts simultaneously in PostgreSQL.
+    Executes atomic batch operations for up to 100 alerts simultaneously in PostgreSQL:
+      - CLAIM / ASSIGN / CORRELATE_CASE: Permitted for L1_ANALYST and above
+      - CLOSE_SAR / CLOSE_FALSE_POSITIVE: Strictly restricted to L2_INVESTIGATOR / ANALYST / MLRO / ADMIN
     """
-    status = "CLOSED_SAR" if payload.action == "CLOSE_SAR" else "CLOSED_FALSE_POSITIVE"
+    caller_role = str(current_user.get("role") or "").upper()
+    if payload.action in ("CLOSE_SAR", "CLOSE_FALSE_POSITIVE") and caller_role == "L1_ANALYST":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Privilege Separation: L1_ANALYST cannot bulk-close alerts; escalate or claim instead.",
+        )
+
     try:
         alert_uuids = [uuid.UUID(aid) for aid in payload.alert_ids]
     except ValueError:
@@ -1213,32 +1325,93 @@ async def bulk_resolve_alerts(
 
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
+
+        # P1-3: Bulk Claim / Assign
+        if payload.action in ("CLAIM", "ASSIGN"):
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                target_user_id = None
+                if payload.action == "ASSIGN" and payload.assignee_username:
+                    target_user_id = await conn.fetchval(
+                        "SELECT id FROM users WHERE username = $1;",
+                        payload.assignee_username.strip(),
+                    )
+                    if not target_user_id:
+                        raise HTTPException(status_code=404, detail=f"Assignee '{payload.assignee_username}' not found.")
+                else:
+                    try:
+                        target_user_id = uuid.UUID(str(current_user["id"]))
+                    except (ValueError, KeyError):
+                        target_user_id = None
+
+                updated_rows = await conn.fetch(
+                    """
+                    UPDATE alerts
+                    SET assigned_officer_id = $1,
+                        status = CASE WHEN status = 'OPEN' THEN 'IN_REVIEW' ELSE status END
+                    WHERE id = ANY($2::uuid[])
+                      AND status NOT IN ('CLOSED_SAR', 'CLOSED_FALSE_POSITIVE', 'CLOSED')
+                    RETURNING id;
+                    """,
+                    target_user_id,
+                    alert_uuids,
+                )
+                return {
+                    "processed_count": len(updated_rows or []),
+                    "action": payload.action,
+                    "status": "IN_REVIEW",
+                    "message": f"Successfully processed {len(updated_rows or [])} alerts ({payload.action}).",
+                }
+
+        # P1-1 & P1-3: Bulk Entity-Centric Case Auto-Correlation
+        if payload.action == "CORRELATE_CASE":
+            from services.case_correlation import batch_correlate_alerts
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                res = await batch_correlate_alerts(
+                    conn=conn,
+                    tenant_id=tenant_id,
+                    alert_ids=payload.alert_ids,
+                    actor_id=current_user.get("id"),
+                    actor_username=current_user.get("username", "analyst"),
+                )
+                return {
+                    "processed_count": res["processed_alerts"],
+                    "action": payload.action,
+                    "status": "CORRELATED",
+                    "merged_count": res["merged_count"],
+                    "created_count": res["created_count"],
+                    "cases": res["cases"],
+                    "message": f"Correlated {res['processed_alerts']} alerts into {len(res['cases'])} entity case(s).",
+                }
+
+        next_status = "CLOSED_SAR" if payload.action == "CLOSE_SAR" else "CLOSED_FALSE_POSITIVE"
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             # Fetch alerts to validate deterministic state machine transitions (B7)
             rows = await conn.fetch(
                 "SELECT id, status, transaction_id FROM alerts WHERE id = ANY($1::uuid[]);",
                 alert_uuids
             )
-            valid_ids, held_tx_ids = _filter_valid_alert_transitions(rows, status)
+            valid_ids, held_tx_ids = _filter_valid_alert_transitions(rows, next_status)
 
             if not valid_ids:
                 return {
                     "processed_count": 0,
                     "action": payload.action,
-                    "status": status,
+                    "status": next_status,
                     "message": "No eligible alerts could be transitioned."
                 }
 
-            await _execute_bulk_resolution_db(conn, valid_ids, held_tx_ids, status, current_user, tenant_id, payload)
+            await _execute_bulk_resolution_db(conn, valid_ids, held_tx_ids, next_status, current_user, tenant_id, payload)
             count = len(valid_ids)
             await _dispatch_bulk_resolution_events(count, valid_ids, current_user, tenant_id, payload)
 
             return {
                 "processed_count": count,
                 "action": payload.action,
-                "status": status,
+                "status": next_status,
                 "message": f"Successfully processed {count} alerts in batch transaction."
             }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("Bulk alert action failed")
         raise HTTPException(status_code=500, detail=f"Bulk action failed: {str(e)}")

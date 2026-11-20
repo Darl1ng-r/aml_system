@@ -206,6 +206,7 @@
       <button class="tab-btn" onclick="switchTab('ctr', this)">CTR Filings</button>
       <button class="tab-btn" onclick="switchTab('reports', this)">Compliance Reports &amp; Watchlists</button>
       <button class="tab-btn" onclick="switchTab('privacy', this)">Privacy &amp; Legal Holds</button>
+      <button class="tab-btn" onclick="switchTab('pkyc-qa', this)" data-role="MLRO,ADMIN,AUDITOR">pKYC &amp; QA Audit</button>
       <button class="tab-btn" onclick="switchTab('siem', this)" data-role="ADMIN">SIEM Forwarder</button>
     </div>
 
@@ -341,7 +342,34 @@
       </div>
     </section>
 
-    <!-- 7. SIEM FORWARDER -->
+    <!-- 7. PERPETUAL KYC & QA FOUR-EYES SAMPLING (P1-5) -->
+    <section id="panel-pkyc-qa" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>Perpetual KYC (pKYC) Delta Rescreening</span>
+            <button class="btn btn-primary" onclick="runPkycDeltaSweep()">Run Delta Sweep</button>
+          </div>
+          <p style="font-size:0.78rem; color:var(--text-muted); margin-bottom:0.75rem;">Re-screens active customer accounts against sanctions &amp; PEP watchlists and triggers EDD alerts on material risk changes.</p>
+          <table>
+            <thead><tr><th>Run</th><th>Triggered By</th><th>Scanned</th><th>Changes</th><th>Alerts</th></tr></thead>
+            <tbody id="pkycRunsTbody"><tr><td colspan="5" style="text-align:center; color:var(--text-dim);">Click Run Delta Sweep or open tab to load...</td></tr></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <div class="card-title">
+            <span>QA Four-Eyes Sampling (<span id="qaPassRate">100%</span> Pass Rate)</span>
+            <button class="btn btn-primary" onclick="runQaSampling()">Sample 10% Closed FPs</button>
+          </div>
+          <table>
+            <thead><tr><th>Alert</th><th>Analyst</th><th>Status</th><th>Decision</th></tr></thead>
+            <tbody id="qaQueueTbody"><tr><td colspan="4" style="text-align:center; color:var(--text-dim);">Loading QA sampling queue...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8. SIEM FORWARDER -->
     <section id="panel-siem" class="panel">
       <div class="card">
         <div class="card-title"><span>SIEM Event Forwarder (Splunk HEC / QRadar / Sentinel)</span><button class="btn" onclick="loadSiemStatus()">Refresh Status</button></div>
@@ -388,6 +416,7 @@
       else if (tab === 'onboarding') loadAccounts();
       else if (tab === 'ctr') loadCtrFilings();
       else if (tab === 'reports') loadReportsAndWatchlist();
+      else if (tab === 'pkyc-qa') { loadPkycRuns(); loadQaQueue(); }
       else if (tab === 'siem') loadSiemStatus();
     }
 
@@ -716,6 +745,89 @@
           })
         });
         showToast(res.message || 'SIEM test event dispatched.');
+      } catch (err) { showToast(err.message); }
+    }
+
+    async function loadPkycRuns() {
+      const tbody = document.getElementById('pkycRunsTbody');
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
+      try {
+        const runs = await apiJson('/api/v1/customers/pkyc/runs');
+        if (!runs.length) {
+          tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-dim);">No pKYC runs recorded yet.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = runs.map(r => `
+          <tr>
+            <td class="mono">${esc(String(r.run_id).slice(0, 8))}</td>
+            <td>${esc(r.triggered_by)}</td>
+            <td class="mono">${Number(r.accounts_scanned)}</td>
+            <td class="mono">${Number(r.material_changes_found)}</td>
+            <td class="mono">${Number(r.alerts_generated)}</td>
+          </tr>
+        `).join('');
+      } catch (err) { tbody.innerHTML = `<tr><td colspan="5" style="color:var(--risk-high);">${esc(err.message)}</td></tr>`; }
+    }
+
+    async function runPkycDeltaSweep() {
+      try {
+        const res = await apiJson('/api/v1/customers/pkyc/rescreen-delta', { method: 'POST' });
+        showToast(`pKYC sweep scanned ${res.accounts_scanned} accounts (${res.material_changes_found} material changes).`);
+        loadPkycRuns();
+      } catch (err) { showToast(err.message); }
+    }
+
+    async function loadQaQueue() {
+      const tbody = document.getElementById('qaQueueTbody');
+      const rateEl = document.getElementById('qaPassRate');
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
+      try {
+        const data = await apiJson('/api/v1/qa/queue');
+        if (rateEl && data.kpis) rateEl.textContent = `${data.kpis.qa_pass_rate_pct}%`;
+        const items = data.items || [];
+        if (!items.length) {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:var(--text-dim);">No QA samples queued.</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(q => `
+          <tr>
+            <td class="mono">${esc(String(q.alert_id).slice(0, 8))}</td>
+            <td>${esc(q.original_analyst_username || 'Analyst')}</td>
+            <td class="mono">${esc(q.status)}</td>
+            <td>
+              ${q.status === 'PENDING' ? `
+                <button class="btn" style="padding:2px 8px; font-size:0.72rem;" onclick="decideQa('${esc(q.review_id)}', 'PASSED')">Pass</button>
+                <button class="btn btn-danger" style="padding:2px 8px; font-size:0.72rem;" onclick="decideQa('${esc(q.review_id)}', 'FAILED_REOPENED')">Fail &amp; Reopen</button>
+              ` : esc(q.qa_reviewer_username || 'Done')}
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) { tbody.innerHTML = `<tr><td colspan="4" style="color:var(--risk-high);">${esc(err.message)}</td></tr>`; }
+    }
+
+    async function runQaSampling() {
+      try {
+        const res = await apiJson('/api/v1/qa/sample', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sample_rate: 0.10, max_samples: 25 })
+        });
+        showToast(`Sampled ${res.sampled_count} closed alert(s) for QA Four-Eyes audit.`);
+        loadQaQueue();
+      } catch (err) { showToast(err.message); }
+    }
+
+    async function decideQa(reviewId, decision) {
+      const notes = await window.SentinelDialog.prompt(`Enter QA audit notes for decision ${decision}:`, '', { title: 'Independent QA Four-Eyes Review' });
+      if (!notes || notes.trim().length < 3) return;
+      try {
+        await apiJson(`/api/v1/qa/${encodeURIComponent(reviewId)}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision, notes: notes.trim() })
+        });
+        showToast(`QA review finalized: ${decision}`);
+        loadQaQueue();
       } catch (err) { showToast(err.message); }
     }
 

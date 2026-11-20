@@ -33,8 +33,16 @@ CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rul
 
 class RulePatchPayload(BaseModel):
     enabled: Optional[bool] = None
+    mode: Optional[str] = Field(None, pattern=r"^(ACTIVE|SHADOW|DISABLED)$")
     config: Optional[Dict[str, Any]] = None
+    shadow_config: Optional[Dict[str, Any]] = None
     change_reason: Optional[str] = Field("Rule threshold adjustment via Rule Builder", max_length=500)
+
+
+class RuleBacktestPayload(BaseModel):
+    candidate_config: Dict[str, Any] = Field(default_factory=dict)
+    lookback_days: int = Field(default=30, ge=1, le=180)
+    sample_limit: int = Field(default=2000, ge=10, le=5000)
 
 
 class RuleTestPayload(BaseModel):
@@ -62,8 +70,8 @@ async def list_rules(
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, rule_name, enabled, config, version, updated_by_name,
-                       updated_at, description
+                SELECT id, rule_name, enabled, mode, config, shadow_config, version,
+                       updated_by_name, updated_at, description
                 FROM rule_configs
                 WHERE tenant_id = $1
                 ORDER BY rule_name ASC;
@@ -76,7 +84,13 @@ async def list_rules(
                         "id": str(r["id"]),
                         "rule_name": r["rule_name"],
                         "enabled": r["enabled"],
+                        "mode": r.get("mode") if hasattr(r, "get") else (r["mode"] if "mode" in r else "ACTIVE"),
                         "config": r["config"] if isinstance(r["config"], dict) else json.loads(r["config"]),
+                        "shadow_config": (
+                            r["shadow_config"]
+                            if isinstance(r.get("shadow_config") if hasattr(r, "get") else (r["shadow_config"] if "shadow_config" in r else None), dict)
+                            else (json.loads(r["shadow_config"]) if ("shadow_config" in r and r["shadow_config"]) else None)
+                        ),
                         "version": r["version"],
                         "updated_by_name": r["updated_by_name"] or "SYSTEM",
                         "updated_at": r["updated_at"].isoformat() if r["updated_at"] else "",
@@ -165,7 +179,7 @@ async def patch_rule(
             # 1. Fetch existing rule
             current_row = await conn.fetchrow(
                 """
-                SELECT id, enabled, config, version
+                SELECT id, enabled, mode, config, shadow_config, version
                 FROM rule_configs
                 WHERE tenant_id = $1 AND rule_name = $2;
                 """,
@@ -173,26 +187,38 @@ async def patch_rule(
             )
 
             new_enabled, new_config, new_version = _compute_rule_updates(current_row, payload)
+            existing_mode = (current_row["mode"] if current_row and "mode" in current_row else "ACTIVE") or "ACTIVE"
+            new_mode = payload.mode or ("DISABLED" if payload.enabled is False else existing_mode)
+            if payload.mode == "DISABLED":
+                new_enabled = False
+            elif payload.mode in ("ACTIVE", "SHADOW") and payload.enabled is None:
+                new_enabled = True
+
+            existing_shadow = current_row["shadow_config"] if (current_row and "shadow_config" in current_row) else None
+            new_shadow = payload.shadow_config if payload.shadow_config is not None else existing_shadow
+            new_shadow_json = json.dumps(new_shadow) if isinstance(new_shadow, dict) else new_shadow
 
             # 2. Upsert into rule_configs
             saved_id = await conn.fetchval(
                 """
                 INSERT INTO rule_configs (
-                    tenant_id, rule_name, enabled, config, version,
+                    tenant_id, rule_name, enabled, mode, config, shadow_config, version,
                     updated_by, updated_by_name, updated_at
                 )
-                VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, NOW())
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, NOW())
                 ON CONFLICT (tenant_id, rule_name) DO UPDATE
                 SET enabled = EXCLUDED.enabled,
+                    mode = EXCLUDED.mode,
                     config = EXCLUDED.config,
+                    shadow_config = EXCLUDED.shadow_config,
                     version = EXCLUDED.version,
                     updated_by = EXCLUDED.updated_by,
                     updated_by_name = EXCLUDED.updated_by_name,
                     updated_at = NOW()
                 RETURNING id;
                 """,
-                tenant_uuid, rule_name, new_enabled, json.dumps(new_config),
-                new_version, user_uuid, username
+                tenant_uuid, rule_name, new_enabled, new_mode, json.dumps(new_config),
+                new_shadow_json, new_version, user_uuid, username
             )
 
             # 3. Insert audit snapshot into rule_config_history
@@ -235,11 +261,75 @@ async def patch_rule(
             "rule_name": rule_name,
             "version": new_version,
             "enabled": new_enabled,
-            "config": new_config
+            "mode": new_mode,
+            "config": new_config,
+            "shadow_config": new_shadow if isinstance(new_shadow, dict) else (json.loads(new_shadow) if new_shadow else None),
         }
     except Exception as e:
         logger.exception("Failed to update rule %s", rule_name)
         raise HTTPException(status_code=500, detail=f"Failed to update rule {rule_name}: {e}")
+
+
+@router.post("/{rule_name}/backtest")
+async def backtest_rule_endpoint(
+    rule_name: str,
+    payload: RuleBacktestPayload,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+):
+    """
+    Read-only Historical Rule Backtesting (P1-2):
+    Replays a candidate threshold configuration against historical transactions
+    on the read replica to project alert volume delta & false-positive impact.
+    """
+    from services.rule_backtest import backtest_rule_config
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    return await backtest_rule_config(
+        tenant_id=str(tenant_id),
+        rule_name=rule_name,
+        candidate_config=payload.candidate_config,
+        lookback_days=payload.lookback_days,
+        sample_limit=payload.sample_limit,
+    )
+
+
+@router.get("/{rule_name}/shadow-hits")
+async def list_rule_shadow_hits(
+    rule_name: str,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+):
+    """Lists silent Challenger Shadow Mode hits recorded for a rule without paging analysts."""
+    from database.postgres import get_async_db_read_conn
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, rule_name, transaction_id, sender_account_id,
+                   amount_base_usd, rule_version, matched_reason, created_at
+            FROM rule_shadow_hits
+            WHERE rule_name = $1
+            ORDER BY created_at DESC
+            LIMIT 100;
+            """,
+            rule_name.upper().strip(),
+        )
+    return {
+        "rule_name": rule_name.upper().strip(),
+        "total_shadow_hits": len(rows or []),
+        "hits": [
+            {
+                "id": str(r["id"]),
+                "transaction_id": str(r["transaction_id"]) if r["transaction_id"] else None,
+                "sender_account_id": str(r["sender_account_id"]) if r["sender_account_id"] else None,
+                "amount_base_usd": float(r["amount_base_usd"] or 0.0),
+                "rule_version": int(r["rule_version"] or 1),
+                "matched_reason": r["matched_reason"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+            for r in (rows or [])
+        ],
+    }
 
 
 @router.get("/{rule_name}/history")

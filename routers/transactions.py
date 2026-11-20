@@ -450,6 +450,19 @@ async def _persist_transaction_record(
                 },
             )
 
+        # P1-2: Evaluate SHADOW challenger rules silently into rule_shadow_hits
+        if tenant_id:
+            from services.rule_backtest import evaluate_shadow_rules
+            await evaluate_shadow_rules(
+                conn=conn,
+                tenant_id=tenant_id,
+                transaction_id=tx_id,
+                sender_account_id=sender_id,
+                amount_base_usd=scoring.get("amount_base_usd", payload.amount),
+                country=payload.country,
+                channel=payload.channel,
+            )
+
         if scoring["alert_triggered"]:
             threat_level = scoring["threat_level"]
             if threat_level == "NONE":

@@ -42,7 +42,7 @@ async def get_rules_config_async(tenant_id: str | None = None) -> dict:
         async with get_async_db_read_conn(tenant_id=cache_key) as conn:
             if hasattr(conn, "fetch"):
                 rows = await conn.fetch(
-                    "SELECT rule_name, enabled, config FROM rule_configs;"
+                    "SELECT rule_name, enabled, mode, config FROM rule_configs;"
                 )
                 for r in (rows or []):
                     rname = r["rule_name"]
@@ -52,7 +52,10 @@ async def get_rules_config_async(tenant_id: str | None = None) -> dict:
                     entry = dict(merged_rules.get(rname, {}))
                     if isinstance(rcfg, dict):
                         entry.update(rcfg)
-                    entry["enabled"] = bool(r["enabled"])
+                    rmode = (r["mode"] if "mode" in r else "ACTIVE") or "ACTIVE"
+                    # SHADOW / DISABLED rules do NOT trigger live alerts (evaluated silently by rule_backtest)
+                    entry["enabled"] = bool(r["enabled"]) and rmode.upper() == "ACTIVE"
+                    entry["mode"] = rmode.upper()
                     merged_rules[rname] = entry
     except Exception as e:
         logger.debug(f"DB rule_configs lookup skipped/fallback to defaults: {e}")
