@@ -145,6 +145,8 @@ body:has(.triage-shell) {
 .topbar,
 .header-nav,
 .triage-nav,
+.rules-nav,
+.users-nav,
 .navbar {
   view-transition-name: sentinel-topbar;
   height: 56px !important;
@@ -291,6 +293,89 @@ body:has(.triage-shell) {
 .header-nav .btn-logout:hover,
 .navbar .btn-logout:hover {
   color: #F87171 !important;
+}
+
+/* Unified 3-Zone Sentinel Topbar Helpers (Zero Email / Zero Status Clutter / 4 Core Pills) */
+.sentinel-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.sentinel-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: #FFFFFF !important;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 14.5px;
+  letter-spacing: -0.025em;
+  white-space: nowrap;
+}
+
+.sentinel-brand-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #FFFFFF;
+  flex-shrink: 0;
+}
+
+.sentinel-topbar-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sentinel-topbar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.sentinel-icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--sidebar-line);
+  color: rgba(255, 255, 255, 0.85);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease, transform 140ms var(--ease-out);
+}
+
+.sentinel-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #FFFFFF;
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.sentinel-icon-btn:active {
+  transform: scale(0.95);
+}
+
+.sentinel-icon-btn--danger:hover {
+  background: rgba(248, 113, 113, 0.16);
+  color: #F87171;
+  border-color: rgba(248, 113, 113, 0.35);
 }
 
 /* Custom Minimal Scrollbars */

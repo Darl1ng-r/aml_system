@@ -104,6 +104,12 @@
                 localStorage.setItem('username', user.username);
                 const navName = document.getElementById('navUsername');
                 if (navName) navName.textContent = user.username;
+                const avatarBtn = document.getElementById('sentinel-user-avatar');
+                if (avatarBtn) {
+                    const roleText = user.role ? ` (${user.role})` : '';
+                    avatarBtn.setAttribute('title', `Signed in as ${user.username}${roleText}`);
+                    avatarBtn.setAttribute('aria-label', `Profile: ${user.username}`);
+                }
             }
             if (user.role) {
                 localStorage.setItem('role', user.role);
@@ -118,7 +124,46 @@
         }
     };
 
+    // 6. Universal Modules Dropdown Controller across all 14 workspace pages
+    window.toggleSentinelModules = function toggleSentinelModules(event) {
+        if (event && event.stopPropagation) event.stopPropagation();
+        const menu = document.getElementById('sentinel-modules-menu') || document.getElementById('app-menu-popover');
+        const btn = document.getElementById('btn-sentinel-modules') || document.getElementById('btn-app-menu');
+        if (!menu) return;
+        const isOpen = menu.classList.toggle('show');
+        menu.style.display = isOpen ? 'block' : 'none';
+        if (btn) btn.setAttribute('aria-expanded', String(isOpen));
+    };
+
+    document.addEventListener('click', (e) => {
+        const menu = document.getElementById('sentinel-modules-menu');
+        const btn = document.getElementById('btn-sentinel-modules');
+        if (menu && menu.classList.contains('show') && !menu.contains(e.target) && (!btn || !btn.contains(e.target))) {
+            menu.classList.remove('show');
+            menu.style.display = 'none';
+            if (btn) btn.setAttribute('aria-expanded', 'false');
+        }
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const menu = document.getElementById('sentinel-modules-menu');
+            const btn = document.getElementById('btn-sentinel-modules');
+            if (menu && menu.classList.contains('show')) {
+                menu.classList.remove('show');
+                menu.style.display = 'none';
+                if (btn) btn.setAttribute('aria-expanded', 'false');
+            }
+        }
+    });
+
     document.addEventListener('DOMContentLoaded', () => {
         window.hydrateNavUser();
+        const savedUser = localStorage.getItem('username');
+        const savedRole = localStorage.getItem('role');
+        const avatarBtn = document.getElementById('sentinel-user-avatar');
+        if (avatarBtn && savedUser) {
+            avatarBtn.setAttribute('title', `Signed in as ${savedUser}${savedRole ? ' (' + savedRole + ')' : ''}`);
+        }
     });
 })();

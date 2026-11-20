@@ -13,10 +13,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
 
   <!-- Core Stylesheet with Cache Busting -->
-  <link rel="stylesheet" href="/static/style.css?v=20261120-sys3">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys4">
 
   <!-- Shared API Client (CSRF + HttpOnly Cookies + Logout) -->
-  <script src="/static/api-client.js"></script>
+  <script src="/static/api-client.js?v=20261120-v2"></script>
 
   <!-- Lucide Icon Library -->
   <script src="/static/lucide.min.js" defer></script>
@@ -481,72 +481,61 @@
   <div class="triage-shell">
 
     <!-- Top Navigation Bar -->
-    <header class="triage-nav">
-      <div class="nav-brand">
-        <span class="shield-badge">AML</span>
-        <span>SENTINEL</span>
-        <span style="font-size:12px; color:var(--sidebar-text); font-weight:400;">| Alert Triage Console</span>
-      </div>
+      <header class="triage-nav">
+    <div class="sentinel-topbar-left">
+      <a href="/dashboard/executive" class="sentinel-brand" aria-label="Sentinel Home">
+        <span class="sentinel-brand-icon" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+        </span>
+        <span>Sentinel</span>
+      </a>
+    </div>
 
-      <nav class="nav-links" style="display:flex; align-items:center; gap:8px;">
-        <div class="nav-pills">
-          <a href="/alerts/triage" class="nav-pill active" title="Alert Triage Inbox">
-            <i data-lucide="inbox" style="width:14px; height:14px;"></i> Triage
-          </a>
-          <a href="/dashboard" class="nav-pill" title="Investigation Cockpit">
-            <i data-lucide="crosshair" style="width:14px; height:14px;"></i> Cockpit
-          </a>
-          <a href="/customers" class="nav-pill" title="Customer 360 Dossier">
-            <i data-lucide="user-check" style="width:14px; height:14px;"></i> Customer 360
-          </a>
-          <a href="/sar/queue" class="nav-pill" title="SAR Filing Queue">
-            <i data-lucide="file-text" style="width:14px; height:14px;"></i> SAR
-          </a>
-          <a href="/network" class="nav-pill" title="UBO Network Graph">
-            <i data-lucide="share-2" style="width:14px; height:14px;"></i> Network
-          </a>
-        </div>
-
-        <div class="app-launcher-dropdown">
-          <button type="button" class="nav-link-btn" id="btn-triage-app-menu" onclick="toggleTriageAppMenu()" aria-haspopup="true" aria-expanded="false" title="Modules & Administration">
-            <i data-lucide="grid" style="width:14px; height:14px;"></i>
-            <span>Modules</span>
-            <i data-lucide="chevron-down" style="width:12px; height:12px; margin-left:2px;"></i>
-          </button>
-          
-          <div class="dropdown-menu" id="triage-app-menu-popover" style="display:none;">
-            <div class="dropdown-group-label">Investigations &amp; Regulatory</div>
-            <a href="/sar/editor" class="dropdown-item"><i data-lucide="file-text"></i> SAR Draft Editor</a>
-            <a href="/sar/queue" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="send"></i> SAR Filing Queue</a>
-            <a href="/network" class="dropdown-item"><i data-lucide="share-2"></i> Graph Explorer</a>
-            
-            <div class="dropdown-divider"></div>
-            
-            <div class="dropdown-group-label">Governance &amp; Oversight</div>
-            <a href="/dashboard/executive" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="bar-chart-2"></i> Executive Dashboard</a>
-            <a href="/audit/logs" class="dropdown-item" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN"><i data-lucide="shield"></i> Immutable Audit Vault</a>
-            <a href="/ml/governance" class="dropdown-item" data-role="ADMIN,MLRO"><i data-lucide="cpu"></i> AI &amp; Model Governance</a>
-            <a href="/settings/risk-appetite" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="compass"></i> Risk Appetite Settings</a>
-            <a href="/admin/rules" class="dropdown-item" id="nav-rule-builder"><i data-lucide="sliders"></i> Rule Tuning &amp; Builder</a>
-            <a href="/admin/users" class="dropdown-item" id="nav-user-admin"><i data-lucide="users"></i> Team &amp; 5-Tier RBAC</a>
-            <a href="/admin/health" class="dropdown-item" data-role="ADMIN"><i data-lucide="activity"></i> System Health</a>
-          </div>
-        </div>
+    <div class="sentinel-topbar-center">
+      <nav class="nav-pills" role="navigation" aria-label="Core Platform Views">
+        <a href="/dashboard/executive" class="nav-pill" title="Executive &amp; Compliance Overview">Overview</a>
+        <a href="/alerts/triage" class="nav-pill active" title="Alert Triage Queue">Triage</a>
+        <a href="/dashboard" class="nav-pill" title="Case Investigation Workspace">Investigations</a>
+        <a href="/network" class="nav-pill" title="Entity Link Analysis &amp; Network Graph">Network</a>
       </nav>
+    </div>
 
-      <div style="display:flex; align-items:center; gap:12px;">
-        <div id="ws-indicator" style="display:flex; align-items:center; gap:6px; font-size:12px; color:#10B981;">
-          <span style="width:8px; height:8px; border-radius:50%; background:#10B981; display:inline-block;" class="pulse-dot"></span>
-          <span>Stream Active</span>
-        </div>
-        <div style="background:rgba(255,255,255,0.1); padding:4px 10px; border-radius:14px; font-size:12px;" id="user-chip">
-          analyst.tier1
-        </div>
-        <button onclick="logout()" class="nav-link-btn" title="Sign Out">
-          <i data-lucide="log-out" style="width:15px; height:15px;"></i>
+    <div class="sentinel-topbar-right">
+      <div class="app-launcher-dropdown">
+        <button type="button" class="topbar-btn" id="btn-sentinel-modules" onclick="toggleSentinelModules(event)" aria-haspopup="true" aria-expanded="false" title="All Platform Modules">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          <span>Modules</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
         </button>
+
+        <div class="dropdown-menu" id="sentinel-modules-menu" style="display:none;">
+          <div class="dropdown-group-label">Investigations &amp; Reporting</div>
+          <a href="/customers" class="dropdown-item">Customer 360 Dossier</a>
+          <a href="/sar/editor" class="dropdown-item">SAR / STR Draft Editor</a>
+          <a href="/sar/queue" class="dropdown-item" data-role="MLRO,ADMIN">SAR Filing Queue</a>
+          <a href="/compliance/ops" class="dropdown-item">Compliance Ops Hub</a>
+
+          <div class="dropdown-divider"></div>
+
+          <div class="dropdown-group-label">Governance &amp; Admin</div>
+          <a href="/admin/rules" class="dropdown-item" data-role="ADMIN">Rule &amp; Threshold Builder</a>
+          <a href="/ml/governance" class="dropdown-item" data-role="ADMIN,MLRO">AI &amp; Model Governance</a>
+          <a href="/settings/risk-appetite" class="dropdown-item" data-role="MLRO,ADMIN">Risk Appetite Settings</a>
+          <a href="/audit/logs" class="dropdown-item" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN">Immutable Audit Vault</a>
+          <a href="/admin/users" class="dropdown-item" data-role="ADMIN">Team &amp; RBAC</a>
+          <a href="/admin/health" class="dropdown-item" data-role="ADMIN">System Health</a>
+        </div>
       </div>
-    </header>
+
+      <button type="button" class="sentinel-icon-btn" id="sentinel-user-avatar" onclick="window.location.href='/admin/users'" title="Account Profile" aria-label="Account Profile">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </button>
+
+      <button type="button" class="sentinel-icon-btn sentinel-icon-btn--danger" onclick="logout()" title="Sign Out" aria-label="Sign Out">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
+  </header>
 
     <!-- KPI Metric Cards -->
     <section class="triage-kpis">

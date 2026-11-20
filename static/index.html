@@ -13,7 +13,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
 
   <!-- Core Stylesheet with Cache Busting -->
-  <link rel="stylesheet" href="/static/style.css?v=20261120-sys3">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys4">
 
   <!-- Minimal Page-Specific Helpers (defers all theming to style.css tokens) -->
   <style>
@@ -77,86 +77,75 @@
 
   <div class="shell">
 
-    <!-- ── TOP BAR ─────────────────────────────────────────── -->
+    <!-- ── TOP BAR (UNIFIED 4-CORE ENTERPRISE HEADER) ────────── -->
     <header class="topbar">
-      <!-- 1. Left: Brand & Case Context -->
-      <div class="topbar-left">
+      <!-- 1. Left: Minimal Monochrome Brand & Active Case ID -->
+      <div class="sentinel-topbar-left">
+        <a href="/dashboard/executive" class="sentinel-brand" aria-label="Sentinel Home">
+          <span class="sentinel-brand-icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+          </span>
+          <span>Sentinel</span>
+        </a>
         <span class="case-id" id="topbar-case-id">CASE #AML-2026-04471</span>
-        <span class="case-crumb" id="topbar-case-crumb">Structuring · Wire Transfer · Opened 09:14 today</span>
+        <span class="case-crumb" id="topbar-case-crumb" style="display:none;"></span>
       </div>
 
-      <!-- 2. Center: Centered Primary Navigation Pills -->
-      <div class="topbar-center">
-        <nav class="nav-pills" role="navigation" aria-label="Primary Platform Navigation">
-          <a href="/alerts/triage" class="nav-pill" title="Alert Triage Inbox">
-            <i data-lucide="inbox" style="width:14px; height:14px;"></i> Triage
-          </a>
-          <a href="/dashboard" class="nav-pill active" title="Investigation Cockpit">
-            <i data-lucide="crosshair" style="width:14px; height:14px;"></i> Cockpit
-          </a>
-          <a href="/customers" class="nav-pill" title="Customer 360 Dossier">
-            <i data-lucide="user-check" style="width:14px; height:14px;"></i> Customer 360
-          </a>
-          <a href="/sar/queue" class="nav-pill" title="SAR Filing Queue">
-            <i data-lucide="file-text" style="width:14px; height:14px;"></i> SAR
-          </a>
-          <a href="/network" class="nav-pill" title="UBO Network Graph">
-            <i data-lucide="share-2" style="width:14px; height:14px;"></i> Network
-          </a>
+      <!-- 2. Center: 4 Core Enterprise AML Views -->
+      <div class="sentinel-topbar-center">
+        <nav class="nav-pills" role="navigation" aria-label="Core Platform Views">
+          <a href="/dashboard/executive" class="nav-pill" title="Executive &amp; Compliance Overview">Overview</a>
+          <a href="/alerts/triage" class="nav-pill" title="Alert Triage Queue">Triage</a>
+          <a href="/dashboard" class="nav-pill active" title="Case Investigation Workspace">Investigations</a>
+          <a href="/network" class="nav-pill" title="Entity Link Analysis &amp; Network Graph">Network</a>
         </nav>
       </div>
 
-      <!-- 3. Right: Status, Modules Dropdown, Shortcuts & Profile -->
-      <div class="topbar-right">
-        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.10); color:#A3E635;">
-          <span class="pulse-dot" style="width:7px; height:7px; border-radius:50%; background:#10b981;"></span>
-          <span id="app-status-text">Compliance Engine Online</span>
-        </div>
-        <span class="queue-pos" id="queue-position-display">Queue 1 of 1</span>
+      <!-- 3. Right: Modules Switcher, Shortcuts & Minimal User Icon -->
+      <div class="sentinel-topbar-right">
+        <span class="queue-pos" id="queue-position-display" style="display:none;">Queue 1 of 1</span>
 
         <!-- Unified Modules App Switcher Dropdown -->
         <div class="app-launcher-dropdown">
-          <button class="topbar-btn" id="btn-app-menu" onclick="toggleAppMenu()" aria-haspopup="true" aria-expanded="false" title="Modules & Administration">
-            <i data-lucide="grid"></i>
+          <button class="topbar-btn" id="btn-app-menu" onclick="toggleAppMenu()" aria-haspopup="true" aria-expanded="false" title="All Platform Modules">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
             <span>Modules</span>
-            <i data-lucide="chevron-down" style="width:12px; height:12px; margin-left:2px;"></i>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
           </button>
-          
+
           <div class="dropdown-menu" id="app-menu-popover" style="display:none;">
-            <div class="dropdown-group-label">Investigations &amp; Regulatory</div>
-            <a href="/sar/editor" class="dropdown-item"><i data-lucide="file-text"></i> SAR Draft Editor</a>
+            <div class="dropdown-group-label">Investigations &amp; Reporting</div>
+            <a href="/customers" class="dropdown-item"><i data-lucide="user-check"></i> Customer 360 Dossier</a>
+            <a href="/sar/editor" class="dropdown-item"><i data-lucide="file-text"></i> SAR / STR Draft Editor</a>
             <a href="/sar/queue" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="send"></i> SAR Filing Queue</a>
-            <a href="/network" class="dropdown-item"><i data-lucide="share-2"></i> Graph Explorer</a>
-            <a href="/compliance/ops" class="dropdown-item"><i data-lucide="briefcase"></i> Compliance Operations Hub</a>
+            <a href="/compliance/ops" class="dropdown-item"><i data-lucide="briefcase"></i> Compliance Ops Hub</a>
             <button type="button" class="dropdown-item" onclick="openModal('sandbox-modal'); toggleAppMenu(false);"><i data-lucide="scan-search"></i> Watchlist Screening</button>
             <button type="button" class="dropdown-item" onclick="openModal('str-modal'); toggleAppMenu(false);"><i data-lucide="package"></i> Regulatory STR Batches</button>
-            
+
             <div class="dropdown-divider"></div>
-            
-            <div class="dropdown-group-label">Governance &amp; Oversight</div>
-            <a href="/dashboard/executive" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="bar-chart-2"></i> Executive Dashboard</a>
-            <button type="button" class="dropdown-item" onclick="openModal('executive-modal'); toggleAppMenu(false);"><i data-lucide="layout-dashboard"></i> Operational Overview</button>
-            <a href="/audit/logs" class="dropdown-item" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN"><i data-lucide="shield"></i> Immutable Audit Vault</a>
+
+            <div class="dropdown-group-label">Governance &amp; Admin</div>
+            <a href="/admin/rules" class="dropdown-item" id="nav-rule-builder"><i data-lucide="sliders"></i> Rule &amp; Threshold Builder</a>
             <a href="/ml/governance" class="dropdown-item" data-role="ADMIN,MLRO"><i data-lucide="cpu"></i> AI &amp; Model Governance</a>
             <a href="/settings/risk-appetite" class="dropdown-item" data-role="MLRO,ADMIN"><i data-lucide="compass"></i> Risk Appetite Settings</a>
-            <a href="/admin/rules" class="dropdown-item" id="nav-rule-builder"><i data-lucide="sliders"></i> Rule Tuning &amp; Builder</a>
-            <a href="/admin/users" class="dropdown-item" id="nav-user-admin"><i data-lucide="users"></i> Team &amp; 5-Tier RBAC</a>
+            <a href="/audit/logs" class="dropdown-item" data-role="AUDITOR,GLOBAL_AUDITOR,ADMIN"><i data-lucide="shield"></i> Immutable Audit Vault</a>
+            <a href="/admin/users" class="dropdown-item" id="nav-user-admin"><i data-lucide="users"></i> Team &amp; RBAC</a>
             <a href="/admin/health" class="dropdown-item" data-role="ADMIN"><i data-lucide="activity"></i> System Health</a>
+            <button type="button" class="dropdown-item" onclick="openModal('executive-modal'); toggleAppMenu(false);"><i data-lucide="layout-dashboard"></i> Quick KPI Summary</button>
           </div>
         </div>
 
-        <button class="topbar-btn" onclick="openModal('shortcuts-modal')" title="Keyboard Shortcuts (?)">
-          <kbd>?</kbd>
+        <button class="sentinel-icon-btn" onclick="openModal('shortcuts-modal')" title="Keyboard Shortcuts (?)" aria-label="Keyboard Shortcuts">
+          <span style="font-family:var(--font-data);font-size:12px;font-weight:600;">?</span>
         </button>
 
-        <!-- Current Analyst -->
-        <div class="analyst-chip">
-          <div class="avatar-sm" id="user-avatar-initials">RT</div>
-          <span id="user-welcome-text">rama.tubeh</span>
-        </div>
+        <!-- Minimal Profile Icon (no email text) -->
+        <button type="button" class="sentinel-icon-btn" id="sentinel-user-avatar" onclick="window.location.href='/admin/users'" title="Account Profile" aria-label="Account Profile">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </button>
 
-        <button class="topbar-btn" onclick="logout()" title="Sign Out">
-          <i data-lucide="log-out"></i>
+        <button class="sentinel-icon-btn sentinel-icon-btn--danger" onclick="logout()" title="Sign Out" aria-label="Sign Out">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         </button>
       </div>
     </header>
