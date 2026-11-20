@@ -178,5 +178,81 @@ class SiemForwarderService:
             "last_dispatched_at": self.last_dispatched_at
         }
 
+    async def load_tenant_config(self, tenant_id: str) -> Dict[str, Any]:
+        """Loads persisted tenant SIEM config from PostgreSQL `siem_configs` (multi-pod consistent)."""
+        try:
+            from database.postgres import get_async_db_read_conn
+            async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT enabled, destination_url, format, total_forwarded, last_dispatched_at, updated_by
+                    FROM siem_configs
+                    WHERE tenant_id = $1::uuid;
+                    """,
+                    str(tenant_id),
+                )
+                if row:
+                    return {
+                        "enabled": bool(row["enabled"]),
+                        "destination_url": row["destination_url"],
+                        "format": row["format"],
+                        "total_forwarded": int(row["total_forwarded"] or 0),
+                        "buffered_events": len(self._buffer),
+                        "last_dispatched_at": row["last_dispatched_at"].isoformat() if row["last_dispatched_at"] else None,
+                        "persisted": True,
+                    }
+        except Exception as exc:
+            logger.debug(f"Falling back to in-memory SIEM status (DB unavailable): {exc}")
+        return {**self.get_status(), "persisted": False}
+
+    async def save_tenant_config(
+        self,
+        tenant_id: str,
+        enabled: bool,
+        destination_url: str,
+        auth_token: Optional[str],
+        fmt: str,
+        updated_by: str,
+    ) -> Dict[str, Any]:
+        """Persists tenant SIEM config to PostgreSQL `siem_configs` with encrypted token."""
+        validated_url = validate_siem_destination_url(destination_url)
+        normalized_fmt = (fmt or "SPLUNK_HEC").upper()
+        self.enabled = enabled
+        self.destination_url = validated_url
+        if auth_token:
+            self.auth_token = auth_token
+        self.format = normalized_fmt
+
+        try:
+            from database.postgres import get_async_db_conn
+            from services.encryption import encrypt_pii
+            enc_token = encrypt_pii(auth_token, tenant_id=str(tenant_id)) if auth_token else ""
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO siem_configs (
+                        tenant_id, enabled, destination_url, auth_token_enc, format, updated_by, updated_at
+                    )
+                    VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW())
+                    ON CONFLICT (tenant_id) DO UPDATE SET
+                        enabled = EXCLUDED.enabled,
+                        destination_url = EXCLUDED.destination_url,
+                        auth_token_enc = CASE WHEN EXCLUDED.auth_token_enc <> '' THEN EXCLUDED.auth_token_enc ELSE siem_configs.auth_token_enc END,
+                        format = EXCLUDED.format,
+                        updated_by = EXCLUDED.updated_by,
+                        updated_at = NOW();
+                    """,
+                    str(tenant_id),
+                    enabled,
+                    validated_url,
+                    enc_token,
+                    normalized_fmt,
+                    updated_by,
+                )
+        except Exception as exc:
+            logger.warning(f"Failed to persist SIEM config to PostgreSQL (in-memory updated): {exc}")
+
+        return await self.load_tenant_config(tenant_id)
+
 
 siem_service = SiemForwarderService()

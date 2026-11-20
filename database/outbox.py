@@ -226,6 +226,12 @@ class OutboxRelayEngine:
         from services.redpanda import publish_transaction_async
         event_id = event["id"]
         try:
+            # P0-2: Route core-banking outbound webhook outbox rows to signed HTTP dispatcher
+            if event.get("aggregate_type") == "WEBHOOK_DISPATCH":
+                from services.webhooks import dispatch_webhook_outbox_event
+                ok, err = await dispatch_webhook_outbox_event(event)
+                return event_id, ok, err
+
             payload = event["payload"]
             # Partition by sender account when present (eliminates single-tenant hot partitions),
             # falling back to tenant_id then aggregate_id for non-account domain events

@@ -1,14 +1,17 @@
 """
-FATF Recommendation 16 / FinCEN Travel Rule Verification Engine (GAP-8)
-========================================================================
+FATF Recommendation 16 / FinCEN & EU TFR Travel Rule Verification Engine (P0-1)
+===============================================================================
 Enforces complete originator and beneficiary information on wire transfers
-exceeding $3,000 USD (FinCEN 31 CFR 1010.410) and €1,000 EUR (EU TFR).
+exceeding $3,000 USD (FinCEN 31 CFR 1010.410) or €1,000 EUR (EU TFR 2023/1113),
+using FX currency normalization so non-USD/EUR currencies are evaluated accurately.
 """
 
 from typing import Dict, Any, Tuple
+from services.fx_rates import convert_to_base_currency_sync
 
 
 TRAVEL_RULE_THRESHOLD_USD = 3000.0
+TRAVEL_RULE_THRESHOLD_EUR = 1000.0
 
 
 def validate_travel_rule(
@@ -16,19 +19,32 @@ def validate_travel_rule(
     currency: str,
     channel: str | None,
     originator_info: Dict[str, Any],
-    beneficiary_info: Dict[str, Any]
+    beneficiary_info: Dict[str, Any],
+    amount_usd: float | None = None,
 ) -> Tuple[bool, list[str]]:
     """
-    Validates travel rule completeness.
+    Validates FATF Travel Rule completeness across currencies.
+    - EUR transfers are evaluated against EU TFR €1,000 threshold.
+    - All other currencies are normalized to USD and evaluated against FinCEN $3,000 threshold.
     Returns:
         (is_valid: bool, missing_fields: list[str])
     """
-    is_wire = channel and channel.upper() in ["WIRE", "SWIFT", "ACH", "CROSS_BORDER"]
+    is_wire = channel and channel.upper() in ["WIRE", "SWIFT", "ACH", "CROSS_BORDER", "SEPA"]
     if not is_wire:
         return True, []
 
-    if amount < TRAVEL_RULE_THRESHOLD_USD and currency.upper() == "USD":
-        return True, []
+    curr = (currency or "USD").upper().strip()
+    if curr == "EUR":
+        if float(amount) < TRAVEL_RULE_THRESHOLD_EUR:
+            return True, []
+    else:
+        normalized_usd = (
+            float(amount_usd)
+            if amount_usd is not None
+            else convert_to_base_currency_sync(float(amount), curr, "USD")[0]
+        )
+        if normalized_usd < TRAVEL_RULE_THRESHOLD_USD:
+            return True, []
 
     missing = []
 

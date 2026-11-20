@@ -58,6 +58,30 @@ class Settings(BaseSettings):
     # Embedded background worker toggle (set False in multi-pod K8s where dedicated worker runs)
     run_embedded_worker: bool = True
 
+    # P0-1: Multi-Currency FX Normalization
+    base_currency: str = "USD"
+    fx_rates_url: str = "https://api.frankfurter.app/latest"
+
+    # P0-3: Pluggable Evidence Storage (local | s3) & ClamAV Scanning
+    evidence_storage_backend: str = "local"
+    evidence_s3_bucket: str = ""
+    evidence_s3_endpoint: str = ""
+    evidence_s3_region: str = "us-east-1"
+    evidence_s3_access_key: str = ""
+    evidence_s3_secret_key: str = ""
+    evidence_kms_key_id: str = ""
+    evidence_worm_enabled: bool = False
+    clamav_enabled: bool = False
+    clamav_host: str = "localhost"
+    clamav_port: int = 3310
+
+    # P0-4: FinCEN / FIU Transport (sandbox | sftp | rest)
+    fincen_transport: str = "sandbox"
+    fincen_sftp_host: str = ""
+    fincen_sftp_port: int = 22
+    fincen_sftp_username: str = ""
+    fincen_sftp_remote_dir: str = "/incoming/bsa"
+
     # Comma-separated list of allowed frontend origins.
     # ⚠️  Do NOT include the API server itself (localhost:8000).
     # Override via ALLOWED_ORIGINS in .env for production.

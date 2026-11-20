@@ -483,36 +483,44 @@
         return;
       }
 
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
       tbody.innerHTML = allDrafts.map(d => {
         const statusClass = getStatusClass(d.status);
-        const excerpt = formatNarrativeExcerpt(d.narrative);
+        const excerpt = esc(formatNarrativeExcerpt(d.narrative));
         const dateStr = d.created_at ? d.created_at.slice(0, 16).replace('T', ' ') : '-';
         const isPending = d.status === 'PENDING_MLRO_REVIEW';
         const isApproved = d.status === 'APPROVED';
-        const referenceId = getQueueReferenceId(d);
+        const referenceId = esc(getQueueReferenceId(d));
+        let deadlineBadge = '';
+        if (d.status !== 'FILED' && d.days_until_deadline !== null && d.days_until_deadline !== undefined) {
+          const days = Number(d.days_until_deadline);
+          const color = days < 0 ? '#B91C1C' : (days <= 7 ? '#B45309' : '#4B5563');
+          const label = days < 0 ? `OVERDUE (${Math.abs(days)}d)` : `BSA D-${days}`;
+          deadlineBadge = `<div class="mono" style="font-size:0.68rem; margin-top:3px; color:${color}; font-weight:600;">${label}</div>`;
+        }
         const trackingCell = d.fincen_tracking_id
-          ? `<span class="mono" style="color:var(--accent-emerald); font-size:0.75rem;">${d.fincen_tracking_id}</span>`
+          ? `<span class="mono" style="color:var(--accent-emerald); font-size:0.75rem;">${esc(d.fincen_tracking_id)}</span>`
           : '<span style="color:var(--text-dim);">—</span>';
 
         return `
           <tr>
-            <td class="mono"><a href="/sar/draft/${d.draft_id}" style="color:var(--accent-blue); text-decoration:none;">${d.draft_id.slice(0, 8)}</a></td>
+            <td class="mono"><a href="/sar/draft/${esc(d.draft_id)}" style="color:var(--accent-blue); text-decoration:none;">${esc(d.draft_id.slice(0, 8))}</a></td>
             <td class="mono">${referenceId}</td>
-            <td>${d.drafted_by_username || 'Analyst'}</td>
-            <td><span class="status-badge ${statusClass}">${d.status}</span></td>
+            <td>${esc(d.drafted_by_username || 'Analyst')}</td>
+            <td><span class="status-badge ${statusClass}">${esc(d.status)}</span>${deadlineBadge}</td>
             <td>${trackingCell}</td>
             <td style="color:var(--text-muted); max-width:240px;">${excerpt}</td>
-            <td>${d.reviewed_by_username || '-'}</td>
-            <td class="mono" style="font-size:0.75rem; color:var(--text-dim);">${dateStr}</td>
+            <td>${esc(d.reviewed_by_username || '-')}</td>
+            <td class="mono" style="font-size:0.75rem; color:var(--text-dim);">${esc(dateStr)}</td>
             <td style="text-align:right;">
               <div style="display:inline-flex; gap:0.4rem;">
-                <a href="/sar/draft/${d.draft_id}" class="btn-action" title="Open Editor">View</a>
+                <a href="/sar/draft/${esc(d.draft_id)}" class="btn-action" title="Open Editor">View</a>
                 ${isPending ? `
-                  <button class="btn-action btn-approve" onclick="openReviewModal('${d.draft_id}', 'APPROVE')">Approve</button>
-                  <button class="btn-action btn-reject" onclick="openReviewModal('${d.draft_id}', 'REJECT')">Reject</button>
+                  <button class="btn-action btn-approve" onclick="openReviewModal('${esc(d.draft_id)}', 'APPROVE')">Approve</button>
+                  <button class="btn-action btn-reject" onclick="openReviewModal('${esc(d.draft_id)}', 'REJECT')">Reject</button>
                 ` : ''}
                 ${isApproved && d.alert_id ? `
-                  <button class="btn-action btn-approve" onclick="submitApprovedToFinCEN('${d.draft_id}', '${d.alert_id}', this)">File FinCEN</button>
+                  <button class="btn-action btn-approve" onclick="submitApprovedToFinCEN('${esc(d.draft_id)}', '${esc(d.alert_id)}', this)">File FinCEN</button>
                 ` : ''}
               </div>
             </td>

@@ -235,12 +235,37 @@ async def _persist_fincen_receipt(
         )
         if draft_to_validate and draft_to_validate.get("id"):
             try:
+                # P0-4: Record 90-day Continuing Activity SAR statutory clock upon filing
                 await conn.execute(
-                    "UPDATE sar_drafts SET status = 'FILED' WHERE id = $1;",
-                    draft_to_validate["id"]
+                    """
+                    UPDATE sar_drafts
+                    SET status = 'FILED',
+                        fincen_tracking_id = $2,
+                        xsd_validated = TRUE,
+                        continuing_activity_due_at = NOW() + INTERVAL '90 days',
+                        updated_at = NOW()
+                    WHERE id = $1;
+                    """,
+                    draft_to_validate["id"],
+                    receipt.get("fincen_tracking_id"),
                 )
             except Exception:
                 pass
+
+        # P0-2: Enqueue signed SAR_FILED outbound webhook inside the filing transaction
+        from services.webhooks import enqueue_webhook_event_tx
+        await enqueue_webhook_event_tx(
+            conn=conn,
+            tenant_id=str(tenant_id),
+            event_type="SAR_FILED",
+            aggregate_id=payload.alert_id,
+            payload={
+                "alert_id": payload.alert_id,
+                "fincen_tracking_id": receipt["fincen_tracking_id"],
+                "status": receipt["status"],
+                "submitted_by": current_user["username"],
+            },
+        )
 
     logger.info(
         f"AUDIT LOG: FinCEN SAR electronically filed by '{current_user['username']}' "
@@ -449,31 +474,114 @@ async def create_sar_draft(
             except ValueError:
                 user_uuid = None
 
+        from datetime import timedelta
+        now_utc = datetime.now(timezone.utc)
+        statutory_deadline = now_utc + timedelta(days=30)  # BSA 31 CFR § 1020.320 (30-day rule)
+        xsd_ok = False
+        if payload.xml_payload:
+            from services.sar_validator import validate_regulatory_xml
+            xsd_ok, _ = validate_regulatory_xml(payload.xml_payload)
+
         draft_id = await conn.fetchval(
             """
             INSERT INTO sar_drafts (
                 tenant_id, alert_id, case_id, drafted_by, drafted_by_username,
-                status, narrative, xml_payload
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                status, narrative, xml_payload, detection_date, statutory_deadline_at, xsd_validated
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING id;
             """,
             uuid.UUID(str(tenant_id)), alert_uuid, case_uuid,
             user_uuid,
             current_user.get("username", "analyst"),
             payload.status,
-            payload.narrative, payload.xml_payload
+            payload.narrative, payload.xml_payload,
+            now_utc, statutory_deadline, xsd_ok
         )
 
         return {
             "draft_id": str(draft_id),
             "alert_id": payload.alert_id,
             "status": payload.status,
+            "statutory_deadline_at": statutory_deadline.isoformat(),
+            "days_until_deadline": 30,
+            "xsd_validated": xsd_ok,
             "message": (
                 "SAR draft submitted for MLRO review."
                 if payload.status == "PENDING_MLRO_REVIEW"
                 else "SAR draft saved."
             )
         }
+
+
+@router.get("/deadlines")
+async def get_sar_statutory_deadlines(
+    current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
+):
+    """
+    Returns BSA 31 CFR § 1020.320 statutory 30-day filing deadlines (approaching/overdue)
+    and 90-day Continuing Activity SAR review trackers.
+    """
+    tenant_id = enforce_tenant_data_scope(current_user)
+    now_utc = datetime.now(timezone.utc)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        pending_rows = await conn.fetch(
+            """
+            SELECT id, alert_id, status, drafted_by_username, detection_date, statutory_deadline_at, fiu_format
+            FROM sar_drafts
+            WHERE tenant_id = $1 AND status NOT IN ('FILED', 'REJECTED')
+            ORDER BY statutory_deadline_at ASC NULLS LAST
+            LIMIT 100;
+            """,
+            uuid.UUID(str(tenant_id)),
+        )
+        continuing_rows = await conn.fetch(
+            """
+            SELECT id, alert_id, fincen_tracking_id, continuing_activity_due_at
+            FROM sar_drafts
+            WHERE tenant_id = $1 AND status = 'FILED' AND continuing_activity_due_at IS NOT NULL
+            ORDER BY continuing_activity_due_at ASC
+            LIMIT 100;
+            """,
+            uuid.UUID(str(tenant_id)),
+        )
+
+    pending_deadlines = []
+    overdue_count = 0
+    for r in pending_rows:
+        dl = r["statutory_deadline_at"]
+        days_left = int((dl - now_utc).total_seconds() // 86400) if dl else None
+        is_overdue = days_left is not None and days_left < 0
+        if is_overdue:
+            overdue_count += 1
+        pending_deadlines.append({
+            "draft_id": str(r["id"]),
+            "alert_id": str(r["alert_id"]) if r["alert_id"] else None,
+            "status": r["status"],
+            "drafted_by_username": r["drafted_by_username"],
+            "statutory_deadline_at": dl.isoformat() if dl else None,
+            "days_until_deadline": days_left,
+            "is_overdue": is_overdue,
+            "fiu_format": r.get("fiu_format", "FINCEN_BSABATCH") if hasattr(r, "get") else "FINCEN_BSABATCH",
+        })
+
+    continuing_reviews = []
+    for r in continuing_rows:
+        due = r["continuing_activity_due_at"]
+        days_left = int((due - now_utc).total_seconds() // 86400) if due else None
+        continuing_reviews.append({
+            "draft_id": str(r["id"]),
+            "alert_id": str(r["alert_id"]) if r["alert_id"] else None,
+            "fincen_tracking_id": r["fincen_tracking_id"],
+            "continuing_activity_due_at": due.isoformat() if due else None,
+            "days_until_review": days_left,
+        })
+
+    return {
+        "overdue_count": overdue_count,
+        "pending_30day_filings": pending_deadlines,
+        "continuing_90day_reviews": continuing_reviews,
+    }
 
 
 @router.get("/sar/drafts")
@@ -506,8 +614,13 @@ async def list_sar_drafts(
                 """,
                 uuid.UUID(str(tenant_id))
             )
-        return [
-            {
+        now_utc = datetime.now(timezone.utc)
+        results = []
+        for r in rows:
+            dl = r["statutory_deadline_at"] if "statutory_deadline_at" in r else None
+            days_left = int((dl - now_utc).total_seconds() // 86400) if dl else None
+            cont_due = r["continuing_activity_due_at"] if "continuing_activity_due_at" in r else None
+            results.append({
                 "draft_id": str(r["id"]),
                 "alert_id": str(r["alert_id"]) if r["alert_id"] else None,
                 "case_id": str(r["case_id"]) if r["case_id"] else None,
@@ -518,10 +631,14 @@ async def list_sar_drafts(
                 "rejection_reason": r["rejection_reason"],
                 "fincen_tracking_id": r["fincen_tracking_id"] if "fincen_tracking_id" in r else None,
                 "fincen_filing_status": r["fincen_filing_status"] if "fincen_filing_status" in r else None,
+                "statutory_deadline_at": dl.isoformat() if dl else None,
+                "days_until_deadline": days_left,
+                "is_overdue": bool(days_left is not None and days_left < 0 and r["status"] != "FILED"),
+                "continuing_activity_due_at": cont_due.isoformat() if cont_due else None,
+                "xsd_validated": bool(r["xsd_validated"]) if "xsd_validated" in r else False,
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None
-            }
-            for r in rows
-        ]
+            })
+        return results
 
 
 @router.post("/sar/drafts/{id}/review")

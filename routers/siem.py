@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, HttpUrl
 
-from services.auth import RoleChecker
+from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
 from services.siem_forwarder import siem_service, validate_siem_destination_url
 
@@ -36,8 +36,9 @@ async def get_siem_status(
     current_user: dict = Depends(RoleChecker(["ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
-    """Retrieves current SIEM forwarder status, buffer depth, and total dispatches."""
-    return siem_service.get_status()
+    """Retrieves persisted tenant SIEM forwarder configuration & dispatch metrics."""
+    tenant_id = enforce_tenant_data_scope(current_user)
+    return await siem_service.load_tenant_config(str(tenant_id))
 
 
 @router.post("/test")
@@ -69,21 +70,22 @@ async def update_siem_config(
     current_user: dict = Depends(RoleChecker(["ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
-    """Updates SIEM forwarder target endpoint, token, and format."""
+    """Persists SIEM forwarder target endpoint, encrypted token, and format to PostgreSQL."""
+    tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        validated_url = validate_siem_destination_url(str(payload.destination_url))
+        saved_cfg = await siem_service.save_tenant_config(
+            tenant_id=str(tenant_id),
+            enabled=payload.enabled,
+            destination_url=str(payload.destination_url),
+            auth_token=payload.auth_token,
+            fmt=payload.format or "SPLUNK_HEC",
+            updated_by=current_user["username"],
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    siem_service.enabled = payload.enabled
-    siem_service.destination_url = validated_url
-    if payload.auth_token:
-        siem_service.auth_token = payload.auth_token
-    if payload.format:
-        siem_service.format = payload.format.upper()
-
     return {
         "status": "UPDATED",
-        "config": siem_service.get_status(),
+        "config": saved_cfg,
         "updated_by": current_user["username"]
     }

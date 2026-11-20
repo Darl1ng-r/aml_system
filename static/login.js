@@ -551,19 +551,44 @@
             btnCancelMfa.addEventListener('click', cancelMfa);
         }
 
-        // 6. SSO Buttons (disabled until OIDC IdP is configured)
-        const btnGoogle = document.getElementById('btn-sso-google');
-        const btnGithub = document.getElementById('btn-sso-github');
-        if (btnGoogle) {
-            btnGoogle.addEventListener('click', () => {
-                showError('Google Enterprise SSO is not configured on this deployment. Please sign in with your credentials.');
-            });
-        }
-        if (btnGithub) {
-            btnGithub.addEventListener('click', () => {
-                showError('GitHub Corporate SSO is not configured on this deployment. Please sign in with your credentials.');
-            });
-        }
+        // 6. Hydrate live Enterprise OIDC SSO buttons when tenant providers are configured (P0-6)
+        (async function hydrateEnterpriseSsoButtons() {
+            const grid = document.querySelector('.sso-grid');
+            if (!grid) return;
+            try {
+                const resp = await fetch('/api/v1/auth/sso/providers/public');
+                if (resp.ok) {
+                    const providers = await resp.json();
+                    if (Array.isArray(providers) && providers.length > 0) {
+                        grid.innerHTML = '';
+                        providers.slice(0, 2).forEach((p) => {
+                            const btn = document.createElement('button');
+                            btn.type = 'button';
+                            btn.className = 'btn-secondary-auth';
+                            btn.textContent = p.provider_name || 'Enterprise SSO';
+                            btn.addEventListener('click', () => {
+                                window.location.href = `/api/v1/auth/sso/${encodeURIComponent(p.id)}/authorize`;
+                            });
+                            grid.appendChild(btn);
+                        });
+                        return;
+                    }
+                }
+            } catch (_) { /* keep default disabled buttons when no IdP configured */ }
+
+            const btnGoogle = document.getElementById('btn-sso-google');
+            const btnGithub = document.getElementById('btn-sso-github');
+            if (btnGoogle) {
+                btnGoogle.addEventListener('click', () => {
+                    showError('Configure an OIDC Identity Provider via /api/v1/auth/sso/providers to enable Enterprise SSO.');
+                });
+            }
+            if (btnGithub) {
+                btnGithub.addEventListener('click', () => {
+                    showError('Configure an OIDC Identity Provider via /api/v1/auth/sso/providers to enable Enterprise SSO.');
+                });
+            }
+        })();
 
         // 7. Lucide Icons
         if (window.lucide && typeof window.lucide.createIcons === 'function') {

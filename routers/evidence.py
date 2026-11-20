@@ -103,6 +103,9 @@ class EvidenceMetadata(BaseModel):
     content_type: str
     file_size: int
     storage_key: str
+    sha256_digest: Optional[str] = None
+    storage_backend: str = "local"
+    scan_status: str = "CLEAN"
     uploaded_by: Optional[str] = None
     uploaded_by_name: str
     uploaded_at: str
@@ -189,6 +192,7 @@ async def list_case_evidence(
             rows = await conn.fetch(
                 """
                 SELECT id, case_id, filename, content_type, file_size, storage_key,
+                       sha256_digest, storage_backend, scan_status,
                        uploaded_by, uploaded_by_name, uploaded_at, description, tags
                 FROM case_evidence
                 WHERE case_id = $1
@@ -204,6 +208,9 @@ async def list_case_evidence(
                     content_type=r["content_type"] or DEFAULT_CONTENT_TYPE,
                     file_size=r["file_size"] or 0,
                     storage_key=r["storage_key"],
+                    sha256_digest=r.get("sha256_digest") if hasattr(r, "get") else None,
+                    storage_backend=(r.get("storage_backend") if hasattr(r, "get") else None) or "local",
+                    scan_status=(r.get("scan_status") if hasattr(r, "get") else None) or "CLEAN",
                     uploaded_by=str(r["uploaded_by"]) if r["uploaded_by"] else None,
                     uploaded_by_name=r["uploaded_by_name"],
                     uploaded_at=r["uploaded_at"].isoformat() if r["uploaded_at"] else "",
@@ -249,41 +256,52 @@ async def upload_case_evidence(
     safe_description = sanitize_text(description or "")
     parsed_tags = [sanitize_text(t.strip()) for t in tags.split(",") if t.strip()] if tags else []
 
-    # Store file safely within tenant evidence boundary using bounded 64 KiB streaming chunks
-    evidence_id = uuid.uuid4()
-    storage_subfolder = os.path.realpath(os.path.join(EVIDENCE_STORAGE_DIR, str(tenant_id)))
-    os.makedirs(storage_subfolder, exist_ok=True)
-    stored_path = _ensure_within_tenant_dir(
-        storage_subfolder,
-        os.path.join(storage_subfolder, f"{evidence_id}_{safe_filename}"),
+    # Stream into bounded buffer (<= 25 MB), compute SHA-256 chain-of-custody digest, and run malware scan (P0-3)
+    from services.evidence_storage import (
+        compute_sha256_hex,
+        get_evidence_storage_backend,
+        scan_bytes_for_malware,
     )
-
+    evidence_id = uuid.uuid4()
+    buf = bytearray()
     file_size = 0
-    first_chunk = True
+    while True:
+        chunk = await file.read(CHUNK_SIZE_BYTES)
+        if not chunk:
+            break
+        file_size += len(chunk)
+        if file_size > MAX_EVIDENCE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Evidence file exceeds maximum allowed size of {MAX_EVIDENCE_BYTES // (1024 * 1024)} MB."
+            )
+        buf.extend(chunk)
+
+    raw_bytes = bytes(buf)
+    is_clean, scan_status = await scan_bytes_for_malware(raw_bytes)
+    if not is_clean:
+        log_audit_event(
+            event_type="SECURITY_ALERT",
+            actor_id=str(user_id),
+            actor_role=current_user.get("role", "ANALYST"),
+            action="MALWARE_UPLOAD_BLOCKED",
+            resource_type="CASE",
+            resource_id=case_id,
+            tenant_id=tenant_id,
+            details={"filename": safe_filename, "scan_status": scan_status},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Evidence upload rejected by security malware scan ({scan_status})."
+        )
+
+    sha256_digest = compute_sha256_hex(raw_bytes)
+    backend = get_evidence_storage_backend(EVIDENCE_STORAGE_DIR)
+    object_key = f"{evidence_id}_{safe_filename}"
     try:
-        while True:
-            chunk = await file.read(CHUNK_SIZE_BYTES)
-            if not chunk:
-                break
-            file_size += len(chunk)
-            if file_size > MAX_EVIDENCE_BYTES:
-                if os.path.exists(stored_path):
-                    os.remove(stored_path)
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"Evidence file exceeds maximum allowed size of {MAX_EVIDENCE_BYTES // (1024 * 1024)} MB."
-                )
-            await asyncio.to_thread(_append_file_chunk, stored_path, chunk, first_chunk)
-            first_chunk = False
-        if first_chunk:
-            # Empty file uploaded — create zero-byte artifact cleanly
-            await asyncio.to_thread(_append_file_chunk, stored_path, b"", True)
-    except HTTPException:
-        raise
+        stored_key = await backend.put_object(str(tenant_id), object_key, raw_bytes, safe_content_type)
     except Exception as e:
-        if os.path.exists(stored_path):
-            os.remove(stored_path)
-        raise HTTPException(status_code=500, detail=f"Failed to stream evidence upload: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to persist evidence artifact: {e}")
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -292,13 +310,15 @@ async def upload_case_evidence(
                 """
                 INSERT INTO case_evidence (
                     id, case_id, tenant_id, filename, content_type, file_size,
-                    storage_key, uploaded_by, uploaded_by_name, description, tags
+                    storage_key, sha256_digest, storage_backend, scan_status,
+                    uploaded_by, uploaded_by_name, description, tags
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);
                 """,
                 evidence_id, resolved_case_uuid, uuid.UUID(str(tenant_id)),
                 safe_filename, safe_content_type,
-                file_size, stored_path, user_uuid, username, safe_description, parsed_tags
+                file_size, stored_key, sha256_digest, backend.backend_name, scan_status,
+                user_uuid, username, safe_description, parsed_tags
             )
 
         log_audit_event(
@@ -309,7 +329,13 @@ async def upload_case_evidence(
             resource_type="CASE",
             resource_id=case_id,
             tenant_id=tenant_id,
-            details={"evidence_id": str(evidence_id), "filename": safe_filename, "size": file_size}
+            details={
+                "evidence_id": str(evidence_id),
+                "filename": safe_filename,
+                "size": file_size,
+                "sha256": sha256_digest,
+                "storage_backend": backend.backend_name,
+            }
         )
 
         return {
@@ -317,11 +343,16 @@ async def upload_case_evidence(
             "evidence_id": str(evidence_id),
             "filename": safe_filename,
             "file_size": file_size,
+            "sha256_digest": sha256_digest,
+            "storage_backend": backend.backend_name,
+            "scan_status": scan_status,
             "uploaded_by": username
         }
     except Exception as e:
-        if os.path.exists(stored_path):
-            os.remove(stored_path)
+        try:
+            await backend.delete_object(str(tenant_id), stored_key)
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Failed to record evidence: {e}")
 
 
@@ -342,29 +373,43 @@ async def download_case_evidence(
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         resolved_case_uuid = await _resolve_case_uuid(conn, raw_uuid, tenant_id, current_user, auto_create=False)
         row = await conn.fetchrow(
-            "SELECT storage_key, filename, content_type FROM case_evidence WHERE id = $1 AND case_id = $2;",
+            "SELECT storage_key, filename, content_type, sha256_digest, storage_backend FROM case_evidence WHERE id = $1 AND case_id = $2;",
             ev_uuid, resolved_case_uuid
         )
         if not row:
             raise HTTPException(status_code=404, detail="Evidence not found")
 
+    from services.evidence_storage import compute_sha256_hex, get_evidence_storage_backend, LocalEvidenceBackend, S3EvidenceBackend
     storage_key = row["storage_key"]
-    tenant_dir = os.path.realpath(os.path.join(EVIDENCE_STORAGE_DIR, str(tenant_id)))
-    if not storage_key or not os.path.exists(storage_key):
-        raise HTTPException(status_code=404, detail="Evidence file missing from storage")
+    backend_type = (row.get("storage_backend") if hasattr(row, "get") else None) or ("s3" if str(storage_key).startswith("s3://") else "local")
+    backend = S3EvidenceBackend() if backend_type == "s3" else LocalEvidenceBackend(EVIDENCE_STORAGE_DIR)
 
-    safe_storage_path = _ensure_within_tenant_dir(tenant_dir, storage_key)
+    try:
+        payload_bytes = await backend.get_object(str(tenant_id), storage_key)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Evidence file missing from storage")
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+    expected_sha = row.get("sha256_digest") if hasattr(row, "get") else None
+    actual_sha = compute_sha256_hex(payload_bytes)
+    if expected_sha and actual_sha != expected_sha:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Evidence integrity verification failed: SHA-256 chain-of-custody mismatch."
+        )
+
     safe_download_name = _sanitize_evidence_filename(row["filename"])
     stored_mime = (row["content_type"] or DEFAULT_CONTENT_TYPE).split(";")[0].strip().lower()
     safe_media_type = stored_mime if stored_mime in ALLOWED_EVIDENCE_MIMES else DEFAULT_CONTENT_TYPE
 
-    return FileResponse(
-        path=safe_storage_path,
-        filename=safe_download_name,
+    return Response(
+        content=payload_bytes,
         media_type=safe_media_type,
         headers={
             "Content-Disposition": f'attachment; filename="{safe_download_name}"',
             "X-Content-Type-Options": "nosniff",
+            "X-Evidence-SHA256": actual_sha,
         },
     )
 

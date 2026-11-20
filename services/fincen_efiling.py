@@ -65,22 +65,61 @@ class FinCENEfilingClient:
         secret = file_password.encode("utf-8")
         return hmac.new(secret, payload_bytes, digestmod=hashlib.sha256).hexdigest()
 
-    def validate_sar_xml(self, xml_str: str) -> bool:
-        """Validates XML structural conformance before transmission."""
-        try:
-            root = ET.fromstring(xml_str)
-            return root.tag.endswith("SuspiciousActivityReport") or root.tag == "SuspiciousActivityReport"
-        except ET.ParseError as e:
-            logger.exception(f"FinCEN XML parse failure: {e}")
-            return False
+    def validate_sar_xml(self, xml_str: str, fiu_format: str | None = None) -> bool:
+        """Validates XML structural & regulatory conformance (XXE-safe FinCEN & goAML 5.0)."""
+        from services.sar_validator import validate_regulatory_xml
+        ok, errors = validate_regulatory_xml(xml_str, fiu_format=fiu_format)
+        if not ok:
+            logger.warning(f"Regulatory SAR XML validation failed: {errors}")
+        return ok
 
-    async def submit_sar(self, sar_xml: str, alert_id: str) -> Dict[str, Any]:
+    async def _submit_via_sftp(self, payload_bytes: bytes, tracking_id: str) -> Dict[str, Any]:
+        """Transmits signed BSABatch XML over SFTP to FinCEN SDTM drop-box."""
+        host = getattr(settings, "fincen_sftp_host", "") or os.getenv("FINCEN_SFTP_HOST", "")
+        port = int(getattr(settings, "fincen_sftp_port", 22) or 22)
+        username = getattr(settings, "fincen_sftp_username", "") or os.getenv("FINCEN_SFTP_USERNAME", "")
+        remote_dir = getattr(settings, "fincen_sftp_remote_dir", "/incoming/bsa")
+        remote_path = f"{remote_dir.rstrip('/')}/{tracking_id}.xml"
+
+        try:
+            import paramiko  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "SFTP FinCEN transport requires 'paramiko' package installed in production."
+            ) from exc
+
+        import io
+        password = _get_fincen_secret("sftp_password", "FINCEN_SFTP_PASSWORD", "")
+        transport = paramiko.Transport((host, port))
+        try:
+            transport.connect(username=username, password=password)
+            sftp = paramiko.SFTPClient.from_transport(transport)
+            try:
+                sftp.putfo(io.BytesIO(payload_bytes), remote_path)
+            finally:
+                sftp.close()
+        finally:
+            transport.close()
+
+        return {
+            "status": "ACKNOWLEDGED",
+            "fincen_tracking_id": tracking_id,
+            "fincen_ack_code": "SFTP_UPLOADED_200",
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
+            "fincen_confirmation_message": f"BSABatch XML uploaded via SFTP to {remote_path}.",
+            "transport": "SFTP_BATCH",
+            "sandbox": False,
+        }
+
+    async def submit_sar(self, sar_xml: str, alert_id: str, fiu_format: str | None = None) -> Dict[str, Any]:
         """
-        Submits a Suspicious Activity Report electronically to FinCEN.
-        Returns submission receipt details including FinCEN Tracking ID and ACK status.
+        Submits a Suspicious Activity Report electronically to FinCEN / FIU.
+        Enforces strict regulatory XML validation prior to transmission.
         """
-        if not self.validate_sar_xml(sar_xml):
-            raise ValueError("Invalid FinCEN SAR XML schema structure.")
+        from services.sar_validator import validate_regulatory_xml
+        is_valid, val_errors = validate_regulatory_xml(sar_xml, fiu_format=fiu_format)
+        if not is_valid:
+            raise ValueError(f"Invalid FinCEN SAR XML schema structure: {'; '.join(val_errors)}")
 
         payload_bytes = sar_xml.encode("utf-8")
         signature = self.generate_signature(payload_bytes)
@@ -94,6 +133,10 @@ class FinCENEfilingClient:
             "X-FinCEN-Tracking-ID": tracking_id
         }
 
+        transport_mode = str(getattr(settings, "fincen_transport", "sandbox")).lower()
+        if not self.sandbox and transport_mode == "sftp":
+            return await self._submit_via_sftp(payload_bytes, tracking_id)
+
         if self.sandbox:
             logger.info(f"[FinCEN Sandbox] Simulating electronic SAR filing for alert {alert_id} | Tracking ID: {tracking_id}")
             return {
@@ -101,7 +144,9 @@ class FinCENEfilingClient:
                 "fincen_tracking_id": tracking_id,
                 "fincen_ack_code": "ACK_SUCCESS_200",
                 "submitted_at": datetime.now(timezone.utc).isoformat(),
-                "fincen_confirmation_message": "Report successfully ingested by FinCEN BSA E-Filing System (Sandbox Verified).",
+                "fincen_confirmation_message": "Report successfully validated and ingested by FinCEN BSA E-Filing System (Sandbox Verified).",
+                "transport": "SANDBOX",
+                "xsd_validated": True,
                 "sandbox": True
             }
 

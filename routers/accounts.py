@@ -193,6 +193,23 @@ async def freeze_account(
             f"Reason: {payload.reason} | Ref: {payload.freezing_order_ref}"
         )
 
+        # P0-2: Atomically enqueue signed outbound core-banking webhook via transactional outbox
+        from services.webhooks import enqueue_webhook_event_tx
+        await enqueue_webhook_event_tx(
+            conn=conn,
+            tenant_id=str(tenant_id),
+            event_type="ACCOUNT_FROZEN",
+            aggregate_id=id,
+            payload={
+                "account_id": id,
+                "account_number": acc["account_number"],
+                "status": "FROZEN",
+                "reason": payload.reason,
+                "freezing_order_ref": payload.freezing_order_ref,
+                "actor": current_user.get("username"),
+            },
+        )
+
         return {
             "account_id": id,
             "status": "FROZEN",
@@ -251,6 +268,20 @@ async def unfreeze_account(
             )
         except Exception as audit_err:
             logger.warning(f"Audit log writing failed in unfreeze_account: {audit_err}")
+
+        # P0-2: Atomically enqueue ACCOUNT_UNFROZEN core-banking webhook
+        from services.webhooks import enqueue_webhook_event_tx
+        await enqueue_webhook_event_tx(
+            conn=conn,
+            tenant_id=str(tenant_id),
+            event_type="ACCOUNT_UNFROZEN",
+            aggregate_id=id,
+            payload={
+                "account_id": id,
+                "status": "ACTIVE",
+                "actor": current_user.get("username"),
+            },
+        )
 
         return {
             "account_id": id,

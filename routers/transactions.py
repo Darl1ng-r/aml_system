@@ -179,10 +179,14 @@ async def _compute_transaction_risk(
 
     kyc_risk_tier = baseline.get("kyc_risk_tier", "STANDARD") if baseline else "STANDARD"
 
+    # P0-1: Multi-Currency FX Normalization to Base Reporting Currency (USD)
+    from services.fx_rates import convert_to_base_currency
+    amount_base_usd, fx_rate_applied = await convert_to_base_currency(payload.amount, payload.currency)
+
     triggered_rules = await RulesEngine.evaluate_transaction(
         sender_id=str(sender_id),
         receiver_id=str(receiver_id),
-        amount=payload.amount,
+        amount=amount_base_usd,
         sender_name=acct["sender_name"],
         sender_bic=acct["sender_bic"],
         receiver_name=acct["receiver_name"],
@@ -196,12 +200,15 @@ async def _compute_transaction_risk(
             "channel": payload.channel,
             "merchant": payload.merchant,
             "country": payload.country,
+            "original_amount": payload.amount,
+            "original_currency": payload.currency,
+            "fx_rate_applied": fx_rate_applied,
         }
     )
 
     import asyncio as _asyncio
     ml_result = await _asyncio.to_thread(
-        anomaly_model.predict_risk, payload.amount, sender_risk, receiver_risk, velocity_count
+        anomaly_model.predict_risk, amount_base_usd, sender_risk, receiver_risk, velocity_count
     )
     ai_score = ml_result["risk_score"]
     attributions = ml_result["attributions"]
@@ -210,7 +217,7 @@ async def _compute_transaction_risk(
 
     try:
         iforest_score = await get_iforest_score(
-            amount=payload.amount,
+            amount=amount_base_usd,
             sender_risk=sender_risk,
             receiver_risk=receiver_risk,
             hour=payload.timestamp.hour,
@@ -294,7 +301,9 @@ async def _compute_transaction_risk(
         "explainability": explainability,
         "attributions": attributions,
         "top_drivers": top_drivers,
-        "is_geo": is_geo
+        "is_geo": is_geo,
+        "amount_base_usd": amount_base_usd,
+        "fx_rate_applied": fx_rate_applied,
     }
 
 
@@ -359,8 +368,11 @@ async def _handle_ctr_and_structuring(
     except Exception as ex_ctr:
         logger.warning(f"Failed to query 24h rolling cash aggregation: {ex_ctr}")
 
-    total_aggregate_cash = prior_24h_cash + float(payload.amount)
-    if payload.amount >= 10000.0 or total_aggregate_cash >= 10000.0:
+    # Evaluate CTR against FX-normalized USD equivalent (31 CFR 1010.311)
+    from services.fx_rates import convert_to_base_currency
+    tx_amount_usd, _ = await convert_to_base_currency(payload.amount, payload.currency)
+    total_aggregate_cash = prior_24h_cash + float(tx_amount_usd)
+    if tx_amount_usd >= 10000.0 or total_aggregate_cash >= 10000.0:
         await conn.execute(
             """
             INSERT INTO ctr_filings (tenant_id, transaction_id, account_id, amount, currency, cash_in_out, status)
@@ -406,12 +418,37 @@ async def _persist_transaction_record(
 
         await conn.execute(
             """
-            INSERT INTO transactions (id, tenant_id, sender_account_id, receiver_account_id, amount, currency, status, timestamp, country, merchant, device, channel)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12);
+            INSERT INTO transactions (
+                id, tenant_id, sender_account_id, receiver_account_id, amount, currency,
+                amount_base_usd, fx_rate_applied, status, timestamp, country, merchant, device, channel
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);
             """,
-            tx_id, tenant_id, sender_id, receiver_id, payload.amount, payload.currency, scoring["tx_status"], dt,
+            tx_id, tenant_id, sender_id, receiver_id, payload.amount, payload.currency,
+            scoring.get("amount_base_usd", payload.amount), scoring.get("fx_rate_applied", 1.0),
+            scoring["tx_status"], dt,
             payload.country, payload.merchant, payload.device, payload.channel
         )
+
+        # P0-2: Enqueue signed core-banking interdiction webhook on HELD transactions
+        if scoring.get("decision") == "HELD" and tenant_id:
+            from services.webhooks import enqueue_webhook_event_tx
+            await enqueue_webhook_event_tx(
+                conn=conn,
+                tenant_id=str(tenant_id),
+                event_type="TRANSACTION_HELD",
+                aggregate_id=tx_id,
+                payload={
+                    "transaction_id": tx_id,
+                    "sender_account": payload.sender_account,
+                    "receiver_account": payload.receiver_account,
+                    "amount": payload.amount,
+                    "currency": payload.currency,
+                    "amount_base_usd": scoring.get("amount_base_usd", payload.amount),
+                    "triggered_rules": scoring.get("triggered_rules", []),
+                    "threat_level": scoring.get("threat_level", "HIGH"),
+                },
+            )
 
         if scoring["alert_triggered"]:
             threat_level = scoring["threat_level"]
