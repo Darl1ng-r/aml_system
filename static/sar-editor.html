@@ -394,6 +394,10 @@
             <span class="info-label">Author:</span>
             <span class="info-val" id="ctxAuthor">-</span>
           </div>
+          <div class="info-row">
+            <span class="info-label">BSA 30d Clock:</span>
+            <span class="info-val" id="ctxDeadline" style="font-family:'JetBrains Mono',monospace;">D-30</span>
+          </div>
         </div>
       </div>
 
@@ -613,6 +617,23 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
         activeDraftStatus = data.status || 'DRAFT';
         document.getElementById('ctxStatus').innerText = activeDraftStatus;
         document.getElementById('ctxAuthor').innerText = data.drafted_by_username || 'Analyst';
+        const dlEl = document.getElementById('ctxDeadline');
+        if (dlEl) {
+          if (activeDraftStatus === 'FILED') {
+            dlEl.textContent = data.continuing_activity_due_at ? 'FILED · 90d Review' : 'FILED';
+            dlEl.style.color = 'var(--accent-emerald)';
+          } else if (typeof data.days_until_deadline === 'number') {
+            if (data.days_until_deadline < 0) {
+              dlEl.textContent = `OVERDUE (${Math.abs(data.days_until_deadline)}d)`;
+              dlEl.style.color = 'var(--accent-crimson)';
+            } else {
+              dlEl.textContent = `D-${data.days_until_deadline}`;
+              dlEl.style.color = data.days_until_deadline <= 5 ? 'var(--accent-amber)' : 'var(--accent-emerald)';
+            }
+          } else {
+            dlEl.textContent = 'D-30';
+          }
+        }
         document.getElementById('narrativeText').value = data.narrative || '';
         isDirty = false;
         activeAlertId = data.alert_id;

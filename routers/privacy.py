@@ -298,16 +298,22 @@ async def execute_gdpr_erasure(
                 detail="Erasure blocked: active regulatory/legal hold prevents PII deletion.",
             )
 
-        # 2. BSA 5-year statutory retention guard (31 CFR § 1010.430)
-        latest_tx_ts = await conn.fetchval(
+        # 2. BSA 5-year statutory retention guard (31 CFR § 1010.430 & § 1020.320(d):
+        #    checks latest transaction timestamp AND latest linked SAR filing date)
+        latest_retention_ts = await conn.fetchval(
             """
-            SELECT MAX(timestamp)
-            FROM transactions
-            WHERE sender_account_id = $1 OR receiver_account_id = $1;
+            SELECT GREATEST(
+                (SELECT MAX(timestamp) FROM transactions WHERE sender_account_id = $1 OR receiver_account_id = $1),
+                (SELECT MAX(a.fincen_submitted_at)
+                 FROM alerts a
+                 JOIN transactions t ON a.transaction_id = t.id
+                 WHERE (t.sender_account_id = $1 OR t.receiver_account_id = $1)
+                   AND a.fincen_submitted_at IS NOT NULL)
+            );
             """,
             acc_id,
         )
-        anchor_ts = latest_tx_ts or acc["created_at"]
+        anchor_ts = latest_retention_ts or acc["created_at"]
         if anchor_ts is not None:
             if anchor_ts.tzinfo is None:
                 anchor_ts = anchor_ts.replace(tzinfo=timezone.utc)

@@ -200,7 +200,7 @@ async def _execute_fincen_gateway_submission(
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
         await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
-        raise HTTPException(status_code=400, detail=str(ve))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(ve))
     except Exception as e:
         logger.exception("FinCEN SAR submission failed")
         try:
@@ -722,6 +722,12 @@ async def review_sar_draft(
 def _format_sar_draft_response(draft: Any) -> dict:
     created = draft["created_at"]
     updated = draft.get("updated_at")
+    dl = draft.get("statutory_deadline_at") if hasattr(draft, "get") else (draft["statutory_deadline_at"] if "statutory_deadline_at" in draft else None)
+    cont_due = draft.get("continuing_activity_due_at") if hasattr(draft, "get") else (draft["continuing_activity_due_at"] if "continuing_activity_due_at" in draft else None)
+    now_utc = datetime.now(timezone.utc)
+    if dl is not None and dl.tzinfo is None:
+        dl = dl.replace(tzinfo=timezone.utc)
+    days_left = int((dl - now_utc).total_seconds() // 86400) if dl else None
     return {
         "draft_id": str(draft["id"]),
         "alert_id": str(draft["alert_id"]) if draft["alert_id"] else None,
@@ -733,6 +739,11 @@ def _format_sar_draft_response(draft: Any) -> dict:
         "xml_payload": draft["xml_payload"] or "",
         "reviewed_by_username": draft["reviewed_by_username"],
         "rejection_reason": draft["rejection_reason"],
+        "statutory_deadline_at": dl.isoformat() if dl else None,
+        "days_until_deadline": days_left,
+        "is_overdue": bool(days_left is not None and days_left < 0 and draft["status"] != "FILED"),
+        "continuing_activity_due_at": cont_due.isoformat() if cont_due else None,
+        "xsd_validated": bool(draft.get("xsd_validated")) if hasattr(draft, "get") else bool(draft["xsd_validated"] if "xsd_validated" in draft else False),
         "created_at": created.isoformat() if created else None,
         "updated_at": updated.isoformat() if updated else None,
         "alert_details": {

@@ -48,7 +48,11 @@ async def test_siem_forwarder(
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
     """Sends a synthetic test heartbeat probe to verify target SIEM connectivity."""
+    tenant_id = enforce_tenant_data_scope(current_user)
     target = str(payload.destination_url) if payload.destination_url else None
+    if not target:
+        persisted = await siem_service.load_tenant_config(str(tenant_id))
+        target = persisted.get("destination_url")
     if target:
         try:
             validate_siem_destination_url(target)
