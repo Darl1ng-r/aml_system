@@ -88,7 +88,7 @@ def _serialize_alert_row(row) -> dict:
         "alert_id": str(row[0]),
         "rule_name": row[1],
         "threat_level": row[2],
-        "ai_risk_score": float(row[3]) if row[3] else None,
+        "ai_risk_score": float(row[3]) if row[3] is not None else None,
         "explainability": json.loads(row[4]) if isinstance(row[4], str) else row[4],
         "status": row[5],
         "created_at": _to_iso(row[6]),
@@ -96,8 +96,8 @@ def _serialize_alert_row(row) -> dict:
         "sender_risk_tier": _get_val(15, "STANDARD"),
         "account_created_at": _to_iso(row[16]) if len(row) > 16 else None,
         "transaction": {
-            "amount": float(row[7]),
-            "currency": row[8],
+            "amount": float(row[7]) if row[7] is not None else 0.0,
+            "currency": row[8] or "USD",
             "timestamp": _to_iso(row[9]),
             "sender": row[10],
             "receiver": row[11],
@@ -117,7 +117,7 @@ async def list_alerts(
     search: str | None = Query(default=None, max_length=200),
     severity: str | None = None,
     status_filter: str | None = None,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR", "MLRO"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
     try:
@@ -128,9 +128,9 @@ async def list_alerts(
             count_query = f"""
                 SELECT COUNT(*)
                 FROM alerts a
-                JOIN transactions t ON a.transaction_id = t.id
-                JOIN accounts s ON t.sender_account_id = s.id
-                JOIN accounts r ON t.receiver_account_id = r.id
+                LEFT JOIN transactions t ON a.transaction_id = t.id
+                LEFT JOIN accounts s ON t.sender_account_id = s.id
+                LEFT JOIN accounts r ON t.receiver_account_id = r.id
                 WHERE {where_sql};
             """
             total_count = await conn.fetchval(count_query, *params)
@@ -146,12 +146,12 @@ async def list_alerts(
                        s.risk_category as sender_risk_tier, s.created_at as account_created_at,
                        t.channel, t.country
                 FROM alerts a
-                JOIN transactions t ON a.transaction_id = t.id
-                JOIN accounts s ON t.sender_account_id = s.id
-                JOIN accounts r ON t.receiver_account_id = r.id
+                LEFT JOIN transactions t ON a.transaction_id = t.id
+                LEFT JOIN accounts s ON t.sender_account_id = s.id
+                LEFT JOIN accounts r ON t.receiver_account_id = r.id
                 LEFT JOIN users u ON a.assigned_officer_id = u.id
                 WHERE {where_sql}
-                ORDER BY a.created_at DESC
+                ORDER BY (a.transaction_id IS NULL) ASC, a.created_at DESC
                 LIMIT ${param_idx} OFFSET ${param_idx + 1};
             """
             rows = await conn.fetch(query, *params, limit, offset)

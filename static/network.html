@@ -387,7 +387,7 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/api-client.js?v=20261120-v2"></script>
+  <script src="/static/api-client.js?v=20261120-v3"></script>
   <script>
     let network = null;
     let nodesDataSet = null;
@@ -609,7 +609,22 @@
           const data = await res.json();
           const flows = Array.isArray(data.circular_flows) ? data.circular_flows : [];
           loopCount = flows.length;
-          flows.forEach(c => { if (Array.isArray(c)) c.forEach(id => cycleNodeIds.add(String(id))); });
+          const accToNodeId = {};
+          if (nodesDataSet) {
+            nodesDataSet.get().forEach(n => {
+              accToNodeId[String(n.id)] = String(n.id);
+              if (n.properties && n.properties.account_number) {
+                accToNodeId[String(n.properties.account_number)] = String(n.id);
+              }
+            });
+          }
+          flows.forEach(c => {
+            const members = Array.isArray(c) ? c : (Array.isArray(c?.cycle) ? c.cycle : []);
+            members.forEach(m => {
+              const resolved = accToNodeId[String(m)] || String(m);
+              cycleNodeIds.add(resolved);
+            });
+          });
         }
 
         // Also run Tarjan's SCC over the live rendered PostgreSQL graph edges

@@ -712,57 +712,56 @@ function formatTenure(dateStr) {
 function mapApiAlertToClientModel(alert) {
     const tx = alert.transaction || {};
     const amountFormatted = tx.amount ? '$' + Number(tx.amount).toLocaleString('en-US', { minimumFractionDigits: 2 }) : '$0.00';
-    const senderName = tx.sender_name || tx.sender || 'Primary Account';
-    const receiverName = tx.receiver_name || tx.receiver || 'Beneficiary';
-    const tenure = alert.account_created_at ? formatTenure(alert.account_created_at) : 'Institutional';
-    const riskTier = alert.sender_risk_tier || (alert.threat_level === 'CRITICAL' ? 'CRITICAL' : 'STANDARD');
+    const senderName = tx.sender_name || tx.sender || '—';
+    const receiverName = tx.receiver_name || tx.receiver || '—';
+    const tenure = alert.account_created_at ? formatTenure(alert.account_created_at) : '—';
+    const riskTier = alert.sender_risk_tier || 'STANDARD';
+    const rawScore = (alert.ai_risk_score !== null && alert.ai_risk_score !== undefined) ? Number(alert.ai_risk_score) : null;
 
     return {
-        alert_id: alert.alert_id,
-        short_id: alert.alert_id ? alert.alert_id.slice(-6) : 'N/A',
-        title: `${alert.rule_name || 'AML ALERT'} — ${amountFormatted} (${senderName} → ${receiverName})`,
+        alert_id: alert.alert_id || alert.id,
+        short_id: (alert.alert_id || alert.id) ? String(alert.alert_id || alert.id).slice(-6) : 'N/A',
+        title: `${(alert.rule_name || 'AML ALERT').replaceAll('_', ' ')} — ${amountFormatted} (${senderName} → ${receiverName})`,
         rule_name: alert.rule_name || 'COMPLIANCE_ALERT',
         threat_level: alert.threat_level || 'MEDIUM',
-        ai_risk_score: (alert.ai_risk_score !== null && alert.ai_risk_score !== undefined) ? alert.ai_risk_score : 0.5,
+        ai_risk_score: rawScore !== null ? rawScore : 0,
         status: alert.status || 'OPEN',
-        created_at: alert.created_at || new Date().toISOString(),
+        created_at: alert.created_at || null,
         assignee: alert.assignee || 'Unassigned',
-        threshold_proximity: alert.threat_level === 'CRITICAL' ? '95%+' : 'Standard',
-        channel: tx.channel || 'Wire Transfer',
-        counterparty_jurisdiction: tx.country || 'DOMESTIC',
-        prior_30d_txns: 1,
+        threshold_proximity: rawScore !== null ? `${Math.round(rawScore * 100)}%` : '—',
+        channel: tx.channel || '—',
+        counterparty_jurisdiction: tx.country || '—',
+        prior_30d_txns: '—',
         account_tenure: tenure,
         rules_triggered_count: 1,
-        model_version: 'v4.2.1',
+        model_version: alert.explainability?.model_version || 'Production RBA',
         transaction: {
             amount: tx.amount || 0,
             currency: tx.currency || 'USD',
-            timestamp: tx.timestamp || new Date().toISOString(),
-            sender: tx.sender || 'Primary Account',
-            sender_account: tx.sender || 'N/A',
+            timestamp: tx.timestamp || alert.created_at || null,
+            sender: tx.sender || '—',
+            sender_account: tx.sender || '—',
             sender_name: senderName,
-            receiver: tx.receiver || 'Beneficiary',
-            receiver_account: tx.receiver || 'N/A',
+            receiver: tx.receiver || '—',
+            receiver_account: tx.receiver || '—',
             receiver_name: receiverName,
-            channel: tx.channel || 'Wire Transfer',
-            country: tx.country || 'DOMESTIC'
+            channel: tx.channel || '—',
+            country: tx.country || '—'
         },
         rules_triggered: [
-            { code: alert.rule_name || 'R-COMP-01', desc: `— Triggered compliance rule ${alert.rule_name}`, critical: alert.threat_level === 'CRITICAL' }
+            { code: alert.rule_name || 'RULE', desc: `— Triggered ${(alert.rule_name || 'compliance rule').replaceAll('_', ' ')}`, critical: alert.threat_level === 'CRITICAL' }
         ],
-        explainability: alert.explainability || {
-            attributions: { "transaction_risk": 0.5 }
-        },
+        explainability: alert.explainability || null,
         entity: {
             name: senderName,
-            nationality: tx.country || 'Global',
-            tier: `${riskTier} Tier`,
+            nationality: tx.country || '—',
+            tier: `${riskTier} Risk`,
             connected: receiverName,
             customer_since: tenure,
-            occupation: 'Commercial Account',
-            pep: 'Screened Clean',
-            sanctions: 'Screened Clean',
-            adverse_media: 'Clean'
+            occupation: `${riskTier} Risk Account`,
+            pep: alert.pep_status || 'Pending Screening',
+            sanctions: alert.sanctions_status || 'Pending Screening',
+            adverse_media: alert.adverse_media_status || 'Pending Screening'
         },
         linked_entities: [],
         prior_alerts: [],
@@ -804,6 +803,13 @@ function _applyLoadedAlerts(data, xTotalCount) {
             currentId = activeAlertId;
         }
         selectCase(currentId);
+    } else {
+        const titleEl = document.getElementById('evidence-txn-title');
+        const subEl = document.getElementById('evidence-txn-sub');
+        const topIdEl = document.getElementById('topbar-case-id');
+        if (topIdEl) topIdEl.innerText = 'NO OPEN CASES';
+        if (titleEl) titleEl.innerText = 'No open alerts in your queue';
+        if (subEl) subEl.innerText = 'All alerts for this tenant have been resolved or filtered out.';
     }
     updatePaginationControls(totalAlertsCount);
 }
@@ -1333,22 +1339,22 @@ function _updateTriggeredRulesAndShap(alert, firedRulesCount) {
 function _renderEntityKyc(entity) {
     if (!entity) return;
     const kycName = document.getElementById('ctx-kyc-name');
-    if (kycName) kycName.innerText = entity.name || 'N/A';
+    if (kycName) kycName.innerText = entity.name || '—';
 
     const kycTenure = document.getElementById('ctx-kyc-tenure');
-    if (kycTenure) kycTenure.innerText = entity.customer_since || 'Jul 2025';
+    if (kycTenure) kycTenure.innerText = entity.customer_since || '—';
 
     const kycOcc = document.getElementById('ctx-kyc-occupation');
-    if (kycOcc) kycOcc.innerText = entity.occupation || 'Commercial Account';
+    if (kycOcc) kycOcc.innerText = entity.occupation || '—';
 
     const kycPep = document.getElementById('ctx-kyc-pep');
-    if (kycPep) kycPep.innerText = entity.pep || 'Screened Clean';
+    if (kycPep) kycPep.innerText = entity.pep || '—';
 
     const kycSanc = document.getElementById('ctx-kyc-sanctions');
-    if (kycSanc) kycSanc.innerText = entity.sanctions || 'None';
+    if (kycSanc) kycSanc.innerText = entity.sanctions || '—';
 
     const kycMed = document.getElementById('ctx-kyc-media');
-    if (kycMed) kycMed.innerText = entity.adverse_media || 'Clean';
+    if (kycMed) kycMed.innerText = entity.adverse_media || '—';
 }
 
 function _renderLinkedEntitiesList(linkedList) {
@@ -1405,8 +1411,17 @@ function _updateContextKycAndEntities(alert, riskScore) {
     }
 }
 
+// Active AbortController to prevent stale race conditions on rapid case switching
+let activeCaseAbortController = null;
+
 // Selecting a case to open Case Investigation Cockpit
 function selectCase(id) {
+    if (activeCaseAbortController) {
+        activeCaseAbortController.abort();
+    }
+    activeCaseAbortController = new AbortController();
+    const signal = activeCaseAbortController.signal;
+
     activeAlertId = id;
     const alert = activeAlerts.find(a => a.alert_id === id) || activeAlerts[0];
     if (!alert) return;
@@ -1417,7 +1432,7 @@ function selectCase(id) {
     _updateCaseQueueAndTopbar(alert, fullCaseId);
     void acquireCaseLock(alert.alert_id);
 
-    const rawAiScore = (alert.ai_risk_score !== undefined && alert.ai_risk_score !== null && !Number.isNaN(alert.ai_risk_score)) ? Number(alert.ai_risk_score) : 0.8;
+    const rawAiScore = (alert.ai_risk_score !== undefined && alert.ai_risk_score !== null && !Number.isNaN(alert.ai_risk_score)) ? Number(alert.ai_risk_score) : 0;
     const riskScore = Math.min(Math.max(Math.round(rawAiScore * 100), 0), 100);
     const riskClass = getAlertRiskClass(alert);
 
@@ -1429,24 +1444,30 @@ function selectCase(id) {
 
     loadInboxTableHighlights(id);
     log(`Cockpit Active: Inspecting Case #${shortId} (${alert.entity ? alert.entity.name : 'Unknown'})`, 'info');
-    void fetchAndRenderAlertDetails(id, alert);
+    void fetchAndRenderAlertDetails(id, alert, signal);
 }
 
 function _renderKycSnapshotDetails(entity) {
     if (!entity) return;
     const kycName = document.getElementById('ctx-kyc-name');
-    if (kycName) kycName.innerText = entity.name || 'N/A';
+    if (kycName) kycName.innerText = entity.name || '—';
 
     const kycTenure = document.getElementById('ctx-kyc-tenure');
-    if (kycTenure && entity.customer_since) {
-        kycTenure.innerText = formatTenure(entity.customer_since);
+    if (kycTenure) {
+        kycTenure.innerText = entity.customer_since ? formatTenure(entity.customer_since) : '—';
     }
 
     const kycOcc = document.getElementById('ctx-kyc-occupation');
-    if (kycOcc) kycOcc.innerText = entity.risk_tier ? `${entity.risk_tier} Risk Account` : 'Commercial Account';
+    if (kycOcc) kycOcc.innerText = entity.risk_tier ? `${entity.risk_tier} Risk Account` : '—';
 
     const kycPep = document.getElementById('ctx-kyc-pep');
-    if (kycPep) kycPep.innerText = entity.risk_tier === 'CRITICAL' ? 'Flagged / Review' : 'Screened Clean';
+    if (kycPep) kycPep.innerText = entity.pep_status || 'Not Screened';
+
+    const kycSanc = document.getElementById('ctx-kyc-sanctions');
+    if (kycSanc) kycSanc.innerText = entity.sanctions_status || 'Not Screened';
+
+    const kycMed = document.getElementById('ctx-kyc-media');
+    if (kycMed) kycMed.innerText = entity.adverse_media_status || 'Not Screened';
 }
 
 function _renderPriorAlertsDetails(priorAlerts) {
@@ -1468,7 +1489,7 @@ function _renderPriorAlertsDetails(priorAlerts) {
     }
 }
 
-async function fetchAndRenderAlertDetails(id, alert) {
+async function fetchAndRenderAlertDetails(id, alert, signal = undefined) {
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
     if (!isUUID || mockMode) {
         return;
@@ -1476,26 +1497,35 @@ async function fetchAndRenderAlertDetails(id, alert) {
 
     try {
         const response = await fetch(`${BASE_URL}/api/v1/alerts/${id}/details`, {
-            headers: getAuthHeaders()
+            headers: getAuthHeaders(),
+            signal
         });
         if (!response.ok) return;
         const details = await response.json();
+        if (signal && signal.aborted) return;
 
         _renderKycSnapshotDetails(details.entity);
 
+        const prior30dEl = document.getElementById('txn-prior-30d');
         if (details.timeline_30d?.length > 0) {
             renderTransactionTimeline(details.timeline_30d, details.transaction?.id || null);
-            const prior30dEl = document.getElementById('txn-prior-30d');
             if (prior30dEl) prior30dEl.innerText = details.timeline_30d.length;
+        } else {
+            const track = document.getElementById('evidence-timeline-track');
+            const labels = document.getElementById('evidence-timeline-labels') || document.querySelector('.timeline-labels');
+            if (track) track.innerHTML = '<div class="timeline-axis"></div>';
+            if (labels) labels.innerHTML = '<span>No prior 30-day transactions recorded for this entity.</span>';
+            if (prior30dEl) prior30dEl.innerText = '0';
         }
 
-        _renderPriorAlertsDetails(details.prior_alerts);
+        _renderPriorAlertsDetails(details.prior_alerts || []);
 
         if (details.linked_entities) {
             alert.linked_entities = details.linked_entities;
             _renderLinkedEntitiesList(details.linked_entities);
         }
     } catch (e) {
+        if (e && e.name === 'AbortError') return;
         console.warn("Could not load enhanced alert details:", e);
     }
 }
@@ -1580,13 +1610,15 @@ async function loadGraphData(alertId, alert) {
 
     try {
         const response = await fetch(`${BASE_URL}/api/v1/alerts/${alertId}/graph`, {
-            headers: getAuthHeaders()
+            headers: getAuthHeaders(),
+            signal: activeCaseAbortController ? activeCaseAbortController.signal : undefined
         });
         if (!response.ok) throw new Error(`Graph data request failed with HTTP ${response.status}`);
         const graphData = await response.json();
         renderVisNetworkGraph(graphData, alert);
     } catch (e) {
-        log(`Failed to fetch graph data from Neo4j: ${e.message}.`, 'warn');
+        if (e && e.name === 'AbortError') return;
+        log(`Failed to fetch graph data: ${e.message}.`, 'warn');
         renderVisNetworkGraph({ nodes: [], edges: [] }, alert);
     }
 }

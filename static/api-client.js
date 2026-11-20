@@ -9,10 +9,26 @@
 (function () {
     'use strict';
 
-    // 1. Global same-origin fetch wrapper for HttpOnly cookie auth + CSRF protection
+    // 1. Global same-origin fetch wrapper for HttpOnly cookie auth, CSRF, and single-flight 401 refresh
     if (!window.__AML_FETCH_PATCHED__) {
         const originalFetch = window.fetch.bind(window);
-        window.fetch = function (resource, options = {}) {
+        let refreshPromise = null;
+
+        async function attemptSilentRefresh() {
+            if (!refreshPromise) {
+                refreshPromise = originalFetch('/api/v1/auth/refresh', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Protection': '1' },
+                    credentials: 'include'
+                })
+                    .then((r) => r.ok)
+                    .catch(() => false)
+                    .finally(() => { refreshPromise = null; });
+            }
+            return refreshPromise;
+        }
+
+        window.fetch = async function (resource, options = {}) {
             const urlStr = typeof resource === 'string' ? resource : (resource?.url || '');
             const isSameOrigin =
                 urlStr.startsWith('/') ||
@@ -34,7 +50,16 @@
                         mergedOptions.headers || {}
                     );
                 }
-                return originalFetch(resource, mergedOptions);
+                const response = await originalFetch(resource, mergedOptions);
+                const isAuthEndpoint = /\/api\/v1\/auth\/(login|refresh|logout|register|signup)/.test(urlStr);
+                if (response.status === 401 && !isAuthEndpoint && !mergedOptions.__retriedAfterRefresh) {
+                    const refreshed = await attemptSilentRefresh();
+                    if (refreshed) {
+                        const retryOpts = Object.assign({}, mergedOptions, { __retriedAfterRefresh: true });
+                        return originalFetch(resource, retryOpts);
+                    }
+                }
+                return response;
             }
             return originalFetch(resource, options);
         };

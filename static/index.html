@@ -87,7 +87,7 @@
           </span>
           <span>Sentinel</span>
         </a>
-        <span class="case-id" id="topbar-case-id">CASE #AML-2026-04471</span>
+        <span class="case-id" id="topbar-case-id">LOADING…</span>
         <span class="case-crumb" id="topbar-case-crumb" style="display:none;"></span>
       </div>
 
@@ -155,11 +155,7 @@
       <button type="button" class="queue-nav-btn" onclick="navigateQueue(-1)" aria-label="Previous case" title="Previous case (K or ↑)">↑</button>
 
       <div class="queue-list" id="queue-rail-items">
-        <!-- Dynamically injected queue items -->
-        <div class="queue-item current">
-          <span class="risk-dot high"></span>
-          <span class="qid">4471</span>
-        </div>
+        <!-- Dynamically populated from live PostgreSQL alerts -->
       </div>
 
       <button type="button" class="queue-nav-btn" onclick="navigateQueue(1)" aria-label="Next case" title="Next case (J or ↓)" style="margin-top:auto;">↓</button>
@@ -184,10 +180,10 @@
       <!-- Transaction Header -->
       <div class="txn-header">
         <div>
-          <h1 id="evidence-txn-title">Wire transfer — $9,480.00 → offshore holding entity</h1>
-          <div class="sub" id="evidence-txn-sub">Sender: Tobias M. Varga · Account ****4821 · Received 08:52:14 today</div>
+          <h1 id="evidence-txn-title">Loading active investigation…</h1>
+          <div class="sub" id="evidence-txn-sub">Fetching live case telemetry from database…</div>
         </div>
-        <div class="risk-badge high" id="evidence-risk-badge">● Risk 92 / 100</div>
+        <div class="risk-badge med" id="evidence-risk-badge">● Risk —</div>
       </div>
 
       <!-- Evidence Tabs with Full ARIA Accessibility -->
@@ -207,35 +203,35 @@
           <div class="txn-grid">
             <div class="field">
               <div class="flabel">Amount</div>
-              <div class="fval amt" id="txn-amount">$9,480.00</div>
+              <div class="fval amt" id="txn-amount">—</div>
             </div>
             <div class="field">
               <div class="flabel">Threshold proximity</div>
-              <div class="fval" id="txn-threshold">98.7%</div>
+              <div class="fval" id="txn-threshold">—</div>
             </div>
             <div class="field">
               <div class="flabel">Channel</div>
-              <div class="fval" id="txn-channel">Wire — SWIFT</div>
+              <div class="fval" id="txn-channel">—</div>
             </div>
             <div class="field">
               <div class="flabel">Counterparty jurisdiction</div>
-              <div class="fval" id="txn-jurisdiction">🇰🇾 KY</div>
+              <div class="fval" id="txn-jurisdiction">—</div>
             </div>
             <div class="field">
               <div class="flabel">Prior 30d similar txns</div>
-              <div class="fval" id="txn-prior-30d">6</div>
+              <div class="fval" id="txn-prior-30d">—</div>
             </div>
             <div class="field">
               <div class="flabel">Account tenure</div>
-              <div class="fval" id="txn-tenure">14 mo</div>
+              <div class="fval" id="txn-tenure">—</div>
             </div>
             <div class="field">
               <div class="flabel">Rules triggered</div>
-              <div class="fval" id="txn-rules-count">3</div>
+              <div class="fval" id="txn-rules-count">—</div>
             </div>
             <div class="field">
               <div class="flabel">Reviewed by model</div>
-              <div class="fval" id="txn-model">Production RBA</div>
+              <div class="fval" id="txn-model">—</div>
             </div>
           </div>
         </div>
@@ -267,22 +263,9 @@
           <div class="timeline-wrap">
             <div class="timeline-track" id="evidence-timeline-track">
               <div class="timeline-axis"></div>
-              <div class="timeline-point" style="left:4%; background:#B8B1A0;" title="Aug 12 - $1,200"></div>
-              <div class="timeline-point" style="left:16%; background:#B8B1A0;" title="Aug 16 - $850"></div>
-              <div class="timeline-point" style="left:24%; background:#F5A623;" title="Aug 21 - $4,500"></div>
-              <div class="timeline-point" style="left:38%; background:#B8B1A0;" title="Aug 26 - $900"></div>
-              <div class="timeline-point" style="left:47%; background:#F5A623;" title="Aug 30 - $6,200"></div>
-              <div class="timeline-point" style="left:58%; background:#F5A623;" title="Sep 3 - $5,800"></div>
-              <div class="timeline-point" style="left:70%; background:#B8B1A0;" title="Sep 6 - $1,100"></div>
-              <div class="timeline-point" style="left:81%; background:#F5A623;" title="Sep 8 - $7,400"></div>
-              <div class="timeline-point highlight" style="left:96%;" title="Today - $9,480 (Flagged)"></div>
             </div>
-            <div class="timeline-labels">
-              <span>Aug 12</span>
-              <span>Aug 21</span>
-              <span>Aug 30</span>
-              <span>Sep 8</span>
-              <span>Today</span>
+            <div class="timeline-labels" id="evidence-timeline-labels">
+              <span>Loading timeline…</span>
             </div>
           </div>
         </div>
@@ -366,8 +349,8 @@
         <div class="ctx-section">
           <div class="ctx-heading">Composite risk score</div>
           <div class="risk-gauge" id="ctx-risk-gauge">
-            <div class="gauge-num" id="ctx-risk-score">92</div>
-            <div class="gauge-label" id="ctx-risk-label">FATF Risk-Based Composite<br>Dynamic model evaluation.</div>
+            <div class="gauge-num" id="ctx-risk-score">—</div>
+            <div class="gauge-label" id="ctx-risk-label">FATF Risk-Based Composite<br>Awaiting live case data.</div>
           </div>
         </div>
 
@@ -379,27 +362,27 @@
           </div>
           <div class="kyc-row">
             <span class="k">Legal name</span>
-            <span class="v" id="ctx-kyc-name">Tobias M. Varga</span>
+            <span class="v" id="ctx-kyc-name">—</span>
           </div>
           <div class="kyc-row">
             <span class="k">Customer since</span>
-            <span class="v" id="ctx-kyc-tenure">Jul 2025</span>
+            <span class="v" id="ctx-kyc-tenure">—</span>
           </div>
           <div class="kyc-row">
-            <span class="k">Occupation</span>
-            <span class="v" id="ctx-kyc-occupation">Commercial Account</span>
+            <span class="k">Account tier</span>
+            <span class="v" id="ctx-kyc-occupation">—</span>
           </div>
           <div class="kyc-row">
             <span class="k">PEP status</span>
-            <span class="v" id="ctx-kyc-pep">Screened Clean</span>
+            <span class="v" id="ctx-kyc-pep">—</span>
           </div>
           <div class="kyc-row">
             <span class="k">Sanctions match</span>
-            <span class="v" id="ctx-kyc-sanctions">None</span>
+            <span class="v" id="ctx-kyc-sanctions">—</span>
           </div>
           <div class="kyc-row">
             <span class="k">Adverse media</span>
-            <span class="v" id="ctx-kyc-media">Clean</span>
+            <span class="v" id="ctx-kyc-media">—</span>
           </div>
         </div>
 
@@ -416,21 +399,10 @@
         <!-- 4. Prior Alerts -->
         <div class="ctx-section">
           <div class="ctx-heading">
-            Prior alerts <span id="ctx-prior-alerts-count" style="font-weight:400; color:#6B6F7A;">3</span>
+            Prior alerts <span id="ctx-prior-alerts-count" style="font-weight:400; color:#6B6F7A;">0</span>
           </div>
           <div id="ctx-prior-alerts-list">
-            <div class="alert-item">
-              <span>Structuring pattern</span>
-              <span class="adate">Aug 21 <span class="status-pill closed">Closed</span></span>
-            </div>
-            <div class="alert-item">
-              <span>High-risk jurisdiction</span>
-              <span class="adate">Jul 30 <span class="status-pill closed">Closed</span></span>
-            </div>
-            <div class="alert-item">
-              <span>Velocity threshold</span>
-              <span class="adate">Jun 14 <span class="status-pill escalated">Escalated</span></span>
-            </div>
+            <div style="font-size:12px; color:var(--ink-soft); padding:6px 0;">Loading prior alert history…</div>
           </div>
         </div>
 
@@ -708,15 +680,15 @@
         <div style="background:#FBF9F5; border:1px solid var(--panel-edge); border-radius:8px; padding:14px; margin-bottom:16px; font-size:12px; font-family:var(--font-data);">
           <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
             <span style="color:var(--ink-soft);">Case Reference:</span>
-            <strong id="sar-modal-case-id" style="color:var(--ink);">CASE #AML-2026-04471</strong>
+            <strong id="sar-modal-case-id" style="color:var(--ink);">—</strong>
           </div>
           <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
             <span style="color:var(--ink-soft);">Target Entity:</span>
-            <strong id="sar-modal-entity-name" style="color:var(--ink);">Tobias M. Varga</strong>
+            <strong id="sar-modal-entity-name" style="color:var(--ink);">—</strong>
           </div>
           <div style="display:flex; justify-content:space-between;">
             <span style="color:var(--ink-soft);">Aggregate Suspicious Flow:</span>
-            <strong id="sar-modal-amount" style="color:var(--risk-high);">$9,480.00 USD</strong>
+            <strong id="sar-modal-amount" style="color:var(--risk-high);">—</strong>
           </div>
         </div>
 
@@ -768,7 +740,7 @@
   </div>
 
   <!-- Application Logic -->
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20261120-v3"></script>
 
   <!-- Modal and View Controllers -->
   <script>
@@ -860,7 +832,7 @@
       const cb = document.getElementById('sar-confirm-checkbox');
       const btn = document.getElementById('btn-confirm-sar-submit');
 
-      if (caseIdEl) caseIdEl.textContent = document.getElementById('topbar-case-id')?.textContent || 'CASE #AML-2026-04471';
+      if (caseIdEl) caseIdEl.textContent = document.getElementById('topbar-case-id')?.textContent || '—';
       if (entityEl) entityEl.textContent = document.getElementById('ctx-kyc-name')?.textContent || 'Target Customer Entity';
       if (amountEl) amountEl.textContent = document.getElementById('txn-amount')?.textContent || '$9,480.00 USD';
       if (cb) cb.checked = false;
