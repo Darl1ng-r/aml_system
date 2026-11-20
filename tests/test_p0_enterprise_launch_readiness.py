@@ -386,8 +386,8 @@ def test_p0_6_pkce_and_group_to_rbac_prevents_super_admin_escalation():
 async def test_p0_6_oidc_callback_verifies_state_jwks_and_jit_provisions_mlro():
     priv_pem, pub_pem = get_or_create_rsa_keypair()
     provider_id = str(uuid.uuid4())
-    state_token = "state_test_oidc_123"
-    nonce = "nonce_test_oidc_456"
+    state_token = f"state_test_oidc_{uuid.uuid4().hex}"
+    nonce = f"nonce_test_oidc_{uuid.uuid4().hex}"
     issuer = "https://idp.example.invalid"
 
     id_token = jwt.encode(

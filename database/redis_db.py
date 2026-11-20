@@ -1,3 +1,4 @@
+import asyncio
 import redis
 import redis.asyncio as async_redis
 import logging
@@ -9,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 _redis_client = None
 _async_redis_client = None
+_async_redis_loop = None
 
 def get_redis_client():
     global _redis_client
@@ -39,7 +41,14 @@ def get_redis_client():
     return _redis_client
 
 async def get_async_redis_client():
-    global _async_redis_client
+    global _async_redis_client, _async_redis_loop
+    current_loop = asyncio.get_running_loop()
+    if _async_redis_client is not None and (
+        _async_redis_loop is not current_loop or _async_redis_loop.is_closed()
+    ):
+        _async_redis_client = None
+        _async_redis_loop = None
+
     if _async_redis_client is None:
         try:
             ssl_ctx = get_ssl_context()
@@ -59,9 +68,11 @@ async def get_async_redis_client():
 
             _async_redis_client = async_redis.Redis(**kwargs)
             await _async_redis_client.ping()
+            _async_redis_loop = current_loop
             logger.info("Async Redis connection established.")
         except Exception as e:
             _async_redis_client = None
+            _async_redis_loop = None
             logger.error(f"Failed to connect to Async Redis: {e}")
             raise e
     return _async_redis_client

@@ -57,7 +57,9 @@ async def export_data_subject_dossier(
     or internal alert flags to prevent unlawful tipping-off.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
-    offset = (page - 1) * limit
+    page_num = page if isinstance(page, int) else 1
+    page_limit = limit if isinstance(limit, int) else 200
+    offset = (page_num - 1) * page_limit
 
     async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
         acc = await conn.fetchrow(
@@ -92,7 +94,7 @@ async def export_data_subject_dossier(
             LIMIT $2 OFFSET $3;
             """,
             acc_id,
-            limit,
+            page_limit,
             offset,
         )
 
@@ -107,8 +109,8 @@ async def export_data_subject_dossier(
                 "created_at": acc["created_at"].isoformat() if acc["created_at"] else None,
             },
             "pagination": {
-                "page": page,
-                "limit": limit,
+                "page": page_num,
+                "limit": page_limit,
                 "total_transactions": int(total_tx or 0),
                 "has_more": (offset + len(txs)) < int(total_tx or 0),
             },

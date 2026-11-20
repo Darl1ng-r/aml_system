@@ -12,7 +12,13 @@ from services.encryption import encrypt_pii, decrypt_pii
 from services.adverse_media import evaluate_adverse_media_text
 from services.iso20022 import parse_pacs008_message
 from routers.compliance_reporting import get_sar_summary, get_ctr_summary, get_conversion_rates, get_kyc_status
-from routers.privacy import create_legal_hold, release_legal_hold, export_data_subject_dossier, LegalHoldCreate
+from routers.privacy import (
+    create_legal_hold,
+    release_legal_hold,
+    export_data_subject_dossier,
+    list_legal_holds,
+    LegalHoldCreate,
+)
 from database.postgres import get_async_db_conn
 
 TENANT_ID = "00000000-0000-0000-0000-000000000001"
@@ -173,10 +179,15 @@ async def test_compliance_reporting_and_privacy():
     assert hold_res["status"] == "ACTIVE"
     hold_id = hold_res["hold_id"]
 
-    # Export DSAR Dossier
+    # Export DSAR Dossier (P0-5: must NOT leak legal_holds_active to prevent BSA tipping-off)
     dsar_dossier = await export_data_subject_dossier(account_number=acc_number, current_user=auditor)
     assert dsar_dossier["account"]["account_number"] == acc_number
-    assert len(dsar_dossier["legal_holds_active"]) >= 1
+    assert "legal_holds_active" not in dsar_dossier
+    assert "risk_score" not in dsar_dossier["account"]
+
+    # Internal-only MLRO legal hold listing still surfaces the hold
+    holds_internal = await list_legal_holds(account_id=acc_id, current_user=mlro)
+    assert len(holds_internal) >= 1
 
     # Release Legal Hold
     rel_res = await release_legal_hold(id=hold_id, current_user=mlro)

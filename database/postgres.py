@@ -15,9 +15,7 @@ async def init_db_pool():
     import os
     global db_pool, db_replica_pool
     pgbouncer_enabled = os.getenv("PGBOUNCER_ENABLED", "false").lower() == "true"
-    pool_kwargs = {
-        "command_timeout": 15.0,
-    }
+    pool_kwargs = {}
     if pgbouncer_enabled:
         # Transaction-mode PgBouncer requires disabling per-connection prepared statement caches
         pool_kwargs["statement_cache_size"] = 0
@@ -30,6 +28,7 @@ async def init_db_pool():
             ssl=ssl_ctx,
             min_size=2,
             max_size=15,
+            command_timeout=15.0,
             **pool_kwargs
         )
         logger.info("Primary asyncpg connection pool initialized (pgbouncer=%s).", pgbouncer_enabled)
@@ -43,6 +42,7 @@ async def init_db_pool():
                 ssl=ssl_ctx,
                 min_size=2,
                 max_size=10,
+                command_timeout=15.0,
                 **pool_kwargs
             )
             logger.info("Read replica asyncpg connection pool initialized.")

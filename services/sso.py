@@ -106,6 +106,11 @@ async def consume_sso_state(state_token: str) -> Optional[Dict[str, Any]]:
     """Atomically consumes a single-use SSO state entry (prevents CSRF & replay attacks)."""
     if not state_token:
         return None
+
+    # Always pop local fallback first so a split-brain Redis timeout-after-write can NEVER allow replay
+    local_entry = _local_sso_states.pop(state_token, None)
+    local_payload = local_entry[1] if (local_entry and local_entry[0] >= time.monotonic()) else None
+
     try:
         redis = await get_async_redis_client()
         if redis:
@@ -121,10 +126,7 @@ async def consume_sso_state(state_token: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:
         logger.debug(f"Redis SSO state consume fallback: {exc}")
 
-    entry = _local_sso_states.pop(state_token, None)
-    if entry and entry[0] >= time.monotonic():
-        return entry[1]
-    return None
+    return local_payload
 
 
 async def fetch_oidc_discovery(issuer_url: str) -> Dict[str, Any]:

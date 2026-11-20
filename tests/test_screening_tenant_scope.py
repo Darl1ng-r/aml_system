@@ -7,7 +7,7 @@ from routers.screening import perform_pep_search
 @pytest.mark.anyio
 async def test_perform_pep_search_scopes_by_tenant_id():
     """Verify perform_pep_search queries PostgreSQL with tenant_id parameter."""
-    tenant_id = "00000000-0000-0000-0000-000000000001"
+    tenant_id = str(uuid.uuid4())
     t_uuid = uuid.UUID(tenant_id)
 
     mock_conn = AsyncMock()
@@ -53,7 +53,7 @@ async def test_perform_sanctions_search_postgres_and_baseline_fallback():
     mock_es = AsyncMock()
     mock_es.search.side_effect = Exception("Elasticsearch connection refused")
 
-    tenant_id = "00000000-0000-0000-0000-000000000001"
+    tenant_id = str(uuid.uuid4())
     t_uuid = uuid.UUID(tenant_id)
 
     mock_conn = AsyncMock()

@@ -298,8 +298,8 @@ async def test_siem_forwarder_integration(admin_token):
         assert res_stat.status_code == 200
         assert "enabled" in res_stat.json()
 
-        # 2. PUT config
-        res_cfg = await ac.put(
+        # 2. PUT config — loopback HTTP must be blocked by Anti-SSRF policy
+        res_ssrf = await ac.put(
             "/api/v1/admin/siem/config",
             headers=headers,
             json={
@@ -309,13 +309,40 @@ async def test_siem_forwarder_integration(admin_token):
                 "format": "SPLUNK_HEC"
             }
         )
-        assert res_cfg.status_code == 200
-        assert res_cfg.json()["status"] == "UPDATED"
+        assert res_ssrf.status_code == 400
 
-        # 3. POST test probe
-        res_test = await ac.post("/api/v1/admin/siem/test", headers=headers, json={})
-        assert res_test.status_code == 200
-        assert "target_url" in res_test.json()
+        # Valid external HTTPS Splunk HEC endpoint succeeds and persists
+        fake_dns = [(2, 1, 6, "", ("93.184.216.34", 443))]
+        orig_post = httpx.AsyncClient.post
+
+        class DummyResp:
+            status_code = 200
+            text = '{"text":"Success"}'
+
+        async def fake_post(self, url, **kwargs):
+            if str(url).startswith("https://splunk.example.com"):
+                return DummyResp()
+            return await orig_post(self, url, **kwargs)
+
+        with patch("services.siem_forwarder.socket.getaddrinfo", return_value=fake_dns), \
+             patch.object(httpx.AsyncClient, "post", new=fake_post):
+            res_cfg = await ac.put(
+                "/api/v1/admin/siem/config",
+                headers=headers,
+                json={
+                    "enabled": True,
+                    "destination_url": "https://splunk.example.com/services/collector/event",
+                    "auth_token": "TEST-SPLUNK-TOKEN",
+                    "format": "SPLUNK_HEC"
+                }
+            )
+            assert res_cfg.status_code == 200
+            assert res_cfg.json()["status"] == "UPDATED"
+
+            # 3. POST test probe
+            res_test = await ac.post("/api/v1/admin/siem/test", headers=headers, json={})
+            assert res_test.status_code == 200
+            assert "target_url" in res_test.json()
 
 
 # ── 8. Dynamic Institutional Risk Appetite Lifecycle ─────────────────────────

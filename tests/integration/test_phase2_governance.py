@@ -95,10 +95,11 @@ async def test_sar_drafting_and_four_eyes_dual_control():
             uuid.UUID(alert_id), uuid.UUID(tenant_id)
         )
 
-    # 1. Analyst creates SAR draft
+    # 1. Analyst creates SAR draft and submits for MLRO review
     draft_req = SARDraftCreate(
         alert_id=alert_id,
-        narrative="Customer conducted multiple structured wire transfers under reporting threshold."
+        narrative="Customer conducted multiple structured wire transfers under reporting threshold.",
+        status="PENDING_MLRO_REVIEW",
     )
     draft_resp = await create_sar_draft(payload=draft_req, current_user=drafter_user)
     assert draft_resp["status"] == "PENDING_MLRO_REVIEW"
