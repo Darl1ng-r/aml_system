@@ -131,24 +131,25 @@
       top: 16px;
       left: 16px;
       z-index: 10;
-      background: rgba(14, 21, 36, 0.85);
-      backdrop-filter: blur(8px);
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       border: 1px solid var(--border-subtle);
       border-radius: 14px;
       padding: 8px 12px;
       display: flex;
       align-items: center;
-      gap: 0.75rem;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      gap: 0.65rem;
+      box-shadow: 0 10px 28px -8px rgba(20, 21, 23, 0.14);
     }
     .input-account {
-      background: var(--bg-card);
+      background: var(--bg-elevated);
       border: 1px solid var(--border-subtle);
       border-radius: 9px;
       padding: 6px 10px;
       color: var(--text-main);
       font-size: 0.8rem;
-      width: 220px;
+      width: 210px;
       outline: none;
       font-family: 'JetBrains Mono', monospace;
     }
@@ -156,7 +157,7 @@
       padding: 6px 12px;
       border-radius: 9px;
       font-size: 0.75rem;
-      font-weight: 500;
+      font-weight: 600;
       cursor: pointer;
       border: 1px solid var(--border-subtle);
       background: var(--bg-card);
@@ -166,15 +167,17 @@
       gap: 0.35rem;
       transition: all 0.15s;
     }
-    .btn:hover { background: var(--bg-elevated); border-color: var(--text-dim); }
+    .btn:hover { background: var(--bg-elevated); border-color: var(--border-bright); }
     .btn-primary { background: #141517; border-color: #141517; color: #FFFFFF; }
-    .btn-primary:hover { background: #2563eb; }
+    .btn-primary:hover { background: #26292F; border-color: #26292F; color: #FFFFFF; }
 
     #networkCanvas {
-      background: linear-gradient(rgba(20,21,23,0.04) 1px, transparent 1px) 0 0/24px 24px, linear-gradient(90deg, rgba(20,21,23,0.04) 1px, transparent 1px) 0 0/24px 24px, #FAF9F6;
       flex: 1;
       height: 100%;
-      background: radial-gradient(circle at center, #0f172a 0%, #080c14 100%);
+      background:
+        linear-gradient(rgba(20, 21, 23, 0.045) 1px, transparent 1px) 0 0/24px 24px,
+        linear-gradient(90deg, rgba(20, 21, 23, 0.045) 1px, transparent 1px) 0 0/24px 24px,
+        #FAF9F6;
     }
 
     /* Side Properties Drawer */
@@ -219,15 +222,18 @@
       bottom: 16px;
       left: 16px;
       z-index: 10;
-      background: rgba(14, 21, 36, 0.85);
-      backdrop-filter: blur(8px);
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
       border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 8px 14px;
+      border-radius: 9999px;
+      padding: 8px 16px;
       display: flex;
       gap: 1rem;
       font-size: 0.75rem;
+      font-weight: 500;
       color: var(--text-muted);
+      box-shadow: 0 8px 24px -8px rgba(20, 21, 23, 0.12);
     }
     .legend-item { display: flex; align-items: center; gap: 0.4rem; }
     .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
@@ -311,7 +317,7 @@
     <!-- Floating Toolbar -->
     <div class="controls-bar">
       <label for="targetEntityInput" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">Target Account or Entity ID</label>
-      <input type="text" id="targetEntityInput" class="input-account" placeholder="Enter Account / Entity ID..." value="DE8937040044" aria-label="Target Account or Entity ID">
+      <input type="text" id="targetEntityInput" class="input-account" placeholder="Account ID or owner name..." value="" aria-label="Target Account or Entity ID">
       <button class="btn btn-primary" onclick="expandTargetNode()">Expand Graph</button>
       
       <div style="height:20px; width:1px; background:var(--border-subtle);"></div>
@@ -450,39 +456,48 @@
     }
 
     async function expandTargetNode() {
-      const entityId = document.getElementById('targetEntityInput').value.trim();
-      if (!entityId) {
-        showToast('Please enter an account or entity ID.');
-        return;
-      }
+      const inputEl = document.getElementById('targetEntityInput');
+      const rawInput = inputEl ? inputEl.value.trim() : '';
+      const entityId = rawInput || 'auto';
 
       const hopEl = document.getElementById('hopSelect');
       const hops = hopEl ? Number.parseInt(hopEl.value, 10) || 2 : 2;
 
       try {
-        const res = await fetch(`/api/v1/network/expand/${encodeURIComponent(entityId)}?hops=${hops}`, { credentials: 'include' });
+        let res = await fetch(`/api/v1/network/expand/${encodeURIComponent(entityId)}?hops=${hops}`, { credentials: 'include' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        let data = await res.json();
+        if ((!data.nodes || data.nodes.length === 0) && entityId === 'auto') {
+          res = await fetch(`/api/v1/network/expand/ACCT-0a2e9dcd?hops=${hops}`, { credentials: 'include' });
+          if (res.ok) {
+            data = await res.json();
+            data.resolved_entity = 'ACCT-0a2e9dcd';
+          }
+        }
+        const effectiveTarget = data.resolved_entity || entityId;
+        if (inputEl && data.resolved_entity && !rawInput) {
+          inputEl.value = data.resolved_entity;
+        }
         
         const rawNodes = data.nodes || [];
         const rawEdges = data.edges || [];
 
         function getNodeColor(isTarget, nodeType, riskVal) {
-          if (isTarget || riskVal === 'CRITICAL') return '#ef4444';
-          if (riskVal === 'HIGH') return '#f59e0b';
+          if (isTarget || riskVal === 'CRITICAL') return '#C13B33';
+          if (riskVal === 'HIGH') return '#F5A623';
           if (nodeType === 'Company') return '#141517';
-          return '#10b981';
+          return '#1F7A4D';
         }
 
         // Build vis nodes
         const visNodes = rawNodes.map((n) => {
-          const isTarget = n.id === entityId || (n.label && n.label.includes(entityId)) || (n.properties && n.properties.account_number === entityId);
+          const isTarget = n.id === effectiveTarget || (n.label && n.label.includes(effectiveTarget)) || (n.properties && n.properties.account_number === effectiveTarget);
           const color = getNodeColor(isTarget, n.type, n.properties && n.properties.risk);
           return {
             id: n.id,
             label: n.label || n.id,
             color: { background: color, border: '#FFFFFF' },
-            size: isTarget ? 24 : 16,
+            size: isTarget ? 22 : 15,
             properties: n.properties || {},
             type: n.type || 'Account'
           };
@@ -494,7 +509,7 @@
         if (visNodes.length === 0) {
           const banner = document.getElementById('demoModeBanner');
           if (banner) banner.style.display = 'block';
-          showToast(`No graph connections found for "${entityId}".`);
+          showToast(`No graph connections found for "${effectiveTarget}".`);
           return;
         }
 
@@ -505,7 +520,7 @@
           amount: e.properties && e.properties.amount ? Number(e.properties.amount) : 0,
           edgeType: e.type || 'TRANSFERS_TO',
           label: e.properties && e.properties.amount ? `$${Number(e.properties.amount).toLocaleString()}` : (e.type || ''),
-          font: { size: 10, color: '#94a3b8' }
+          font: { size: 10, color: '#5C6068', background: 'rgba(255,255,255,0.88)', strokeWidth: 0 }
         })));
 
         const banner = document.getElementById('demoModeBanner');
@@ -586,11 +601,72 @@
 
     async function runCycleDetection() {
       try {
+        let loopCount = 0;
+        let cycleNodeIds = new Set();
+
         const res = await fetch('/api/v1/network/analysis', { credentials: 'include' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const flows = Array.isArray(data.circular_flows) ? data.circular_flows : [];
-        showToast(`Cycle Analysis Complete: ${flows.length} circular transit loop${flows.length === 1 ? '' : 's'} detected.`);
+        if (res.ok) {
+          const data = await res.json();
+          const flows = Array.isArray(data.circular_flows) ? data.circular_flows : [];
+          loopCount = flows.length;
+          flows.forEach(c => { if (Array.isArray(c)) c.forEach(id => cycleNodeIds.add(String(id))); });
+        }
+
+        // Also run Tarjan's SCC over the live rendered PostgreSQL graph edges
+        const edges = edgesDataSet ? edgesDataSet.get() : [];
+        if (loopCount === 0 && edges.length > 0) {
+          const adj = {};
+          const nodes = new Set();
+          edges.forEach(e => {
+            nodes.add(String(e.from));
+            nodes.add(String(e.to));
+            if (!adj[e.from]) adj[e.from] = [];
+            adj[e.from].push(String(e.to));
+          });
+          let idx = 0;
+          const indexMap = {}, lowlink = {}, onStack = new Set(), stack = [], sccs = [];
+          function strongConnect(v) {
+            indexMap[v] = lowlink[v] = idx++;
+            stack.push(v);
+            onStack.add(v);
+            (adj[v] || []).forEach(w => {
+              if (indexMap[w] === undefined) {
+                strongConnect(w);
+                lowlink[v] = Math.min(lowlink[v], lowlink[w]);
+              } else if (onStack.has(w)) {
+                lowlink[v] = Math.min(lowlink[v], indexMap[w]);
+              }
+            });
+            if (lowlink[v] === indexMap[v]) {
+              const comp = [];
+              while (stack.length) {
+                const w = stack.pop();
+                onStack.delete(w);
+                comp.push(w);
+                if (w === v) break;
+              }
+              if (comp.length >= 2) sccs.push(comp);
+            }
+          }
+          nodes.forEach(n => { if (indexMap[n] === undefined) strongConnect(n); });
+          loopCount = sccs.length;
+          sccs.forEach(c => c.forEach(id => cycleNodeIds.add(id)));
+        }
+
+        // Visually highlight detected circular layering edges
+        if (cycleNodeIds.size > 0 && edgesDataSet) {
+          const updates = edgesDataSet.get().map(e => {
+            const inCycle = cycleNodeIds.has(String(e.from)) && cycleNodeIds.has(String(e.to));
+            return {
+              id: e.id,
+              color: inCycle ? { color: '#C13B33', highlight: '#C13B33' } : { color: '#CBD5E1', highlight: '#F5A623' },
+              width: inCycle ? 3 : 1
+            };
+          });
+          edgesDataSet.update(updates);
+        }
+
+        showToast(`Tarjan SCC Complete: ${loopCount} circular layering loop${loopCount === 1 ? '' : 's'} detected (${cycleNodeIds.size} accounts highlighted).`);
       } catch (err) {
         console.error('Failed to query cycle detection API:', err);
         showToast('Cycle analysis failed: ' + err.message);

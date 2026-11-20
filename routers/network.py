@@ -156,13 +156,32 @@ def _parse_pg_rows(rows: list) -> dict:
 async def _expand_pg_fallback(entity_id: str, tenant_id: str | None, hops: int = 2) -> dict:
     from database.postgres import get_async_db_read_conn
     safe_hops = max(1, min(int(hops), 3))
+    target_entity = str(entity_id or "").strip()
     async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        if target_entity.lower() in ("", "auto", "default"):
+            seed_row = await conn.fetchrow(
+                """
+                SELECT a.account_number
+                FROM accounts a
+                JOIN transactions t
+                  ON t.sender_account_id = a.id OR t.receiver_account_id = a.id
+                WHERE ($1::text IS NULL OR t.tenant_id = $1::uuid)
+                GROUP BY a.id, a.account_number, a.risk_score
+                ORDER BY count(t.id) DESC, a.risk_score DESC NULLS LAST
+                LIMIT 1
+                """,
+                str(tenant_id) if tenant_id else None,
+            )
+            if not seed_row:
+                return {"nodes": [], "edges": [], "resolved_entity": None}
+            target_entity = seed_row["account_number"]
+
         rows = await conn.fetch(
             """
             WITH RECURSIVE visited_accounts(acc_id, depth) AS (
                 SELECT id, 0
                 FROM accounts
-                WHERE id::text = $1 OR account_number = $1
+                WHERE id::text = $1 OR account_number ILIKE $1 OR owner_name ILIKE $1
                 UNION
                 SELECT CASE
                            WHEN t.sender_account_id = v.acc_id THEN t.receiver_account_id
@@ -198,9 +217,11 @@ async def _expand_pg_fallback(entity_id: str, tenant_id: str | None, hops: int =
             ORDER BY t.timestamp DESC
             LIMIT 75;
             """,
-            str(entity_id), str(tenant_id) if tenant_id else None, safe_hops
+            target_entity, str(tenant_id) if tenant_id else None, safe_hops
         )
-    return _parse_pg_rows(rows)
+    parsed = _parse_pg_rows(rows)
+    parsed["resolved_entity"] = target_entity
+    return parsed
 
 
 @router.get("/entities/{entity_id}/network")
@@ -214,17 +235,23 @@ async def expand_graph_node(
 ):
     """
     Dynamically expands a target graph node by fetching its N-hop connected sub-network from Neo4j,
-    scoped strictly to the authenticated tenant (B4).
+    automatically falling back to PostgreSQL when Neo4j is unavailable or returns no records.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
-    try:
-        return await _expand_neo4j(entity_id, tenant_id, hops=hops)
-    except Exception as neo_err:
-        logger.info(f"Neo4j expansion unavailable ({neo_err}); executing in-engine PostgreSQL fallback...")
+    neo_err = None
+    if str(entity_id or "").strip().lower() not in ("", "auto", "default"):
         try:
-            return await _expand_pg_fallback(entity_id, tenant_id, hops=hops)
-        except Exception as pg_err:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Graph node expansion failed on both Neo4j ({neo_err}) and PostgreSQL ({pg_err})"
-            )
+            neo_res = await _expand_neo4j(entity_id, tenant_id, hops=hops)
+            if neo_res and neo_res.get("nodes"):
+                return neo_res
+        except Exception as err:
+            neo_err = err
+            logger.info(f"Neo4j expansion unavailable ({err}); executing in-engine PostgreSQL fallback...")
+
+    try:
+        return await _expand_pg_fallback(entity_id, tenant_id, hops=hops)
+    except Exception as pg_err:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Graph node expansion failed on both Neo4j ({neo_err}) and PostgreSQL ({pg_err})"
+        )
