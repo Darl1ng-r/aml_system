@@ -41,7 +41,7 @@ static_resources:
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
-                      value: "aml-internal-gateway-secret-dev-only"
+                      value: "${INTERNAL_GATEWAY_SECRET}"
                     append: false
 
               - match:
@@ -71,7 +71,7 @@ static_resources:
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
-                      value: "aml-internal-gateway-secret-dev-only"
+                      value: "${INTERNAL_GATEWAY_SECRET}"
                     append: false
 
               # 3. Screening & Sanctions Routes
@@ -90,7 +90,7 @@ static_resources:
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
-                      value: "aml-internal-gateway-secret-dev-only"
+                      value: "${INTERNAL_GATEWAY_SECRET}"
                     append: false
 
               # 4. Case Management & Regulatory Reporting Routes
@@ -109,7 +109,7 @@ static_resources:
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
-                      value: "aml-internal-gateway-secret-dev-only"
+                      value: "${INTERNAL_GATEWAY_SECRET}"
                     append: false
 
               - match:
@@ -127,7 +127,7 @@ static_resources:
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
-                      value: "aml-internal-gateway-secret-dev-only"
+                      value: "${INTERNAL_GATEWAY_SECRET}"
                     append: false
 
               # 5. Fallback Route to Core AML Application

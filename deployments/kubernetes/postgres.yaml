@@ -211,7 +211,8 @@ spec:
   selector:
     app: aml-postgres
 ---
-# Read-Only Replica Service (load-balances read requests across all pods)
+# Read-Only Replica Service (routes strictly to standby replica pod-1, excluding primary pod-0)
+# NOTE: For automated failover HA in production, replace this StatefulSet with CloudNativePG or Patroni.
 apiVersion: v1
 kind: Service
 metadata:
@@ -224,4 +225,4 @@ spec:
   - port: 5432
     targetPort: 5432
   selector:
-    app: aml-postgres
+    statefulset.kubernetes.io/pod-name: aml-postgres-1

@@ -66,3 +66,28 @@ async def get_async_redis_client():
             raise e
     return _async_redis_client
 
+
+async def get_async_redis_pubsub_client():
+    """
+    Dedicated Async Redis client for long-lived Pub/Sub subscriptions WITHOUT socket_timeout=1.0
+    so idle Pub/Sub channels never experience periodic timeout disconnects.
+    """
+    ssl_ctx = get_ssl_context()
+    pwd = REDIS_PASSWORD or os.getenv("REDIS_PASSWORD", None)
+    kwargs = {
+        "host": REDIS_HOST,
+        "port": REDIS_PORT,
+        "decode_responses": True,
+        "socket_connect_timeout": 2.0,
+        "socket_timeout": None,
+        "socket_keepalive": True,
+    }
+    if pwd:
+        kwargs["password"] = pwd
+    if ssl_ctx:
+        kwargs["ssl"] = True
+        kwargs["ssl_context"] = ssl_ctx
+    client = async_redis.Redis(**kwargs)
+    await client.ping()
+    return client
+

@@ -29,16 +29,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/install/bin:$PATH" \
     PYTHONPATH="/install/lib/python3.11/site-packages:$PYTHONPATH"
 
-# Runtime dependencies and unprivileged user
+# Runtime dependencies and unprivileged user (libgomp1 required by xgboost/lightgbm)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    libgomp1 \
     curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 10001 appgroup \
-    && useradd -u 10001 -g appgroup -s /bin/bash -m appuser
+    && useradd -u 10001 -g appgroup -s /bin/bash -m appuser \
+    && mkdir -p /tmp/prometheus_multiproc \
+    && chown -R appuser:appgroup /tmp/prometheus_multiproc
 
 COPY --from=builder /install /install
 COPY --chown=appuser:appgroup . /app
+
+ENV PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus_multiproc
 
 USER appuser
 
@@ -47,4 +52,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/health/live || exit 1
 
-CMD ["sh", "-c", "exec python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-4}"]
+CMD ["sh", "-c", "exec python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2}"]

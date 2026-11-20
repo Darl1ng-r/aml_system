@@ -227,8 +227,13 @@ class OutboxRelayEngine:
         event_id = event["id"]
         try:
             payload = event["payload"]
-            tenant_key = (
-                event.get("tenant_id")
+            # Partition by sender account when present (eliminates single-tenant hot partitions),
+            # falling back to tenant_id then aggregate_id for non-account domain events
+            partition_key = (
+                payload.get("sender_account_id")
+                or payload.get("sender_id")
+                or payload.get("sender_account")
+                or event.get("tenant_id")
                 or payload.get("tenant_id")
                 or event.get("aggregate_id")
             )
@@ -237,9 +242,13 @@ class OutboxRelayEngine:
             if not topic and event.get("event_type") == "aml.core.transaction.buffered.v1":
                 topic = "aml.transactions.raw"
 
+            # Propagate W3C traceparent into payload envelope if present in outbox headers
+            if headers.get("traceparent") and isinstance(payload, dict) and "_traceparent" not in payload:
+                payload = {**payload, "_traceparent": headers["traceparent"]}
+
             success = await publish_transaction_async(
                 payload,
-                key=str(tenant_key) if tenant_key else None,
+                key=str(partition_key) if partition_key else None,
                 topic=topic,
             )
             if success:

@@ -64,7 +64,7 @@ async def _get_producer():
                 acks="all",            # wait for all in-sync replicas to confirm
                 retry_backoff_ms=500,
                 request_timeout_ms=10_000,
-                compression_type="snappy",   # reduce wire size for high-volume topics
+                compression_type="gzip",     # built-in compression (no native libsnappy dependency)
             )
             await p.start()
             _producer = p

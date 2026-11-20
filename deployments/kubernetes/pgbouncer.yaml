@@ -1,0 +1,108 @@
+# ════════════════════════════════════════════════════════════════════════════
+# PgBouncer HA Connection Pooler (Transaction Pooling Mode)
+# ════════════════════════════════════════════════════════════════════════════
+# Prevents connection exhaustion when FastAPI scales to 10+ pods.
+# All RLS contexts use transaction-scoped set_config(..., true), making
+# transaction pooling safe and deterministic.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aml-pgbouncer
+  namespace: aml-system
+  labels:
+    app: aml-pgbouncer
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: aml-pgbouncer
+  template:
+    metadata:
+      labels:
+        app: aml-pgbouncer
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: pgbouncer
+        image: edoburu/pgbouncer:v1.23.1-p0
+        ports:
+        - containerPort: 6432
+          name: pgbouncer
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: DB_HOST
+          value: "aml-postgres-primary"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: "aml_db"
+        - name: DB_USER
+          value: "aml_app"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aml-secrets
+              key: AML_APP_PASSWORD
+        - name: LISTEN_PORT
+          value: "6432"
+        - name: POOL_MODE
+          value: "transaction"
+        - name: MAX_CLIENT_CONN
+          value: "1000"
+        - name: DEFAULT_POOL_SIZE
+          value: "40"
+        - name: RESERVE_POOL_SIZE
+          value: "10"
+        - name: AUTH_TYPE
+          value: "scram-sha-256"
+        - name: MAX_PREPARED_STATEMENTS
+          value: "0"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        readinessProbe:
+          tcpSocket:
+            port: 6432
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 6432
+          initialDelaySeconds: 10
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-pgbouncer-service
+  namespace: aml-system
+  labels:
+    app: aml-pgbouncer
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6432
+    targetPort: 6432
+    protocol: TCP
+    name: pgbouncer
+  selector:
+    app: aml-pgbouncer

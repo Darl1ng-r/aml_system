@@ -15,6 +15,53 @@ logger = logging.getLogger(__name__)
 CONFIG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rules_config.json"))
 
 _config_cache = None
+_tenant_rules_cache: dict[str, tuple[float, dict]] = {}
+_TENANT_RULES_TTL_SECONDS = 60.0
+_MAX_TENANT_RULES_CACHE = 500
+
+
+async def get_rules_config_async(tenant_id: str | None = None) -> dict:
+    """
+    Loads active AML rule configurations with PostgreSQL `rule_configs` override support.
+    Falls back to `rules_config.json` defaults when the table is empty or DB is unreachable,
+    ensuring live `PATCH /api/v1/rules/{rule_name}` changes take immediate cluster-wide effect.
+    """
+    base_cfg = get_rules_config()
+    if not tenant_id:
+        return base_cfg
+
+    cache_key = str(tenant_id)
+    now = time.monotonic()
+    cached = _tenant_rules_cache.get(cache_key)
+    if cached and (now - cached[0]) < _TENANT_RULES_TTL_SECONDS:
+        return cached[1]
+
+    merged_rules = {k: dict(v) for k, v in base_cfg.get("rules", {}).items()}
+    try:
+        from database.postgres import get_async_db_read_conn
+        async with get_async_db_read_conn(tenant_id=cache_key) as conn:
+            if hasattr(conn, "fetch"):
+                rows = await conn.fetch(
+                    "SELECT rule_name, enabled, config FROM rule_configs;"
+                )
+                for r in (rows or []):
+                    rname = r["rule_name"]
+                    rcfg = r["config"]
+                    if isinstance(rcfg, str):
+                        rcfg = json.loads(rcfg)
+                    entry = dict(merged_rules.get(rname, {}))
+                    if isinstance(rcfg, dict):
+                        entry.update(rcfg)
+                    entry["enabled"] = bool(r["enabled"])
+                    merged_rules[rname] = entry
+    except Exception as e:
+        logger.debug(f"DB rule_configs lookup skipped/fallback to defaults: {e}")
+
+    merged = {"rules": merged_rules}
+    if len(_tenant_rules_cache) >= _MAX_TENANT_RULES_CACHE:
+        _tenant_rules_cache.clear()
+    _tenant_rules_cache[cache_key] = (now, merged)
+    return merged
 
 def get_rules_config() -> dict:
     global _config_cache
@@ -111,7 +158,7 @@ async def _screen_party_name(
 ) -> bool:
     from routers.screening import perform_sanctions_search
     from services.whitelisting import is_entity_whitelisted
-    res = await perform_sanctions_search(name, threshold, es)
+    res = await perform_sanctions_search(name, threshold, es, tenant_id=tenant_id)
     if res.get("match_found", False):
         if not await is_entity_whitelisted(tenant_id, name, "SANCTIONS_HIT", customer_id=customer_id):
             return True
@@ -124,7 +171,8 @@ class RulesEngine:
     def reload_config(cls):
         global _config_cache
         _config_cache = None
-        logger.info("Rules configuration cache invalidated.")
+        _tenant_rules_cache.clear()
+        logger.info("Rules configuration cache invalidated (global + tenant DB cache).")
 
     @staticmethod
     async def _resolve_entity_id(
@@ -708,73 +756,52 @@ class RulesEngine:
         **kwargs
     ) -> list[str]:
         triggered_rules = []
-        config = get_rules_config()
+        config = await get_rules_config_async(tenant_id=tenant_id)
         meta = metadata or {}
 
         entity_id = await RulesEngine._resolve_entity_id(sender_id, sender_name, meta, tenant_id)
 
-        # 1. LARGE_TRANSACTION Rule
+        # 1. LARGE_TRANSACTION Rule (sync)
         triggered_rules.extend(RulesEngine._check_large_transaction(config, amount))
 
-        # 2. STRUCTURING_SMURFING Rule
+        # 2. STRUCTURING_SMURFING Rule (needed for entity totals in rule 13)
         struct_rules, total_entity_amount, entity_below = await RulesEngine._check_structuring_smurfing(
             config, amount, sender_id, entity_id, tenant_id
         )
         triggered_rules.extend(struct_rules)
 
-        # 3. VELOCITY_MONITORING Rule
-        triggered_rules.extend(await RulesEngine._check_velocity_monitoring(
-            config, amount, sender_id, timestamp, tenant_id
-        ))
-
-        # 4. RAPID_MOVEMENT_FUNDS Rule
-        triggered_rules.extend(await RulesEngine._check_rapid_movement_funds(
-            config, amount, sender_id, timestamp, tenant_id
-        ))
-
-        # 5. DORMANT_ACCOUNT Activation Rule
-        triggered_rules.extend(await RulesEngine._check_dormant_account(
-            config, amount, sender_id, timestamp, tenant_id
-        ))
-
-        # 6. GEOGRAPHIC_SANCTIONS Rule
-        triggered_rules.extend(await RulesEngine._check_geographic_sanctions(
-            config, sender_bic, receiver_bic, sender_name, receiver_name, tenant_id, entity_id
-        ))
-
-        # 7. ROUND_TRIP_DETECTION
-        triggered_rules.extend(await RulesEngine._check_round_trip(
-            config, amount, sender_id, receiver_id, timestamp, tenant_id
-        ))
-
-        # 8. NEWLY_INCORPORATED_HIGH_VALUE
-        triggered_rules.extend(await RulesEngine._check_newly_incorporated(
-            config, amount, sender_id, timestamp, tenant_id
-        ))
-
-        # 9. TRADE_BASED_ML_OVER_UNDER_INVOICING
-        triggered_rules.extend(RulesEngine._check_tbml(config, amount, meta))
-
-        # 10. CRYPTO_FIAT_VASP_STRUCTURING
-        triggered_rules.extend(RulesEngine._check_vasp_crypto(
-            config, amount, sender_bic, receiver_bic, meta
-        ))
-
         # Risk tier discount (FATF RBA)
         kyc_risk_tier = str(meta.get("kyc_risk_tier", "STANDARD")).upper()
         tier_discount = 0.50 if kyc_risk_tier in ("HIGH", "CRITICAL") else 1.00
 
-        # 11. STRUCTURING_EXTENDED_7D
-        triggered_rules.extend(await RulesEngine._check_structuring_extended_7d(
-            config, amount, sender_id, sender_name, entity_id, tier_discount, timestamp, meta, tenant_id
+        # Parallelize independent I/O-bound rules (3-8, 11-12) via asyncio.gather
+        import asyncio as _asyncio
+        parallel_results = await _asyncio.gather(
+            RulesEngine._check_velocity_monitoring(config, amount, sender_id, timestamp, tenant_id),
+            RulesEngine._check_rapid_movement_funds(config, amount, sender_id, timestamp, tenant_id),
+            RulesEngine._check_dormant_account(config, amount, sender_id, timestamp, tenant_id),
+            RulesEngine._check_geographic_sanctions(
+                config, sender_bic, receiver_bic, sender_name, receiver_name, tenant_id, entity_id
+            ),
+            RulesEngine._check_round_trip(config, amount, sender_id, receiver_id, timestamp, tenant_id),
+            RulesEngine._check_newly_incorporated(config, amount, sender_id, timestamp, tenant_id),
+            RulesEngine._check_structuring_extended_7d(
+                config, amount, sender_id, sender_name, entity_id, tier_discount, timestamp, meta, tenant_id
+            ),
+            RulesEngine._check_conduit_passthrough(config, amount, sender_id, tier_discount, timestamp, tenant_id),
+        )
+        for res_list in parallel_results:
+            triggered_rules.extend(res_list)
+
+        # 9. TRADE_BASED_ML_OVER_UNDER_INVOICING (sync)
+        triggered_rules.extend(RulesEngine._check_tbml(config, amount, meta))
+
+        # 10. CRYPTO_FIAT_VASP_STRUCTURING (sync)
+        triggered_rules.extend(RulesEngine._check_vasp_crypto(
+            config, amount, sender_bic, receiver_bic, meta
         ))
 
-        # 12. CONDUIT_RAPID_PASSTHROUGH
-        triggered_rules.extend(await RulesEngine._check_conduit_passthrough(
-            config, amount, sender_id, tier_discount, timestamp, tenant_id
-        ))
-
-        # 13. AMOUNT_ANOMALY_HEURISTICS
+        # 13. AMOUNT_ANOMALY_HEURISTICS (sync)
         triggered_rules.extend(RulesEngine._check_amount_anomaly(
             config, amount, total_entity_amount, entity_below
         ))

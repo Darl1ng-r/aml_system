@@ -22,6 +22,30 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LOCK_TTL_SECONDS = 300  # 5 minutes
 
+# Atomic Lua compare-and-set / compare-and-delete scripts (prevents TOCTOU race conditions)
+_LUA_COMPARE_AND_SET = """
+local current = redis.call('GET', KEYS[1])
+if not current then
+    return 0
+end
+if string.find(current, ARGV[1], 1, true) then
+    redis.call('SET', KEYS[1], ARGV[2], 'EX', tonumber(ARGV[3]))
+    return 1
+end
+return -1
+"""
+
+_LUA_COMPARE_AND_DEL = """
+local current = redis.call('GET', KEYS[1])
+if not current then
+    return 1
+end
+if string.find(current, ARGV[1], 1, true) then
+    return redis.call('DEL', KEYS[1])
+end
+return -1
+"""
+
 
 def _redis_key(resource_type: str, resource_id: str) -> str:
     return f"aml:lock:{resource_type.upper()}:{resource_id}"
@@ -41,21 +65,36 @@ async def _try_acquire_redis_lease(
     lock_token: str
 ) -> Tuple[bool, Optional[Tuple[bool, Dict[str, Any]]]]:
     try:
+        payload_json = json.dumps(lock_payload)
         acquired = await redis.set(
             key,
-            json.dumps(lock_payload),
+            payload_json,
             nx=True,
             ex=ttl_seconds
         )
-        if not acquired:
-            existing_raw = await redis.get(key)
-            if existing_raw:
-                existing_data = json.loads(existing_raw)
-                if existing_data.get("locked_by") == str(user_id):
-                    await redis.set(key, json.dumps(lock_payload), ex=ttl_seconds)
-                    await _persist_lock_to_db(res_type, resource_id, user_id, username, tenant_id, expires_at, lock_token)
-                    return True, (True, lock_payload)
-                return True, (False, existing_data)
+        if acquired:
+            await _persist_lock_to_db(res_type, resource_id, user_id, username, tenant_id, expires_at, lock_token)
+            return True, (True, lock_payload)
+
+        existing_raw = await redis.get(key)
+        if existing_raw:
+            existing_data = json.loads(existing_raw)
+            if existing_data.get("locked_by") == str(user_id):
+                # Atomic compare-and-set renewal via Lua when supported
+                if hasattr(redis, "eval"):
+                    try:
+                        owner_marker = f'"locked_by": "{user_id}"'
+                        res = await redis.eval(_LUA_COMPARE_AND_SET, 1, key, owner_marker, payload_json, str(ttl_seconds))
+                        if res == -1:
+                            refreshed = await redis.get(key)
+                            return True, (False, json.loads(refreshed) if refreshed else existing_data)
+                    except Exception:
+                        await redis.set(key, payload_json, ex=ttl_seconds)
+                else:
+                    await redis.set(key, payload_json, ex=ttl_seconds)
+                await _persist_lock_to_db(res_type, resource_id, user_id, username, tenant_id, expires_at, lock_token)
+                return True, (True, lock_payload)
+            return True, (False, existing_data)
     except Exception as e:
         logger.warning(f"Redis lock check failed, falling back to PostgreSQL: {e}")
     return False, None
@@ -324,33 +363,42 @@ async def release_resource_lock(
     resource_id: str,
     user_id: str,
     user_role: str = "ANALYST",
-    force: bool = False
+    force: bool = False,
+    tenant_id: Optional[str] = None,
 ) -> Tuple[bool, str]:
     """
-    Releases an active lock lease.
+    Releases an active lock lease atomically (Lua compare-and-delete in Redis + tenant-scoped PG update).
     If force=True, allows MLRO / ADMIN to break another analyst's lock.
     """
     res_type = resource_type.upper()
     redis = await get_async_redis_client()
     key = _redis_key(res_type, resource_id)
 
-    existing_holder = None
     if redis:
         try:
-            raw = await redis.get(key)
-            if raw:
-                data = json.loads(raw)
-                existing_holder = data.get("locked_by")
-                if existing_holder == str(user_id) or force:
-                    await redis.delete(key)
-                elif not force:
-                    return False, f"Cannot release lock owned by {data.get('locked_by_name')}"
+            if force:
+                await redis.delete(key)
+            elif hasattr(redis, "eval"):
+                owner_marker = f'"locked_by": "{user_id}"'
+                res = await redis.eval(_LUA_COMPARE_AND_DEL, 1, key, owner_marker)
+                if res == -1:
+                    raw = await redis.get(key)
+                    holder = json.loads(raw).get("locked_by_name") if raw else "another user"
+                    return False, f"Cannot release lock owned by {holder}"
+            else:
+                raw = await redis.get(key)
+                if raw:
+                    data = json.loads(raw)
+                    if data.get("locked_by") == str(user_id):
+                        await redis.delete(key)
+                    else:
+                        return False, f"Cannot release lock owned by {data.get('locked_by_name')}"
         except Exception as e:
             logger.warning(f"Redis release error: {e}")
 
     # Mark released in DB
     try:
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             if force:
                 await conn.execute(
                     """

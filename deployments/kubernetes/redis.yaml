@@ -1,11 +1,18 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Redis StatefulSet (Auth Revocations, Distributed Locks & Hot Cache)
+# ════════════════════════════════════════════════════════════════════════════
+# Converted from Deployment+RWO PVC to StatefulSet to prevent rolling-update
+# Multi-Attach volume deadlocks. Enforces --requirepass and noeviction policy.
+# ════════════════════════════════════════════════════════════════════════════
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: aml-redis
   namespace: aml-system
   labels:
     app: aml-redis
 spec:
+  serviceName: aml-redis-service
   replicas: 1
   selector:
     matchLabels:
@@ -16,13 +23,43 @@ spec:
         app: aml-redis
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: redis
         image: redis:7-alpine
-        command: ["redis-server", "--appendonly", "yes"]
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: aml-secrets
+              key: REDIS_PASSWORD
+        - name: REDISCLI_AUTH
+          valueFrom:
+            secretKeyRef:
+              name: aml-secrets
+              key: REDIS_PASSWORD
+        command:
+        - sh
+        - -c
+        - >
+          exec redis-server
+          --appendonly yes
+          --maxmemory 384mb
+          --maxmemory-policy noeviction
+          --requirepass "$REDIS_PASSWORD"
         ports:
         - containerPort: 6379
           name: redisport
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
         livenessProbe:
           exec:
             command: ["redis-cli", "ping"]
@@ -45,22 +82,15 @@ spec:
         volumeMounts:
         - name: redis-data
           mountPath: /data
-      volumes:
-      - name: redis-data
-        persistentVolumeClaim:
-          claimName: aml-redis-pvc
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: aml-redis-pvc
-  namespace: aml-system
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 5Gi
+  volumeClaimTemplates:
+  - metadata:
+      name: redis-data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 5Gi
 ---
 apiVersion: v1
 kind: Service

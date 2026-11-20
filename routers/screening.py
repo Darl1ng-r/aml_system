@@ -241,48 +241,54 @@ def _eval_baseline_sanctions(name: str) -> tuple[float, str, str]:
 
 async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_id: str | None = None) -> dict:
     """
-    Core fuzzy sanctions search logic against Elasticsearch with normalized query expansion,
-    backed by native PostgreSQL 16 fuzzy matching and resilient baseline evaluation (M11).
-    Evaluates all candidate hits and aliases using token-aware fuzzy matching.
+    Core fuzzy sanctions search logic with Redis hot caching (300s TTL),
+    Elasticsearch short-circuiting on clean responses (eliminating redundant PG scans),
+    native PostgreSQL pg_trgm/ILIKE matching, and resilient built-in baseline evaluation.
     """
     best_similarity = 0.0
     best_source_list = UNKNOWN_LIST
     best_matched_name = ""
 
     norm_name = normalize_screening_name(name)
+    cache_key = f"screening:sanctions:{tenant_id or 'global'}:{norm_name}:{threshold:.2f}"
 
-    # 1. Search Elasticsearch sanctions index if client is connected and available
+    # 0. Check Redis hot cache first (sub-millisecond path for repeat counterparties)
+    redis = None
+    try:
+        redis = await get_async_redis_client()
+        if redis:
+            cached = await redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+    except Exception:
+        redis = None
+
+    # 1. Search Elasticsearch sanctions index if explicitly provided / enabled
+    es_succeeded = False
     if es is not None:
         try:
             hits = await _search_es_sanctions_hits(es, name, norm_name)
+            es_succeeded = True
             es_sim, es_src, es_match = _eval_es_sanctions_hits(hits, name)
             if es_sim > best_similarity:
                 best_similarity, best_source_list, best_matched_name = es_sim, es_src, es_match
-            if best_similarity >= threshold:
-                return {
-                    "match_found": True,
-                    "score": round(best_similarity, 2),
-                    "source_list": best_source_list,
-                    "matched_entry": {
-                        "name": best_matched_name,
-                        "reason": f"Fuzzy similarity match of {int(best_similarity * 100)}%"
-                    }
-                }
         except Exception as es_err:
             logger.warning(f"Elasticsearch sanctions search offline/bypass ({es_err}); falling back to PostgreSQL...")
 
-    # 2. Database Fallback: Query PostgreSQL 16 (tenant-scoped)
-    pg_sim, pg_src, pg_match = await _eval_pg_sanctions(name, tenant_id)
-    if pg_sim > best_similarity:
-        best_similarity, best_source_list, best_matched_name = pg_sim, pg_src, pg_match
+    # 2. PostgreSQL sanctions/PEP query ONLY when ES was unavailable or not enabled
+    # (Short-circuits clean ES results to eliminate 2 full table scans per transaction)
+    if not es_succeeded:
+        pg_sim, pg_src, pg_match = await _eval_pg_sanctions(name, tenant_id)
+        if pg_sim > best_similarity:
+            best_similarity, best_source_list, best_matched_name = pg_sim, pg_src, pg_match
 
-    # 3. Built-in Sanctions Baseline Fallback (Zero-infrastructure guarantee)
+    # 3. Built-in Sanctions Baseline Fallback (Zero-infrastructure guarantee, O(8) in-memory)
     base_sim, base_src, base_match = _eval_baseline_sanctions(name)
     if base_sim > best_similarity:
         best_similarity, best_source_list, best_matched_name = base_sim, base_src, base_match
 
     match_found = best_similarity >= threshold
-    return {
+    result = {
         "match_found": match_found,
         "score": round(best_similarity, 2),
         "source_list": best_source_list if best_similarity > 0.0 else None,
@@ -291,6 +297,14 @@ async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_
             "reason": f"Fuzzy similarity match of {int(best_similarity * 100)}%"
         } if best_similarity > 0.0 else None
     }
+
+    if redis:
+        try:
+            await redis.set(cache_key, json.dumps(result), ex=300)
+        except Exception:
+            pass
+
+    return result
 
 
 def _build_pep_dict(candidate_name: str, source: dict, sim: float, threshold: float) -> dict:

@@ -1,0 +1,73 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Dedicated Transactional Outbox Relay Worker Deployment
+# ════════════════════════════════════════════════════════════════════════════
+# Decouples PostgreSQL outbox polling + Kafka publishing from stateless
+# FastAPI pods. Uses SELECT FOR UPDATE SKIP LOCKED across replicas.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aml-outbox-relay
+  namespace: aml-system
+  labels:
+    app: aml-outbox-relay
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: aml-outbox-relay
+  template:
+    metadata:
+      labels:
+        app: aml-outbox-relay
+    spec:
+      serviceAccountName: aml-fastapi-sa
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: outbox-relay
+        image: ghcr.io/aml-sentinel/aml-fastapi-app:${IMAGE_TAG}
+        imagePullPolicy: Always
+        command: ["python", "-m", "workers.outbox_relay"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - secretRef:
+            name: aml-secrets
+        - configMapRef:
+            name: aml-config
+        env:
+        - name: OUTBOX_POLL_INTERVAL_SECONDS
+          value: "0.5"
+        - name: OUTBOX_BATCH_SIZE
+          value: "100"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 64Mi

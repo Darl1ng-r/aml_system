@@ -24,11 +24,13 @@ spec:
         - containerPort: 7687
           name: bolt
         env:
-        - name: NEO4J_AUTH
+        - name: NEO4J_PASSWORD_SECRET
           valueFrom:
             secretKeyRef:
               name: aml-secrets
               key: NEO4J_PASSWORD
+        - name: NEO4J_AUTH
+          value: "neo4j/$(NEO4J_PASSWORD_SECRET)"
         - name: NEO4J_PLUGINS
           value: '["apoc"]'
         resources:

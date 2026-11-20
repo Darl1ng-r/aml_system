@@ -199,7 +199,10 @@ async def _compute_transaction_risk(
         }
     )
 
-    ml_result = anomaly_model.predict_risk(payload.amount, sender_risk, receiver_risk, velocity_count)
+    import asyncio as _asyncio
+    ml_result = await _asyncio.to_thread(
+        anomaly_model.predict_risk, payload.amount, sender_risk, receiver_risk, velocity_count
+    )
     ai_score = ml_result["risk_score"]
     attributions = ml_result["attributions"]
 
@@ -285,8 +288,9 @@ async def _compute_transaction_risk(
 async def _verify_concurrency_lock(conn: Any, sender_id: Any, receiver_id: Any) -> None:
     if hasattr(conn, "fetch"):
         try:
+            # Deterministic ascending lock order prevents AB-BA PostgreSQL deadlocks
             locked_accounts = await conn.fetch(
-                "SELECT id, status FROM accounts WHERE id IN ($1, $2) FOR UPDATE;",
+                "SELECT id, status FROM accounts WHERE id IN ($1, $2) ORDER BY id ASC FOR UPDATE;",
                 sender_id, receiver_id
             )
             for acc in (locked_accounts or []):
@@ -679,15 +683,8 @@ async def _buffer_async_transaction(
         "ingested_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    # Asynchronous publish to event stream with tenant-keyed partitioning
-    background_tasks.add_task(
-        publish_transaction,
-        buffer_payload,
-        key=tenant_str or tx_id,
-        topic="aml.transactions.raw",
-    )
-
-    # Persist to transactional outbox for durable streaming
+    # Persist to transactional outbox as the single durable source of truth (avoids duplicate Kafka publishing)
+    outbox_recorded = False
     try:
         from database.outbox import record_outbox_event
         async with get_async_db_conn(tenant_id=user_tenant_id) as conn:
@@ -700,8 +697,18 @@ async def _buffer_async_transaction(
                 tenant_id=tenant_str,
                 headers={"topic": "aml.transactions.raw"},
             )
+            outbox_recorded = True
     except Exception as ex_buf:
         logger.warning(f"Async ingestion outbox buffering warning: {ex_buf}")
+
+    # Fallback direct publish only if outbox persistence failed (partitioned by sender_account)
+    if not outbox_recorded:
+        background_tasks.add_task(
+            publish_transaction,
+            buffer_payload,
+            key=payload.sender_account or tx_id,
+            topic="aml.transactions.raw",
+        )
 
 
 async def _finalize_async_response(

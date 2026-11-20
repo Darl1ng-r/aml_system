@@ -12,18 +12,27 @@ db_pool = None
 db_replica_pool = None
 
 async def init_db_pool():
+    import os
     global db_pool, db_replica_pool
+    pgbouncer_enabled = os.getenv("PGBOUNCER_ENABLED", "false").lower() == "true"
+    pool_kwargs = {
+        "command_timeout": 15.0,
+    }
+    if pgbouncer_enabled:
+        # Transaction-mode PgBouncer requires disabling per-connection prepared statement caches
+        pool_kwargs["statement_cache_size"] = 0
+
     if db_pool is None or getattr(db_pool, "_loop", None) is None or db_pool._loop.is_closed():
         dsn = get_postgres_dsn()
         ssl_ctx = get_ssl_context()
         db_pool = await asyncpg.create_pool(
             dsn=dsn,
             ssl=ssl_ctx,
-            min_size=5,
-            max_size=20,
-            command_timeout=15.0
+            min_size=2,
+            max_size=15,
+            **pool_kwargs
         )
-        logger.info("Primary asyncpg connection pool initialized.")
+        logger.info("Primary asyncpg connection pool initialized (pgbouncer=%s).", pgbouncer_enabled)
 
     if db_replica_pool is None or getattr(db_replica_pool, "_loop", None) is None or db_replica_pool._loop.is_closed():
         try:
@@ -33,8 +42,8 @@ async def init_db_pool():
                 dsn=POSTGRES_REPLICA_URL,
                 ssl=ssl_ctx,
                 min_size=2,
-                max_size=15,
-                command_timeout=15.0
+                max_size=10,
+                **pool_kwargs
             )
             logger.info("Read replica asyncpg connection pool initialized.")
         except Exception as e:

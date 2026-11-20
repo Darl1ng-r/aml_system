@@ -74,15 +74,16 @@ def _collect_graph_nodes(graph: dict) -> set:
     return nodes
 
 def _brandes_bfs(graph: dict, s: str, all_nodes: set):
+    from collections import deque
     S = []
     P = {w: [] for w in all_nodes}
     g = {w: 1.0 if w == s else 0.0 for w in all_nodes}
     d = {w: -1 for w in all_nodes}
     d[s] = 0
-    Q = [s]
+    Q = deque([s])
 
     while Q:
-        v = Q.pop(0)
+        v = Q.popleft()
         S.append(v)
         for w in graph.get(v, []):
             if d[w] < 0:
@@ -384,11 +385,12 @@ async def _detect_gds_betweenness(driver) -> tuple[list[dict], bool]:
         return intermediaries, False
 
 def _find_simple_cycle_in_scc(graph: dict, scc: list[str]) -> list[str] | None:
+    from collections import deque
     scc_set = set(scc)
     start = scc[0]
-    queue = [(start, [start])]
+    queue = deque([(start, [start])])
     while queue:
-        curr, path = queue.pop(0)
+        curr, path = queue.popleft()
         for nxt in graph.get(curr, []):
             if nxt not in scc_set:
                 continue

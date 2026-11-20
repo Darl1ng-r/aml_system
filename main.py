@@ -269,22 +269,28 @@ async def lifespan(app_instance: FastAPI):
     global _outbox_relay_task
     await startup_db_clients(app_instance)
 
-    # Instantiate and start Transactional Outbox Relay Engine as supervised task
-    from database.outbox import OutboxRelayEngine
-    _outbox_shutdown_event.clear()
-    relay_engine = OutboxRelayEngine(poll_interval_seconds=1.0, batch_size=50)
-    _outbox_relay_task = asyncio.create_task(
-        relay_engine.run(shutdown_event=_outbox_shutdown_event),
-        name="outbox-relay-engine"
-    )
-    logger.info("Transactional Outbox Relay Engine started in background task.")
+    # Only run embedded OutboxRelayEngine in single-node/dev mode (RUN_EMBEDDED_WORKER=true).
+    # In multi-pod Kubernetes deployments, RUN_EMBEDDED_WORKER=false and the dedicated
+    # `aml-outbox-relay` Deployment owns transactional outbox polling.
+    run_embedded = os.getenv("RUN_EMBEDDED_WORKER", str(settings.run_embedded_worker)).lower() == "true"
+    if run_embedded:
+        from database.outbox import OutboxRelayEngine
+        _outbox_shutdown_event.clear()
+        relay_engine = OutboxRelayEngine(poll_interval_seconds=1.0, batch_size=50)
+        _outbox_relay_task = asyncio.create_task(
+            relay_engine.run(shutdown_event=_outbox_shutdown_event),
+            name="outbox-relay-engine"
+        )
+        logger.info("Transactional Outbox Relay Engine started in embedded worker mode.")
+    else:
+        logger.info("RUN_EMBEDDED_WORKER=false; skipping embedded Outbox Relay (handled by dedicated worker).")
 
     yield
 
     # Shutdown Outbox Relay Engine gracefully
-    logger.info("Signaling Outbox Relay Engine shutdown...")
-    _outbox_shutdown_event.set()
     if _outbox_relay_task:
+        logger.info("Signaling Outbox Relay Engine shutdown...")
+        _outbox_shutdown_event.set()
         try:
             await asyncio.wait_for(_outbox_relay_task, timeout=5.0)
             logger.info("Outbox Relay Engine stopped gracefully.")
@@ -296,6 +302,20 @@ async def lifespan(app_instance: FastAPI):
             except (asyncio.CancelledError, Exception):
                 pass
         _outbox_relay_task = None
+
+    # Cancel Vault background secret renewal loop cleanly to prevent leaked tasks
+    try:
+        from services.vault_loader import VaultSecretsLoader
+        renewal_task = getattr(VaultSecretsLoader, "_renewal_task", None)
+        if renewal_task and not renewal_task.done():
+            renewal_task.cancel()
+            try:
+                await renewal_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            VaultSecretsLoader._renewal_task = None
+    except Exception:
+        pass
 
     await shutdown_db_clients()
 

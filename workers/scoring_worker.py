@@ -153,8 +153,19 @@ async def score_transaction(event: dict):
     """Processes a single raw transaction event through the multi-model AML pipeline."""
     tx_id = event["transaction_id"]
     tenant_id = event["tenant_id"]
-    sender_id = event["sender_id"]
-    receiver_id = event["receiver_id"]
+    # Support both normalized account-ID contract and legacy sender_id/sender_account keys
+    sender_id = (
+        event.get("sender_account_id")
+        or event.get("sender_id")
+        or event.get("sender_account")
+    )
+    receiver_id = (
+        event.get("receiver_account_id")
+        or event.get("receiver_id")
+        or event.get("receiver_account")
+    )
+    if not sender_id or not receiver_id:
+        raise ValueError(f"Scoring event {tx_id} missing sender/receiver account identifiers.")
     amount = float(event["amount"])
 
     logger.info(f"Processing async transaction scoring for tx={tx_id} tenant={tenant_id}")
@@ -175,7 +186,7 @@ async def score_transaction(event: dict):
         tenant_id=tenant_id
     )
 
-    # 2. ML scoring with real dynamic features
+    # 2. ML scoring with real dynamic features (offloaded from event loop)
     features = {
         "amount": amount,
         "sender_risk": sender_risk,
@@ -186,7 +197,7 @@ async def score_transaction(event: dict):
         "currency": event.get("currency", "USD"),
         "channel": event.get("channel", "Wire")
     }
-    ai_score, attributions = anomaly_model.predict(features)
+    ai_score, attributions = await asyncio.to_thread(anomaly_model.predict, features)
 
     # 3. Behavioral baseline & Isolation Forest
     baseline = await get_customer_baseline(str(sender_id))

@@ -27,7 +27,7 @@ spec:
   - Egress
 
 ---
-# Policy 2: Allow ingress controller → FastAPI (port 8000)
+# Policy 2: Allow ingress controller & Prometheus scraper → FastAPI (port 8000)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -43,13 +43,58 @@ spec:
   - from:
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: ingress-nginx  # ingress controller namespace
+          kubernetes.io/metadata.name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
     ports:
     - protocol: TCP
       port: 8000
 
 ---
-# Policy 3: Allow FastAPI & Sync Worker → PostgreSQL (port 5432)
+# Policy 2b: Allow FastAPI, Outbox Relay & Sync Worker → PgBouncer (port 6432)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apps-to-pgbouncer
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aml-pgbouncer
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: aml-fastapi-app
+    - podSelector:
+        matchLabels:
+          app: aml-outbox-relay
+    - podSelector:
+        matchLabels:
+          app: aml-sync-worker
+    ports:
+    - protocol: TCP
+      port: 6432
+  egress:
+  - ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+# Policy 3: Allow PgBouncer, FastAPI, Workers, Migrations & Postgres Replication → PostgreSQL (5432)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -61,14 +106,41 @@ spec:
       app: aml-postgres
   policyTypes:
   - Ingress
+  - Egress
   ingress:
   - from:
+    - podSelector:
+        matchLabels:
+          app: aml-pgbouncer
     - podSelector:
         matchLabels:
           app: aml-fastapi-app
     - podSelector:
         matchLabels:
           app: aml-sync-worker
+    - podSelector:
+        matchLabels:
+          app: aml-outbox-relay
+    - podSelector:
+        matchLabels:
+          job: aml-db-migrations
+    - podSelector:
+        matchLabels:
+          app: aml-postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  egress:
+  # DNS + Primary <-> Replica streaming WAL replication
+  - ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-postgres
     ports:
     - protocol: TCP
       port: 5432
@@ -193,7 +265,15 @@ spec:
       port: 53
     - protocol: TCP
       port: 53
-  # PostgreSQL
+  # PgBouncer
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-pgbouncer
+    ports:
+    - protocol: TCP
+      port: 6432
+  # PostgreSQL (read replica / direct)
   - to:
     - podSelector:
         matchLabels:
@@ -235,7 +315,13 @@ spec:
     ports:
     - protocol: TCP
       port: 9092
-  # Supabase auth (external HTTPS)
+  # HashiCorp Vault (8200) & OpenTelemetry Collector (4317)
+  - ports:
+    - protocol: TCP
+      port: 8200
+    - protocol: TCP
+      port: 4317
+  # External HTTPS (Supabase / HIBP / Watchlists / SIEM)
   - ports:
     - protocol: TCP
       port: 443
@@ -294,3 +380,164 @@ spec:
     ports:
     - protocol: TCP
       port: 9092
+
+---
+# Policy 10: Allow Outbox Relay Worker egress (Postgres, PgBouncer, Redpanda, Redis, OTel, Vault, DNS)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-outbox-relay-egress
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aml-outbox-relay
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-pgbouncer
+    ports:
+    - protocol: TCP
+      port: 6432
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-redpanda
+    ports:
+    - protocol: TCP
+      port: 9092
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  - ports:
+    - protocol: TCP
+      port: 8200
+    - protocol: TCP
+      port: 4317
+
+---
+# Policy 11: Allow Alembic DB Migration Job egress to PostgreSQL (5432) & DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-db-migrations-egress
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      job: aml-db-migrations
+  policyTypes:
+  - Egress
+  egress:
+  - ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+
+---
+# Policy 12: Allow Elasticsearch inter-node transport (9300) & Redpanda Raft (33145) + Outbox Relay → Redpanda
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-es-and-redpanda-cluster-mesh
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aml-redpanda
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: aml-outbox-relay
+    ports:
+    - protocol: TCP
+      port: 9092
+  - from:
+    - podSelector:
+        matchLabels:
+          app: aml-redpanda
+    ports:
+    - protocol: TCP
+      port: 33145
+    - protocol: TCP
+      port: 9092
+  egress:
+  - ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-redpanda
+    ports:
+    - protocol: TCP
+      port: 33145
+    - protocol: TCP
+      port: 9092
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-elasticsearch-internode
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aml-elasticsearch
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: aml-elasticsearch
+    ports:
+    - protocol: TCP
+      port: 9300
+  egress:
+  - ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - podSelector:
+        matchLabels:
+          app: aml-elasticsearch
+    ports:
+    - protocol: TCP
+      port: 9300

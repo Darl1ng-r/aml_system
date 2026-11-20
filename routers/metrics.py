@@ -83,7 +83,7 @@ class ConnectionManager:
                 continue
 
             try:
-                await connection.send_text(payload)
+                await asyncio.wait_for(connection.send_text(payload), timeout=2.0)
             except Exception:
                 disconnected.append(connection)
 
@@ -106,21 +106,24 @@ class ConnectionManager:
                 envelope = {
                     "message": message,
                     "target_tenant_id": target_tenant_id or message.get("tenant_id"),
-                    "sender_pid": os.getpid()
+                    "sender_instance_id": _WS_INSTANCE_ID
                 }
                 await redis.publish("aml:events:broadcast", json.dumps(envelope))
         except Exception as e:
             logger.debug(f"Redis Pub/Sub broadcast skipped/non-fatal: {e}")
 
 
+import uuid as _ws_uuid
+_WS_INSTANCE_ID = str(_ws_uuid.uuid4())
 ws_manager = ConnectionManager()
 
 
 async def start_redis_ws_listener(ws_mgr: ConnectionManager, shutdown_event: asyncio.Event | None = None):
     """Background listener consuming Redis Pub/Sub events published by other pods/workers."""
-    from database.redis_db import get_async_redis_client
+    from database.redis_db import get_async_redis_pubsub_client
+    redis = None
     try:
-        redis = await get_async_redis_client()
+        redis = await get_async_redis_pubsub_client()
         if not redis:
             return
         pubsub = redis.pubsub()
@@ -132,8 +135,8 @@ async def start_redis_ws_listener(ws_mgr: ConnectionManager, shutdown_event: asy
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if msg and msg.get("type") == "message":
                     data = json.loads(msg["data"])
-                    # Discard if this process was the original sender
-                    if data.get("sender_pid") == os.getpid():
+                    # Discard if this pod/worker instance was the original sender (UUID-safe across K8s pods)
+                    if data.get("sender_instance_id") == _WS_INSTANCE_ID:
                         continue
                     await ws_mgr._send_local(data.get("message", {}), data.get("target_tenant_id"))
                 await asyncio.sleep(0.05)
@@ -144,6 +147,12 @@ async def start_redis_ws_listener(ws_mgr: ConnectionManager, shutdown_event: asy
                 await asyncio.sleep(1.0)
     except Exception as e:
         logger.warning(f"Failed to start Redis WebSocket listener (standalone fallback active): {e}")
+    finally:
+        if redis:
+            try:
+                await redis.aclose()
+            except Exception:
+                pass
 
 
 def _determine_risk_tier(active: int) -> str:
@@ -436,15 +445,28 @@ async def get_executive_metrics(
     """
     Computes executive compliance KPIs, SLA breach trackers, SAR filing throughput,
     and institutional efficiency metrics for MLRO & Compliance Leadership.
+    Backed by a 30s tenant-scoped Redis cache to prevent heavy aggregate scan storms.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
+    cache_key = f"metrics:executive:{tenant_id}"
+    redis = None
+    try:
+        from database.redis_db import get_async_redis_client
+        redis = await get_async_redis_client()
+        if redis:
+            cached = await redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+    except Exception:
+        redis = None
+
     try:
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
             kpis = await _fetch_executive_counts(conn)
             sla_breaches = await _fetch_executive_sla_breaches(conn)
             typologies, days_map, analysts = await _fetch_executive_analytics(conn)
 
-            return {
+            payload = {
                 "kpis": kpis,
                 "sla_breaches": sla_breaches,
                 "typologies": typologies,
@@ -454,6 +476,12 @@ async def get_executive_metrics(
                 },
                 "leaderboard": analysts
             }
+            if redis:
+                try:
+                    await redis.set(cache_key, json.dumps(payload), ex=30)
+                except Exception:
+                    pass
+            return payload
     except Exception as e:
         logger.exception("Failed to calculate executive compliance metrics")
         raise HTTPException(status_code=500, detail=f"Executive metrics failed: {str(e)}")

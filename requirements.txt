@@ -1,3 +1,4 @@
+# Production Dependencies (Pinned & Deduplicated)
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.1
 aiosignal==1.4.0
@@ -17,21 +18,17 @@ fastapi==0.109.0
 frozenlist==1.8.0
 h11==0.16.0
 idna==3.18
-iniconfig==2.3.0
 multidict==6.7.1
 neo4j==5.16.0
 numpy==2.5.1
 packaging==26.2
 pg8000==1.30.3
-pluggy==1.6.0
 propcache==0.5.2
 pycparser==3.0
 pydantic==2.13.4
 pydantic-settings==2.14.2
 pydantic_core==2.46.4
-Pygments==2.20.0
 PyJWT==2.13.0
-pytest==9.1.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-multipart==0.0.32
@@ -48,33 +45,30 @@ uvicorn==0.27.0
 yarl==1.24.2
 rapidfuzz==3.14.5
 # ML / Risk Scoring
-xgboost>=2.0.0
-lightgbm>=4.0.0
-shap>=0.45.0
-scikit-learn>=1.3.0
-joblib>=1.3.0
+xgboost==2.1.4
+lightgbm==4.5.0
+shap==0.46.0
+scikit-learn==1.6.1
+joblib==1.4.2
 # Streaming / Messaging
-aiokafka>=0.10.0
+aiokafka==0.12.0
 # Database Migrations
-alembic>=1.13.0
-sqlalchemy[asyncio]>=2.0.0
-asyncpg>=0.29.0
+alembic==1.14.1
+sqlalchemy[asyncio]==2.0.37
 # Observability — Structured Logging
-python-json-logger>=2.0.0
+python-json-logger==3.2.1
 # Observability — Distributed Tracing (OpenTelemetry)
-opentelemetry-api>=1.20.0
-opentelemetry-sdk>=1.20.0
-opentelemetry-exporter-otlp-proto-grpc>=1.20.0
-opentelemetry-instrumentation-fastapi>=0.41b0
-# Authentication — Password Hashing
-argon2-cffi>=23.1.0
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+opentelemetry-exporter-otlp-proto-grpc==1.29.0
+opentelemetry-instrumentation-fastapi==0.50b0
+# Authentication — Password Hashing & TOTP
+argon2-cffi==23.1.0
+pyotp==2.9.0
 # Observability — Prometheus Metrics
-prometheus-client>=0.19.0
+prometheus-client==0.21.1
 # Observability — Sentry Error Tracking
-sentry-sdk>=1.40.0
-# Secrets Management
-hvac>=2.1.0
-httpx>=0.25.0
-# Testing — async HTTP mocking (for Vault tests)
-respx>=0.21.0
-
+sentry-sdk==2.20.0
+# Secrets Management & HTTP
+hvac==2.3.0
+httpx==0.28.1
