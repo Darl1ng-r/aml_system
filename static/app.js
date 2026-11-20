@@ -1118,8 +1118,19 @@ function _setCaseEditingDisabled(disabled) {
         });
 }
 
+function _esc(val) {
+    if (typeof window.escapeHtml === 'function') return window.escapeHtml(val);
+    if (val === null || val === undefined) return '';
+    return String(val)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function _handleCaseLockConflict(data, banner, textEl, timerEl, forceBtn) {
-    const holder = data?.detail?.lock_info?.locked_by_name || 'another investigator';
+    const holder = _esc(data?.detail?.lock_info?.locked_by_name || 'another investigator');
     currentCaseLockToken = null;
     currentLockedCaseId = null;
     _setCaseEditingDisabled(true);
@@ -1329,8 +1340,8 @@ function _updateTriggeredRulesAndShap(alert, firedRulesCount) {
             : [{ code: (alert.rule_name || 'COMPLIANCE_ALERT').replaceAll('_', ' '), desc: `— Flagged by transaction monitoring engine (${alert.threat_level || 'STANDARD'})` }];
         rulesList.innerHTML = rules.map(r => `
             <div class="rule-row ${r.critical ? 'critical' : ''}">
-                <span class="rname">${r.code || r.name || 'RULE'}</span>
-                <span class="rdesc">${r.desc || r.description || ''}</span>
+                <span class="rname">${_esc(r.code || r.name || 'RULE')}</span>
+                <span class="rdesc">${_esc(r.desc || r.description || '')}</span>
             </div>
         `).join('');
     }
@@ -1354,11 +1365,11 @@ function _updateTriggeredRulesAndShap(alert, firedRulesCount) {
 
             shapItem.innerHTML = `
                 <div class="shap-header">
-                    <span style="text-transform: capitalize;">${key.replaceAll('_', ' ')} Impact</span>
+                    <span style="text-transform: capitalize;">${_esc(key.replaceAll('_', ' '))} Impact</span>
                     <span style="color: ${barColor}; font-weight: 600;">${signText}${percentage}% weighting</span>
                 </div>
                 <div class="shap-bar-bg">
-                    <div class="shap-bar-fill" style="width: ${percentage}%; background-color: ${barColor};"></div>
+                    <div class="shap-bar-fill" style="width: ${Math.min(100, Math.max(0, percentage))}%; background-color: ${barColor};"></div>
                 </div>
             `;
             shapList.appendChild(shapItem);
@@ -1402,10 +1413,10 @@ function _renderLinkedEntitiesList(linkedList) {
     }
     entitiesList.innerHTML = linkedList.map(e => `
         <div class="entity-card">
-            <div class="entity-avatar" style="${e.high_risk ? 'background:var(--risk-high-bg); color:var(--risk-high);' : ''}">${e.avatar || e.name.slice(0, 2).toUpperCase()}</div>
+            <div class="entity-avatar" style="${e.high_risk ? 'background:var(--risk-high-bg); color:var(--risk-high);' : ''}">${_esc(e.avatar || String(e.name || '').slice(0, 2).toUpperCase())}</div>
             <div>
-                <div class="entity-name">${e.name}</div>
-                <div class="entity-meta">${e.relation}</div>
+                <div class="entity-name">${_esc(e.name)}</div>
+                <div class="entity-meta">${_esc(e.relation)}</div>
             </div>
         </div>
     `).join('');
@@ -1417,8 +1428,8 @@ function _updateContextKycAndEntities(alert, riskScore) {
 
     const gaugeLabel = document.getElementById('ctx-risk-label');
     if (gaugeLabel) {
-        const threat = alert.threat_level || 'HIGH';
-        const ruleFormatted = (alert.rule_name || 'RULES').replaceAll('_', ' ');
+        const threat = _esc(alert.threat_level || 'HIGH');
+        const ruleFormatted = _esc((alert.rule_name || 'RULES').replaceAll('_', ' '));
         gaugeLabel.innerHTML = `FATF Risk-Based Composite<br><span style="font-weight:600;">${threat}</span> Priority · ${ruleFormatted}`;
     }
 

@@ -305,6 +305,11 @@ class OutboxRelayEngine:
     async def _execute_relay_cycle(self, pool: Any) -> int:
         try:
             events = await self._fetch_pending_batch(pool)
+            try:
+                from observability.prometheus import set_outbox_pending_events
+                set_outbox_pending_events(len(events))
+            except Exception:
+                pass
             if events:
                 processed_count = await self._dispatch_events_batch(pool, events)
             else:

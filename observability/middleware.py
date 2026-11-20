@@ -59,18 +59,19 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         cid = request.headers.get("x-correlation-id", str(uuid.uuid4()))
-        tenant_id = request.headers.get("x-tenant-id", "")
 
+        # Security: Never trust raw unauthenticated X-Tenant-ID headers in log context.
+        # tenant_id_var & user_id_var are populated strictly after JWT/gateway verification.
         correlation_id_var.set(cid)
-        if tenant_id:
-            tenant_id_var.set(tenant_id)
+        tenant_id_var.set("")
         user_id_var.set("")
 
-        endpoint = normalize_metric_path(request)
         t0 = time.monotonic()
         try:
             response = await call_next(request)
             duration = time.monotonic() - t0
+            # Normalize AFTER call_next() so request.scope["route"] is populated
+            endpoint = normalize_metric_path(request)
             response.headers["X-Correlation-ID"] = cid
             try:
                 from observability.prometheus import record_http_request
@@ -80,6 +81,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             return response
         except Exception as exc:
             duration = time.monotonic() - t0
+            endpoint = normalize_metric_path(request)
             try:
                 from observability.prometheus import record_http_request
                 record_http_request(request.method, endpoint, 500, duration)

@@ -22,22 +22,53 @@ from typing import Any, Dict
 from observability.middleware import correlation_id_var, tenant_id_var, user_id_var
 
 # Sensitive keys and regex patterns for compliance PII/credential scrubbing
-SENSITIVE_KEY_PATTERNS = {"password", "secret", "token", "access_token", "refresh_token", "api_key", "apikey", "authorization", "ssn", "cvv"}
+SENSITIVE_KEY_PATTERNS = {
+    "password", "secret", "token", "access_token", "refresh_token",
+    "api_key", "apikey", "authorization", "ssn", "tax_id", "cvv",
+    "narrative", "sar_narrative", "cookie", "set-cookie",
+}
 BEARER_TOKEN_REGEX = re.compile(r"(Bearer\s+)[-a-z0-9_.]+", re.IGNORECASE)
+JWT_TOKEN_REGEX = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")
 PASSWORD_URI_REGEX = re.compile(r"((?:pass" + r"word)=)[^&\s]+", re.IGNORECASE)
 ACCOUNT_NUM_REGEX = re.compile(r"\b(ACC_[A-Za-z0-9]{2,4})[A-Za-z0-9]+([A-Za-z0-9]{4})\b")
+IBAN_REGEX = re.compile(r"\b([A-Z]{2}\d{2})[A-Z0-9]{8,24}([A-Z0-9]{4})\b")
+SSN_REGEX = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 CREDIT_CARD_REGEX = re.compile(r"\b(?:\d{4}[-\s]?){3}(\d{4})\b")
 
 
 def mask_sensitive_text(text: str) -> str:
-    """Masks secrets, tokens, credentials, and bank account numbers from text."""
+    """Masks secrets, JWTs, credentials, IBANs, SSNs, and account numbers from logs and tracebacks."""
     if not isinstance(text, str):
         return text
     text = BEARER_TOKEN_REGEX.sub(r"\1[REDACTED]", text)
+    text = JWT_TOKEN_REGEX.sub("[REDACTED_JWT]", text)
     text = PASSWORD_URI_REGEX.sub(r"\1[REDACTED]", text)
     text = ACCOUNT_NUM_REGEX.sub(r"\1****\2", text)
+    text = IBAN_REGEX.sub(r"\1********\2", text)
+    text = SSN_REGEX.sub("***-**-****", text)
     text = CREDIT_CARD_REGEX.sub(r"****-****-****-\1", text)
     return text
+
+
+def sentry_before_send_scrubber(event: Dict[str, Any], hint: Any = None) -> Dict[str, Any]:
+    """Sentry before_send hook stripping PII, IBANs, SSNs, JWTs, cookies, and SAR narratives."""
+    if not isinstance(event, dict):
+        return event
+    if "request" in event and isinstance(event["request"], dict):
+        event["request"].pop("cookies", None)
+        if "headers" in event["request"]:
+            event["request"]["headers"] = mask_dict_data(event["request"]["headers"])
+        if "data" in event["request"]:
+            event["request"]["data"] = mask_dict_data(event["request"]["data"])
+    if "extra" in event:
+        event["extra"] = mask_dict_data(event["extra"])
+    if "breadcrumbs" in event:
+        event["breadcrumbs"] = mask_dict_data(event["breadcrumbs"])
+    if "exception" in event:
+        event["exception"] = mask_dict_data(event["exception"])
+    if "message" in event and isinstance(event["message"], str):
+        event["message"] = mask_sensitive_text(event["message"])
+    return event
 
 
 def mask_dict_data(data: Any) -> Any:
@@ -80,9 +111,9 @@ class JsonFormatter(logging.Formatter):
             "user_id": getattr(record, "user_id", user_id_var.get("")),
         }
 
-        # Include exception traceback if present
+        # Include PII/credential-scrubbed exception traceback if present
         if record.exc_info:
-            log_payload["exception"] = self.formatException(record.exc_info)
+            log_payload["exception"] = mask_sensitive_text(self.formatException(record.exc_info))
 
         # Include audit event structured data if marked
         if getattr(record, "audit_event", False):

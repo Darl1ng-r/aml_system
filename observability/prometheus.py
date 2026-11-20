@@ -1,10 +1,14 @@
 """
 Prometheus Metrics Registry and Exposition (Official prometheus-client)
 ======================================================================
-Provides standard Prometheus metrics tracking for compliance, SLOs, and alerting (Finding #7):
+Provides standard Prometheus metrics tracking for compliance, SLOs, and alerting:
 - http_requests_total{method, endpoint, status}
 - http_request_duration_seconds_bucket{endpoint, le}
 - audit_events_total{event_type}
+- transactions_ingested_total{decision, channel}
+- transactions_scored_total{threat_level}
+- rules_triggered_total{rule_name}
+- outbox_pending_events
 
 Supports shared-memory multi-process mode via PROMETHEUS_MULTIPROC_DIR.
 """
@@ -12,6 +16,7 @@ Supports shared-memory multi-process mode via PROMETHEUS_MULTIPROC_DIR.
 import os
 from prometheus_client import (
     Counter,
+    Gauge,
     Histogram,
     CollectorRegistry,
     generate_latest,
@@ -29,34 +34,69 @@ if _is_multiproc:
 else:
     registry = REGISTRY
 
-# Use custom registry or default REGISTRY
-try:
-    http_requests_total = Counter(
-        "http_requests_total",
-        "Total number of HTTP requests processed.",
-        ["method", "endpoint", "status"]
-    )
-except ValueError:
-    http_requests_total = REGISTRY._names_to_collectors.get("http_requests_total")
 
-try:
-    http_request_duration_seconds = Histogram(
-        "http_request_duration_seconds",
-        "HTTP request latency histogram in seconds.",
-        ["endpoint"],
-        buckets=DURATION_BUCKETS
-    )
-except ValueError:
-    http_request_duration_seconds = REGISTRY._names_to_collectors.get("http_request_duration_seconds")
+def _get_or_create_counter(name: str, documentation: str, labelnames: list[str]):
+    try:
+        return Counter(name, documentation, labelnames)
+    except ValueError:
+        return REGISTRY._names_to_collectors.get(name)
 
-try:
-    audit_events_total = Counter(
-        "audit_events_total",
-        "Total security and compliance audit events emitted.",
-        ["event_type"]
-    )
-except ValueError:
-    audit_events_total = REGISTRY._names_to_collectors.get("audit_events_total")
+
+def _get_or_create_histogram(name: str, documentation: str, labelnames: list[str], buckets):
+    try:
+        return Histogram(name, documentation, labelnames, buckets=buckets)
+    except ValueError:
+        return REGISTRY._names_to_collectors.get(name)
+
+
+def _get_or_create_gauge(name: str, documentation: str):
+    try:
+        return Gauge(name, documentation)
+    except ValueError:
+        return REGISTRY._names_to_collectors.get(name)
+
+
+http_requests_total = _get_or_create_counter(
+    "http_requests_total",
+    "Total number of HTTP requests processed.",
+    ["method", "endpoint", "status"],
+)
+
+http_request_duration_seconds = _get_or_create_histogram(
+    "http_request_duration_seconds",
+    "HTTP request latency histogram in seconds.",
+    ["endpoint"],
+    buckets=DURATION_BUCKETS,
+)
+
+audit_events_total = _get_or_create_counter(
+    "audit_events_total",
+    "Total security and compliance audit events emitted.",
+    ["event_type"],
+)
+
+transactions_ingested_total = _get_or_create_counter(
+    "transactions_ingested_total",
+    "Total financial transactions ingested by decision and channel.",
+    ["decision", "channel"],
+)
+
+transactions_scored_total = _get_or_create_counter(
+    "transactions_scored_total",
+    "Total transactions scored by final compliance threat level.",
+    ["threat_level"],
+)
+
+rules_triggered_total = _get_or_create_counter(
+    "rules_triggered_total",
+    "Total AML detection rule triggers by rule identifier.",
+    ["rule_name"],
+)
+
+outbox_pending_events = _get_or_create_gauge(
+    "outbox_pending_events",
+    "Current count of pending/processing events in the transactional outbox.",
+)
 
 
 def record_http_request(method: str, endpoint: str, status_code: int, duration_seconds: float):
@@ -71,6 +111,26 @@ def record_audit_event(event_type: str):
     """Records an emitted security / compliance audit event."""
     if audit_events_total:
         audit_events_total.labels(event_type=event_type).inc()
+
+
+def record_transaction_ingested(decision: str = "APPROVED", channel: str = "Wire"):
+    if transactions_ingested_total:
+        transactions_ingested_total.labels(decision=str(decision), channel=str(channel or "Unknown")).inc()
+
+
+def record_transaction_scored(threat_level: str = "NONE"):
+    if transactions_scored_total:
+        transactions_scored_total.labels(threat_level=str(threat_level or "NONE")).inc()
+
+
+def record_rule_triggered(rule_name: str):
+    if rules_triggered_total:
+        rules_triggered_total.labels(rule_name=str(rule_name)).inc()
+
+
+def set_outbox_pending_events(count: int):
+    if outbox_pending_events:
+        outbox_pending_events.set(max(0, int(count)))
 
 
 def generate_metrics_text() -> str:

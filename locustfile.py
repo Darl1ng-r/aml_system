@@ -1,21 +1,23 @@
+import os
 import secrets
-import uuid
+from datetime import datetime, timezone
 from locust import HttpUser, task, between
 
 prng = secrets.SystemRandom()
 
+
 class AMLIngestionUser(HttpUser):
     """
-    Simulates high-throughput Core Banking and Payment Gateway transaction ingestion.
-    Benchmarks the real-time deterministic rules engine and behavioral scoring pipeline.
+    Simulates authenticated high-throughput Core Banking and Payment Gateway transaction ingestion.
+    Benchmarks the real-time deterministic rules engine and async outbox ingestion pipeline.
     """
-    wait_time = between(0.1, 0.5)  # Simulate 2 to 10 requests per user per second
+    wait_time = between(0.1, 0.5)
 
     test_accounts = [
-        "DE12003400567890111100",
-        "US99887766554433221100",
-        "GB44332211009988776655",
-        "RU11223344556677889900"
+        "ACCT-0a2e9dcd",
+        "ACCT-1b3f8eae",
+        "ACCT-2c4a7fbf",
+        "ACCT-3d5b6aca",
     ]
 
     channels = ["Wire", "SWIFT", "ACH", "POS", "Card"]
@@ -23,17 +25,26 @@ class AMLIngestionUser(HttpUser):
     merchants = ["Apex Clearing", "Global Remit Ltd", "Metro Retail", "Crypto Bridge Corp"]
 
     def on_start(self):
-        """Optionally authenticate or set up session headers."""
+        """Authenticate via OAuth2 password grant and attach Bearer + CSRF headers."""
+        username = os.getenv("AML_LOAD_USER", "admin")
+        password = os.getenv("AML_LOAD_PASSWORD", "admin123")
         self.headers = {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-CSRF-Protection": "1",
         }
+        resp = self.client.post(
+            "/api/v1/auth/login",
+            data={"username": username, "password": password},
+            headers={"X-CSRF-Protection": "1"},
+        )
+        if resp.status_code == 200:
+            token = resp.json().get("access_token")
+            if token:
+                self.headers["Authorization"] = f"Bearer {token}"
 
     @task(8)
     def submit_transaction(self):
-        """Simulates transaction ingestion payload."""
-        # 10% chance of triggering Structuring ($9,000 - $9,999)
-        # 5% chance of triggering Large CTR ($10,000+)
-        # 85% chance of normal routine transaction ($10 - $2,500)
+        """Simulates authenticated transaction ingestion matching TransactionRequest schema."""
         roll = prng.random()
         if roll < 0.10:
             amount = round(prng.uniform(9000.0, 9950.0), 2)
@@ -46,18 +57,19 @@ class AMLIngestionUser(HttpUser):
         receiver = prng.choice([acc for acc in self.test_accounts if acc != sender] or self.test_accounts)
 
         payload = {
-            "sender_account_id": sender,
-            "receiver_account_id": receiver,
+            "sender_account": sender,
+            "receiver_account": receiver,
             "amount": amount,
             "currency": "USD",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "country": prng.choice(self.countries),
             "merchant": prng.choice(self.merchants),
             "device": f"Terminal-{prng.randint(1, 20):02d}",
-            "channel": prng.choice(self.channels)
+            "channel": prng.choice(self.channels),
         }
 
-        with self.client.post("/api/v1/transactions", json=payload, headers=self.headers, catch_response=True) as resp:
-            if resp.status_code in (200, 201):
+        with self.client.post("/api/v1/transactions/ingest", json=payload, headers=self.headers, catch_response=True) as resp:
+            if resp.status_code in (200, 201, 202):
                 resp.success()
             elif resp.status_code == 422:
                 resp.failure(f"Validation failure: {resp.text}")

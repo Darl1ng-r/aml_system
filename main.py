@@ -38,8 +38,16 @@ def create_background_task(coro) -> asyncio.Task:
     return task
 
 
+_observability_initialized = False
+
+
 def _init_observability(app_instance: FastAPI) -> None:
-    # 0c. Initialise OpenTelemetry tracing
+    global _observability_initialized
+    if _observability_initialized:
+        return
+    _observability_initialized = True
+
+    # 0c. Initialise OpenTelemetry tracing (must happen at app setup time, outside lifespan)
     try:
         from observability.tracing import init_tracer
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -52,16 +60,19 @@ def _init_observability(app_instance: FastAPI) -> None:
     except Exception as e:
         logger.warning(f"OpenTelemetry init skipped (non-fatal): {e}")
 
-    # 0d. Initialise Sentry error tracking (if configured)
+    # 0d. Initialise Sentry error tracking with mandatory PII/SAR before_send scrubber
     if getattr(settings, "sentry_dsn", None):
         try:
             import sentry_sdk
+            from observability.logging import sentry_before_send_scrubber
             sentry_sdk.init(
                 dsn=settings.sentry_dsn,
                 environment=settings.environment,
                 traces_sample_rate=settings.sentry_traces_sample_rate,
+                send_default_pii=False,
+                before_send=sentry_before_send_scrubber,
             )
-            logger.info("Sentry APM & error tracking initialized.")
+            logger.info("Sentry APM & error tracking initialized (PII scrubbing enabled).")
         except Exception as e:
             logger.warning(f"Sentry init skipped (non-fatal): {e}")
 
@@ -418,6 +429,9 @@ app.include_router(risk_appetite.router)
 
 # Mount static files directory for dashboard styling and frontend client logic
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Initialize OpenTelemetry FastAPI instrumentation & Sentry PII-scrubbing at app setup time
+_init_observability(app)
 
 # ── Exception Handlers ───────────────────────────────────────────────────
 from fastapi import Request

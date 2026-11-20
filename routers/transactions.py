@@ -271,6 +271,19 @@ async def _compute_transaction_risk(
     else:
         threat_level = "MEDIUM"
 
+    try:
+        from observability.prometheus import (
+            record_transaction_ingested,
+            record_transaction_scored,
+            record_rule_triggered,
+        )
+        record_transaction_ingested(decision=decision, channel=payload.channel)
+        record_transaction_scored(threat_level=threat_level)
+        for rname in triggered_rules:
+            record_rule_triggered(rname)
+    except Exception:
+        pass
+
     return {
         "dynamic_score": dynamic_score,
         "triggered_rules": triggered_rules,
