@@ -491,9 +491,15 @@
       }
     }
 
+    let _healthPollInterval = null;
     window.addEventListener('DOMContentLoaded', () => {
       loadHealthData();
-      setInterval(loadHealthData, 10000);
+      _healthPollInterval = window.setInterval(() => {
+        if (!document.hidden) loadHealthData();
+      }, 10000);
+    });
+    window.addEventListener('beforeunload', () => {
+      if (_healthPollInterval) window.clearInterval(_healthPollInterval);
     });
   </script>
 </body>

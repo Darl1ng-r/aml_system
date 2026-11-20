@@ -265,6 +265,7 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.04);
     }
   </style>
+  <script src="/static/ui-dialogs.js?v=20261121-w4"></script>
 </head>
 
 <body>
@@ -478,14 +479,14 @@
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          alert(`Failed to toggle rule state: ${err.detail || res.status}`);
+          await window.SentinelDialog.alert(`Failed to toggle rule state: ${err.detail || res.status}`, { title: 'Rule Update Failed' });
           await fetchRules();
         } else {
           await fetchRules();
         }
       } catch (e) {
         console.error('Network error updating rule:', e);
-        alert('Network error updating rule: ' + (e.message || e));
+        await window.SentinelDialog.alert('Network error updating rule: ' + (e.message || e), { title: 'Network Error' });
         await fetchRules();
       }
     }
@@ -494,7 +495,7 @@
       const rule = rulesData.find(r => r.rule_name === ruleName);
       if (!rule) return;
 
-      const reason = prompt('Enter audit reason for modifying rule threshold:');
+      const reason = await window.SentinelDialog.prompt('Enter audit reason for modifying rule threshold:', '', { title: 'Rule Configuration Audit' });
       if (!reason) return;
 
       const newConfig = {};
@@ -521,14 +522,14 @@
           body: JSON.stringify({config: newConfig, change_reason: reason})
         });
         if (res.ok) {
-          alert(`Rule ${ruleName} updated and published across all pods!`);
+          window.SentinelDialog.toast(`Rule ${ruleName} updated and published across all pods.`, 'success');
           await fetchRules();
         } else {
-          alert('Failed to save rule configuration.');
+          await window.SentinelDialog.alert('Failed to save rule configuration.', { title: 'Save Failed' });
         }
       } catch (e) {
         console.error('Error saving rule:', e);
-        alert('Error saving rule: ' + (e.message || e));
+        await window.SentinelDialog.alert('Error saving rule: ' + (e.message || e), { title: 'Save Error' });
       }
     }
 
@@ -551,14 +552,15 @@
           throw new Error(data.detail || `Simulation failed (HTTP ${res.status})`);
         }
         const resultsDiv = document.getElementById('sim-results');
+        const esc = window.escapeHtml || ((s) => String(s));
 
         if (data.is_suspicious) {
           resultsDiv.innerHTML = `
             <div style="color:var(--risk-high); font-weight:700; margin-bottom:8px;">
-              ⚠️ VIOLATION DETECTED (${data.triggered_count} rules fired)
+              ⚠️ VIOLATION DETECTED (${Number(data.triggered_count || 0)} rules fired)
             </div>
             <ul>
-              ${data.triggered_rules.map(r => `<li><strong>${r}</strong></li>`).join('')}
+              ${(data.triggered_rules || []).map(r => `<li><strong>${esc(r)}</strong></li>`).join('')}
             </ul>
           `;
         } else {
@@ -570,7 +572,7 @@
         }
       } catch (e) {
         console.error('Failed to run simulation:', e);
-        alert('Failed to run simulation: ' + (e.message || e));
+        await window.SentinelDialog.alert('Failed to run simulation: ' + (e.message || e), { title: 'Simulation Error' });
       }
     }
 

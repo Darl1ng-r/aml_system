@@ -132,6 +132,7 @@
       z-index: 99;
     }
   </style>
+  <script src="/static/ui-dialogs.js?v=20261121-w4"></script>
 </head>
 <body>
     <header class="navbar">
@@ -445,7 +446,7 @@
     }
 
     async function addCaseNote(caseId) {
-      const note = prompt('Enter investigation note:');
+      const note = await window.SentinelDialog.prompt('Enter investigation note:', '', { title: 'Add Investigation Note' });
       if (!note || note.trim().length < 2) return;
       try {
         await apiJson(`/api/v1/cases/${caseId}/notes`, {
@@ -458,9 +459,9 @@
     }
 
     async function closeCase(caseId) {
-      const reason = prompt('Closure reason (FALSE_POSITIVE, SAR_FILED, LAW_ENFORCEMENT_REFERRAL, CLOSED_CLEARED):', 'CLOSED_CLEARED');
+      const reason = await window.SentinelDialog.prompt('Closure reason (FALSE_POSITIVE, SAR_FILED, LAW_ENFORCEMENT_REFERRAL, CLOSED_CLEARED):', 'CLOSED_CLEARED', { title: 'Close Case — Reason' });
       if (!reason) return;
-      const notes = prompt('Closing notes (min 3 chars):');
+      const notes = await window.SentinelDialog.prompt('Closing notes (min 3 chars):', '', { title: 'Close Case — Audit Notes' });
       if (!notes || notes.trim().length < 3) return;
       try {
         await apiJson(`/api/v1/cases/${caseId}/close`, {

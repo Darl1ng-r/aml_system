@@ -352,6 +352,7 @@
       animation: pulseSkeleton 1.4s ease-in-out infinite;
     }
   </style>
+  <script src="/static/ui-dialogs.js?v=20261121-w4"></script>
 </head>
 <body>
 
@@ -866,10 +867,10 @@
 
     async function requestEdd() {
       if (!activeCustomerId) return;
-      const trigger = prompt('Enter EDD trigger reason (e.g., PEP_HIT, HIGH_RISK_JURISDICTION, UNUSUAL_ACTIVITY):', 'UNUSUAL_ACTIVITY');
+      const trigger = await window.SentinelDialog.prompt('Enter EDD trigger reason (e.g., PEP_HIT, HIGH_RISK_JURISDICTION, UNUSUAL_ACTIVITY):', 'UNUSUAL_ACTIVITY', { title: 'Request Enhanced Due Diligence' });
       if (!trigger || !trigger.trim()) return;
-      const sow = prompt('Documented Source of Wealth (optional):', '') || '';
-      const sof = prompt('Documented Source of Funds (optional):', '') || '';
+      const sow = (await window.SentinelDialog.prompt('Documented Source of Wealth (optional):', '', { title: 'Source of Wealth' })) || '';
+      const sof = (await window.SentinelDialog.prompt('Documented Source of Funds (optional):', '', { title: 'Source of Funds' })) || '';
       try {
         const res = await fetch('/api/v1/edd/requests', {
           method: 'POST',
@@ -899,9 +900,9 @@
       const endpoint = isFrozen ? `/api/v1/accounts/${activeCustomerId}/unfreeze` : `/api/v1/accounts/${activeCustomerId}/freeze`;
       let body = {};
       if (!isFrozen) {
-        const reason = prompt('Enter regulatory justification for freezing this account:');
+        const reason = await window.SentinelDialog.prompt('Enter regulatory justification for freezing this account:', '', { title: 'Regulatory Account Freeze' });
         if (!reason || !reason.trim()) return;
-        const orderRef = prompt('Enter court/regulatory order reference (optional):', '') || '';
+        const orderRef = (await window.SentinelDialog.prompt('Enter court/regulatory order reference (optional):', '', { title: 'Order Reference' })) || '';
         body = { reason: reason.trim(), freezing_order_ref: orderRef.trim() || undefined };
       }
 

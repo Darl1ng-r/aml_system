@@ -264,6 +264,7 @@
       display: none;
     }
   </style>
+  <script src="/static/ui-dialogs.js?v=20261121-w4"></script>
 </head>
 <body>
 
@@ -521,7 +522,11 @@
     }
 
     async function submitApprovedToFinCEN(draftId, alertId, btnEl) {
-      if (!confirm('Electronically transmit this approved SAR draft to the FinCEN BSA E-Filing Gateway?')) return;
+      const ok = await window.SentinelDialog.confirm(
+        'Electronically transmit this approved SAR draft to the FinCEN BSA E-Filing Gateway?',
+        { title: 'Confirm FinCEN Transmission', confirmText: 'Transmit SAR' }
+      );
+      if (!ok) return;
       if (btnEl) {
         btnEl.disabled = true;
         btnEl.innerText = 'Filing...';

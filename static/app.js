@@ -101,6 +101,18 @@ function handleEscapeKeyShortcut() {
     return false;
 }
 
+function isInteractiveElementActive() {
+    const activeEl = document.activeElement;
+    if (!activeEl) return false;
+    const tag = activeEl.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button' || tag === 'a') {
+        return true;
+    }
+    if (activeEl.isContentEditable) return true;
+    const role = (activeEl.getAttribute('role') || '').toLowerCase();
+    return role === 'button' || role === 'link' || role === 'menuitem' || role === 'textbox';
+}
+
 function handleActionShortcuts(key) {
     const lowerKey = key.toLowerCase();
     if (lowerKey === 'a') {
@@ -131,7 +143,7 @@ function handleNavigationShortcuts(key) {
         navigateQueue(-1);
         return true;
     }
-    if (key === 'Enter') {
+    if (key === 'Enter' && !isInteractiveElementActive()) {
         const noteInput = document.getElementById('inbox-justification');
         if (noteInput) noteInput.focus();
         return true;
@@ -140,12 +152,8 @@ function handleNavigationShortcuts(key) {
 }
 
 window.addEventListener('keydown', (e) => {
-    // Toggle Shortcuts Help modal on "?"
-    if (e.key === '?' && !isInputFieldActive()) {
-        e.preventDefault();
-        toggleShortcutsModal();
-        return;
-    }
+    // Ignore shortcuts when a modal <dialog> is open
+    if (document.querySelector('dialog[open]')) return;
 
     // Close any open modal on "Esc"
     if (e.key === 'Escape' && handleEscapeKeyShortcut()) {
@@ -161,6 +169,23 @@ window.addEventListener('keydown', (e) => {
                 void resolveCurrentCase('CLOSE_FALSE_POSITIVE');
             }
         }
+        return;
+    }
+
+    // Never hijack OS/browser modifier combos (Ctrl+A select-all, Cmd+C copy, Alt+Left back, etc.)
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+    }
+
+    // Toggle Shortcuts Help modal on "?"
+    if (e.key === '?' && !isInteractiveElementActive()) {
+        e.preventDefault();
+        toggleShortcutsModal();
+        return;
+    }
+
+    // Do not hijack Enter/Space/letters when focus is on buttons, links, or interactive controls
+    if (isInteractiveElementActive()) {
         return;
     }
 
@@ -968,9 +993,13 @@ async function executeBulkResolve(action) {
     if (ids.length === 0) return;
 
     const actionText = action === 'CLOSE_SAR' ? 'File Regulatory SAR' : 'Dismiss as False Positive';
-    const note = prompt(`Enter mandatory investigation notes for batch processing ${ids.length} selected alerts (${actionText}):`);
+    const note = await window.SentinelDialog.prompt(
+        `Enter mandatory investigation notes for batch processing ${ids.length} selected alerts (${actionText}):`,
+        '',
+        { title: 'Batch Investigation Rationale' }
+    );
     if (!note || note.trim().length < 5) {
-        alert('A valid investigation justification (minimum 5 characters) is required for batch action execution.');
+        await window.SentinelDialog.alert('A valid investigation justification (minimum 5 characters) is required for batch action execution.');
         return;
     }
 
@@ -1195,18 +1224,22 @@ window.addEventListener('beforeunload', () => {
 
 async function forceUnlockCurrentCase() {
     if (!activeAlertId) return;
-    if (!confirm('Force break lock on this case? This action is recorded in the permanent audit trail.')) return;
+    const confirmed = await window.SentinelDialog.confirm(
+        'Force break lock on this case? This action is recorded in the permanent audit trail.',
+        { title: 'Force Break Case Lock', danger: true, confirmText: 'Break Lock' }
+    );
+    if (!confirmed) return;
     try {
         const res = await fetch(`${BASE_URL}/api/v1/locks/ALERT/${activeAlertId}?force=true`, {
             method: 'DELETE',
             headers: getAuthHeaders()
         });
         if (res.ok) {
-            alert('Lock broken. Re-acquiring lease...');
+            window.SentinelDialog.toast('Lock broken. Re-acquiring lease...', 'success');
             void acquireCaseLock(activeAlertId);
         }
     } catch (e) {
-        alert('Failed to force unlock: ' + e.message);
+        await window.SentinelDialog.alert('Failed to force unlock: ' + e.message, { title: 'Unlock Failed' });
     }
 }
 
@@ -1770,7 +1803,7 @@ function renderVisNetworkGraph(graphData, alert, targetContainerId = 'vis-graph-
         }
     });
 
-    visNetworkInstance.on('doubleClick', (params) => {
+    activeInstance.on('doubleClick', (params) => {
         if (params.nodes && params.nodes.length > 0) {
             void expandGraphNode(params.nodes[0]);
         }
@@ -1792,7 +1825,7 @@ async function expandSelectedGraphNode() {
     if (!visNetworkInstance) return;
     const selectedNodes = visNetworkInstance.getSelectedNodes();
     if (selectedNodes.length === 0) {
-        alert('Please click a node in the graph map first to select it for expansion.');
+        await window.SentinelDialog.alert('Please click a node in the graph map first to select it for expansion.');
         return;
     }
     await expandGraphNode(selectedNodes[0]);
@@ -2083,7 +2116,7 @@ async function submitSARToFinCEN() {
     if (!activeAlertId) return;
     const sarXml = document.getElementById('inbox-sar-xml').innerText;
     if (!sarXml) {
-        alert('No generated SAR XML payload found for active case.');
+        await window.SentinelDialog.alert('No generated SAR XML payload found for active case.');
         return;
     }
 
@@ -2205,7 +2238,7 @@ async function runSandboxScreening(event) {
 
     } catch (e) {
         log(`API screening error: ${e.message}`, 'error');
-        alert(`Screening request failed: ${e.message}`);
+        await window.SentinelDialog.alert(`Screening request failed: ${e.message}`, { title: 'Screening Error' });
     }
 }
 

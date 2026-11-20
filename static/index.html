@@ -740,7 +740,9 @@
   </div>
 
   <!-- Application Logic -->
-  <script src="/static/app.js?v=20261120-v3"></script>
+  <script src="/static/api-client.js?v=20261121-w4"></script>
+  <script src="/static/ui-dialogs.js?v=20261121-w4"></script>
+  <script src="/static/app.js?v=20261121-w4"></script>
 
   <!-- Modal and View Controllers -->
   <script>
@@ -936,14 +938,14 @@
     async function uploadEvidenceFile() {
       const fileInput = document.getElementById('evidence-file-input');
       if (!fileInput.files || fileInput.files.length === 0) {
-        alert('Please select a file to upload');
+        await window.SentinelDialog.alert('Please select a file to upload', { title: 'Evidence Locker' });
         return;
       }
       const caseId = (typeof activeAlertId !== 'undefined' && activeAlertId) ? activeAlertId : null;
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(caseId);
 
       if (!isUUID || (typeof mockMode !== 'undefined' && mockMode)) {
-        alert('Evidence artifact attached in simulated evaluation mode!');
+        await window.SentinelDialog.alert('Select a persisted case before attaching evidence artifacts.', { title: 'Evidence Locker' });
         fileInput.value = '';
         document.getElementById('evidence-desc-input').value = '';
         document.getElementById('evidence-tags-input').value = '';
@@ -957,7 +959,6 @@
 
       try {
         const headers = typeof getAuthHeaders === 'function' ? getAuthHeaders() : { 'X-CSRF-Protection': '1' };
-        // Omit Content-Type from headers so browser assigns boundary
         const uploadHeaders = { ...headers };
         delete uploadHeaders['Content-Type'];
 
@@ -967,22 +968,24 @@
           body: formData
         });
         if (res.ok) {
-          alert('Evidence attached successfully to case chain of custody!');
+          window.SentinelDialog.toast('Evidence attached successfully to case chain of custody.', 'success');
           fileInput.value = '';
           document.getElementById('evidence-desc-input').value = '';
           document.getElementById('evidence-tags-input').value = '';
           loadCaseEvidence();
         } else {
-          alert('Failed to upload evidence');
+          const err = await res.json().catch(() => ({}));
+          await window.SentinelDialog.alert(err.detail || 'Failed to upload evidence', { title: 'Upload Rejected' });
         }
       } catch (e) {
         console.error('Failed to upload evidence file:', e);
-        alert('Error uploading evidence file');
+        await window.SentinelDialog.alert('Error uploading evidence file', { title: 'Upload Error' });
       }
     }
 
     async function deleteEvidence(caseId, evId) {
-      if (!confirm('Remove this evidence attachment?')) return;
+      const ok = await window.SentinelDialog.confirm('Remove this evidence attachment?', { title: 'Remove Evidence', danger: true, confirmText: 'Remove' });
+      if (!ok) return;
       try {
         const headers = typeof getAuthHeaders === 'function' ? getAuthHeaders() : { 'X-CSRF-Protection': '1' };
         const res = await fetch(`/api/v1/cases/${caseId}/evidence/${evId}`, {
@@ -992,7 +995,7 @@
         if (res.ok) loadCaseEvidence();
       } catch (e) {
         console.error('Failed to delete evidence attachment:', e);
-        alert('Failed to delete evidence');
+        await window.SentinelDialog.alert('Failed to delete evidence', { title: 'Delete Error' });
       }
     }
 

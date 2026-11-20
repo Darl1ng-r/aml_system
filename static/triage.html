@@ -474,6 +474,7 @@
       display: none;
     }
   </style>
+  <script src="/static/ui-dialogs.js?v=20261121-w4"></script>
 </head>
 
 <body>
@@ -874,8 +875,12 @@
       renderAlertsTable();
     }
 
+    let _triageSearchTimer = null;
     function handleSearch() {
-      renderAlertsTable();
+      if (_triageSearchTimer) window.clearTimeout(_triageSearchTimer);
+      _triageSearchTimer = window.setTimeout(() => {
+        renderAlertsTable();
+      }, 200);
     }
 
     async function selectAlert(alertId) {
@@ -1024,21 +1029,25 @@
       try {
         const res = await fetch(`/api/v1/alerts/${selectedAlert.id}/claim`, {method: 'POST'});
         if (res.ok) {
-          alert('Alert claimed successfully! Status changed to IN_REVIEW.');
+          window.SentinelDialog.toast('Alert claimed successfully! Status changed to IN_REVIEW.', 'success');
           await fetchAlerts();
         } else {
           const err = await res.json();
-          alert(`Could not claim: ${err.detail || 'Error'}`);
+          await window.SentinelDialog.alert(`Could not claim: ${err.detail || 'Error'}`, { title: 'Claim Failed' });
         }
       } catch (e) {
         console.error('Network error claiming alert:', e);
-        alert('Network error claiming alert: ' + (e.message || e));
+        await window.SentinelDialog.alert('Network error claiming alert: ' + (e.message || e), { title: 'Network Error' });
       }
     }
 
     async function dismissFalsePositive() {
       if (!selectedAlert) return;
-      const justification = prompt('Enter mandatory compliance justification for False Positive dismissal:');
+      const justification = await window.SentinelDialog.prompt(
+        'Enter mandatory compliance justification for False Positive dismissal:',
+        '',
+        { title: 'False Positive Dismissal' }
+      );
       if (!justification) return;
 
       try {
@@ -1052,21 +1061,25 @@
           })
         });
         if (res.ok) {
-          alert('Alert dismissed as False Positive.');
+          window.SentinelDialog.toast('Alert dismissed as False Positive.', 'success');
           await fetchAlerts();
           closeDrawer();
         } else {
-          alert('Error dismissing alert');
+          await window.SentinelDialog.alert('Error dismissing alert', { title: 'Dismissal Error' });
         }
       } catch (e) {
         console.error('Failed to dismiss alert:', e);
-        alert('Failed to dismiss alert: ' + (e.message || e));
+        await window.SentinelDialog.alert('Failed to dismiss alert: ' + (e.message || e), { title: 'Dismissal Error' });
       }
     }
 
     async function escalateToL2() {
       if (!selectedAlert) return;
-      const reason = prompt('Enter rationale for escalating to Tier 2 (L2_INVESTIGATOR):');
+      const reason = await window.SentinelDialog.prompt(
+        'Enter rationale for escalating to Tier 2 (L2_INVESTIGATOR):',
+        '',
+        { title: 'Escalate to Tier 2' }
+      );
       if (!reason) return;
 
       try {
@@ -1076,15 +1089,15 @@
           body: JSON.stringify({justification: reason})
         });
         if (res.ok) {
-          alert('Alert successfully escalated to Tier 2 with audit trail.');
+          window.SentinelDialog.toast('Alert escalated to Tier 2 with audit trail.', 'success');
           await fetchAlerts();
           selectAlert(selectedAlert.id);
         } else {
-          alert('Failed to escalate alert.');
+          await window.SentinelDialog.alert('Failed to escalate alert.', { title: 'Escalation Failed' });
         }
       } catch (e) {
         console.error('Escalation failed:', e);
-        alert('Escalation failed: ' + (e.message || e));
+        await window.SentinelDialog.alert('Escalation failed: ' + (e.message || e), { title: 'Escalation Error' });
       }
     }
 

@@ -540,13 +540,15 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
         document.getElementById('autosaveStatus').style.color = 'var(--accent-amber)';
       });
 
-      // Auto-save interval every 30 seconds (only when dirty and editable)
-      setInterval(() => {
+      // Auto-save interval every 30 seconds (only when visible, dirty, and editable)
+      const _sarAutosaveInterval = window.setInterval(() => {
+        if (document.hidden) return;
         const editable = activeDraftStatus === 'DRAFT' || activeDraftStatus === 'REJECTED';
         if (isDirty && editable && document.getElementById('narrativeText').value.length >= 10) {
           saveDraft(true);
         }
       }, 30000);
+      window.addEventListener('beforeunload', () => window.clearInterval(_sarAutosaveInterval));
     }
 
     function updateCharCounter() {

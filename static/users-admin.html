@@ -199,6 +199,7 @@
       background: #FFFFFF;
     }
   </style>
+  <script src="/static/ui-dialogs.js?v=20261121-w4"></script>
 </head>
 
 <body>
@@ -409,7 +410,11 @@
     }
 
     async function changeUserRole(userId, newRole) {
-      if (!confirm(`Are you sure you want to transition this user to ${newRole}? This will immediately revoke their existing tokens.`)) {
+      const ok = await window.SentinelDialog.confirm(
+        `Are you sure you want to transition this user to ${newRole}? This will immediately revoke their existing tokens.`,
+        { title: 'Confirm Role Transition', danger: true, confirmText: 'Update Role' }
+      );
+      if (!ok) {
         await fetchUsers();
         return;
       }
@@ -421,22 +426,26 @@
           body: JSON.stringify({role: newRole})
         });
         if (res.ok) {
-          alert('Role updated and sessions rotated!');
+          window.SentinelDialog.toast('Role updated and sessions rotated.', 'success');
           await fetchUsers();
         } else {
           const err = await res.json().catch(() => ({}));
-          alert(`Failed to update user role: ${err.detail || res.status}`);
+          await window.SentinelDialog.alert(`Failed to update user role: ${err.detail || res.status}`, { title: 'Role Update Failed' });
           await fetchUsers();
         }
       } catch (e) {
         console.error('Error updating user role:', e);
-        alert('Error updating user role: ' + (e.message || e));
+        await window.SentinelDialog.alert('Error updating user role: ' + (e.message || e), { title: 'Update Error' });
         await fetchUsers();
       }
     }
 
     async function revokeSessions(userId) {
-      if (!confirm('Immediately invalidate all active JWTs for this user?')) return;
+      const ok = await window.SentinelDialog.confirm(
+        'Immediately invalidate all active JWTs for this user?',
+        { title: 'Revoke User Sessions', danger: true, confirmText: 'Revoke All' }
+      );
+      if (!ok) return;
       try {
         const res = await fetch(`/api/v1/auth/users/${userId}/revoke-sessions`, {
           method: 'POST',
@@ -445,12 +454,12 @@
         });
         if (res.ok) {
           const data = await res.json();
-          alert(data.detail || 'Sessions revoked successfully.');
+          window.SentinelDialog.toast(data.detail || 'Sessions revoked successfully.', 'success');
         } else {
-          alert('Failed to revoke sessions.');
+          await window.SentinelDialog.alert('Failed to revoke sessions.', { title: 'Revocation Failed' });
         }
       } catch (e) {
-        alert('Failed to revoke sessions: ' + e.message);
+        await window.SentinelDialog.alert('Failed to revoke sessions: ' + e.message, { title: 'Revocation Error' });
       }
     }
 
@@ -475,18 +484,18 @@
           body: JSON.stringify({username, password, role})
         });
         if (res.ok) {
-          alert(`User ${username} provisioned successfully with role ${role}!`);
+          window.SentinelDialog.toast(`User ${username} provisioned with role ${role}.`, 'success');
           document.getElementById('prov-username').value = '';
           document.getElementById('prov-password').value = '';
           closeProvisionModal();
           await fetchUsers();
         } else {
           const err = await res.json();
-          alert(`Failed to provision: ${err.detail || 'Error'}`);
+          await window.SentinelDialog.alert(`Failed to provision: ${err.detail || 'Error'}`, { title: 'Provisioning Failed' });
         }
       } catch (e) {
         console.error('Network error provisioning user:', e);
-        alert('Network error provisioning user: ' + (e.message || e));
+        await window.SentinelDialog.alert('Network error provisioning user: ' + (e.message || e), { title: 'Network Error' });
       }
     }
 

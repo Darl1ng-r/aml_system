@@ -532,11 +532,15 @@
       }
     }
 
+    let _execPollInterval = null;
     window.addEventListener('DOMContentLoaded', () => {
       loadExecutiveDashboard();
-      setInterval(() => {
+      _execPollInterval = window.setInterval(() => {
         if (!document.hidden) loadExecutiveDashboard();
       }, 30000);
+    });
+    window.addEventListener('beforeunload', () => {
+      if (_execPollInterval) window.clearInterval(_execPollInterval);
     });
   </script>
 </body>

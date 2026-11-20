@@ -8,7 +8,7 @@
    Fonts:    Manrope (Display) · Inter (UI) · JetBrains Mono (Data)
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
+/* Google Fonts loaded via <link> in HTML pages (removed duplicate @import for FCP performance) */
 
 :root {
   /* Core Minimalist Palette */
@@ -25,8 +25,8 @@
   --panel-edge-strong:    rgba(20, 21, 23, 0.18);
 
   --ink:                  #141517;
-  --ink-soft:             #5C6068;
-  --ink-muted:            #8C919B;
+  --ink-soft:             #52565E;
+  --ink-muted:            #5C6068;
 
   /* Single Intentional Focal Accent */
   --accent:               #F5A623;
