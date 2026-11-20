@@ -42,23 +42,25 @@ _observability_initialized = False
 
 
 def _init_observability(app_instance: FastAPI) -> None:
+    import sys
     global _observability_initialized
     if _observability_initialized:
         return
     _observability_initialized = True
 
-    # 0c. Initialise OpenTelemetry tracing (must happen at app setup time, outside lifespan)
-    try:
-        from observability.tracing import init_tracer
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        init_tracer(
-            service_name=settings.otel_service_name,
-            endpoint=settings.otel_exporter_endpoint,
-        )
-        FastAPIInstrumentor.instrument_app(app_instance)
-        logger.info("OpenTelemetry FastAPI instrumentation enabled.")
-    except Exception as e:
-        logger.warning(f"OpenTelemetry init skipped (non-fatal): {e}")
+    # 0c. Initialise OpenTelemetry tracing (skip live OTLP gRPC socket exporter during pytest)
+    if "pytest" not in sys.modules and not os.getenv("PYTEST_CURRENT_TEST"):
+        try:
+            from observability.tracing import init_tracer
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            init_tracer(
+                service_name=settings.otel_service_name,
+                endpoint=settings.otel_exporter_endpoint,
+            )
+            FastAPIInstrumentor.instrument_app(app_instance)
+            logger.info("OpenTelemetry FastAPI instrumentation enabled.")
+        except Exception as e:
+            logger.warning(f"OpenTelemetry init skipped (non-fatal): {e}")
 
     # 0d. Initialise Sentry error tracking with mandatory PII/SAR before_send scrubber
     if getattr(settings, "sentry_dsn", None):

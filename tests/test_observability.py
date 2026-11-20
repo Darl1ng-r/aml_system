@@ -86,7 +86,8 @@ async def test_correlation_id_middleware_sets_contextvars():
 
     async def dummy_call_next(req: Request) -> Response:
         assert correlation_id_var.get() == "custom-correlation-id-777"
-        assert tenant_id_var.get() == "tenant-999"
+        # Security: Raw unauthenticated X-Tenant-ID headers must NOT be trusted into log context
+        assert tenant_id_var.get() == ""
         return Response("OK")
 
     response = await middleware.dispatch(request, dummy_call_next)
