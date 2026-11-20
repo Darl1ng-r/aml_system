@@ -4,40 +4,40 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Customer 360 Dossier | AML Sentinel</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261014.5">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys1">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-dark: #ECE7DD;
+      --bg-dark: #ECEBE7;
       --bg-surface: #FFFFFF;
       --bg-card: #FFFFFF;
-      --bg-elevated: #FAF8F5;
-      --border-subtle: #DAD3C3;
-      --border-focus: #3D5A80;
-      --text-main: #22262E;
-      --text-muted: #4B4F5A;
+      --bg-elevated: #F5F4F0;
+      --border-subtle: rgba(20,21,23,0.09);
+      --border-focus: #141517;
+      --text-main: #141517;
+      --text-muted: #5C6068;
       --text-dim: #6B6F7A;
-      --accent-cyan: #3D5A80;
-      --accent-blue: #3D5A80;
+      --accent-cyan: #141517;
+      --accent-blue: #141517;
       --accent-emerald: #4C7A5E;
-      --accent-amber: #C98A2E;
+      --accent-amber: #F5A623;
       --accent-crimson: #C1443B;
-      --accent-purple: #3D5A80;
+      --accent-purple: #141517;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background-color: var(--bg-dark);
       color: var(--text-main);
-      font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+      font-family: 'Inter', -apple-system, sans-serif;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
     }
     .header-nav {
-      background: #1B1F2B;
-      border-bottom: 1px solid #2B3040;
+      background: #141517;
+      border-bottom: 1px solid rgba(255,255,255,0.10);
       padding: 0 1.5rem;
       height: 56px;
       display: flex;
@@ -58,13 +58,14 @@
       color: #E7E9EF;
     }
     .brand-badge {
-      background: linear-gradient(135deg, var(--accent-cyan), #2B3F5A);
-      padding: 3px 8px;
-      border-radius: 4px;
-      font-size: 0.7rem;
-      font-family: 'IBM Plex Mono', monospace;
+      background: rgba(245, 166, 35, 0.16);
+      border: 1px solid rgba(245, 166, 35, 0.35);
+      padding: 3px 9px;
+      border-radius: 9999px;
+      font-size: 0.68rem;
+      font-family: 'JetBrains Mono', monospace;
       font-weight: 600;
-      color: #FFFFFF;
+      color: #F5A623;
     }
     .nav-links { display: flex; gap: 0.5rem; }
     .nav-link {
@@ -76,26 +77,31 @@
       transition: all 0.15s ease;
       font-weight: 500;
     }
-    .nav-link:hover, .nav-link.active {
+    .nav-link:hover {
       color: #FFFFFF;
-      background: #2D3345;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .nav-link.active {
+      color: #141517;
+      background: #FFFFFF;
+      font-weight: 600;
     }
     .user-pill {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       font-size: 0.8rem;
-      background: #252A38;
+      background: rgba(255,255,255,0.07);
       color: #E7E9EF;
       padding: 4px 10px;
       border-radius: 20px;
       border: 1px solid rgba(255, 255, 255, 0.15);
     }
     .role-badge {
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       font-size: 0.65rem;
-      background: #172554;
-      color: #93C5FD;
+      background: rgba(245,166,35,0.16);
+      color: #F5A623;
       padding: 2px 6px;
       border-radius: 4px;
       border: 1px solid rgba(61, 90, 128, 0.4);
@@ -119,7 +125,7 @@
       overflow: hidden;
     }
     .customer-sidebar {
-      background: #FAF8F5;
+      background: #F5F4F0;
       border-right: 1px solid var(--border-subtle);
       display: flex;
       flex-direction: column;
@@ -154,7 +160,7 @@
       border-left: 3px solid var(--accent-blue);
     }
     .customer-name { font-weight: 600; font-size: 0.85rem; color: var(--text-main); }
-    .customer-sub { font-size: 0.725rem; color: var(--text-dim); margin-top: 2px; font-family: 'IBM Plex Mono', monospace; }
+    .customer-sub { font-size: 0.725rem; color: var(--text-dim); margin-top: 2px; font-family: 'JetBrains Mono', monospace; }
 
     .dossier-pane {
       padding: 1.5rem 2rem;
@@ -238,7 +244,7 @@
       align-items: center;
       justify-content: center;
     }
-    .gauge-val { font-size: 1.3rem; font-weight: 700; font-family: 'IBM Plex Mono', monospace; }
+    .gauge-val { font-size: 1.3rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
     .gauge-lbl { font-size: 0.6rem; color: var(--text-dim); text-transform: uppercase; }
 
     .factor-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
@@ -264,7 +270,7 @@
 
     .badge-strip { display: flex; gap: 0.5rem; flex-wrap: wrap; }
     .status-pill {
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       font-size: 0.7rem;
       padding: 3px 8px;
       border-radius: 4px;
@@ -278,7 +284,7 @@
     .pill-red { background: #FBEAE8; color: #A8322A; border: 1px solid rgba(193, 68, 59, 0.35); }
 
     .ubo-tree-node {
-      background: #FAF8F5;
+      background: #F5F4F0;
       border: 1px solid var(--border-subtle);
       border-radius: 6px;
       padding: 8px 12px;
@@ -303,7 +309,7 @@
       gap: 0.35rem;
       transition: all 0.15s;
     }
-    .btn:hover { background: #FAF8F5; border-color: var(--text-dim); }
+    .btn:hover { background: #F5F4F0; border-color: var(--text-dim); }
     .btn-danger { background: #FBEAE8; color: #A8322A; border-color: rgba(193, 68, 59, 0.35); }
     .sr-only {
       position: absolute;
@@ -404,7 +410,7 @@
               <span class="status-pill pill-amber" id="dossierRiskTier">HIGH RISK</span>
               <span class="status-pill pill-green" id="dossierStatus">ACTIVE</span>
             </div>
-            <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px; font-family:'IBM Plex Mono',monospace;">
+            <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px; font-family:'JetBrains Mono',monospace;">
               ACC: <span id="dossierAccNum" style="color:#fff;">DE8937040044</span> &bull;
               BIC: <span id="dossierBic" style="color:#fff;">DEUTDEDDFXX</span> &bull;
               ONBOARDED: <span id="dossierCreated">2026-01-14</span>
@@ -425,7 +431,7 @@
         <div class="card">
           <div class="card-title">
             <span>Dynamic Risk Score Engine</span>
-            <span style="font-family:'IBM Plex Mono',monospace; color:var(--text-dim);" id="riskModelVer">MODEL: BLENDED-v2</span>
+            <span style="font-family:'JetBrains Mono',monospace; color:var(--text-dim);" id="riskModelVer">MODEL: BLENDED-v2</span>
           </div>
           <div class="gauge-container">
             <div class="gauge-circle" id="riskGaugeCircle">
@@ -476,7 +482,7 @@
           <div style="font-size:0.75rem; color:var(--text-muted); line-height:1.5;">
             Automated nightly batch re-screening matches against U.S. Treasury OFAC, UN 1267, EU Consolidated sanctions, and Dow Jones PEP databases.
           </div>
-          <div style="margin-top:0.75rem; font-size:0.7rem; font-family:'IBM Plex Mono',monospace; color:var(--text-dim);">
+          <div style="margin-top:0.75rem; font-size:0.7rem; font-family:'JetBrains Mono',monospace; color:var(--text-dim);">
             Last Screened: <span id="lastScreenTime">Today, 04:00 UTC</span>
           </div>
         </div>
@@ -491,14 +497,14 @@
             <div class="ubo-tree-node">
               <div>
                 <strong style="color:#fff;">Elena Rostova</strong>
-                <div style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;">TAX-ID: CY99182301 &bull; Direct Shareholder</div>
+                <div style="font-size:0.7rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">TAX-ID: CY99182301 &bull; Direct Shareholder</div>
               </div>
               <span class="status-pill pill-amber">55.0% UBO</span>
             </div>
             <div class="ubo-tree-node">
               <div>
                 <strong style="color:#fff;">Valentin Korolev</strong>
-                <div style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;">TAX-ID: CY44192004 &bull; Managing Director</div>
+                <div style="font-size:0.7rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">TAX-ID: CY44192004 &bull; Managing Director</div>
               </div>
               <span class="status-pill pill-green">25.0% UBO</span>
             </div>
@@ -680,7 +686,7 @@
         <div class="ubo-tree-node">
           <div>
             <strong style="color:#fff;">${u.name}</strong>
-            <div style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;">TAX-ID: ${u.tax_id} &bull; Beneficial Owner</div>
+            <div style="font-size:0.7rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">TAX-ID: ${u.tax_id} &bull; Beneficial Owner</div>
           </div>
           <span class="status-pill pill-amber">${u.percentage}% UBO</span>
         </div>
@@ -699,7 +705,7 @@
             <span class="status-pill ${a.threat_level === 'CRITICAL' ? 'pill-red' : 'pill-amber'}">${a.threat_level}</span>
             <span style="color:#fff; margin-left:6px;">${a.rule_name}</span>
           </div>
-          <span style="font-family:'IBM Plex Mono',monospace; color:var(--text-dim);">${a.created_at.slice(0,10)}</span>
+          <span style="font-family:'JetBrains Mono',monospace; color:var(--text-dim);">${a.created_at.slice(0,10)}</span>
         </div>
       `).join('');
     }
@@ -762,7 +768,7 @@
         <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--border-subtle);">
           <div>
             <div style="font-size:0.75rem; font-weight:600; color:#f59e0b;">EDD: ${e.trigger_reason || 'REVIEW'}</div>
-            <div style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;">${e.status || 'OPEN'} &bull; ${e.created_at ? e.created_at.slice(0, 10) : ''}</div>
+            <div style="font-size:0.7rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">${e.status || 'OPEN'} &bull; ${e.created_at ? e.created_at.slice(0, 10) : ''}</div>
           </div>
           <span class="status-pill pill-amber">EDD</span>
         </div>

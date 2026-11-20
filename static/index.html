@@ -7,127 +7,16 @@
   <meta name="description" content="AML Sentinel — Institutional Anti-Money Laundering & Case Investigation Platform">
   <title>Case Investigation — AML Sentinel</title>
 
-  <!-- Google Fonts: IBM Plex Sans & IBM Plex Mono -->
+  <!-- Google Fonts: Manrope, Inter & JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
 
   <!-- Core Stylesheet with Cache Busting -->
-  <link rel="stylesheet" href="/static/style.css?v=20261014.5">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys1">
 
-  <!-- Critical Layout Style Fallbacks (Guarantees no FOUC or cache drift) -->
+  <!-- Minimal Page-Specific Helpers (defers all theming to style.css tokens) -->
   <style>
-    .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: #1B1F2B;
-      height: 52px;
-      padding: 0 16px;
-      border-bottom: 1px solid #2B3040;
-      position: relative;
-      z-index: 100;
-    }
-    .topbar-left {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      flex: 1;
-      min-width: 0;
-    }
-    .topbar-center {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-shrink: 0;
-    }
-    .topbar-right {
-      display: flex;
-      align-items: center;
-      justify-content: flex-end;
-      gap: 10px;
-      flex: 1;
-    }
-    .nav-pills {
-      display: inline-flex;
-      align-items: center;
-      background: rgba(255, 255, 255, 0.06);
-      padding: 3px;
-      border-radius: 9999px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      gap: 2px;
-    }
-    .nav-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 5px 14px;
-      border-radius: 9999px;
-      font-size: 12px;
-      font-weight: 500;
-      color: #9FA6B8;
-      text-decoration: none;
-      transition: all 0.15s ease;
-      line-height: 1;
-      white-space: nowrap;
-    }
-    .nav-pill:hover {
-      color: #FFFFFF;
-      background: #2D3345;
-    }
-    .nav-pill.active {
-      background: #3D5A80;
-      color: #FFFFFF;
-      font-weight: 600;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.25);
-    }
-    .app-launcher-dropdown {
-      position: relative;
-      display: inline-block;
-    }
-    .dropdown-menu {
-      display: none;
-      position: absolute;
-      top: calc(100% + 8px);
-      right: 0;
-      width: 290px;
-      background: #1B1F2B;
-      border: 1px solid #2B3040;
-      border-radius: 8px;
-      padding: 8px;
-      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
-      z-index: 9999;
-    }
-    .dropdown-menu.show {
-      display: block;
-    }
-    .mobile-decision-bar {
-      display: none;
-    }
-    @media (max-width: 1024px) {
-      .mobile-decision-bar {
-        display: flex;
-      }
-    }
-    .decision-btns {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      width: 100%;
-    }
-    .dbtn {
-      width: 100%;
-      padding: 10px 14px;
-      display: flex;
-      align-items: center;
-      justify-content: flex-start;
-      gap: 10px;
-      font-size: 12.5px;
-      font-weight: 600;
-      border-radius: 6px;
-      box-sizing: border-box;
-      text-align: left;
-    }
     button.tab {
       background: transparent;
       border-top: none;
@@ -213,7 +102,7 @@
 
       <!-- 3. Right: Status, Modules Dropdown, Shortcuts & Profile -->
       <div class="topbar-right">
-        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:#232936; border:1px solid #2B3040; color:#A3E635;">
+        <div id="app-status-badge" class="status-indicator online" style="display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:3px 8px; border-radius:12px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.10); color:#A3E635;">
           <span class="pulse-dot" style="width:7px; height:7px; border-radius:50%; background:#10b981;"></span>
           <span id="app-status-text">Compliance Engine Online</span>
         </div>
@@ -370,8 +259,8 @@
           <div class="graph-wrap" id="graph-wrap-box">
             <div class="graph-legend">
               <span><i class="legend-dot" style="background:#C1443B"></i>High risk</span>
-              <span><i class="legend-dot" style="background:#C98A2E"></i>Medium</span>
-              <span><i class="legend-dot" style="background:#3D5A80"></i>Subject</span>
+              <span><i class="legend-dot" style="background:#F5A623"></i>Medium</span>
+              <span><i class="legend-dot" style="background:#141517"></i>Subject</span>
             </div>
             <div id="vis-graph-container" style="width: 100%; height: 100%;"></div>
           </div>
@@ -385,12 +274,12 @@
               <div class="timeline-axis"></div>
               <div class="timeline-point" style="left:4%; background:#B8B1A0;" title="Aug 12 - $1,200"></div>
               <div class="timeline-point" style="left:16%; background:#B8B1A0;" title="Aug 16 - $850"></div>
-              <div class="timeline-point" style="left:24%; background:#C98A2E;" title="Aug 21 - $4,500"></div>
+              <div class="timeline-point" style="left:24%; background:#F5A623;" title="Aug 21 - $4,500"></div>
               <div class="timeline-point" style="left:38%; background:#B8B1A0;" title="Aug 26 - $900"></div>
-              <div class="timeline-point" style="left:47%; background:#C98A2E;" title="Aug 30 - $6,200"></div>
-              <div class="timeline-point" style="left:58%; background:#C98A2E;" title="Sep 3 - $5,800"></div>
+              <div class="timeline-point" style="left:47%; background:#F5A623;" title="Aug 30 - $6,200"></div>
+              <div class="timeline-point" style="left:58%; background:#F5A623;" title="Sep 3 - $5,800"></div>
               <div class="timeline-point" style="left:70%; background:#B8B1A0;" title="Sep 6 - $1,100"></div>
-              <div class="timeline-point" style="left:81%; background:#C98A2E;" title="Sep 8 - $7,400"></div>
+              <div class="timeline-point" style="left:81%; background:#F5A623;" title="Sep 8 - $7,400"></div>
               <div class="timeline-point highlight" style="left:96%;" title="Today - $9,480 (Flagged)"></div>
             </div>
             <div class="timeline-labels">
@@ -433,7 +322,7 @@
           </div>
 
           <!-- Upload Dropzone / Form -->
-          <div style="background:#FAF8F5; border:1px dashed var(--border-strong); border-radius:var(--r-md); padding:16px; margin-bottom:16px;">
+          <div style="background:#F5F4F0; border:1px dashed var(--border-strong); border-radius:var(--r-md); padding:16px; margin-bottom:16px;">
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:10px;">
               <div>
                 <label for="evidence-file-input" style="display:block; font-size:11px; font-weight:600; margin-bottom:4px;">Attach Document / Screenshot</label>
@@ -468,7 +357,7 @@
       <div id="tab-content-raw" role="tabpanel" aria-labelledby="tab-raw-telemetry" style="display:none;">
         <div class="panel">
           <div class="panel-title">Raw Telemetry & Cryptographic Verification</div>
-          <pre id="evidence-raw-json" style="background:#F8F6F0; border:1px solid var(--panel-edge); border-radius:8px; padding:12px; font-family:var(--font-data); font-size:11px; max-height:400px; overflow:auto;"></pre>
+          <pre id="evidence-raw-json" style="background:#F5F4F0; border:1px solid var(--panel-edge); border-radius:8px; padding:12px; font-family:var(--font-data); font-size:11px; max-height:400px; overflow:auto;"></pre>
         </div>
       </div>
 

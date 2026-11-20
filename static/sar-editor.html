@@ -4,40 +4,40 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SAR Draft Editor | AML Sentinel</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261014.5">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys1">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-dark: #ECE7DD;
+      --bg-dark: #ECEBE7;
       --bg-surface: #FFFFFF;
-      --bg-card: #FAF8F5;
-      --bg-elevated: #F0EBE1;
-      --border-subtle: #DAD3C3;
-      --border-focus: #3D5A80;
-      --text-main: #22262E;
-      --text-muted: #4B4F5A;
+      --bg-card: #F5F4F0;
+      --bg-elevated: #EFEFED;
+      --border-subtle: rgba(20,21,23,0.09);
+      --border-focus: #141517;
+      --text-main: #141517;
+      --text-muted: #5C6068;
       --text-dim: #6B6F7A;
-      --accent-cyan: #3D5A80;
-      --accent-blue: #3D5A80;
+      --accent-cyan: #141517;
+      --accent-blue: #141517;
       --accent-emerald: #4C7A5E;
-      --accent-amber: #C98A2E;
+      --accent-amber: #F5A623;
       --accent-crimson: #C1443B;
-      --accent-purple: #3D5A80;
+      --accent-purple: #141517;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background-color: var(--bg-dark);
       color: var(--text-main);
-      font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+      font-family: 'Inter', -apple-system, sans-serif;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
     }
     .header-nav {
-      background: #1B1F2B;
-      border-bottom: 1px solid #2B3040;
+      background: #141517;
+      border-bottom: 1px solid rgba(255,255,255,0.10);
       padding: 0 1.5rem;
       height: 56px;
       display: flex;
@@ -58,13 +58,14 @@
       color: #E7E9EF;
     }
     .brand-badge {
-      background: linear-gradient(135deg, var(--accent-blue), #2B3F5A);
-      padding: 3px 8px;
-      border-radius: 4px;
-      font-size: 0.7rem;
-      font-family: 'IBM Plex Mono', monospace;
+      background: rgba(245, 166, 35, 0.16);
+      border: 1px solid rgba(245, 166, 35, 0.35);
+      padding: 3px 9px;
+      border-radius: 9999px;
+      font-size: 0.68rem;
+      font-family: 'JetBrains Mono', monospace;
       font-weight: 600;
-      color: #FFFFFF;
+      color: #F5A623;
     }
     .nav-links { display: flex; gap: 0.5rem; }
     .nav-link {
@@ -76,29 +77,34 @@
       transition: all 0.15s ease;
       font-weight: 500;
     }
-    .nav-link:hover, .nav-link.active {
+    .nav-link:hover {
       color: #FFFFFF;
-      background: #2D3345;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .nav-link.active {
+      color: #141517;
+      background: #FFFFFF;
+      font-weight: 600;
     }
     .user-pill {
       display: flex;
       align-items: center;
       gap: 0.5rem;
       font-size: 0.8rem;
-      background: #252B3B;
+      background: rgba(255,255,255,0.07);
       color: #F1F3F9;
       padding: 4px 10px;
       border-radius: 20px;
       border: 1px solid #3A4259;
     }
     .role-badge {
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       font-size: 0.65rem;
-      background: #1E3A8A;
-      color: #DBEAFE;
+      background: rgba(245,166,35,0.16);
+      color: #F5A623;
       padding: 2px 6px;
       border-radius: 4px;
-      border: 1px solid #3B82F6;
+      border: 1px solid rgba(245,166,35,0.4);
     }
     .btn-logout {
       background: transparent;
@@ -121,7 +127,7 @@
 
     /* Left Context Column */
     .context-pane {
-      background: #FAF8F5;
+      background: #F5F4F0;
       border-right: 1px solid var(--border-subtle);
       padding: 1.25rem;
       overflow-y: auto;
@@ -152,16 +158,16 @@
     }
     .info-row:last-child { margin-bottom: 0; }
     .info-label { color: var(--text-muted); }
-    .info-val { font-family: 'IBM Plex Mono', monospace; font-weight: 500; color: var(--text-main); }
+    .info-val { font-family: 'JetBrains Mono', monospace; font-weight: 500; color: var(--text-main); }
     .typology-tag {
       display: inline-block;
       padding: 3px 8px;
       border-radius: 4px;
       font-size: 0.7rem;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       background: #E8EEF5;
-      color: #1E3A8A;
-      border: 1px solid #93C5FD;
+      color: rgba(245,166,35,0.16);
+      border: 1px solid #F5A623;
       margin-top: 0.25rem;
     }
 
@@ -185,13 +191,13 @@
       display: flex;
       align-items: center;
       gap: 0.35rem;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       font-weight: 600;
     }
     .char-counter {
       font-size: 0.75rem;
       color: var(--text-dim);
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
     }
     .narrative-textarea {
       width: 100%;
@@ -202,7 +208,7 @@
       border-radius: 8px;
       padding: 1.25rem;
       color: var(--text-main);
-      font-family: 'IBM Plex Sans', sans-serif;
+      font-family: 'Inter', sans-serif;
       font-size: 0.95rem;
       line-height: 1.6;
       resize: vertical;
@@ -236,12 +242,12 @@
       border-color: var(--border-subtle);
       color: var(--text-main);
     }
-    .btn-secondary:hover { background: #FAF8F5; border-color: var(--text-dim); }
+    .btn-secondary:hover { background: #F5F4F0; border-color: var(--text-dim); }
     .btn-primary {
       background: var(--accent-blue);
       color: #fff;
     }
-    .btn-primary:hover { background: #2B3F5A; }
+    .btn-primary:hover { background: #26292F; }
     .btn-submit {
       background: var(--risk-high);
       color: #fff;
@@ -261,14 +267,14 @@
     .preview-tabs {
       display: flex;
       border-bottom: 1px solid var(--border-subtle);
-      background: #FAF8F5;
+      background: #F5F4F0;
     }
     .preview-tab {
       flex: 1;
       padding: 10px;
       text-align: center;
       font-size: 0.75rem;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       color: var(--text-muted);
       cursor: pointer;
       border: none;
@@ -285,10 +291,10 @@
       flex: 1;
       padding: 1rem;
       overflow: auto;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       font-size: 0.75rem;
-      color: #1B1F2B;
-      background: #F8F6F0;
+      color: #141517;
+      background: #F5F4F0;
       border-top: 1px solid var(--border-subtle);
       white-space: pre-wrap;
       line-height: 1.45;
@@ -444,7 +450,7 @@
         <button class="preview-tab" id="tabGoaml" onclick="switchFormat('GOAML')">UNODC EU goAML</button>
       </div>
       <div style="padding: 8px 12px; background:var(--bg-card); display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--border-subtle);">
-        <span style="font-size:0.7rem; color:var(--text-dim); font-family:'IBM Plex Mono',monospace;" id="xmlFormatLabel">SCHEMA: FinCEN BSA E-Filing v2.0</span>
+        <span style="font-size:0.7rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;" id="xmlFormatLabel">SCHEMA: FinCEN BSA E-Filing v2.0</span>
         <button class="btn btn-secondary" style="padding:4px 8px; font-size:0.7rem;" onclick="downloadXml()">Download XML</button>
       </div>
       <pre class="xml-content" id="xmlDisplay">&lt;!-- Click 'Generate Live XML Preview' or type to update --&gt;</pre>

@@ -4,34 +4,34 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Network Graph Visualizer | AML Sentinel</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys1">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
   <style>
     :root {
-      --bg-dark: #080c14;
-      --bg-surface: #0e1524;
-      --bg-card: #131c2e;
-      --bg-elevated: #1a253c;
-      --border-subtle: #1e2d48;
-      --border-focus: #3b82f6;
-      --text-main: #f1f5f9;
-      --text-muted: #94a3b8;
-      --text-dim: #64748b;
-      --accent-cyan: #06b6d4;
-      --accent-blue: #3b82f6;
-      --accent-emerald: #10b981;
-      --accent-amber: #f59e0b;
-      --accent-crimson: #ef4444;
-      --accent-purple: #8b5cf6;
+      --bg-dark: #101113;
+      --bg-surface: #141517;
+      --bg-card: #1C1E22;
+      --bg-elevated: #24272D;
+      --border-subtle: rgba(255, 255, 255, 0.10);
+      --border-focus: #F5A623;
+      --text-main: #F7F7F5;
+      --text-muted: #9CA1AB;
+      --text-dim: #6E737D;
+      --accent-cyan: #F5A623;
+      --accent-blue: #F5A623;
+      --accent-emerald: #34D399;
+      --accent-amber: #F5A623;
+      --accent-crimson: #F87171;
+      --accent-purple: #D4D4D8;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background-color: var(--bg-dark);
       color: var(--text-main);
-      font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+      font-family: 'Inter', -apple-system, sans-serif;
       height: 100vh;
       overflow: hidden;
       display: flex;
@@ -58,13 +58,14 @@
       color: #fff;
     }
     .brand-badge {
-      background: linear-gradient(135deg, var(--accent-purple), var(--accent-cyan));
-      padding: 3px 8px;
-      border-radius: 4px;
-      font-size: 0.7rem;
-      font-family: 'IBM Plex Mono', monospace;
+      background: rgba(245, 166, 35, 0.14);
+      border: 1px solid rgba(245, 166, 35, 0.35);
+      padding: 3px 9px;
+      border-radius: 9999px;
+      font-size: 0.68rem;
+      font-family: 'JetBrains Mono', monospace;
       font-weight: 600;
-      color: #000;
+      color: #F5A623;
     }
     .nav-links { display: flex; gap: 0.5rem; }
     .nav-link {
@@ -72,13 +73,18 @@
       text-decoration: none;
       font-size: 0.825rem;
       padding: 6px 12px;
-      border-radius: 6px;
+      border-radius: 9px;
       transition: all 0.15s ease;
       font-weight: 500;
     }
-    .nav-link:hover, .nav-link.active {
-      color: #fff;
-      background: var(--bg-card);
+    .nav-link:hover {
+      color: #FFFFFF;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .nav-link.active {
+      color: #141517;
+      background: #FFFFFF;
+      font-weight: 600;
     }
     .user-pill {
       display: flex;
@@ -91,7 +97,7 @@
       border: 1px solid var(--border-subtle);
     }
     .role-badge {
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       font-size: 0.65rem;
       background: #2E1065;
       color: #EDE9FE;
@@ -125,7 +131,7 @@
       background: rgba(14, 21, 36, 0.85);
       backdrop-filter: blur(8px);
       border: 1px solid var(--border-subtle);
-      border-radius: 8px;
+      border-radius: 14px;
       padding: 8px 12px;
       display: flex;
       align-items: center;
@@ -135,17 +141,17 @@
     .input-account {
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 6px;
+      border-radius: 9px;
       padding: 6px 10px;
       color: #fff;
       font-size: 0.8rem;
       width: 220px;
       outline: none;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
     }
     .btn {
       padding: 6px 12px;
-      border-radius: 6px;
+      border-radius: 9px;
       font-size: 0.75rem;
       font-weight: 500;
       cursor: pointer;
@@ -190,7 +196,7 @@
     .info-card {
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 8px;
+      border-radius: 14px;
       padding: 1rem;
     }
     .info-row {
@@ -201,7 +207,7 @@
     }
     .info-row:last-child { margin-bottom: 0; }
     .info-label { color: var(--text-muted); }
-    .info-val { font-family: 'IBM Plex Mono', monospace; font-weight: 500; color: #fff; }
+    .info-val { font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #fff; }
 
     .legend {
       position: absolute;
@@ -211,7 +217,7 @@
       background: rgba(14, 21, 36, 0.85);
       backdrop-filter: blur(8px);
       border: 1px solid var(--border-subtle);
-      border-radius: 8px;
+      border-radius: 14px;
       padding: 8px 14px;
       display: flex;
       gap: 1rem;
@@ -228,7 +234,7 @@
       background: var(--bg-elevated);
       color: #fff;
       padding: 10px 18px;
-      border-radius: 6px;
+      border-radius: 9px;
       border: 1px solid var(--border-subtle);
       font-size: 0.825rem;
       box-shadow: 0 8px 24px rgba(0,0,0,0.5);
@@ -337,7 +343,7 @@
       <div class="legend-item"><div class="legend-dot" style="background:#10b981;"></div> Standard Account</div>
       <div class="legend-item"><div class="legend-dot" style="background:#f59e0b;"></div> High-Risk Customer</div>
       <div class="legend-item"><div class="legend-dot" style="background:#ef4444;"></div> Sanctions Hit / Shell</div>
-      <div class="legend-item"><div class="legend-dot" style="background:#3b82f6;"></div> Corporate / UBO Node</div>
+      <div class="legend-item"><div class="legend-dot" style="background:rgba(245,166,35,0.4);"></div> Corporate / UBO Node</div>
     </div>
   </div>
 
@@ -385,7 +391,7 @@
         nodes: {
           shape: 'dot',
           size: 16,
-          font: { color: '#f1f5f9', face: 'IBM Plex Sans', size: 12 },
+          font: { color: '#f1f5f9', face: 'Inter', size: 12 },
           borderWidth: 2
         },
         edges: {
@@ -432,7 +438,7 @@
         function getNodeColor(isTarget, nodeType, riskVal) {
           if (isTarget || riskVal === 'CRITICAL') return '#ef4444';
           if (riskVal === 'HIGH') return '#f59e0b';
-          if (nodeType === 'Company') return '#3b82f6';
+          if (nodeType === 'Company') return 'rgba(245,166,35,0.4)';
           return '#10b981';
         }
 
@@ -494,14 +500,14 @@
         { id: '1', label: targetId, color: { background: '#ef4444', border: '#fff' }, size: 22, type: 'Account', properties: { risk: 'CRITICAL', owner: 'Acme Holdings' } },
         { id: '2', label: 'Intermediary Alpha', color: { background: '#f59e0b', border: '#fff' }, size: 16, type: 'Account', properties: { risk: 'HIGH', owner: 'Transit Mule Ltd' } },
         { id: '3', label: 'Beneficiary LLC', color: { background: '#10b981', border: '#fff' }, size: 16, type: 'Account', properties: { risk: 'LOW', owner: 'Beneficiary Corp' } },
-        { id: '4', label: 'Offshore Trust', color: { background: '#3b82f6', border: '#fff' }, size: 16, type: 'Company', properties: { risk: 'HIGH', owner: 'Panama Trust' } },
+        { id: '4', label: 'Offshore Trust', color: { background: 'rgba(245,166,35,0.4)', border: '#fff' }, size: 16, type: 'Company', properties: { risk: 'HIGH', owner: 'Panama Trust' } },
         { id: '5', label: 'Round-Trip Sink', color: { background: '#ef4444', border: '#fff' }, size: 18, type: 'Account', properties: { risk: 'CRITICAL', owner: 'Layering Account' } }
       ]);
 
       edgesDataSet.add([
         { from: '1', to: '2', label: '$49,500', color: { color: '#ef4444' } },
         { from: '2', to: '3', label: '$48,000', color: { color: '#f59e0b' } },
-        { from: '3', to: '4', label: '$47,500', color: { color: '#3b82f6' } },
+        { from: '3', to: '4', label: '$47,500', color: { color: 'rgba(245,166,35,0.4)' } },
         { from: '4', to: '5', label: '$46,000', color: { color: '#ef4444' } },
         { from: '5', to: '1', label: '$45,000 (Cycle)', color: { color: '#ef4444' }, dashes: true }
       ]);

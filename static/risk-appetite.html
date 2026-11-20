@@ -6,20 +6,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-base: #06090e;
-      --bg-surface: #0b0f17;
-      --bg-card: #111722;
-      --bg-elevated: #161e2e;
-      --border-subtle: #1e293b;
-      --border-bright: #334155;
+      --bg-base: #101113;
+      --bg-surface: #141517;
+      --bg-card: #1C1E22;
+      --bg-elevated: #23262B;
+      --border-subtle: rgba(255,255,255,0.10);
+      --border-bright: rgba(255,255,255,0.18);
       --text-main: #f8fafc;
       --text-muted: #94a3b8;
       --text-dim: #64748b;
-      --accent-blue: #38bdf8;
-      --accent-purple: #a855f7;
+      --accent-blue: #F5A623;
+      --accent-purple: #F5A623;
       --accent-emerald: #10b981;
       --accent-amber: #f59e0b;
       --accent-crimson: #ef4444;
@@ -62,7 +62,7 @@
       font-size: 0.65rem;
       padding: 2px 7px;
       border-radius: 4px;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
     }
     .nav-links { display: flex; align-items: center; gap: 0.25rem; }
     .nav-link {
@@ -87,7 +87,7 @@
       border: 1px solid var(--border-subtle);
     }
     .role-badge {
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       font-size: 0.65rem;
       background: rgba(245, 158, 11, 0.2);
       color: var(--accent-amber);
@@ -116,7 +116,7 @@
     .card {
       background: var(--bg-surface);
       border: 1px solid var(--border-subtle);
-      border-radius: 8px;
+      border-radius: 14px;
       padding: 1.5rem;
       display: flex;
       flex-direction: column;
@@ -154,11 +154,11 @@
     .input {
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 6px;
+      border-radius: 9px;
       padding: 8px 12px;
       color: #fff;
       font-size: 0.85rem;
-      font-family: 'IBM Plex Mono', monospace;
+      font-family: 'JetBrains Mono', monospace;
       outline: none;
     }
     .input:focus { border-color: var(--accent-blue); }
@@ -169,7 +169,7 @@
       align-items: center;
       background: var(--bg-card);
       padding: 10px 14px;
-      border-radius: 6px;
+      border-radius: 9px;
       border: 1px solid var(--border-subtle);
     }
 
@@ -178,13 +178,13 @@
       border: 1px solid var(--border-bright);
       color: var(--text-main);
       padding: 8px 16px;
-      border-radius: 6px;
+      border-radius: 9px;
       font-size: 0.85rem;
       cursor: pointer;
       font-weight: 600;
       transition: all 0.15s ease;
     }
-    .btn-primary { background: #2563eb; border-color: #3b82f6; color: #fff; }
+    .btn-primary { background: #2563eb; border-color: #F5A623; color: #fff; }
     .btn-primary:hover { background: #1d4ed8; }
 
     .toast {
@@ -194,7 +194,7 @@
       background: var(--bg-elevated);
       color: #fff;
       padding: 10px 18px;
-      border-radius: 6px;
+      border-radius: 9px;
       border: 1px solid var(--border-subtle);
       font-size: 0.825rem;
       box-shadow: 0 8px 24px rgba(0,0,0,0.5);

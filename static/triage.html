@@ -10,10 +10,10 @@
   <!-- Google Fonts: IBM Plex Sans & IBM Plex Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
 
   <!-- Core Stylesheet with Cache Busting -->
-  <link rel="stylesheet" href="/static/style.css?v=20261014.5">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys1">
 
   <!-- Shared API Client (CSRF + HttpOnly Cookies + Logout) -->
   <script src="/static/api-client.js"></script>
@@ -53,11 +53,12 @@
     }
 
     .nav-brand .shield-badge {
-      background: var(--brand);
-      color: #fff;
-      padding: 4px 8px;
-      border-radius: var(--r-sm);
-      font-size: 11px;
+      background: rgba(245, 166, 35, 0.16);
+      color: #F5A623;
+      border: 1px solid rgba(245, 166, 35, 0.35);
+      padding: 4px 9px;
+      border-radius: 9999px;
+      font-size: 10.5px;
       font-weight: 700;
       letter-spacing: 0.1em;
     }
@@ -90,9 +91,10 @@
     }
 
     .nav-link-btn.active {
-      background: var(--brand);
-      color: #fff;
-      border-color: rgba(255, 255, 255, 0.15);
+      background: #FFFFFF;
+      color: #141517;
+      font-weight: 600;
+      border-color: #FFFFFF;
     }
 
     .triage-kpis {
@@ -262,7 +264,7 @@
     }
 
     table.triage-table tr:hover {
-      background: #FAF8F5;
+      background: #F5F4F0;
     }
 
     table.triage-table tr.selected {
@@ -309,7 +311,7 @@
       font-size: 11px;
       padding: 2px 6px;
       border-radius: var(--r-sm);
-      background: #F0EBE1;
+      background: #EFEFED;
       color: var(--ink-soft);
       font-weight: 500;
     }
@@ -332,7 +334,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: #FAF8F5;
+      background: #F5F4F0;
     }
 
     .drawer-content {
@@ -400,7 +402,7 @@
     .drawer-actions {
       padding: 16px 20px;
       border-top: 1px solid var(--panel-edge);
-      background: #FAF8F5;
+      background: #F5F4F0;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -437,13 +439,13 @@
       border: 1px solid var(--panel-edge);
       color: var(--ink);
     }
-    .btn-dismiss:hover { background: #F0EBE1; }
+    .btn-dismiss:hover { background: #EFEFED; }
 
     .btn-case {
-      background: #1B1F2B;
+      background: #141517;
       color: #fff;
     }
-    .btn-case:hover { background: #2B3040; }
+    .btn-case:hover { background: rgba(255,255,255,0.10); }
 
     @keyframes pulseSkeleton {
       0% { opacity: 0.45; }
@@ -1100,7 +1102,7 @@
           listDiv.innerHTML = '<em>No prior escalations recorded for this alert.</em>';
         } else {
           listDiv.innerHTML = data.map(e => `
-            <div style="padding:6px 0; border-bottom:1px solid #ECE7DD;">
+            <div style="padding:6px 0; border-bottom:1px solid #ECEBE7;">
               <strong>Tier ${e.from_tier} → Tier ${e.to_tier}</strong> by ${e.escalated_by_name}<br>
               <span style="font-size:11px;">${e.escalation_reason}</span>
             </div>

@@ -10,10 +10,10 @@
   <!-- Google Fonts: IBM Plex Sans & IBM Plex Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
 
   <!-- Core Stylesheet -->
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys1">
 
   <!-- Shared API Client (CSRF + HttpOnly Cookies + Logout) -->
   <script src="/static/api-client.js"></script>
@@ -80,8 +80,10 @@
     }
 
     .nav-link-btn.active {
-      background: var(--brand);
-      color: #fff;
+      background: #FFFFFF;
+      color: #141517;
+      font-weight: 600;
+      border-color: #FFFFFF;
     }
 
     .rules-header {
@@ -192,7 +194,7 @@
     }
 
     .rule-param-group {
-      background: #FAF8F5;
+      background: #F5F4F0;
       border: 1px solid var(--panel-edge);
       border-radius: var(--r-md);
       padding: 12px 14px;
@@ -307,7 +309,7 @@
         <div class="rules-subtitle">Per-tenant real-time threshold adjustments. All changes increment versioning and trigger instant distributed Redis cache invalidation.</div>
       </div>
       <div>
-        <button class="btn-save" onclick="scrollToSimulator()" style="background:#1B1F2B; padding:8px 16px;">
+        <button class="btn-save" onclick="scrollToSimulator()" style="background:#141517; padding:8px 16px;">
           <i data-lucide="play" style="width:14px; height:14px; display:inline-block; vertical-align:middle; margin-right:4px;"></i> Test Rule Simulator
         </button>
       </div>
@@ -358,7 +360,7 @@
           </button>
         </form>
 
-        <div style="background:#FAF8F5; border:1px solid var(--panel-edge); border-radius:var(--r-md); padding:14px;">
+        <div style="background:#F5F4F0; border:1px solid var(--panel-edge); border-radius:var(--r-md); padding:14px;">
           <div style="font-size:12px; font-weight:700; text-transform:uppercase; margin-bottom:8px;">Evaluation Result</div>
           <div id="sim-results" style="font-size:13px; font-family:var(--font-data); color:var(--ink);">
             <em>Click "Evaluate Against Rules Engine" to test payload...</em>
