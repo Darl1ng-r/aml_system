@@ -4,28 +4,31 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Network Graph Visualizer | AML Sentinel</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261120-sys1">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys3">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
   <style>
     :root {
-      --bg-dark: #101113;
-      --bg-surface: #141517;
-      --bg-card: #1C1E22;
-      --bg-elevated: #24272D;
-      --border-subtle: rgba(255, 255, 255, 0.10);
-      --border-focus: #F5A623;
-      --text-main: #F7F7F5;
-      --text-muted: #9CA1AB;
-      --text-dim: #6E737D;
-      --accent-cyan: #F5A623;
-      --accent-blue: #F5A623;
-      --accent-emerald: #34D399;
-      --accent-amber: #F5A623;
-      --accent-crimson: #F87171;
-      --accent-purple: #D4D4D8;
+      --bg-dark: #ECEBE7;
+      --bg-base: #ECEBE7;
+      --bg-panel: #FFFFFF;
+      --bg-surface: #FFFFFF;
+      --bg-card: #FFFFFF;
+      --bg-elevated: #F5F4F0;
+      --border-subtle: rgba(20, 21, 23, 0.09);
+      --border-bright: rgba(20, 21, 23, 0.18);
+      --border-focus: #141517;
+      --text-main: #141517;
+      --text-muted: #5C6068;
+      --text-dim: #8C919B;
+      --accent-cyan: #141517;
+      --accent-blue: #141517;
+      --accent-emerald: #1F7A4D;
+      --accent-amber: #B87514;
+      --accent-crimson: #C13B33;
+      --accent-purple: #141517;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -143,7 +146,7 @@
       border: 1px solid var(--border-subtle);
       border-radius: 9px;
       padding: 6px 10px;
-      color: #fff;
+      color: var(--text-main);
       font-size: 0.8rem;
       width: 220px;
       outline: none;
@@ -164,10 +167,11 @@
       transition: all 0.15s;
     }
     .btn:hover { background: var(--bg-elevated); border-color: var(--text-dim); }
-    .btn-primary { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+    .btn-primary { background: #141517; border-color: #141517; color: #FFFFFF; }
     .btn-primary:hover { background: #2563eb; }
 
     #networkCanvas {
+      background: linear-gradient(rgba(20,21,23,0.04) 1px, transparent 1px) 0 0/24px 24px, linear-gradient(90deg, rgba(20,21,23,0.04) 1px, transparent 1px) 0 0/24px 24px, #FAF9F6;
       flex: 1;
       height: 100%;
       background: radial-gradient(circle at center, #0f172a 0%, #080c14 100%);
@@ -196,6 +200,7 @@
     .info-card {
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
+      box-shadow: 0 4px 18px -6px rgba(20, 21, 23, 0.06);
       border-radius: 14px;
       padding: 1rem;
     }
@@ -207,7 +212,7 @@
     }
     .info-row:last-child { margin-bottom: 0; }
     .info-label { color: var(--text-muted); }
-    .info-val { font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #fff; }
+    .info-val { font-family: 'JetBrains Mono', monospace; font-weight: 500; color: var(--text-main); }
 
     .legend {
       position: absolute;
@@ -231,7 +236,7 @@
       position: fixed;
       bottom: 20px;
       right: 20px;
-      background: var(--bg-elevated);
+      background: #141517;
       color: #fff;
       padding: 10px 18px;
       border-radius: 9px;
@@ -285,7 +290,7 @@
       <div style="height:20px; width:1px; background:var(--border-subtle);"></div>
 
       <label for="hopSelect" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">Network Hop Depth</label>
-      <select id="hopSelect" aria-label="Network Hop Depth" style="background:var(--bg-card); color:#fff; border:1px solid var(--border-subtle); padding:6px 8px; border-radius:6px; font-size:0.75rem; outline:none;">
+      <select id="hopSelect" aria-label="Network Hop Depth" style="background:var(--bg-card); color:var(--text-main); border:1px solid var(--border-subtle); padding:6px 8px; border-radius:6px; font-size:0.75rem; outline:none;">
         <option value="1">1-Hop Neighborhood</option>
         <option value="2" selected>2-Hop Expansion</option>
         <option value="3">3-Hop Deep Network</option>
@@ -343,7 +348,7 @@
       <div class="legend-item"><div class="legend-dot" style="background:#10b981;"></div> Standard Account</div>
       <div class="legend-item"><div class="legend-dot" style="background:#f59e0b;"></div> High-Risk Customer</div>
       <div class="legend-item"><div class="legend-dot" style="background:#ef4444;"></div> Sanctions Hit / Shell</div>
-      <div class="legend-item"><div class="legend-dot" style="background:rgba(245,166,35,0.4);"></div> Corporate / UBO Node</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#141517;"></div> Corporate / UBO Node</div>
     </div>
   </div>
 
@@ -391,11 +396,11 @@
         nodes: {
           shape: 'dot',
           size: 16,
-          font: { color: '#f1f5f9', face: 'Inter', size: 12 },
+          font: { color: '#141517', face: 'Inter', size: 12 },
           borderWidth: 2
         },
         edges: {
-          color: { color: '#334155', highlight: '#38bdf8' },
+          color: { color: '#9CA1AB', highlight: '#F5A623' },
           arrows: { to: { enabled: true, scaleFactor: 0.6 } },
           smooth: { type: 'continuous' }
         },
@@ -438,7 +443,7 @@
         function getNodeColor(isTarget, nodeType, riskVal) {
           if (isTarget || riskVal === 'CRITICAL') return '#ef4444';
           if (riskVal === 'HIGH') return '#f59e0b';
-          if (nodeType === 'Company') return 'rgba(245,166,35,0.4)';
+          if (nodeType === 'Company') return '#141517';
           return '#10b981';
         }
 
@@ -449,7 +454,7 @@
           return {
             id: n.id,
             label: n.label || n.id,
-            color: { background: color, border: '#fff' },
+            color: { background: color, border: '#FFFFFF' },
             size: isTarget ? 24 : 16,
             properties: n.properties || {},
             type: n.type || 'Account'
@@ -500,14 +505,14 @@
         { id: '1', label: targetId, color: { background: '#ef4444', border: '#fff' }, size: 22, type: 'Account', properties: { risk: 'CRITICAL', owner: 'Acme Holdings' } },
         { id: '2', label: 'Intermediary Alpha', color: { background: '#f59e0b', border: '#fff' }, size: 16, type: 'Account', properties: { risk: 'HIGH', owner: 'Transit Mule Ltd' } },
         { id: '3', label: 'Beneficiary LLC', color: { background: '#10b981', border: '#fff' }, size: 16, type: 'Account', properties: { risk: 'LOW', owner: 'Beneficiary Corp' } },
-        { id: '4', label: 'Offshore Trust', color: { background: 'rgba(245,166,35,0.4)', border: '#fff' }, size: 16, type: 'Company', properties: { risk: 'HIGH', owner: 'Panama Trust' } },
+        { id: '4', label: 'Offshore Trust', color: { background: '#141517', border: '#fff' }, size: 16, type: 'Company', properties: { risk: 'HIGH', owner: 'Panama Trust' } },
         { id: '5', label: 'Round-Trip Sink', color: { background: '#ef4444', border: '#fff' }, size: 18, type: 'Account', properties: { risk: 'CRITICAL', owner: 'Layering Account' } }
       ]);
 
       edgesDataSet.add([
         { from: '1', to: '2', label: '$49,500', color: { color: '#ef4444' } },
         { from: '2', to: '3', label: '$48,000', color: { color: '#f59e0b' } },
-        { from: '3', to: '4', label: '$47,500', color: { color: 'rgba(245,166,35,0.4)' } },
+        { from: '3', to: '4', label: '$47,500', color: { color: '#141517' } },
         { from: '4', to: '5', label: '$46,000', color: { color: '#ef4444' } },
         { from: '5', to: '1', label: '$45,000 (Cycle)', color: { color: '#ef4444' }, dashes: true }
       ]);

@@ -4,27 +4,30 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>System Health & Messaging Bus | AML Sentinel</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261120-sys1">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys3">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-dark: #101113;
-      --bg-surface: #141517;
-      --bg-card: #1C1E22;
-      --bg-elevated: #24272D;
-      --border-subtle: rgba(255, 255, 255, 0.10);
-      --border-focus: #F5A623;
-      --text-main: #F7F7F5;
-      --text-muted: #9CA1AB;
-      --text-dim: #6E737D;
-      --accent-cyan: #F5A623;
-      --accent-blue: #F5A623;
-      --accent-emerald: #34D399;
-      --accent-amber: #F5A623;
-      --accent-crimson: #F87171;
-      --accent-purple: #D4D4D8;
+      --bg-dark: #ECEBE7;
+      --bg-base: #ECEBE7;
+      --bg-panel: #FFFFFF;
+      --bg-surface: #FFFFFF;
+      --bg-card: #FFFFFF;
+      --bg-elevated: #F5F4F0;
+      --border-subtle: rgba(20, 21, 23, 0.09);
+      --border-bright: rgba(20, 21, 23, 0.18);
+      --border-focus: #141517;
+      --text-main: #141517;
+      --text-muted: #5C6068;
+      --text-dim: #8C919B;
+      --accent-cyan: #141517;
+      --accent-blue: #141517;
+      --accent-emerald: #1F7A4D;
+      --accent-amber: #B87514;
+      --accent-crimson: #C13B33;
+      --accent-purple: #141517;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -144,6 +147,7 @@
     .service-card {
       background: var(--bg-surface);
       border: 1px solid var(--border-subtle);
+      box-shadow: 0 4px 18px -6px rgba(20, 21, 23, 0.06);
       border-radius: 14px;
       padding: 1.25rem;
       display: flex;
@@ -158,7 +162,7 @@
     .service-name {
       font-weight: 600;
       font-size: 0.95rem;
-      color: #fff;
+      color: var(--text-main);
     }
     .status-dot {
       display: inline-flex;
@@ -178,7 +182,7 @@
       font-size: 0.8rem;
     }
     .metric-lbl { color: var(--text-muted); }
-    .metric-val { font-family: 'JetBrains Mono', monospace; color: #fff; font-weight: 500; }
+    .metric-val { font-family: 'JetBrains Mono', monospace; color: var(--text-main); font-weight: 500; }
 
     .kafka-card {
       background: var(--bg-surface);
@@ -204,7 +208,7 @@
       position: fixed;
       bottom: 20px;
       right: 20px;
-      background: var(--bg-elevated);
+      background: #141517;
       color: #fff;
       padding: 10px 18px;
       border-radius: 9px;
@@ -266,7 +270,7 @@
         </div>
       </div>
       <div>
-        <button style="padding:6px 12px; background:var(--bg-card); border:1px solid var(--border-subtle); color:#fff; border-radius:6px; font-size:0.8rem; cursor:pointer;" onclick="loadHealthData()">Refresh Telemetry</button>
+        <button style="padding:6px 12px; background:var(--bg-card); border:1px solid var(--border-subtle); color:var(--text-main); border-radius:6px; font-size:0.8rem; cursor:pointer;" onclick="loadHealthData()">Refresh Telemetry</button>
       </div>
     </div>
 
@@ -421,7 +425,7 @@
         const dotCls = cgStatus === 'HEALTHY' ? 'dot-up' : 'dot-down';
         return `
           <tr>
-            <td class="mono" style="font-weight:600; color:#fff;">${t.topic}</td>
+            <td class="mono" style="font-weight:600; color:var(--text-main);">${t.topic}</td>
             <td class="mono">${t.partitions}</td>
             <td class="mono">${cg.group_id || 'default_workers'}</td>
             <td class="mono" style="color:${lagColor}; font-weight:600;">${lag}</td>

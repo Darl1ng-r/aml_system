@@ -4,27 +4,30 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Audit Log Vault | AML Sentinel</title>
-  <link rel="stylesheet" href="/static/style.css?v=20261120-sys1">
+  <link rel="stylesheet" href="/static/style.css?v=20261120-sys3">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg-dark: #101113;
-      --bg-surface: #141517;
-      --bg-card: #1C1E22;
-      --bg-elevated: #24272D;
-      --border-subtle: rgba(255, 255, 255, 0.10);
-      --border-focus: #F5A623;
-      --text-main: #F7F7F5;
-      --text-muted: #9CA1AB;
-      --text-dim: #6E737D;
-      --accent-cyan: #F5A623;
-      --accent-blue: #F5A623;
-      --accent-emerald: #34D399;
-      --accent-amber: #F5A623;
-      --accent-crimson: #F87171;
-      --accent-purple: #D4D4D8;
+      --bg-dark: #ECEBE7;
+      --bg-base: #ECEBE7;
+      --bg-panel: #FFFFFF;
+      --bg-surface: #FFFFFF;
+      --bg-card: #FFFFFF;
+      --bg-elevated: #F5F4F0;
+      --border-subtle: rgba(20, 21, 23, 0.09);
+      --border-bright: rgba(20, 21, 23, 0.18);
+      --border-focus: #141517;
+      --text-main: #141517;
+      --text-muted: #5C6068;
+      --text-dim: #8C919B;
+      --accent-cyan: #141517;
+      --accent-blue: #141517;
+      --accent-emerald: #1F7A4D;
+      --accent-amber: #B87514;
+      --accent-crimson: #C13B33;
+      --accent-purple: #141517;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -141,7 +144,7 @@
       border: 1px solid var(--border-subtle);
       border-radius: 9px;
       padding: 6px 10px;
-      color: #fff;
+      color: var(--text-main);
       font-size: 0.8rem;
       outline: none;
     }
@@ -160,7 +163,7 @@
       transition: all 0.15s;
     }
     .btn:hover { background: var(--bg-elevated); border-color: var(--text-dim); }
-    .btn-primary { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
+    .btn-primary { background: #141517; border-color: #141517; color: #FFFFFF; }
     .btn-primary:hover { background: #2563eb; }
 
     .table-container {
@@ -240,7 +243,7 @@
       position: fixed;
       bottom: 20px;
       right: 20px;
-      background: var(--bg-elevated);
+      background: #141517;
       color: #fff;
       padding: 10px 18px;
       border-radius: 9px;
@@ -311,7 +314,7 @@
             Sequential SHA-256 hash chaining validated across all indexed audit records. Zero tampering or unauthorized mutations detected.
           </p>
           <div style="display:flex; gap:1.5rem; margin-top:0.5rem; font-family:'JetBrains Mono', monospace; font-size:0.7rem; color:var(--text-dim);">
-            <div>Records Verified: <span id="chainRecordsCount" style="color:#fff;">0</span></div>
+            <div>Records Verified: <span id="chainRecordsCount" style="color:var(--text-main);">0</span></div>
             <div>Chain Root: <span id="chainGenesis" style="color:#7dd3fc;">...</span></div>
             <div>Chain Head: <span id="chainHead" style="color:#7dd3fc;">...</span></div>
           </div>
@@ -387,8 +390,8 @@
       </div>
 
       <div style="font-size:0.8rem; color:var(--text-muted); line-height:1.5;">
-        Event ID: <span class="mono" id="dEventId" style="color:#fff;">-</span><br>
-        Actor: <span id="dActor" style="color:#fff;">-</span> (<span id="dRole">-</span>)<br>
+        Event ID: <span class="mono" id="dEventId" style="color:var(--text-main);">-</span><br>
+        Actor: <span id="dActor" style="color:var(--text-main);">-</span> (<span id="dRole">-</span>)<br>
         Recorded IP: <span class="mono" id="dIp">-</span>
       </div>
 
@@ -481,7 +484,7 @@
       tbody.innerHTML = auditRecords.map(r => `
         <tr>
           <td class="mono" style="font-size:0.725rem; color:var(--text-dim);">${r.created_at.slice(0,19).replace('T', ' ')}</td>
-          <td style="font-weight:600; color:#fff;">${r.actor_username || r.actor_id}</td>
+          <td style="font-weight:600; color:var(--text-main);">${r.actor_username || r.actor_id}</td>
           <td class="mono" style="font-size:0.7rem; color:var(--text-muted);">${r.actor_role}</td>
           <td><span class="action-tag">${r.action}</span></td>
           <td class="mono" style="font-size:0.7rem;">${r.resource_type}</td>
