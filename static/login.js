@@ -81,18 +81,25 @@
         if (formMfa) formMfa.classList.remove('active');
         if (authTabBar) authTabBar.style.display = 'flex';
 
+        const headingEl = document.getElementById('auth-main-heading');
+        const subtitleEl = document.getElementById('auth-main-subtitle');
+
         if (target === 'login') {
-            if (tabLogin) tabLogin.classList.add('active');
-            if (tabSignup) tabSignup.classList.remove('active');
+            if (tabLogin) { tabLogin.classList.add('active'); tabLogin.setAttribute('aria-selected', 'true'); }
+            if (tabSignup) { tabSignup.classList.remove('active'); tabSignup.setAttribute('aria-selected', 'false'); }
             if (formLogin) formLogin.classList.add('active');
             if (formSignup) formSignup.classList.remove('active');
+            if (headingEl) headingEl.innerHTML = 'Welcome back<span class="dot">.</span>';
+            if (subtitleEl) subtitleEl.textContent = 'Sign in to access your compliance workspace.';
             const loginUserInput = document.getElementById('login-username');
             if (loginUserInput) loginUserInput.focus();
         } else {
-            if (tabLogin) tabLogin.classList.remove('active');
-            if (tabSignup) tabSignup.classList.add('active');
+            if (tabLogin) { tabLogin.classList.remove('active'); tabLogin.setAttribute('aria-selected', 'false'); }
+            if (tabSignup) { tabSignup.classList.add('active'); tabSignup.setAttribute('aria-selected', 'true'); }
             if (formLogin) formLogin.classList.remove('active');
             if (formSignup) formSignup.classList.add('active');
+            if (headingEl) headingEl.innerHTML = 'Create your account<span class="dot">.</span>';
+            if (subtitleEl) subtitleEl.textContent = 'Provision your analyst profile to start investigating.';
             const signupUserInput = document.getElementById('signup-username');
             if (signupUserInput) signupUserInput.focus();
         }
@@ -320,6 +327,13 @@
             return;
         }
 
+        const consentInput = document.getElementById('signup-consent');
+        if (consentInput && !consentInput.checked) {
+            showError('Please acknowledge the immutable audit trail policy before creating an account.');
+            consentInput.focus();
+            return;
+        }
+
         if (btn) {
             btn.disabled = true;
             btn.textContent = 'Creating Profile...';
@@ -481,11 +495,24 @@
             switchTab('signup');
         }
 
-        // 1. Tab switches
+        // 1. Tab switches & inline footer switch links
         const tabLogin = document.getElementById('tab-login');
         const tabSignup = document.getElementById('tab-signup');
         if (tabLogin) tabLogin.addEventListener('click', () => switchTab('login'));
         if (tabSignup) tabSignup.addEventListener('click', () => switchTab('signup'));
+        document.querySelectorAll('[data-switch-tab]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const target = btn.getAttribute('data-switch-tab');
+                if (target) switchTab(target);
+            });
+        });
+
+        const btnForgotHelp = document.getElementById('btn-forgot-help');
+        if (btnForgotHelp) {
+            btnForgotHelp.addEventListener('click', () => {
+                showError('For security, credential resets require MLRO or System Administrator verification in the Admin Console.');
+            });
+        }
 
         // 2. Forms
         const formLogin = document.getElementById('form-login');

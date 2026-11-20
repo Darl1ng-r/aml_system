@@ -1,416 +1,339 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AML Portal - Enterprise Authentication</title>
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
-        rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css">
-    <style>
-        body {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 1.5rem;
-            min-height: 100vh;
-            background-color: var(--canvas, #ECE7DD);
-            color: var(--ink, #22262E);
-            font-family: var(--font-ui, 'IBM Plex Sans', -apple-system, sans-serif);
-        }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#141517" />
+  <title>Sentinel AML — Sign In</title>
 
-        .auth-container {
-            width: 100%;
-            max-width: 440px;
-            margin: auto;
-        }
+  <!-- Matching Landing Page Typography: Manrope, Inter, JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet" />
 
-        .auth-card {
-            background-color: var(--panel, #FFFFFF);
-            border: 1px solid var(--panel-edge, #DAD3C3);
-            border-radius: 12px;
-            box-shadow: 0 10px 30px rgba(44, 37, 32, 0.08);
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-        }
+  <!-- Dedicated Minimalist Auth Stylesheet -->
+  <link rel="stylesheet" href="/static/login.css?v=20261120-v2" />
 
-        .auth-header {
-            padding: 2.25rem 2.25rem 1.5rem 2.25rem;
-            text-align: center;
-            border-bottom: 1px solid var(--panel-edge, #DAD3C3);
-            background-color: rgba(44, 37, 32, 0.02);
-        }
-
-        .auth-logo {
-            width: 46px;
-            height: 46px;
-            background: linear-gradient(135deg, var(--brand, #3D5A80), var(--risk-low, #4C7A5E));
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #ffffff;
-            font-weight: 800;
-            font-size: 1.5rem;
-            margin: 0 auto 1rem auto;
-            box-shadow: 0 4px 12px rgba(61, 90, 128, 0.22);
-        }
-
-        .auth-header h1 {
-            font-size: 1.35rem;
-            font-weight: 700;
-            color: var(--ink, #22262E);
-            letter-spacing: -0.02em;
-            margin: 0;
-        }
-
-        .auth-header p {
-            font-size: 0.8rem;
-            color: var(--ink-soft, #4B4F5A);
-            margin-top: 0.35rem;
-            font-weight: 500;
-        }
-
-        .auth-tabs {
-            display: flex;
-            border-bottom: 1px solid var(--panel-edge, #DAD3C3);
-            background-color: rgba(44, 37, 32, 0.03);
-        }
-
-        .auth-tab-btn {
-            flex: 1;
-            background: none;
-            border: none;
-            padding: 0.95rem 1rem;
-            font-family: inherit;
-            font-size: 0.88rem;
-            font-weight: 600;
-            color: var(--ink-soft, #4B4F5A);
-            cursor: pointer;
-            text-align: center;
-            transition: all 0.15s ease;
-            outline: none;
-            border-bottom: 2px solid transparent;
-        }
-
-        .auth-tab-btn:hover {
-            color: var(--ink, #22262E);
-            background-color: rgba(44, 37, 32, 0.02);
-        }
-
-        .auth-tab-btn.active {
-            color: var(--brand, #3D5A80);
-            border-bottom: 2px solid var(--brand, #3D5A80);
-            background-color: #FFFFFF;
-            font-weight: 700;
-        }
-
-        .auth-body {
-            padding: 2.25rem;
-            background-color: #FFFFFF;
-        }
-
-        .auth-form {
-            display: none;
-            flex-direction: column;
-            gap: 1.25rem;
-        }
-
-        .auth-form.active {
-            display: flex;
-        }
-
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 0.4rem;
-        }
-
-        .form-group label {
-            font-size: 0.82rem;
-            font-weight: 600;
-            color: var(--ink, #22262E);
-        }
-
-        .form-group input {
-            padding: 0.75rem 1rem;
-            border-radius: 6px;
-            border: 1px solid var(--panel-edge, #DAD3C3);
-            background-color: #FFFFFF;
-            color: var(--ink, #22262E);
-            font-family: inherit;
-            font-size: 0.9rem;
-            transition: border-color 0.15s ease, box-shadow 0.15s ease;
-            outline: none;
-        }
-
-        .form-group input:focus {
-            border-color: var(--brand, #3D5A80);
-            box-shadow: 0 0 0 3px rgba(61, 90, 128, 0.15);
-        }
-
-        .password-wrapper {
-            position: relative;
-            display: flex;
-            align-items: center;
-        }
-
-        .password-wrapper input {
-            width: 100%;
-            padding-right: 3.5rem;
-        }
-
-        .password-toggle-btn {
-            position: absolute;
-            right: 0.75rem;
-            background: none;
-            border: none;
-            cursor: pointer;
-            color: var(--ink-soft, #4B4F5A);
-            font-size: 0.8rem;
-            font-weight: 600;
-            padding: 0.35rem 0.5rem;
-            border-radius: 4px;
-            transition: color 0.15s ease;
-        }
-
-        .password-toggle-btn:hover {
-            color: var(--ink, #22262E);
-            background-color: rgba(44, 37, 32, 0.04);
-        }
-
-        /* Password Strength Meter */
-        .strength-meter {
-            margin-top: 0.4rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-        }
-
-        .strength-bar-bg {
-            height: 4px;
-            background-color: var(--panel-edge, #DAD3C3);
-            border-radius: 2px;
-            overflow: hidden;
-        }
-
-        .strength-bar-fill {
-            height: 100%;
-            width: 0%;
-            transition: width 0.3s ease, background-color 0.3s ease;
-            border-radius: 2px;
-        }
-
-        .strength-label {
-            font-size: 0.75rem;
-            font-weight: 600;
-            color: var(--ink-soft, #4B4F5A);
-        }
-
-        /* MFA Challenge Screen */
-        .mfa-screen {
-            display: none;
-            flex-direction: column;
-            gap: 1.25rem;
-            text-align: center;
-        }
-
-        .mfa-screen.active {
-            display: flex;
-        }
-
-        .mfa-icon {
-            font-size: 2.5rem;
-            margin-bottom: 0.5rem;
-            display: flex;
-            justify-content: center;
-        }
-
-        .otp-input {
-            letter-spacing: 0.4em;
-            font-size: 1.6rem;
-            text-align: center;
-            font-weight: 700;
-        }
-
-        .btn {
-            padding: 0.8rem 1.25rem;
-            border-radius: 6px;
-            border: none;
-            font-family: inherit;
-            font-size: 0.9rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.15s ease;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.5rem;
-            background-color: var(--brand, #3D5A80);
-            color: #ffffff;
-        }
-
-        .btn:hover:not(:disabled) {
-            background-color: var(--brand-dark, #2B3F5A);
-            box-shadow: 0 4px 12px rgba(61, 90, 128, 0.25);
-        }
-
-        .btn:disabled {
-            opacity: 0.65;
-            cursor: not-allowed;
-        }
-
-        .btn-success {
-            background-color: var(--risk-low, #4C7A5E);
-        }
-
-        .btn-success:hover:not(:disabled) {
-            background-color: #3b604a;
-            box-shadow: 0 4px 12px rgba(76, 122, 94, 0.25);
-        }
-
-        .btn-secondary {
-            background-color: #FFFFFF;
-            border: 1px solid var(--panel-edge, #DAD3C3);
-            color: var(--ink, #22262E);
-        }
-
-        .btn-secondary:hover:not(:disabled) {
-            background-color: rgba(44, 37, 32, 0.04);
-            border-color: #B5AD9C;
-        }
-
-        .error-banner {
-            background-color: rgba(193, 68, 59, 0.08);
-            border: 1px solid rgba(193, 68, 59, 0.25);
-            color: var(--risk-high, #C1443B);
-            border-radius: 6px;
-            padding: 0.75rem 1rem;
-            font-size: 0.85rem;
-            font-weight: 600;
-            text-align: center;
-            display: none;
-        }
-
-        .success-banner {
-            background-color: #E9F1EC;
-            border: 1px solid rgba(76, 122, 94, 0.35);
-            color: #14532D;
-            border-radius: 6px;
-            padding: 0.75rem 1rem;
-            font-size: 0.85rem;
-            font-weight: 600;
-            text-align: center;
-            display: none;
-        }
-    </style>
-    <!-- Lucide Icon Library -->
-    <script src="/static/lucide.min.js"></script>
-    <!-- Enterprise Auth Controller (Strict CSP Compliant) -->
-    <script src="/static/login.js" defer></script>
+  <!-- Local Lucide Icon Library & Enterprise Auth Controller -->
+  <script src="/static/lucide.min.js" defer></script>
+  <script src="/static/login.js?v=20261120-v1" defer></script>
 </head>
+<body class="auth-canvas">
 
-<body>
+  <main class="auth-shell" aria-label="Sentinel AML Authentication">
 
-    <div class="auth-container">
-        <div class="auth-card">
-            <div class="auth-header">
-                <div class="auth-logo" aria-hidden="true">
-                    <i data-lucide="shield-check" style="width:28px;height:28px;stroke:#ffffff;stroke-width:2.2;"></i>
-                </div>
-                <h1>AML Control Center</h1>
-                <p>Sign in to access your compliance investigation queue</p>
-            </div>
+    <!-- =================================================================== -->
+    <!-- LEFT PANEL: MINIMALIST FORM COLUMN                                  -->
+    <!-- =================================================================== -->
+    <section class="auth-form-pane">
+      <!-- Top Bar: Back to Landing + Minimal Brand Mark -->
+      <div class="auth-top-nav">
+        <a href="/landing" class="auth-back-link">
+          <span aria-hidden="true">←</span>
+          <span>Back to home</span>
+        </a>
+        <a href="/landing" class="auth-brand-inline" aria-label="Sentinel AML Home">
+          <span class="auth-brand-badge" aria-hidden="true">
+            <i data-lucide="shield-check" style="width:16px;height:16px;stroke-width:2.2;"></i>
+          </span>
+          <span class="auth-brand-name">Sentinel</span>
+        </a>
+      </div>
 
-            <div id="auth-tab-bar" class="auth-tabs" role="tablist">
-                <button type="button" id="tab-login" class="auth-tab-btn active" role="tab" aria-selected="true" aria-controls="form-login">Sign In</button>
-                <button type="button" id="tab-signup" class="auth-tab-btn" role="tab" aria-selected="false" aria-controls="form-signup">Create Account</button>
-            </div>
-
-            <div class="auth-body">
-                <div id="auth-error" class="error-banner" style="margin-bottom: 1.25rem;" role="alert"></div>
-                <output id="auth-success" class="success-banner" style="margin-bottom: 1.25rem;"></output>
-
-                <!-- 1. LOGIN FORM -->
-                <form id="form-login" class="auth-form active" role="tabpanel" novalidate>
-                    <div class="form-group">
-                        <label for="login-username">Username or Email</label>
-                        <input type="text" id="login-username" placeholder="e.g. sarah_jenkins or officer@aml.com" autocomplete="username" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="login-password">Password</label>
-                        <div class="password-wrapper">
-                            <input type="password" id="login-password" placeholder="••••••••••••" autocomplete="current-password" required>
-                            <button type="button" id="toggle-login-pass" class="password-toggle-btn" aria-label="Show password">Show</button>
-                        </div>
-                    </div>
-                    <button type="submit" id="btn-login-submit" class="btn" style="width: 100%; margin-top: 0.5rem;">Access Console</button>
-                </form>
-
-                <!-- 2. MFA CHALLENGE FORM -->
-                <form id="form-mfa" class="mfa-screen" novalidate>
-                    <div class="mfa-icon">
-                        <i data-lucide="key-round" style="width:36px;height:36px;stroke:var(--brand, #3D5A80);stroke-width:2;"></i>
-                    </div>
-                    <h2 style="font-size: 1.15rem; font-weight: 700; margin: 0; color: var(--ink, #22262E);">Two-Factor Verification</h2>
-                    <p style="font-size: 0.8rem; color: var(--ink-soft, #4B4F5A); margin: 0;">Enter the 6-digit verification code from your authenticator app or an emergency recovery code.</p>
-
-                    <div class="form-group">
-                        <label for="mfa-code">Verification Code</label>
-                        <input type="text" id="mfa-code" class="otp-input" placeholder="000000" maxlength="15" autocomplete="one-time-code" aria-label="Two-factor verification code" required>
-                    </div>
-
-                    <button type="submit" id="btn-mfa-submit" class="btn" style="width: 100%;">Verify & Proceed</button>
-                    <button type="button" id="btn-mfa-cancel" class="btn btn-secondary" style="width: 100%;">Cancel</button>
-                </form>
-
-                <!-- 3. SIGNUP FORM -->
-                <form id="form-signup" class="auth-form" role="tabpanel" novalidate>
-                    <div class="form-group">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <label for="signup-username">Username or Email</label>
-                            <span id="username-avail-badge" style="display: none; font-size: 11px; font-weight: 700;"></span>
-                        </div>
-                        <input type="text" id="signup-username" placeholder="e.g. alex_compliance or alex@aml.com" autocomplete="username" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="signup-password">Create Passphrase (12+ characters)</label>
-                        <div class="password-wrapper">
-                            <input type="password" id="signup-password" placeholder="Minimum 10–12 characters" autocomplete="new-password" required>
-                            <button type="button" id="toggle-signup-pass" class="password-toggle-btn" aria-label="Show password">Show</button>
-                        </div>
-                        <div class="strength-meter" aria-live="polite">
-                            <div class="strength-bar-bg">
-                                <div id="strength-bar" class="strength-bar-fill"></div>
-                            </div>
-                            <span id="strength-text" class="strength-label">Password Strength: Minimum 10–12 chars</span>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label for="signup-confirm">Confirm Passphrase</label>
-                        <input type="password" id="signup-confirm" placeholder="Re-enter passphrase" autocomplete="new-password" required>
-                    </div>
-                    <button type="submit" id="btn-signup-submit" class="btn btn-success" style="width: 100%; margin-top: 0.5rem;">Register Analyst Profile</button>
-                </form>
-
-                <!-- Federated SSO Identity Providers (requires OIDC IdP configuration) -->
-                <div style="margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--panel-edge, #DAD3C3); text-align: center;">
-                    <span style="font-size: 11px; color: var(--ink-soft, #4B4F5A); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;">Enterprise SSO (IdP not configured in this environment)</span>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px;">
-                        <button type="button" id="btn-sso-google" class="btn btn-secondary" disabled title="Configure OIDC Identity Provider to enable Google SSO" style="font-size: 12px; padding: 8px 10px; opacity: 0.5; cursor: not-allowed;">
-                            Google SSO
-                        </button>
-                        <button type="button" id="btn-sso-github" class="btn btn-secondary" disabled title="Configure OIDC Identity Provider to enable GitHub SSO" style="font-size: 12px; padding: 8px 10px; opacity: 0.5; cursor: not-allowed;">
-                            GitHub Corp
-                        </button>
-                    </div>
-                </div>
-            </div>
+      <!-- Centered Auth Form Column -->
+      <div class="auth-center-col">
+        <div class="auth-heading-block">
+          <h1 id="auth-main-heading" class="auth-heading">
+            Welcome back<span class="dot">.</span>
+          </h1>
+          <p id="auth-main-subtitle" class="auth-subtitle">
+            Sign in to access your compliance workspace.
+          </p>
         </div>
-    </div>
+
+        <!-- Segmented Mode Switcher -->
+        <div id="auth-tab-bar" class="auth-tabs" role="tablist" aria-label="Authentication mode">
+          <button
+            type="button"
+            id="tab-login"
+            class="auth-tab-btn active"
+            role="tab"
+            aria-selected="true"
+            aria-controls="form-login"
+          >
+            Sign In
+          </button>
+          <button
+            type="button"
+            id="tab-signup"
+            class="auth-tab-btn"
+            role="tab"
+            aria-selected="false"
+            aria-controls="form-signup"
+          >
+            Create Account
+          </button>
+        </div>
+
+        <!-- Status Feedback Banners -->
+        <div id="auth-error" class="error-banner" role="alert"></div>
+        <output id="auth-success" class="success-banner"></output>
+
+        <!-- 1. LOGIN FORM (Reference 2 Field Structure) -->
+        <form id="form-login" class="auth-form active" role="tabpanel" novalidate>
+          <div class="form-group">
+            <label for="login-username">Username or Email <span class="req-star" aria-hidden="true">*</span></label>
+            <input
+              type="text"
+              id="login-username"
+              placeholder="officer@institution.com"
+              autocomplete="username"
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="login-password">Password <span class="req-star" aria-hidden="true">*</span></label>
+            <div class="password-wrapper">
+              <input
+                type="password"
+                id="login-password"
+                placeholder="Enter your password"
+                autocomplete="current-password"
+                required
+              />
+              <button
+                type="button"
+                id="toggle-login-pass"
+                class="password-toggle-btn"
+                aria-label="Show password"
+              >
+                Show
+              </button>
+            </div>
+          </div>
+
+          <div class="auth-inline-row">
+            <label class="auth-checkbox-label">
+              <input type="checkbox" id="login-remember" checked />
+              <span>Remember this device</span>
+            </label>
+            <button type="button" id="btn-forgot-help" class="auth-muted-link">
+              Need help?
+            </button>
+          </div>
+
+          <button type="submit" id="btn-login-submit" class="btn-primary-auth">
+            <span>Sign in</span>
+            <span aria-hidden="true">→</span>
+          </button>
+
+          <!-- Clean SSO Divider (honestly disabled until OIDC IdP is configured) -->
+          <div class="auth-divider">or continue with SSO</div>
+          <div class="sso-grid">
+            <button
+              type="button"
+              id="btn-sso-google"
+              class="btn-secondary-auth"
+              disabled
+              title="Configure OIDC Identity Provider to enable Google SSO"
+            >
+              <span>Google SSO</span>
+            </button>
+            <button
+              type="button"
+              id="btn-sso-github"
+              class="btn-secondary-auth"
+              disabled
+              title="Configure OIDC Identity Provider to enable GitHub SSO"
+            >
+              <span>GitHub Corp</span>
+            </button>
+          </div>
+
+          <div class="auth-switch-footer">
+            Don’t have an account?
+            <button type="button" class="auth-muted-link" data-switch-tab="signup">Create account</button>
+          </div>
+        </form>
+
+        <!-- 2. TWO-FACTOR MFA CHALLENGE FORM -->
+        <form id="form-mfa" class="mfa-screen" novalidate>
+          <div style="text-align:center;">
+            <div class="mfa-header-icon" aria-hidden="true">
+              <i data-lucide="key-round" style="width:22px;height:22px;"></i>
+            </div>
+            <p class="auth-subtitle">
+              Enter the 6-digit code from your authenticator app or an emergency recovery code.
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label for="mfa-code">Verification Code <span class="req-star" aria-hidden="true">*</span></label>
+            <input
+              type="text"
+              id="mfa-code"
+              class="otp-input"
+              placeholder="000000"
+              maxlength="15"
+              autocomplete="one-time-code"
+              aria-label="Two-factor verification code"
+              required
+            />
+          </div>
+
+          <button type="submit" id="btn-mfa-submit" class="btn-primary-auth">
+            <span>Verify &amp; Continue</span>
+            <span aria-hidden="true">→</span>
+          </button>
+          <button type="button" id="btn-mfa-cancel" class="btn-secondary-auth">
+            Cancel
+          </button>
+        </form>
+
+        <!-- 3. SIGNUP FORM (Reference 1 Field Structure: inputs + role select + consent checkbox) -->
+        <form id="form-signup" class="auth-form" role="tabpanel" novalidate>
+          <div class="form-group">
+            <div class="form-label-row">
+              <label for="signup-username">Username or Work Email <span class="req-star" aria-hidden="true">*</span></label>
+              <span id="username-avail-badge" style="display:none;font-size:11px;font-weight:600;"></span>
+            </div>
+            <input
+              type="text"
+              id="signup-username"
+              placeholder="alex.chen or alex@institution.com"
+              autocomplete="username"
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label for="signup-department">Compliance Team</label>
+            <select id="signup-department" name="department">
+              <option value="l1_triage">L1 Transaction Monitoring</option>
+              <option value="l2_investigations">L2 Financial Crime Investigations</option>
+              <option value="mlro">MLRO / Risk Governance</option>
+              <option value="audit">Internal Audit &amp; QA</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="signup-password">Create Passphrase <span class="req-star" aria-hidden="true">*</span></label>
+            <div class="password-wrapper">
+              <input
+                type="password"
+                id="signup-password"
+                placeholder="Minimum 10–12 characters"
+                autocomplete="new-password"
+                required
+              />
+              <button
+                type="button"
+                id="toggle-signup-pass"
+                class="password-toggle-btn"
+                aria-label="Show password"
+              >
+                Show
+              </button>
+            </div>
+            <div class="strength-meter" aria-live="polite">
+              <div class="strength-bar-bg">
+                <div id="strength-bar" class="strength-bar-fill"></div>
+              </div>
+              <span id="strength-text" class="strength-label">Minimum 10–12 characters recommended</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="signup-confirm">Confirm Passphrase <span class="req-star" aria-hidden="true">*</span></label>
+            <input
+              type="password"
+              id="signup-confirm"
+              placeholder="Re-enter passphrase"
+              autocomplete="new-password"
+              required
+            />
+          </div>
+
+          <label class="auth-checkbox-label">
+            <input type="checkbox" id="signup-consent" required />
+            <span>
+              I acknowledge all investigation actions are recorded in the immutable <strong>SHA-256 audit trail</strong>.
+            </span>
+          </label>
+
+          <button type="submit" id="btn-signup-submit" class="btn-primary-auth">
+            <span>Create account</span>
+            <span aria-hidden="true">→</span>
+          </button>
+
+          <div class="auth-switch-footer">
+            Already have an account?
+            <button type="button" class="auth-muted-link" data-switch-tab="login">Sign in</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Subtle Footer Metadata -->
+      <div class="auth-pane-meta">
+        <span>NIST SP 800-63B · HttpOnly Session</span>
+        <span>v4.2.0</span>
+      </div>
+    </section>
+
+    <!-- =================================================================== -->
+    <!-- RIGHT PANEL: ARCHITECTURAL PHOTO + 3 FLOATING GLASS CARDS (Ref 1)   -->
+    <!-- =================================================================== -->
+    <aside class="auth-visual-pane" aria-label="Sentinel AML Highlights">
+      <picture>
+        <source srcset="/static/images/aml_arch_headquarters.webp" type="image/webp" />
+        <img
+          src="/static/images/aml_arch_headquarters.jpg"
+          alt="Minimalist European private bank architectural glass atrium at dusk"
+          width="1200"
+          height="896"
+          fetchpriority="high"
+        />
+      </picture>
+      <div class="auth-visual-scrim" aria-hidden="true"></div>
+
+      <!-- 3 Staggered Frosted Glass Micro-Cards (Reference 1 Layout Motif) -->
+      <div class="auth-glass-stage">
+        <div class="auth-glass-card auth-glass-card--left">
+          <div class="auth-glass-kicker">
+            <span class="auth-glass-dot" aria-hidden="true"></span>
+            <span>Coverage</span>
+          </div>
+          <div class="auth-glass-value">140+ FATF &amp; FinCEN typologies</div>
+        </div>
+
+        <div class="auth-glass-card auth-glass-card--right">
+          <div class="auth-glass-kicker">
+            <span class="auth-glass-dot" aria-hidden="true"></span>
+            <span>Audit Trail</span>
+          </div>
+          <div class="auth-glass-value">SHA-256 tamper-evident ledger</div>
+        </div>
+
+        <div class="auth-glass-card auth-glass-card--left">
+          <div class="auth-glass-kicker">
+            <span class="auth-glass-dot" aria-hidden="true"></span>
+            <span>Screening</span>
+          </div>
+          <div class="auth-glass-value">&lt;42ms pre-settlement scoring</div>
+        </div>
+      </div>
+
+      <!-- Bottom Editorial Caption -->
+      <div class="auth-visual-footer">
+        <div class="auth-visual-quote">
+          Empowering financial transparency across every payment corridor.
+        </div>
+        <div class="auth-visual-tag">ISO/IEC 27001</div>
+      </div>
+    </aside>
+
+  </main>
 
 </body>
-
 </html>
