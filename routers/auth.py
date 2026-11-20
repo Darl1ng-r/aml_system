@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Optional
 import aiohttp
@@ -14,8 +15,10 @@ from observability.sanitizer import sanitize_text
 from services.rate_limiter import RateLimiter
 from services.auth import (
     hash_password,
+    hash_password_async,
     verify_password,
     verify_password_and_needs_rehash,
+    verify_password_and_needs_rehash_async,
     create_access_token,
     create_refresh_token,
     get_current_user,
@@ -34,7 +37,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str |
     response.set_cookie(
         key="access_token",
         value=access_token,
-        max_age=900,  # 15 minutes
+        max_age=settings.access_token_expire_minutes * 60,
         httponly=True,
         samesite="strict",
         secure=is_secure,
@@ -44,7 +47,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str |
         response.set_cookie(
             key="refresh_token",
             value=refresh_token,
-            max_age=30 * 86400,  # 30 days
+            max_age=settings.refresh_token_expire_days * 86400,
             httponly=True,
             samesite="strict",
             secure=is_secure,
@@ -52,9 +55,22 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str |
         )
 
 def clear_auth_cookies(response: Response):
-    """Clears authentication cookies on logout."""
-    response.delete_cookie(key="access_token", path="/")
-    response.delete_cookie(key="refresh_token", path="/")
+    """Clears authentication cookies on logout with matching security attributes."""
+    is_secure = bool(settings.enable_tls or str(settings.environment).lower() == "production")
+    response.delete_cookie(
+        key="access_token",
+        path="/",
+        httponly=True,
+        samesite="strict",
+        secure=is_secure,
+    )
+    response.delete_cookie(
+        key="refresh_token",
+        path="/",
+        httponly=True,
+        samesite="strict",
+        secure=is_secure,
+    )
 
 class UserSignup(BaseModel):
     username: str = Field(..., min_length=3, max_length=100, pattern=r"^[A-Za-z0-9._@+-]+$")
@@ -127,14 +143,15 @@ async def _process_supabase_login_success(
     access_token = data.get("access_token", "")
     user = data.get("user") or data
     user_id = user.get("id", "")
-    user_metadata = user.get("user_metadata", {})
-    role = user_metadata.get("role", "ANALYST")
+    # Security (S-10): Read role & tenant_id exclusively from server-managed app_metadata
+    app_metadata = user.get("app_metadata") or {}
+    role = app_metadata.get("role", "L1_ANALYST")
     username = email.split("@")[0]
-    tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+    tenant_id = app_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
 
-    hashed_pw = hash_password(form_data.password)
+    hashed_pw = await asyncio.to_thread(hash_password, form_data.password)
     from database.postgres import get_async_db_conn
-    async with get_async_db_conn() as conn:
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
         await conn.execute(
             """
             INSERT INTO users (id, username, role, tenant_id, password_hash)
@@ -179,7 +196,7 @@ async def _process_supabase_login_success(
 async def _handle_local_login_failure(username: str, local_user, password: str):
     if not local_user or not local_user["password_hash"]:
         from services.auth import DUMMY_ARGON2_HASH
-        verify_password_and_needs_rehash(password, DUMMY_ARGON2_HASH)
+        await asyncio.to_thread(verify_password_and_needs_rehash, password, DUMMY_ARGON2_HASH)
         log_audit_event(
             event_type="LOGIN_FAILED",
             actor_id=username,
@@ -259,13 +276,13 @@ async def _execute_local_login(
         if not local_user or not local_user["password_hash"]:
             await _handle_local_login_failure(form_data.username, None, form_data.password)
 
-        pw_valid, needs_rehash = verify_password_and_needs_rehash(form_data.password, local_user["password_hash"])
+        pw_valid, needs_rehash = await asyncio.to_thread(verify_password_and_needs_rehash, form_data.password, local_user["password_hash"])
         if not pw_valid:
             await _handle_local_login_failure(form_data.username, local_user, form_data.password)
 
         if needs_rehash:
             try:
-                new_argon2_hash = hash_password(form_data.password)
+                new_argon2_hash = await asyncio.to_thread(hash_password, form_data.password)
                 await conn.execute(
                     "UPDATE users SET password_hash = $1 WHERE id = $2;",
                     new_argon2_hash, local_user["id"]
@@ -390,7 +407,7 @@ async def _process_supabase_signup_success(
 
     if supabase_user_id:
         from database.postgres import get_async_db_conn
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=default_tenant_id) as conn:
             await conn.execute(
                 """
                 INSERT INTO users (id, username, role, tenant_id, password_hash) 
@@ -455,7 +472,7 @@ async def _execute_local_signup(
     try:
         import uuid
         from database.postgres import get_async_db_conn
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=default_tenant_id) as conn:
             existing_user = await conn.fetchrow(
                 "SELECT id FROM users WHERE username = $1;",
                 payload.username
@@ -524,26 +541,34 @@ async def _execute_local_signup(
         )
 
 
-@router.post("/signup", summary="Register compliance officer (Defaults strictly to ANALYST)")
-@router.post("/register", summary="Register compliance officer (Enterprise registration)")
+@router.post("/signup", summary="Register compliance officer (Disabled in production)")
+@router.post("/register", summary="Register compliance officer (Disabled in production)")
 async def signup(
     request: Request,
     response: Response,
     payload: UserSignup,
     _rate_limit=Depends(RateLimiter(limit=10, window=3600))
 ):
-    if request.url.path.endswith("/register"):
-        from services.auth import check_breached_password
-        if await check_breached_password(payload.password):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Password has appeared in a known public data breach (NIST SP 800-63B violation). Please choose a different, more secure passphrase."
-            )
+    # Security (S-1): Public self-registration is strictly disabled in production
+    # or when ALLOW_PUBLIC_SIGNUP=false. Provision users via POST /api/v1/auth/provision.
+    if str(settings.environment).lower() == "production" or not getattr(settings, "allow_public_signup", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Public self-registration is disabled in this environment. Contact your compliance administrator for account provisioning."
+        )
+
+    # Enforce NIST SP 800-63B HIBP breach screening on BOTH /signup and /register
+    from services.auth import check_breached_password
+    if await check_breached_password(payload.password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password has appeared in a known public data breach (NIST SP 800-63B violation). Please choose a different, more secure passphrase."
+        )
 
     email = payload.username if "@" in payload.username else f"{payload.username}@aml.com"
-    assigned_role = "ANALYST"
+    assigned_role = "L1_ANALYST"
     default_tenant_id = "00000000-0000-0000-0000-000000000001"
-    hashed_pw = hash_password(payload.password)
+    hashed_pw = await asyncio.to_thread(hash_password, payload.password)
 
     supabase_data = await _attempt_supabase_signup(email, payload.password, assigned_role, default_tenant_id)
     if supabase_data:
@@ -578,11 +603,11 @@ async def provision(
         assigned_role = "ADMIN"
     else:
         assigned_role = payload.role or "ANALYST"
-    hashed_pw = hash_password(payload.password)
+    hashed_pw = await asyncio.to_thread(hash_password, payload.password)
 
     import uuid
     from database.postgres import get_async_db_conn
-    async with get_async_db_conn() as conn:
+    async with get_async_db_conn(tenant_id=target_tenant_id) as conn:
         existing_user = await conn.fetchrow(
             "SELECT id FROM users WHERE username = $1;",
             payload.username
@@ -694,7 +719,7 @@ async def update_user_role(
 
         await conn.execute("UPDATE users SET role = $1 WHERE id = $2;", payload.role, u_uuid)
 
-    await revoke_user_sessions(user_id)
+    await revoke_user_sessions(user_id, tenant_id=tenant_id)
 
     log_audit_event(
         event_type="USER_ROLE_CHANGED",
@@ -726,7 +751,7 @@ async def _handle_token_compromise(
             import uuid as _uuid
             _uuid.UUID(str(sub))
             from database.postgres import get_async_db_conn
-            async with get_async_db_conn() as conn:
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
                 await conn.execute("UPDATE users SET token_version = token_version + 1 WHERE id = $1;", sub)
         except Exception as db_err:
             logger.warning(f"Failed to bump token_version on compromise: {db_err}")
@@ -950,7 +975,8 @@ async def revoke_sessions(current_user: dict = Depends(get_current_user)):
     """
     from services.auth import revoke_user_sessions
     user_id = current_user.get("id")
-    new_ver = await revoke_user_sessions(user_id)
+    tenant_id = current_user.get("tenant_id")
+    new_ver = await revoke_user_sessions(user_id, tenant_id=str(tenant_id) if tenant_id else None)
     return {
         "detail": "All active sessions revoked successfully. Please log in again.",
         "token_version": new_ver
@@ -982,7 +1008,7 @@ async def admin_revoke_target_user_sessions(
         if not row:
             raise HTTPException(status_code=404, detail="Target user not found.")
 
-    new_ver = await revoke_user_sessions(user_id)
+    new_ver = await revoke_user_sessions(user_id, tenant_id=tenant_id)
 
     log_audit_event(
         event_type="USER_SESSIONS_REVOKED",

@@ -236,20 +236,46 @@ def register_fallback_jwt_secret(old_secret: str) -> None:
         logger.info("Registered fallback JWT secret for key rotation verification.")
 
 
-def decode_jwt_with_rotation(token: str, algorithm: str | None = None) -> dict:
-    """Decodes and verifies a JWT token against active RSA public keys and fallback keys."""
-    verification_keys = get_jwt_verification_keys()
-    algorithms = [algorithm] if algorithm else [settings.jwt_algorithm, "RS256", "HS256"]
-    if "RS256" not in algorithms:
-        algorithms.append("RS256")
-    if "HS256" not in algorithms:
-        algorithms.append("HS256")
+def _is_pem_key(key: str) -> bool:
+    return isinstance(key, str) and "-----BEGIN " in key
 
+
+def decode_jwt_with_rotation(token: str, algorithm: str | None = None) -> dict:
+    """
+    Decodes and verifies a JWT token against active RSA public keys and legacy symmetric fallback keys.
+    Strictly isolates asymmetric (RS256) and symmetric (HS256) key-algorithm pairs to prevent
+    JWT algorithm-confusion (CVE RS256->HS256) attacks.
+    """
+    try:
+        unverified_header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError as e:
+        raise jwt.InvalidTokenError(f"Malformed JWT header: {e}") from e
+
+    token_alg = str(unverified_header.get("alg", "")).upper()
+    allowed_algs = {"RS256", "HS256"}
+    if token_alg not in allowed_algs:
+        raise jwt.InvalidAlgorithmError(f"Unsupported or unsafe JWT algorithm: '{token_alg}'")
+
+    # If caller explicitly restricted to a single algorithm and token header mismatches
+    if algorithm:
+        req_alg = algorithm.upper()
+        # Allow HS256 fallback verification only during key-rotation when symmetric keys exist
+        if req_alg not in allowed_algs:
+            raise jwt.InvalidAlgorithmError(f"Unsupported requested algorithm: '{req_alg}'")
+
+    verification_keys = get_jwt_verification_keys()
     last_exception = None
 
     for key in verification_keys:
+        key_is_rsa = _is_pem_key(key)
+        # Strict algorithm-to-key binding: never verify an RSA PEM key with HS256 or vice-versa
+        if token_alg == "RS256" and not key_is_rsa:
+            continue
+        if token_alg == "HS256" and key_is_rsa:
+            continue
+
         try:
-            payload = jwt.decode(token, key, algorithms=algorithms)
+            payload = jwt.decode(token, key, algorithms=[token_alg])
             return payload
         except jwt.InvalidSignatureError as e:
             last_exception = e

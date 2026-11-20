@@ -198,12 +198,13 @@ async def test_signup_error_sanitization():
     mock_ctx.__aenter__.return_value = mock_conn
     mock_ctx.__aexit__.return_value = None
 
-    with patch("database.postgres.get_async_db_conn", return_value=mock_ctx):
+    with patch("database.postgres.get_async_db_conn", return_value=mock_ctx), \
+         patch("services.auth.check_breached_password", AsyncMock(return_value=False)):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             response = await ac.post(
                 "/api/v1/auth/signup",
-                json={"username": "duplicate_officer", "password": "Password123!"}
+                json={"username": "duplicate_officer", "password": "UniqueSecurePassphrase!9271"}
             )
             assert response.status_code == 400
             detail = response.json()["detail"]

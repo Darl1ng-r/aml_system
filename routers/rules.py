@@ -284,7 +284,7 @@ async def get_rule_history(
 @router.post("/test")
 async def test_rule_simulation(
     payload: RuleTestPayload,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "MLRO"]))
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "ADMIN", "ANALYST", "MLRO"]))
 ):
     """
     Rule Testing Harness: Evaluates a synthetic transaction against the current

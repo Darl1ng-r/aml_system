@@ -12,7 +12,7 @@ from pydantic import BaseModel, HttpUrl
 
 from services.auth import RoleChecker
 from services.rate_limiter import RateLimiter
-from services.siem_forwarder import siem_service
+from services.siem_forwarder import siem_service, validate_siem_destination_url
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +21,13 @@ router = APIRouter(prefix="/api/v1/admin/siem", tags=["SIEM Forwarder"])
 
 class SiemConfigRequest(BaseModel):
     enabled: bool = True
-    destination_url: str
-    auth_token: Optional[str] = "SPLUNK-HEC-TOKEN"
+    destination_url: HttpUrl
+    auth_token: Optional[str] = None
     format: Optional[str] = "SPLUNK_HEC"
 
 
 class SiemTestRequest(BaseModel):
-    destination_url: Optional[str] = None
+    destination_url: Optional[HttpUrl] = None
     auth_token: Optional[str] = None
 
 
@@ -47,10 +47,19 @@ async def test_siem_forwarder(
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
     """Sends a synthetic test heartbeat probe to verify target SIEM connectivity."""
-    result = await siem_service.test_connection(
-        target_url=payload.destination_url,
-        token=payload.auth_token
-    )
+    target = str(payload.destination_url) if payload.destination_url else None
+    if target:
+        try:
+            validate_siem_destination_url(target)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    try:
+        result = await siem_service.test_connection(
+            target_url=target,
+            token=payload.auth_token
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return result
 
 
@@ -61,8 +70,13 @@ async def update_siem_config(
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
     """Updates SIEM forwarder target endpoint, token, and format."""
+    try:
+        validated_url = validate_siem_destination_url(str(payload.destination_url))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
     siem_service.enabled = payload.enabled
-    siem_service.destination_url = payload.destination_url
+    siem_service.destination_url = validated_url
     if payload.auth_token:
         siem_service.auth_token = payload.auth_token
     if payload.format:

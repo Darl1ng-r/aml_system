@@ -61,24 +61,26 @@ async def close_db_pool():
         db_replica_pool = None
         logger.info("Read replica asyncpg connection pool closed.")
 
+async def _apply_rls_tenant_context(conn, tenant_id: str | None) -> None:
+    """Sets transaction-scoped PostgreSQL RLS tenant context, failing closed on missing or invalid UUID."""
+    if tenant_id:
+        try:
+            import uuid
+            uuid.UUID(str(tenant_id))
+            await conn.execute("SELECT set_config('app.current_tenant_id', $1, true);", str(tenant_id))
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid tenant_id format: '{tenant_id}'")
+    else:
+        await conn.execute("SELECT set_config('app.current_tenant_id', '00000000-0000-0000-0000-000000000000', true);")
+
+
 @asynccontextmanager
 async def get_async_db_conn(tenant_id: str | None = None):
     global db_pool
     if db_pool is None or getattr(db_pool, "_loop", None) is None or db_pool._loop.is_closed():
         await init_db_pool()
     async with db_pool.acquire(timeout=5.0) as conn, conn.transaction():
-        if tenant_id:
-            # Set transaction-scoped configuration variable for PostgreSQL Row Level Security (RLS)
-            # Fail closed: reject invalid tenant_id to prevent data leakage
-            try:
-                import uuid
-                uuid.UUID(str(tenant_id))
-                await conn.execute("SELECT set_config('app.current_tenant_id', $1, true);", str(tenant_id))
-            except (ValueError, TypeError):
-                raise ValueError(f"Invalid tenant_id format: '{tenant_id}'")
-        else:
-            # When no tenant_id is provided, set a dummy non-matching UUID to fail closed
-            await conn.execute("SELECT set_config('app.current_tenant_id', '00000000-0000-0000-0000-000000000000', true);")
+        await _apply_rls_tenant_context(conn, tenant_id)
         yield conn
 
 @asynccontextmanager
@@ -99,8 +101,7 @@ async def get_async_db_read_conn(tenant_id: str | None = None):
 
     try:
         async with conn.transaction(readonly=True):
-            if tenant_id:
-                await conn.execute("SELECT set_config('app.current_tenant_id', $1, true);", str(tenant_id))
+            await _apply_rls_tenant_context(conn, tenant_id)
             yield conn
     finally:
         if conn:

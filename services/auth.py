@@ -139,6 +139,18 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     is_valid, _ = verify_password_and_needs_rehash(plain_password, hashed_password)
     return is_valid
 
+
+async def hash_password_async(password: str) -> str:
+    """Offloads CPU/memory-intensive Argon2id hashing to a worker thread."""
+    import asyncio
+    return await asyncio.to_thread(hash_password, password)
+
+
+async def verify_password_and_needs_rehash_async(plain_password: str, hashed_password: str) -> tuple[bool, bool]:
+    """Offloads CPU/memory-intensive Argon2id verification to a worker thread."""
+    import asyncio
+    return await asyncio.to_thread(verify_password_and_needs_rehash, plain_password, hashed_password)
+
 from services.secrets_manager import get_jwt_signing_key, decode_jwt_with_rotation
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
@@ -228,24 +240,58 @@ def _resolve_auth_token(
     return token or bearer_token or cookie_token
 
 
-async def _verify_token_version(user_id: str, token_version: Any) -> None:
+async def _verify_token_version(
+    user_id: str,
+    token_version: Any,
+    tenant_id: str | None = None,
+) -> None:
     if token_version is None:
         return
+
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    redis_checked = False
     try:
         from database.redis_db import get_async_redis_client
         redis = await get_async_redis_client()
         if redis:
             cached_ver = await redis.get(f"user:token_version:{user_id}")
+            redis_checked = True
             if cached_ver is not None and int(cached_ver) > int(token_version):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Could not validate credentials",
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
+                raise credentials_exception
     except HTTPException:
         raise
-    except Exception:
-        pass
+    except Exception as redis_err:
+        logger.warning(f"Redis token_version check failed for user {user_id}: {redis_err}")
+
+    if redis_checked:
+        return
+
+    # Fail-closed fallback: when Redis is unavailable, verify token_version directly in PostgreSQL
+    try:
+        import uuid as _uuid
+        u_uuid = _uuid.UUID(str(user_id))
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            db_ver = await conn.fetchval(
+                "SELECT token_version FROM users WHERE id = $1;",
+                u_uuid,
+            )
+            if db_ver is not None and int(db_ver) > int(token_version):
+                raise credentials_exception
+    except HTTPException:
+        raise
+    except ValueError:
+        # Non-UUID synthetic test subject IDs when Redis is unavailable
+        if str(settings.environment).lower() == "production":
+            raise credentials_exception
+    except Exception as db_err:
+        logger.error(f"Token version verification failed in both Redis and PostgreSQL: {db_err}")
+        if str(settings.environment).lower() == "production":
+            raise credentials_exception
 
 
 async def _verify_supabase_user(resolved_token: str, credentials_exception: HTTPException) -> dict:
@@ -264,11 +310,16 @@ async def _verify_supabase_user(resolved_token: str, credentials_exception: HTTP
             if resp.status != 200:
                 raise credentials_exception
             user_data = await resp.json()
-            user_metadata = user_data.get("user_metadata", {})
-            role = user_metadata.get("role", "ANALYST")
+            # Security (S-10): Read role & tenant_id exclusively from server-managed app_metadata,
+            # NEVER from client-writable user_metadata.
+            app_metadata = user_data.get("app_metadata") or {}
+            role = app_metadata.get("role", "L1_ANALYST")
             email = user_data.get("email", "")
             username = email.split("@")[0] if email else "anonymous"
-            tenant_id = user_metadata.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+            tenant_id = app_metadata.get("tenant_id")
+            if not tenant_id:
+                logger.warning("Supabase user missing server-assigned app_metadata.tenant_id")
+                raise credentials_exception
             user_id = user_data.get("id")
             from observability.middleware import user_id_var, tenant_id_var
             user_id_var.set(str(user_id))
@@ -302,9 +353,24 @@ async def get_current_user(
     if not resolved_token:
         raise credentials_exception
     
-    # 1. Attempt Local JWT Verification with key rotation fallback support
+    # 1. Attempt Local JWT Verification with per-request decode caching and key rotation support
     try:
-        payload = decode_jwt_with_rotation(resolved_token, algorithm=ALGORITHM)
+        payload = None
+        if request is not None and hasattr(request, "state"):
+            if getattr(request.state, "jwt_raw_token", None) == resolved_token:
+                payload = getattr(request.state, "jwt_payload", None)
+
+        if payload is None:
+            payload = decode_jwt_with_rotation(resolved_token, algorithm=ALGORITHM)
+            if request is not None and hasattr(request, "state"):
+                request.state.jwt_raw_token = resolved_token
+                request.state.jwt_payload = payload
+
+        # Security (S-2): Strictly reject refresh tokens (or any non-access token) on API endpoints
+        token_type = payload.get("type")
+        if token_type != "access":
+            raise credentials_exception
+
         user_id = payload.get("id") or payload.get("user_id") or payload.get("sub")
         role = payload.get("role", "ANALYST")
         username = payload.get("username", "anonymous")
@@ -313,7 +379,7 @@ async def get_current_user(
         token_version = payload.get("token_version")
         
         if user_id:
-            await _verify_token_version(user_id, token_version)
+            await _verify_token_version(user_id, token_version, tenant_id=str(tenant_id))
 
             from observability.middleware import user_id_var, tenant_id_var
             user_id_var.set(str(user_id))
@@ -326,6 +392,8 @@ async def get_current_user(
                 "email": email,
                 "tenant_id": tenant_id
             }
+    except HTTPException:
+        raise
     except jwt.PyJWTError:
         pass  # Fall back to Supabase check if local decode fails
 
@@ -333,7 +401,7 @@ async def get_current_user(
     return await _verify_supabase_user(resolved_token, credentials_exception)
 
 
-async def revoke_user_sessions(user_id: str) -> int:
+async def revoke_user_sessions(user_id: str, tenant_id: str | None = None) -> int:
     """
     Increments token_version in PostgreSQL and updates Redis cache,
     immediately revoking all outstanding sessions/JWTs for this user across clusters.
@@ -343,7 +411,7 @@ async def revoke_user_sessions(user_id: str) -> int:
     
     new_version = 1
     try:
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE users 
@@ -393,7 +461,9 @@ ROLE_HIERARCHY = {
 
 ROLE_ALIASES = {
     "ADMIN": ["ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
-    "ANALYST": ["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
+    # Security (S-5): L1_ANALYST is strictly excluded from ANALYST (L2 equivalent)
+    # so Tier-1 analysts cannot file/close SARs, retrain ML models, or onboard entities.
+    "ANALYST": ["ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
     "AUDITOR": ["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "SUPER_ADMIN"],
     "L1_ANALYST": ["L1_ANALYST", "ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
     "L2_INVESTIGATOR": ["L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
@@ -561,6 +631,12 @@ class DownstreamAuthValidator:
 
         token = auth_header[7:].strip()
         payload = self.decode_token(token)
+        if payload.get("type") == "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Refresh tokens cannot be used for API authentication.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
         user_id = payload.get("sub") or payload.get("user_id")
         tenant_id = payload.get("tenant_id")

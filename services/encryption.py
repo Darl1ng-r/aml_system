@@ -18,22 +18,37 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+ENCRYPTION_VERSION_PREFIX = "enc:v1:"
 
-def _derive_aes_key(key_material: str, info: bytes = b"aml-pii-field-encryption-v1") -> bytes:
+
+class DecryptionError(ValueError):
+    """Raised when an authenticated AES-256-GCM PII payload fails integrity verification."""
+
+
+def _derive_aes_key(
+    key_material: str,
+    info: bytes = b"aml-pii-field-encryption-v1",
+    tenant_id: Optional[str] = None,
+) -> bytes:
     """
     Derives a 256-bit (32-byte) AES key from raw key material using RFC 5869 HKDF-SHA256.
-    Ensures cryptographic key isolation (NIST SP 800-57).
+    Supports optional per-tenant domain separation salt (NIST SP 800-57).
     """
+    salt = (
+        f"aml-system-pii-salt-2026:{tenant_id}".encode("utf-8")
+        if tenant_id
+        else b"aml-system-pii-salt-2026"
+    )
     hkdf = HKDF(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=b"aml-system-pii-salt-2026",
+        salt=salt,
         info=info,
     )
     return hkdf.derive(key_material.encode("utf-8"))
 
 
-def _get_encryption_key() -> bytes:
+def _get_encryption_key(tenant_id: Optional[str] = None) -> bytes:
     """
     Derives a 256-bit AES-GCM encryption key dedicated strictly to PII encryption.
     Resolution priority:
@@ -48,7 +63,7 @@ def _get_encryption_key() -> bytes:
         from services.vault_loader import SecretStore
         vault_key = SecretStore.get("encryption.pii_key") or SecretStore.get("encryption.field_key")
         if vault_key:
-            return _derive_aes_key(vault_key)
+            return _derive_aes_key(vault_key, tenant_id=tenant_id)
     except Exception:
         pass
 
@@ -59,14 +74,14 @@ def _get_encryption_key() -> bytes:
             with open(secret_file, "r", encoding="utf-8") as f:
                 val = f.read().strip()
                 if val:
-                    return _derive_aes_key(val)
+                    return _derive_aes_key(val, tenant_id=tenant_id)
         except Exception as e:
             logger.warning(f"Failed to read mounted secret {secret_file}: {e}")
 
     # 3. Dedicated environment variable or config setting
     env_key = os.getenv("PII_ENCRYPTION_KEY") or getattr(settings, "pii_encryption_key", None)
     if env_key:
-        return _derive_aes_key(env_key)
+        return _derive_aes_key(env_key, tenant_id=tenant_id)
 
     # 4. Environment-aware guard: fail closed in production
     is_prod = os.getenv("ENVIRONMENT", "").lower() in ("production", "prod")
@@ -81,43 +96,63 @@ def _get_encryption_key() -> bytes:
         "PII_ENCRYPTION_KEY not set. Using ephemeral development key derivation. "
         "DO NOT USE IN PRODUCTION."
     )
-    return _derive_aes_key("dev_insecure_ephemeral_pii_master_key_do_not_use_in_production")
+    return _derive_aes_key(
+        "dev_insecure_ephemeral_pii_master_key_do_not_use_in_production",
+        tenant_id=tenant_id,
+    )
 
 
-def encrypt_pii(plaintext: Optional[str]) -> Optional[str]:
+def encrypt_pii(plaintext: Optional[str], tenant_id: Optional[str] = None) -> Optional[str]:
     """
     Encrypts a sensitive PII string using AES-256-GCM.
     Returns:
-        Base64-encoded string containing (12-byte nonce + ciphertext + 16-byte auth tag).
+        Versioned string 'enc:v1:<base64(12-byte nonce + ciphertext + 16-byte auth tag)>'.
     """
     if not plaintext:
         return plaintext
 
-    key = _get_encryption_key()
+    key = _get_encryption_key(tenant_id=tenant_id)
     aesgcm = AESGCM(key)
     nonce = secrets.token_bytes(12)  # 96-bit unique nonce
     ciphertext = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
-    return base64.b64encode(nonce + ciphertext).decode("utf-8")
+    return ENCRYPTION_VERSION_PREFIX + base64.b64encode(nonce + ciphertext).decode("utf-8")
 
 
-def decrypt_pii(ciphertext_b64: Optional[str]) -> Optional[str]:
+def decrypt_pii(
+    ciphertext_b64: Optional[str],
+    tenant_id: Optional[str] = None,
+    allow_legacy_plaintext: bool = False,
+) -> Optional[str]:
     """
-    Decrypts and authenticates a Base64-encoded AES-256-GCM ciphertext payload.
+    Decrypts and authenticates an AES-256-GCM ciphertext payload.
+    Raises DecryptionError on tampered or corrupted authenticated ciphertexts
+    instead of silently returning raw ciphertext.
     """
     if not ciphertext_b64:
         return ciphertext_b64
 
-    try:
-        raw = base64.b64decode(ciphertext_b64.encode("utf-8"))
-        if len(raw) < 28:  # 12-byte nonce + 16-byte tag minimum
-            return ciphertext_b64
+    is_versioned = ciphertext_b64.startswith(ENCRYPTION_VERSION_PREFIX)
+    b64_body = ciphertext_b64[len(ENCRYPTION_VERSION_PREFIX):] if is_versioned else ciphertext_b64
 
-        nonce = raw[:12]
-        ciphertext = raw[12:]
-        key = _get_encryption_key()
-        aesgcm = AESGCM(key)
+    try:
+        raw = base64.b64decode(b64_body.encode("utf-8"), validate=True)
+    except Exception as e:
+        if is_versioned or not allow_legacy_plaintext:
+            raise DecryptionError(f"Invalid base64 ciphertext payload: {e}") from e
+        return ciphertext_b64
+
+    if len(raw) < 28:  # 12-byte nonce + 16-byte tag minimum
+        if is_versioned or not allow_legacy_plaintext:
+            raise DecryptionError("Ciphertext payload shorter than minimum AES-GCM frame (28 bytes).")
+        return ciphertext_b64
+
+    nonce = raw[:12]
+    ciphertext = raw[12:]
+    key = _get_encryption_key(tenant_id=tenant_id)
+    aesgcm = AESGCM(key)
+    try:
         plaintext_bytes = aesgcm.decrypt(nonce, ciphertext, None)
         return plaintext_bytes.decode("utf-8")
-    except Exception:
-        # If decryption fails (e.g. unencrypted legacy value), return as-is
-        return ciphertext_b64
+    except Exception as e:
+        logger.error("AES-256-GCM PII authentication/decryption failure (possible tampering or key mismatch).")
+        raise DecryptionError("PII decryption failed: authentication tag mismatch or wrong key.") from e

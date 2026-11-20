@@ -539,7 +539,7 @@ class AlertEscalate(BaseModel):
 async def escalate_alert(
     id: str,
     payload: AlertEscalate | None = None,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
@@ -1358,21 +1358,30 @@ async def export_alerts_pdf(
                 """
             )
 
+            import html as _html
             table_rows_html = ""
             for r in rows:
                 score = f"{round(float(r['ai_risk_score'] or 0) * 100)}%"
+                safe_id = _html.escape(str(r['id'])[:8])
+                safe_threat = _html.escape(str(r['threat_level'] or ''))
+                safe_rule = _html.escape(str(r['rule_name'] or ''))
+                safe_curr = _html.escape(str(r['currency'] or ''))
+                safe_status = _html.escape(str(r['status'] or ''))
+                safe_assignee = _html.escape(str(r['assignee'] or ''))
                 table_rows_html += f"""
                 <tr>
-                    <td style="padding: 6px; border-bottom: 1px solid #ddd; font-family: monospace;">{str(r['id'])[:8]}...</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #ddd;"><strong>{r['threat_level']}</strong></td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd; font-family: monospace;">{safe_id}...</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;"><strong>{safe_threat}</strong></td>
                     <td style="padding: 6px; border-bottom: 1px solid #ddd;">{score}</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{r['rule_name']}</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">${float(r['amount']):,.2f} {r['currency']}</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{r['status']}</td>
-                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{r['assignee']}</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{safe_rule}</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">${float(r['amount']):,.2f} {safe_curr}</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{safe_status}</td>
+                    <td style="padding: 6px; border-bottom: 1px solid #ddd;">{safe_assignee}</td>
                 </tr>
                 """
 
+            safe_officer = _html.escape(str(current_user.get('username', '')))
+            safe_role = _html.escape(str(current_user.get('role', '')))
             html_content = f"""
             <!DOCTYPE html>
             <html>
@@ -1389,7 +1398,7 @@ async def export_alerts_pdf(
             <body onload="window.print()">
                 <h1>AML Audit Report & Case Ledger</h1>
                 <p><strong>Generated At:</strong> {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
-                <p><strong>Auditor / Officer:</strong> {current_user['username']} ({current_user['role']})</p>
+                <p><strong>Auditor / Officer:</strong> {safe_officer} ({safe_role})</p>
                 <table>
                     <thead>
                         <tr>

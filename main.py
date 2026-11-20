@@ -312,21 +312,15 @@ app = FastAPI(
     openapi_url=None if is_prod else "/openapi.json"
 )
 
-# ── Middleware ────────────────────────────────────────────────────────────
-# Trusted proxy resolution (must be first to ensure accurate peer/forwarded IP)
-app.add_middleware(TrustedProxyMiddleware)
+# ── Middleware (Starlette LIFO: registered bottom-up, outermost runs FIRST) ─
+# 6. Innermost: Response GZip compression for API JSON and static assets
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Browser security hardening headers (CSP, X-Frame-Options, X-Content-Type-Options) (Findings #22, #23)
-from services.security_headers import SecurityHeadersMiddleware
-app.add_middleware(SecurityHeadersMiddleware)
-
-# Correlation-ID middleware (must wrap requests early)
-app.add_middleware(CorrelationIdMiddleware)
-
-# Anti-CSRF protection middleware
+# 5. Anti-CSRF protection middleware
 app.add_middleware(CSRFProtectionMiddleware)
 
-# Enable CORS for frontend dashboard console
+# 4. CORS for frontend dashboard console
 allowed_origins_list = [origin.strip() for origin in settings.allowed_origins.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -336,9 +330,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Response GZip compression for API JSON and web static assets
-from starlette.middleware.gzip import GZipMiddleware
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# 3. Browser security hardening headers (CSP, X-Frame-Options, X-Content-Type-Options)
+from services.security_headers import SecurityHeadersMiddleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# 2. Correlation-ID & request telemetry middleware
+app.add_middleware(CorrelationIdMiddleware)
+
+# 1. Outermost (runs FIRST on every request): Trusted proxy IP resolution
+app.add_middleware(TrustedProxyMiddleware)
 
 # Include Routers
 app.include_router(health.router)  # /health, /health/live, /health/ready — must be before static mount
@@ -476,9 +476,11 @@ def read_root(request: Request):
 def read_landing():
     return FileResponse("static/landing.html")
 
-@app.get("/dashboard")
-def read_dashboard(request: Request):
-    """Server-side cookie authentication guard for compliance dashboard (Finding #20)."""
+def _serve_authenticated_page(request: Request, static_file_path: str):
+    """
+    Server-side cryptographic cookie authentication guard for all HTML workspace routes (S-9).
+    Verifies JWT signature via decode_jwt_with_rotation() and enforces type == 'access'.
+    """
     token = request.cookies.get("access_token")
     if not token:
         return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
@@ -491,7 +493,13 @@ def read_dashboard(request: Request):
     except Exception:
         return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
 
-    return FileResponse("static/index.html")
+    return FileResponse(static_file_path)
+
+
+@app.get("/dashboard")
+def read_dashboard(request: Request):
+    """Server-side cookie authentication guard for compliance dashboard."""
+    return _serve_authenticated_page(request, "static/index.html")
 
 @app.get(LOGIN_ROUTE, response_class=FileResponse)
 def read_login():
@@ -501,121 +509,82 @@ def read_login():
 @app.get("/triage", response_class=FileResponse)
 def read_triage(request: Request):
     """Server-side cookie authentication guard for Alert Triage Inbox."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/triage.html")
+    return _serve_authenticated_page(request, "static/triage.html")
 
 @app.get("/admin/rules", response_class=FileResponse)
 @app.get("/rules-admin", response_class=FileResponse)
 def read_rules_admin(request: Request):
     """Server-side cookie authentication guard for Rule Builder & Tuner."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/rules-admin.html")
+    return _serve_authenticated_page(request, "static/rules-admin.html")
 
 @app.get("/admin/users", response_class=FileResponse)
 @app.get("/users-admin", response_class=FileResponse)
 def read_users_admin(request: Request):
     """Server-side cookie authentication guard for User & Permissions Governance."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/users-admin.html")
+    return _serve_authenticated_page(request, "static/users-admin.html")
 
 @app.get("/sar/draft/{id}", response_class=FileResponse)
 @app.get("/sar/drafts/{id}", response_class=FileResponse)
 @app.get("/sar/editor", response_class=FileResponse)
 def read_sar_editor(request: Request, id: str = None):
     """Server-side cookie authentication guard for SAR Draft Editor."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/sar-editor.html")
+    return _serve_authenticated_page(request, "static/sar-editor.html")
 
 @app.get("/sar/queue", response_class=FileResponse)
 @app.get("/sar/filings", response_class=FileResponse)
 def read_sar_queue(request: Request):
     """Server-side cookie authentication guard for MLRO SAR Filing Queue."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/sar-queue.html")
+    return _serve_authenticated_page(request, "static/sar-queue.html")
 
 @app.get("/customers/{id}", response_class=FileResponse)
 @app.get("/customers", response_class=FileResponse)
 def read_customer_360(request: Request, id: str = None):
     """Server-side cookie authentication guard for Customer 360 Dossier."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/customer-360.html")
+    return _serve_authenticated_page(request, "static/customer-360.html")
 
 @app.get("/network/{account_id}", response_class=FileResponse)
 @app.get("/network", response_class=FileResponse)
 def read_network_graph(request: Request, account_id: str = None):
     """Server-side cookie authentication guard for Network Graph Visualizer."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/network.html")
+    return _serve_authenticated_page(request, "static/network.html")
 
 @app.get("/dashboard/executive", response_class=FileResponse)
 @app.get("/executive", response_class=FileResponse)
 def read_executive_dashboard(request: Request):
     """Server-side cookie authentication guard for Executive Compliance Dashboard."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/executive-dashboard.html")
+    return _serve_authenticated_page(request, "static/executive-dashboard.html")
 
 @app.get("/audit/logs", response_class=FileResponse)
 @app.get("/audit", response_class=FileResponse)
 def read_audit_vault(request: Request):
     """Server-side cookie authentication guard for Audit Log Vault."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/audit-vault.html")
+    return _serve_authenticated_page(request, "static/audit-vault.html")
 
 @app.get("/admin/health", response_class=FileResponse)
 @app.get("/health-admin", response_class=FileResponse)
 def read_system_health(request: Request):
     """Server-side cookie authentication guard for Admin System Health."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/system-health.html")
+    return _serve_authenticated_page(request, "static/system-health.html")
 
 @app.get("/ml/governance", response_class=FileResponse)
 @app.get("/admin/ml-governance", response_class=FileResponse)
 @app.get("/audit/model-reports", response_class=FileResponse)
 def read_ml_governance(request: Request):
     """Server-side cookie authentication guard for ML Governance & Model Validation."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/ml-governance.html")
+    return _serve_authenticated_page(request, "static/ml-governance.html")
 
 @app.get("/settings/risk-appetite", response_class=FileResponse)
 @app.get("/risk-appetite", response_class=FileResponse)
 def read_risk_appetite(request: Request):
     """Server-side cookie authentication guard for Institutional Risk Appetite Settings."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/risk-appetite.html")
+    return _serve_authenticated_page(request, "static/risk-appetite.html")
 
 
 @app.get("/compliance/ops", response_class=FileResponse)
 @app.get("/ops", response_class=FileResponse)
 def read_compliance_ops(request: Request):
     """Server-side cookie authentication guard for Compliance Operations Hub."""
-    token = request.cookies.get("access_token")
-    if not token:
-        return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
-    return FileResponse("static/compliance-ops.html")
+    return _serve_authenticated_page(request, "static/compliance-ops.html")
 
 
 

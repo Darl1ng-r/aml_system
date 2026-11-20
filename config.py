@@ -45,8 +45,18 @@ class Settings(BaseSettings):
     # Long-lived refresh token — 7 days.
     refresh_token_expire_days: int = 7
 
-    supabase_url: str = "https://xzhsdffpnrlpcitiectz.supabase.co"
+    supabase_url: str = ""
     supabase_key: str = ""
+
+    # Public self-registration switch (forced False in production)
+    allow_public_signup: bool = True
+
+    # Datastore Consolidation Feature Flags (PostgreSQL pg_trgm + CTEs are primary)
+    enable_neo4j: bool = False
+    enable_elasticsearch: bool = False
+
+    # Embedded background worker toggle (set False in multi-pod K8s where dedicated worker runs)
+    run_embedded_worker: bool = True
 
     # Comma-separated list of allowed frontend origins.
     # ⚠️  Do NOT include the API server itself (localhost:8000).
@@ -135,8 +145,9 @@ class Settings(BaseSettings):
         self._check_insecure_passwords()
         self._check_production_origins_and_metrics()
 
-        # Fail-Closed: Production must NEVER run in offline development mode
+        # Fail-Closed: Production must NEVER run in offline development mode or allow public signup
         self.allow_offline_dev = False
+        self.allow_public_signup = False
         return self
 
 settings = Settings()

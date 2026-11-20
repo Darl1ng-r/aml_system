@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from fastapi import Request, HTTPException, status
 import logging
 import time
@@ -7,9 +8,10 @@ from database.redis_db import get_async_redis_client
 
 logger = logging.getLogger(__name__)
 
-# Local in-process fallback bucket for when Redis is unavailable (Finding #14)
+# Bounded in-process fallback bucket for when Redis is unavailable (prevents OOM under DDoS)
+MAX_LOCAL_BUCKETS = 10_000
 _local_lock = threading.Lock()
-_local_buckets: dict[str, list[float]] = {}
+_local_buckets: OrderedDict[str, list[float]] = OrderedDict()
 
 
 def _check_local_rate_limit(key: str, limit: int, window: int) -> bool:
@@ -21,9 +23,15 @@ def _check_local_rate_limit(key: str, limit: int, window: int) -> bool:
         valid = [t for t in timestamps if t > window_start]
         if len(valid) >= limit:
             _local_buckets[key] = valid
+            _local_buckets.move_to_end(key)
             return False
         valid.append(now)
         _local_buckets[key] = valid
+        _local_buckets.move_to_end(key)
+
+        # Evict oldest buckets if capacity exceeded
+        while len(_local_buckets) > MAX_LOCAL_BUCKETS:
+            _local_buckets.popitem(last=False)
         return True
 
 
@@ -41,16 +49,33 @@ def _resolve_rate_limit_client_ip(request: Request) -> str:
 
 
 def _extract_user_and_tenant(request: Request) -> tuple[str | None, str | None]:
-    if not hasattr(request, "headers") or request.headers is None:
+    token_str = None
+    if hasattr(request, "headers") and request.headers is not None:
+        auth_header = request.headers.get("Authorization", "")
+        if isinstance(auth_header, str) and auth_header.startswith("Bearer "):
+            token_str = auth_header[7:].strip()
+
+    if not token_str and hasattr(request, "cookies") and request.cookies is not None:
+        cookie_token = request.cookies.get("access_token")
+        if isinstance(cookie_token, str) and cookie_token:
+            token_str = cookie_token
+
+    if not token_str:
         return None, None
-    auth_header = request.headers.get("Authorization", "")
-    if not isinstance(auth_header, str) or not auth_header.startswith("Bearer "):
-        return None, None
+
     try:
-        from services.secrets_manager import decode_jwt_with_rotation
-        from config import settings
-        token_str = auth_header.split(" ")[1]
-        payload = decode_jwt_with_rotation(token_str, algorithm=settings.jwt_algorithm)
+        payload = None
+        if hasattr(request, "state") and getattr(request.state, "jwt_raw_token", None) == token_str:
+            payload = getattr(request.state, "jwt_payload", None)
+
+        if payload is None:
+            from services.secrets_manager import decode_jwt_with_rotation
+            from config import settings
+            payload = decode_jwt_with_rotation(token_str, algorithm=settings.jwt_algorithm)
+            if hasattr(request, "state"):
+                request.state.jwt_raw_token = token_str
+                request.state.jwt_payload = payload
+
         if isinstance(payload, dict):
             user_id = str(payload.get("id") or payload.get("sub") or "") or None
             tenant_id = str(payload.get("tenant_id") or "") or None
@@ -108,8 +133,24 @@ class RateLimiter:
         except HTTPException:
             raise
         except Exception as e:
-            # When Redis fails, log and proceed to local in-process fallback
+            from config import settings
+            if self.fail_closed and str(settings.environment).lower() == "production":
+                logger.error(f"Rate limiter fail-closed triggered due to Redis outage: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Rate limiting backend unavailable. Request rejected (fail-closed policy).",
+                    headers={"Retry-After": str(self.window)},
+                )
             logger.warning(f"Rate limiter failed to communicate with Redis: {e}. Falling back to in-process limiter.")
+
+        from config import settings
+        if self.fail_closed and str(settings.environment).lower() == "production":
+            logger.error("Rate limiter fail-closed triggered: Redis client returned None.")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Rate limiting backend unavailable. Request rejected (fail-closed policy).",
+                headers={"Retry-After": str(self.window)},
+            )
 
         # Local in-process fallback: enforce sliding window even without Redis
         if not _check_local_rate_limit(key, self.limit, self.window):

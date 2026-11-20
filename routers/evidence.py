@@ -6,6 +6,7 @@ screenshots, and dossiers attached to AML cases.
 """
 
 import os
+import re
 import uuid
 import asyncio
 from datetime import datetime, timezone
@@ -20,10 +21,74 @@ from observability.logging import log_audit_event
 from observability.sanitizer import sanitize_text
 
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
+MAX_EVIDENCE_BYTES = 25 * 1024 * 1024  # 25 MB hard cap
+CHUNK_SIZE_BYTES = 64 * 1024  # 64 KiB streaming chunks
 
-def _write_file_bytes(path: str, data: bytes) -> None:
-    with open(path, "wb") as f:
-        f.write(data)
+ALLOWED_EVIDENCE_MIMES = {
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "text/csv",
+    "text/plain",
+    "application/json",
+    "application/octet-stream",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+FORBIDDEN_EXTENSIONS = {
+    ".html", ".htm", ".xhtml", ".svg", ".js", ".mjs", ".cjs",
+    ".php", ".jsp", ".asp", ".aspx", ".sh", ".bash", ".exe", ".bat", ".cmd",
+}
+
+
+def _sanitize_evidence_filename(raw_filename: str | None) -> str:
+    """Strictly validates and sanitizes an uploaded filename to prevent path traversal and active content."""
+    candidate = (raw_filename or "evidence.bin").strip()
+    if ".." in candidate or "/" in candidate or "\\" in candidate or "\x00" in candidate:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid filename: path traversal characters are forbidden."
+        )
+    base = os.path.basename(sanitize_text(candidate))
+    clean = re.sub(r"[^A-Za-z0-9._-]", "_", base).lstrip(".")
+    if not clean:
+        clean = "evidence.bin"
+    clean = clean[:180]
+    _, ext = os.path.splitext(clean.lower())
+    if ext in FORBIDDEN_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File extension '{ext}' is not permitted in the Evidence Locker."
+        )
+    return clean
+
+
+def _validate_content_type(content_type: str | None) -> str:
+    normalized = (content_type or DEFAULT_CONTENT_TYPE).split(";")[0].strip().lower()
+    if normalized not in ALLOWED_EVIDENCE_MIMES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported content type '{normalized}'. Permitted types: PDF, PNG, JPEG, CSV, TXT, JSON, DOCX, XLSX."
+        )
+    return normalized
+
+
+def _ensure_within_tenant_dir(tenant_dir: str, candidate_path: str) -> str:
+    real_base = os.path.realpath(tenant_dir)
+    real_target = os.path.realpath(candidate_path)
+    if os.path.commonpath([real_base, real_target]) != real_base:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid storage path outside tenant evidence boundary."
+        )
+    return real_target
+
+
+def _append_file_chunk(path: str, chunk: bytes, first: bool) -> None:
+    mode = "wb" if first else "ab"
+    with open(path, mode) as f:
+        f.write(chunk)
 
 router = APIRouter(prefix="/api/v1/cases/{case_id}/evidence", tags=["Case Evidence Locker"])
 
@@ -178,21 +243,47 @@ async def upload_case_evidence(
             user_uuid = None
     username = current_user.get("username", "Investigator")
 
-    # Sanitize inputs
-    safe_filename = sanitize_text(file.filename or "evidence.bin")
+    # Sanitize and strictly validate filename + MIME type (Security S-6)
+    safe_filename = _sanitize_evidence_filename(file.filename)
+    safe_content_type = _validate_content_type(file.content_type)
     safe_description = sanitize_text(description or "")
     parsed_tags = [sanitize_text(t.strip()) for t in tags.split(",") if t.strip()] if tags else []
 
-    # Store file to disk (or S3/MinIO in production)
+    # Store file safely within tenant evidence boundary using bounded 64 KiB streaming chunks
     evidence_id = uuid.uuid4()
-    storage_subfolder = os.path.join(EVIDENCE_STORAGE_DIR, str(tenant_id))
+    storage_subfolder = os.path.realpath(os.path.join(EVIDENCE_STORAGE_DIR, str(tenant_id)))
     os.makedirs(storage_subfolder, exist_ok=True)
-    stored_path = os.path.join(storage_subfolder, f"{evidence_id}_{safe_filename}")
+    stored_path = _ensure_within_tenant_dir(
+        storage_subfolder,
+        os.path.join(storage_subfolder, f"{evidence_id}_{safe_filename}"),
+    )
 
-    content = await file.read()
-    file_size = len(content)
-
-    await asyncio.to_thread(_write_file_bytes, stored_path, content)
+    file_size = 0
+    first_chunk = True
+    try:
+        while True:
+            chunk = await file.read(CHUNK_SIZE_BYTES)
+            if not chunk:
+                break
+            file_size += len(chunk)
+            if file_size > MAX_EVIDENCE_BYTES:
+                if os.path.exists(stored_path):
+                    os.remove(stored_path)
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Evidence file exceeds maximum allowed size of {MAX_EVIDENCE_BYTES // (1024 * 1024)} MB."
+                )
+            await asyncio.to_thread(_append_file_chunk, stored_path, chunk, first_chunk)
+            first_chunk = False
+        if first_chunk:
+            # Empty file uploaded — create zero-byte artifact cleanly
+            await asyncio.to_thread(_append_file_chunk, stored_path, b"", True)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if os.path.exists(stored_path):
+            os.remove(stored_path)
+        raise HTTPException(status_code=500, detail=f"Failed to stream evidence upload: {e}")
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -206,7 +297,7 @@ async def upload_case_evidence(
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
                 """,
                 evidence_id, resolved_case_uuid, uuid.UUID(str(tenant_id)),
-                safe_filename, file.content_type or DEFAULT_CONTENT_TYPE,
+                safe_filename, safe_content_type,
                 file_size, stored_path, user_uuid, username, safe_description, parsed_tags
             )
 
@@ -258,13 +349,23 @@ async def download_case_evidence(
             raise HTTPException(status_code=404, detail="Evidence not found")
 
     storage_key = row["storage_key"]
+    tenant_dir = os.path.realpath(os.path.join(EVIDENCE_STORAGE_DIR, str(tenant_id)))
     if not storage_key or not os.path.exists(storage_key):
         raise HTTPException(status_code=404, detail="Evidence file missing from storage")
 
+    safe_storage_path = _ensure_within_tenant_dir(tenant_dir, storage_key)
+    safe_download_name = _sanitize_evidence_filename(row["filename"])
+    stored_mime = (row["content_type"] or DEFAULT_CONTENT_TYPE).split(";")[0].strip().lower()
+    safe_media_type = stored_mime if stored_mime in ALLOWED_EVIDENCE_MIMES else DEFAULT_CONTENT_TYPE
+
     return FileResponse(
-        path=storage_key,
-        filename=row["filename"],
-        media_type=row["content_type"] or DEFAULT_CONTENT_TYPE
+        path=safe_storage_path,
+        filename=safe_download_name,
+        media_type=safe_media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_download_name}"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

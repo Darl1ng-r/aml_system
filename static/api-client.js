@@ -9,6 +9,33 @@
 (function () {
     'use strict';
 
+    // 0. Global XSS Defense-in-Depth Helpers (Wave 1 Security Hardening)
+    window.escapeHtml = function escapeHtml(value) {
+        if (value === null || value === undefined) return '';
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+            .replace(/`/g, '&#96;');
+    };
+
+    window.safeHtml = function safeHtml(strings, ...values) {
+        return strings.reduce((acc, str, i) => {
+            if (i >= values.length) return acc + str;
+            const val = values[i];
+            if (val && typeof val === 'object' && val.__rawSafeHtml === true) {
+                return acc + str + String(val.html || '');
+            }
+            return acc + str + window.escapeHtml(val);
+        }, '');
+    };
+
+    window.rawSafeHtml = function rawSafeHtml(html) {
+        return { __rawSafeHtml: true, html: String(html || '') };
+    };
+
     // 1. Global same-origin fetch wrapper for HttpOnly cookie auth, CSRF, and single-flight 401 refresh
     if (!window.__AML_FETCH_PATCHED__) {
         const originalFetch = window.fetch.bind(window);

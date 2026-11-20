@@ -16,11 +16,14 @@ from starlette.responses import Response
 
 DEFAULT_CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' cdn.jsdelivr.net unpkg.com; "
-    "style-src 'self' 'unsafe-inline' fonts.googleapis.com unpkg.com; "
-    "font-src 'self' fonts.gstatic.com; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; "
+    "font-src 'self' https://fonts.gstatic.com; "
     "connect-src 'self' ws: wss:; "
-    "img-src 'self' data: https:; "
+    "img-src 'self' data: blob:; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
     "frame-ancestors 'none'; "
     "upgrade-insecure-requests;"
 )
