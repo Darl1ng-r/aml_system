@@ -450,6 +450,7 @@ _init_observability(app)
 
 # ── Exception Handlers ───────────────────────────────────────────────────
 from fastapi import Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -464,9 +465,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         msg = err.get("msg", "Invalid value")
         messages.append(f"{loc}: {msg}" if loc else msg)
     friendly_msg = "; ".join(messages) if messages else "Invalid request data."
+    safe_errors = jsonable_encoder(errors, custom_encoder={Exception: str})
     return JSONResponse(
         status_code=422,
-        content={"detail": friendly_msg, "errors": errors}
+        content={"detail": friendly_msg, "errors": safe_errors}
     )
 
 @app.exception_handler(StarletteHTTPException)

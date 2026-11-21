@@ -212,13 +212,15 @@ async def _eval_pg_sanctions(name: str, tenant_id: str | None) -> tuple[float, s
     best_matched_name = ""
     try:
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            rows = await _query_pep_entities_pg(conn, name, tenant_id, "name, source_database, country")
+            rows = await _query_pep_entities_pg(conn, name, tenant_id, "name, tier, country")
             for row in rows:
                 p_name = row["name"]
                 sim = name_similarity_score(name, p_name)
                 if sim > best_similarity:
                     best_similarity = sim
-                    best_source_list = row["source_database"]
+                    tier_val = row.get("tier") if hasattr(row, "get") else None
+                    src_val = row.get("source_database") if hasattr(row, "get") else None
+                    best_source_list = src_val or f"PostgreSQL Watchlist ({tier_val or 'PEP'})"
                     best_matched_name = p_name
     except Exception as pg_err:
         logger.warning(f"PostgreSQL sanctions query fallback warning: {pg_err}")
@@ -358,21 +360,27 @@ async def _search_pg_pep(name: str, threshold: float, tenant_id: str | None) -> 
     try:
         async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
             rows = await _query_pep_entities_pg(
-                conn, name, tenant_id, "name, pep_tier, position, country, rca_flag, source_database"
+                conn, name, tenant_id, "name, tier, position, country"
             )
             for row in rows:
                 p_name = row["name"]
                 sim = name_similarity_score(name, p_name)
                 if sim > best_score:
                     best_score = sim
+                    pos = (row.get("position") if hasattr(row, "get") else row["position"]) or "Senior Official"
+                    tier_val = (row.get("tier") if hasattr(row, "get") else None) or (row.get("pep_tier") if hasattr(row, "get") else None) or "TIER_2_GOVERNMENT_OFFICIAL"
+                    country_val = (row.get("country") if hasattr(row, "get") else row["country"]) or "GLOBAL"
+                    src_val = (row.get("source_database") if hasattr(row, "get") else None) or "PostgreSQL PEP Registry"
+                    rca_raw = row.get("rca_flag") if hasattr(row, "get") else None
+                    is_rca = bool(rca_raw) if rca_raw is not None else any(k in pos.lower() for k in ("associate", "relative", "family"))
                     best_res = {
                         "match_found": sim >= threshold,
                         "score": round(sim, 2),
-                        "pep_tier": row["pep_tier"],
-                        "position": row["position"],
-                        "country": row["country"],
-                        "rca_flag": row["rca_flag"],
-                        "source_list": row["source_database"],
+                        "pep_tier": tier_val,
+                        "position": pos,
+                        "country": country_val,
+                        "rca_flag": is_rca,
+                        "source_list": src_val,
                         "matched_entry": {
                             "name": p_name,
                             "edd_required": True,

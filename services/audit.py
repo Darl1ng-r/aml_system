@@ -68,10 +68,19 @@ async def record_audit_event_tx(
         except ValueError:
             t_uuid = None
 
-    created_at = datetime.now(timezone.utc)
     prev_hash = GENESIS_AUDIT_HASH
     try:
         if t_uuid is not None and hasattr(conn, "fetchval"):
+            # Serialize hash-chain appends per tenant inside the active transaction
+            # so concurrent requests never fork prev_hash (prevents false TAMPERED chains).
+            if hasattr(conn, "execute"):
+                try:
+                    await conn.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext('audit_log_chain:' || $1));",
+                        str(t_uuid),
+                    )
+                except Exception:
+                    pass
             last_hash = await conn.fetchval(
                 """
                 SELECT record_hash FROM audit_log
@@ -85,6 +94,9 @@ async def record_audit_event_tx(
                 prev_hash = last_hash
     except Exception:
         prev_hash = GENESIS_AUDIT_HASH
+
+    # Compute created_at AFTER acquiring the advisory lock so timestamps are strictly ordered
+    created_at = datetime.now(timezone.utc)
 
     record_hash = compute_audit_record_hash(
         prev_hash=prev_hash,

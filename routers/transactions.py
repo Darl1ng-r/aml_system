@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["Transactions"])
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from observability.sanitizer import sanitize_text
 
 class TransactionRequest(BaseModel):
@@ -39,6 +39,12 @@ class TransactionRequest(BaseModel):
     @classmethod
     def sanitize_input_strings(cls, v: str | None) -> str | None:
         return sanitize_text(v) if v is not None else None
+
+    @model_validator(mode="after")
+    def reject_self_transfer(self) -> "TransactionRequest":
+        if self.sender_account == self.receiver_account:
+            raise ValueError("sender_account and receiver_account must be different")
+        return self
 
 from typing import Any
 

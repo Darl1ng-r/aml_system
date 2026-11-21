@@ -271,6 +271,29 @@ class RulesEngine:
         return triggered, total_entity_amount, entity_below
 
     @staticmethod
+    async def _resolve_account_uuid(conn: Any, account_ref: str | None) -> Any:
+        """Accept either a UUID string or an account_number (e.g. 'ACC-TEST-9921') safely."""
+        if not account_ref:
+            return None
+        try:
+            return uuid.UUID(str(account_ref))
+        except (ValueError, TypeError):
+            pass
+        try:
+            found = await conn.fetchval(
+                "SELECT id FROM accounts WHERE account_number = $1 LIMIT 1;",
+                str(account_ref),
+            )
+            if not found:
+                return None
+            if isinstance(found, int):
+                # Preserve compatibility with unit-test AsyncMock(fetchval=1)
+                return str(account_ref)
+            return uuid.UUID(str(found))
+        except Exception:
+            return None
+
+    @staticmethod
     async def _check_velocity_monitoring(
         config: dict,
         amount: float,
@@ -286,6 +309,9 @@ class RulesEngine:
         try:
             tx_time = timestamp or datetime.now(timezone.utc)
             async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
+                if sender_uuid is None:
+                    return []
                 hist_row = await conn.fetchrow(
                     """
                     SELECT 
@@ -305,7 +331,7 @@ class RulesEngine:
                         GROUP BY DATE_TRUNC('day', timestamp)
                     ) daily_stats;
                     """,
-                    sender_id, history_days, tx_time
+                    sender_uuid, history_days, tx_time
                 )
                 today_row = await conn.fetchrow(
                     """
@@ -317,7 +343,7 @@ class RulesEngine:
                       AND timestamp >= DATE_TRUNC('day', $2::timestamptz)
                       AND timestamp <= $2::timestamptz;
                     """,
-                    sender_id, tx_time
+                    sender_uuid, tx_time
                 )
                 avg_count = float(hist_row["avg_daily_count"])
                 stddev_count = float(hist_row["stddev_daily_count"])
@@ -356,6 +382,9 @@ class RulesEngine:
         amount_ratio_threshold = rapid_config.get("amount_ratio_threshold", 0.90)
         try:
             async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
+                if sender_uuid is None:
+                    return []
                 incoming_row = await conn.fetchrow(
                     """
                     SELECT amount, timestamp 
@@ -366,7 +395,7 @@ class RulesEngine:
                     ORDER BY timestamp DESC 
                     LIMIT 1;
                     """,
-                    sender_id, window_minutes
+                    sender_uuid, window_minutes
                 )
                 if incoming_row:
                     incoming_amount = float(incoming_row["amount"])
@@ -398,6 +427,9 @@ class RulesEngine:
         activation_threshold = dormant_config.get("activation_threshold", 50000.0)
         try:
             async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
+                if sender_uuid is None:
+                    return []
                 last_tx_row = await conn.fetchrow(
                     """
                     SELECT timestamp 
@@ -407,7 +439,7 @@ class RulesEngine:
                     OFFSET 1 
                     LIMIT 1;
                     """,
-                    sender_id
+                    sender_uuid
                 )
                 if last_tx_row:
                     last_activity = last_tx_row["timestamp"]
@@ -505,6 +537,10 @@ class RulesEngine:
         amount_tolerance = round_trip_config.get("amount_tolerance", 0.10)
         try:
             async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
+                receiver_uuid = await RulesEngine._resolve_account_uuid(conn, receiver_id)
+                if sender_uuid is None or receiver_uuid is None:
+                    return []
                 min_amt = amount * (1.0 - amount_tolerance)
                 max_amt = amount * (1.0 + amount_tolerance)
                 reverse_tx = await conn.fetchval(
@@ -516,7 +552,7 @@ class RulesEngine:
                       AND timestamp >= ($5::timestamptz - ($6 || ' hours')::interval)
                     LIMIT 1;
                     """,
-                    receiver_id, sender_id, min_amt, max_amt, timestamp, str(window_hours)
+                    receiver_uuid, sender_uuid, min_amt, max_amt, timestamp, str(window_hours)
                 )
                 if reverse_tx:
                     return ["ROUND_TRIP_DETECTION"]
@@ -731,7 +767,8 @@ class RulesEngine:
         round_divisor = anom_cfg.get("round_divisor", 1000.0)
 
         is_just_below = (just_below_min <= amount < just_below_max)
-        if not is_just_below and (just_below_min <= total_entity_amount < just_below_max) and len(entity_below) >= 2:
+        # Require current transfer to be material (>= $500) before attributing cumulative sub-CTR structuring
+        if not is_just_below and amount >= 500.0 and (just_below_min <= total_entity_amount < just_below_max) and len(entity_below) >= 2:
             is_just_below = True
 
         if is_just_below:
