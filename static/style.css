@@ -149,6 +149,8 @@ body:has(.triage-shell) {
 .users-nav,
 .navbar {
   view-transition-name: sentinel-topbar;
+  position: relative;
+  z-index: 1200;
   height: 56px !important;
   min-height: 56px !important;
   max-height: 56px !important;
