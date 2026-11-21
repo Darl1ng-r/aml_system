@@ -588,21 +588,21 @@
     <div class="triage-controls">
       <div class="filter-pills">
         <span style="font-size:11px; font-weight:700; color:var(--ink-soft); margin-right:4px;">SEVERITY:</span>
-        <button class="pill-btn active" onclick="setSeverityFilter('ALL', this)">All</button>
-        <button class="pill-btn danger" onclick="setSeverityFilter('CRITICAL', this)">Critical</button>
-        <button class="pill-btn" onclick="setSeverityFilter('HIGH', this)">High</button>
-        <button class="pill-btn" onclick="setSeverityFilter('MEDIUM', this)">Medium</button>
-        <button class="pill-btn" onclick="setSeverityFilter('LOW', this)">Low</button>
+        <button type="button" class="pill-btn active" data-sev="ALL" onclick="setSeverityFilter('ALL', this)">All</button>
+        <button type="button" class="pill-btn danger" data-sev="CRITICAL" onclick="setSeverityFilter('CRITICAL', this)">Critical</button>
+        <button type="button" class="pill-btn" data-sev="HIGH" onclick="setSeverityFilter('HIGH', this)">High</button>
+        <button type="button" class="pill-btn" data-sev="MEDIUM" onclick="setSeverityFilter('MEDIUM', this)">Medium</button>
+        <button type="button" class="pill-btn" data-sev="LOW" onclick="setSeverityFilter('LOW', this)">Low</button>
 
         <span style="font-size:11px; font-weight:700; color:var(--ink-soft); margin:0 4px 0 12px;">STATUS:</span>
-        <button class="pill-btn active" onclick="setStatusFilter('ACTIVE', this)">Active</button>
-        <button class="pill-btn" onclick="setStatusFilter('NEW', this)">New</button>
-        <button class="pill-btn" onclick="setStatusFilter('IN_REVIEW', this)">In Review</button>
-        <button class="pill-btn" onclick="setStatusFilter('ESCALATED', this)">Escalated</button>
+        <button type="button" class="pill-btn active" data-status="ACTIVE" onclick="setStatusFilter('ACTIVE', this)">Active</button>
+        <button type="button" class="pill-btn" data-status="NEW" onclick="setStatusFilter('NEW', this)">New</button>
+        <button type="button" class="pill-btn" data-status="IN_REVIEW" onclick="setStatusFilter('IN_REVIEW', this)">In Review</button>
+        <button type="button" class="pill-btn" data-status="ESCALATED" onclick="setStatusFilter('ESCALATED', this)">Escalated</button>
 
         <span style="font-size:11px; font-weight:700; color:var(--ink-soft); margin:0 4px 0 12px;">VIEWS:</span>
-        <button class="pill-btn" id="preset-critical-unassigned" onclick="applyTriagePreset('CRITICAL_UNASSIGNED')">Critical Unassigned</button>
-        <button class="pill-btn" id="preset-entity-grouped" onclick="toggleEntityGroupedView(this)">Entity Grouped</button>
+        <button type="button" class="pill-btn" id="preset-critical-unassigned" onclick="applyTriagePreset('CRITICAL_UNASSIGNED')">Critical Unassigned</button>
+        <button type="button" class="pill-btn" id="preset-entity-grouped" onclick="toggleEntityGroupedView(this)">Entity Grouped</button>
       </div>
 
       <div style="display:flex; align-items:center; gap:8px;">
@@ -738,6 +738,7 @@
       if (window.lucide) lucide.createIcons();
       decodeUserRole();
       hydrateFiltersFromUrl();
+      syncFilterButtonStates();
       await fetchAlerts();
       setupWebSocket();
     });
@@ -844,11 +845,17 @@
     function renderAlertsTable() {
       const tbody = document.getElementById('alerts-table-body');
       let filtered = allAlerts.filter(a => {
-        if (currentSeverity !== 'ALL' && (a.threat_level || '').toUpperCase() !== currentSeverity) return false;
-        if (currentStatus === 'ACTIVE' && ['CLOSED_SAR', 'CLOSED_FALSE_POSITIVE', 'CLOSED'].includes(a.status)) return false;
-        if (currentStatus === 'NEW' && a.status !== 'NEW' && a.status !== 'OPEN') return false;
-        if (currentStatus === 'IN_REVIEW' && a.status !== 'IN_REVIEW') return false;
-        if (currentStatus === 'ESCALATED' && a.status !== 'ESCALATED') return false;
+        const threat = (a.threat_level || 'LOW').toUpperCase();
+        const st = (a.status || 'OPEN').toUpperCase();
+        if (currentSeverity !== 'ALL' && threat !== currentSeverity) return false;
+        if (currentStatus === 'ACTIVE' && ['CLOSED_SAR', 'CLOSED_FALSE_POSITIVE', 'CLOSED'].includes(st)) return false;
+        if (currentStatus === 'NEW' && st !== 'NEW' && st !== 'OPEN') return false;
+        if (currentStatus === 'IN_REVIEW' && st !== 'IN_REVIEW') return false;
+        if (currentStatus === 'ESCALATED' && st !== 'ESCALATED') return false;
+        if (unassignedOnly) {
+          const hasAssignee = (a.assignee && a.assignee !== 'Unassigned') || Boolean(a.assigned_officer_id);
+          if (hasAssignee) return false;
+        }
         return true;
       });
 
@@ -980,32 +987,55 @@
       }
     }
 
+    let unassignedOnly = false;
+
+    function syncFilterButtonStates() {
+      document.querySelectorAll('.pill-btn[data-sev]').forEach(b => {
+        b.classList.toggle('active', !entityGroupedMode && b.dataset.sev === currentSeverity);
+      });
+      document.querySelectorAll('.pill-btn[data-status]').forEach(b => {
+        b.classList.toggle('active', !entityGroupedMode && b.dataset.status === currentStatus);
+      });
+      const presetBtn = document.getElementById('preset-critical-unassigned');
+      if (presetBtn) presetBtn.classList.toggle('active', !entityGroupedMode && unassignedOnly && currentSeverity === 'CRITICAL');
+      const groupBtn = document.getElementById('preset-entity-grouped');
+      if (groupBtn) groupBtn.classList.toggle('active', entityGroupedMode);
+    }
+
     function resetTriageFilters() {
       currentSeverity = 'ALL';
       currentStatus = 'ACTIVE';
+      unassignedOnly = false;
       entityGroupedMode = false;
       const searchInput = document.getElementById('triage-search-input');
       if (searchInput) searchInput.value = '';
-      document.querySelectorAll('.pill-btn[data-sev]').forEach(b => b.classList.toggle('active', b.dataset.sev === 'ALL'));
-      document.querySelectorAll('.pill-btn[data-status]').forEach(b => b.classList.toggle('active', b.dataset.status === 'ACTIVE'));
+      syncFilterButtonStates();
       syncFiltersToUrl();
       renderAlertsTable();
     }
 
     function applyTriagePreset(preset) {
       if (preset === 'CRITICAL_UNASSIGNED') {
+        const turningOff = unassignedOnly && currentSeverity === 'CRITICAL' && !entityGroupedMode;
+        if (turningOff) {
+          resetTriageFilters();
+          return;
+        }
         currentSeverity = 'CRITICAL';
         currentStatus = 'ACTIVE';
+        unassignedOnly = true;
         entityGroupedMode = false;
+        syncFilterButtonStates();
         syncFiltersToUrl();
         renderAlertsTable();
-        showToast('Applied preset: Critical Active Alerts');
+        showToast('Applied preset: Critical Unassigned Alerts');
       }
     }
 
     async function toggleEntityGroupedView(btn) {
       entityGroupedMode = !entityGroupedMode;
-      if (btn) btn.classList.toggle('active', entityGroupedMode);
+      unassignedOnly = false;
+      syncFilterButtonStates();
       syncFiltersToUrl();
       if (!entityGroupedMode) {
         renderAlertsTable();
@@ -1063,14 +1093,18 @@
 
     function setSeverityFilter(sev, btn) {
       currentSeverity = sev;
+      unassignedOnly = false;
       entityGroupedMode = false;
+      syncFilterButtonStates();
       syncFiltersToUrl();
       renderAlertsTable();
     }
 
     function setStatusFilter(stat, btn) {
       currentStatus = stat;
+      unassignedOnly = false;
       entityGroupedMode = false;
+      syncFilterButtonStates();
       syncFiltersToUrl();
       renderAlertsTable();
     }
