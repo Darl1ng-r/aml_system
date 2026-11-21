@@ -686,10 +686,11 @@
     }
 
     function updateRiskGauge(d) {
-      const scorePct = safeScorePercentage(d.risk_score);
+      const rawPct = Number(safeScorePercentage(d.risk_score));
+      const scorePct = Number.isFinite(rawPct) ? Math.min(100, Math.max(0, Math.round(rawPct))) : 0;
       document.getElementById('riskScoreVal').innerText = `${scorePct}%`;
       const gaugeColor = getRiskGaugeColor(scorePct);
-      document.getElementById('riskGaugeCircle').style.background = `conic-gradient(${gaugeColor} 0% ${scorePct}%, rgba(255,255,255,0.08) ${scorePct}% 100%)`;
+      document.getElementById('riskGaugeCircle').style.background = `conic-gradient(${gaugeColor} 0% ${scorePct}%, rgba(20,21,23,0.08) ${scorePct}% 100%)`;
 
       const rb = d.risk_breakdown || {};
       const geoPct = safeBarPct(rb.jurisdiction_risk, 0.2);

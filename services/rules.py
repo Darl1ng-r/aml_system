@@ -200,10 +200,11 @@ class RulesEngine:
 
     @staticmethod
     def _check_large_transaction(config: dict, amount: float) -> list[str]:
+        from decimal import Decimal
         large_config = config.get("rules", {}).get("LARGE_TRANSACTION", {})
         if large_config.get("enabled", True):
-            threshold = large_config.get("threshold", 10000.0)
-            if amount >= threshold:
+            threshold = Decimal(str(large_config.get("threshold", 10000.0)))
+            if Decimal(str(amount)) >= threshold:
                 return ["LARGE_TRANSACTION_THRESHOLD"]
         return []
 
@@ -256,14 +257,18 @@ class RulesEngine:
             account_amts = [amount] + _parse_redis_tx_records(account_recent_txs)
             entity_amts = [amount] + _parse_redis_tx_records(entity_recent_txs)
 
-            account_below = [amt for amt in account_amts if amt < threshold]
-            entity_below = [amt for amt in entity_amts if amt < threshold]
+            from decimal import Decimal
+            dec_threshold = Decimal(str(threshold))
+            account_below = [amt for amt in account_amts if Decimal(str(amt)) < dec_threshold]
+            entity_below = [amt for amt in entity_amts if Decimal(str(amt)) < dec_threshold]
 
-            total_account_amount = sum(account_below)
-            total_entity_amount = sum(entity_below)
+            total_account_dec = sum((Decimal(str(a)) for a in account_below), Decimal("0"))
+            total_entity_dec = sum((Decimal(str(a)) for a in entity_below), Decimal("0"))
+            total_account_amount = float(total_account_dec)
+            total_entity_amount = float(total_entity_dec)
 
-            if (total_entity_amount >= threshold and len(entity_below) >= 2) or \
-               (total_account_amount >= threshold and len(account_below) >= 2):
+            if (total_entity_dec >= dec_threshold and len(entity_below) >= 2) or \
+               (total_account_dec >= dec_threshold and len(account_below) >= 2):
                 triggered.append("STRUCTURING_VELOCITY_24H")
         except Exception as e:
             logger.exception(f"Structuring check Redis error: {e}")
@@ -671,6 +676,9 @@ class RulesEngine:
         if min_sub_amt <= amount < target_thresh:
             try:
                 async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                    sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
+                    if sender_uuid is None:
+                        return []
                     query_7d = """
                         SELECT 
                             COALESCE(SUM(t.amount), 0.0) AS total_sub_amount,
@@ -692,7 +700,7 @@ class RulesEngine:
                     """
                     row_7d = await conn.fetchrow(
                         query_7d,
-                        sender_id, min_sub_amt, target_thresh, tx_time, str(window_days),
+                        sender_uuid, min_sub_amt, target_thresh, tx_time, str(window_days),
                         str(entity_id), str(meta.get("tax_id") or ""), str(sender_name or "")
                     )
                     if row_7d:
@@ -724,6 +732,9 @@ class RulesEngine:
 
         try:
             async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
+                if sender_uuid is None:
+                    return []
                 query_flow = """
                     WITH flow_window AS (
                         SELECT
@@ -737,7 +748,7 @@ class RulesEngine:
                     )
                     SELECT total_inflow, total_outflow FROM flow_window;
                 """
-                row_flow = await conn.fetchrow(query_flow, sender_id, tx_time, str(window_hours))
+                row_flow = await conn.fetchrow(query_flow, sender_uuid, tx_time, str(window_hours))
                 if row_flow:
                     inflow = float(row_flow["total_inflow"])
                     prior_out = float(row_flow["total_outflow"])

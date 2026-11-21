@@ -1362,6 +1362,8 @@
         : `${proto}//${window.location.host}/ws/live-stream`;
       const ws = new WebSocket(wsUrl);
       let pingTimer = null;
+      const seenWsEvents = new Set();
+      let wsRefreshTimer = null;
 
       ws.onopen = () => {
         pingTimer = setInterval(() => {
@@ -1373,8 +1375,15 @@
         try {
           if (event.data === 'pong') return;
           const msg = JSON.parse(event.data);
+          const dedupKey = msg.event_id || (msg.event && (msg.alert_id || msg.id) ? `${msg.event}:${msg.alert_id || msg.id}` : null);
+          if (dedupKey) {
+            if (seenWsEvents.has(dedupKey)) return;
+            seenWsEvents.add(dedupKey);
+            if (seenWsEvents.size > 500) seenWsEvents.clear();
+          }
           if (msg.event === 'NEW_ALERT' || msg.event === 'ALERT_CREATED' || msg.event === 'ALERT_ESCALATED' || msg.event === 'ALERT_RESOLVED') {
-            fetchAlerts();
+            clearTimeout(wsRefreshTimer);
+            wsRefreshTimer = setTimeout(() => fetchAlerts(), 350);
           }
         } catch (e) {
           console.debug('Ignoring non-JSON or invalid WebSocket payload:', e);
@@ -1383,6 +1392,7 @@
 
       ws.onclose = () => {
         if (pingTimer) clearInterval(pingTimer);
+        if (wsRefreshTimer) clearTimeout(wsRefreshTimer);
       };
     }
 

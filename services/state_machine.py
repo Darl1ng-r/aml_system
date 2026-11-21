@@ -115,8 +115,11 @@ def validate_case_transition(current_status: str, target_status: str) -> None:
     try:
         current_enum = CaseStatus(current_status.upper())
     except ValueError:
-        logger.warning(f"Unknown current case state: {current_status}")
-        return
+        logger.error(f"Corrupted or unrecognized current case state: {current_status}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Corrupted or unrecognized current case state: '{current_status}'. Manual admin review required."
+        )
 
     try:
         target_enum = CaseStatus(target_status.upper())
@@ -151,8 +154,11 @@ def validate_alert_transition(current_status: str, target_status: str) -> None:
     try:
         current_enum = AlertStatus(current_status.upper())
     except ValueError:
-        logger.warning(f"Unknown current alert state: {current_status}")
-        return
+        logger.error(f"Corrupted or unrecognized current alert state: {current_status}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Corrupted or unrecognized current alert state: '{current_status}'. Manual admin review required."
+        )
 
     try:
         target_enum = AlertStatus(target_status.upper())

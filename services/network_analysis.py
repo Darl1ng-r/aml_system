@@ -31,27 +31,37 @@ class _TarjanSCC:
                 break
         return scc
 
-    def _process_neighbor(self, v: str, w: str) -> None:
-        if w not in self.indices:
-            self._strongconnect(w)
-            self.lowlinks[v] = min(self.lowlinks[v], self.lowlinks[w])
-        elif w in self.on_stack:
-            self.lowlinks[v] = min(self.lowlinks[v], self.indices[w])
-
-    def _strongconnect(self, v: str) -> None:
-        self.indices[v] = self.index
-        self.lowlinks[v] = self.index
+    def _strongconnect(self, start_node: str) -> None:
+        """Iterative Tarjan SCC traversal (O(V + E)) — immune to Python RecursionError on deep chains."""
+        call_stack: list[tuple[str, int]] = [(start_node, 0)]
+        self.indices[start_node] = self.lowlinks[start_node] = self.index
         self.index += 1
-        self.stack.append(v)
-        self.on_stack.add(v)
+        self.stack.append(start_node)
+        self.on_stack.add(start_node)
 
-        for w in self.graph.get(v, []):
-            self._process_neighbor(v, w)
-
-        if self.lowlinks[v] == self.indices[v]:
-            scc = self._pop_component(v)
-            if len(scc) >= 2:
-                self.sccs.append(scc)
+        while call_stack:
+            v, nbr_idx = call_stack[-1]
+            neighbors = self.graph.get(v, [])
+            if nbr_idx < len(neighbors):
+                call_stack[-1] = (v, nbr_idx + 1)
+                w = neighbors[nbr_idx]
+                if w not in self.indices:
+                    self.indices[w] = self.lowlinks[w] = self.index
+                    self.index += 1
+                    self.stack.append(w)
+                    self.on_stack.add(w)
+                    call_stack.append((w, 0))
+                elif w in self.on_stack:
+                    self.lowlinks[v] = min(self.lowlinks[v], self.indices[w])
+            else:
+                call_stack.pop()
+                if call_stack:
+                    parent = call_stack[-1][0]
+                    self.lowlinks[parent] = min(self.lowlinks[parent], self.lowlinks[v])
+                if self.lowlinks[v] == self.indices[v]:
+                    scc = self._pop_component(v)
+                    if len(scc) >= 2:
+                        self.sccs.append(scc)
 
     def run(self) -> list[list[str]]:
         for node in self._collect_all_nodes():

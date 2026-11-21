@@ -48,16 +48,18 @@ def _compute_circular_hour_stats(hours: list[int]) -> tuple[float, float]:
     return avg_hour_val, round(float(circ_dispersion), 2)
 
 
+def _to_utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
 def _calculate_frequencies(rows: list) -> tuple[float, float, int]:
     now = datetime.now(timezone.utc)
     limit_30_days = now - timedelta(days=30)
-    rows_30 = [r for r in rows if r["timestamp"].replace(tzinfo=timezone.utc) >= limit_30_days]
-    count_30 = len(rows_30)
-    timestamps = [r["timestamp"] for r in rows_30]
-    if timestamps:
-        min_time = min(timestamps).replace(tzinfo=timezone.utc)
-        max_time = max(timestamps).replace(tzinfo=timezone.utc)
-        span_days = max((max_time - min_time).days, 1.0)
+    utc_times = [_to_utc(r["timestamp"]) for r in rows]
+    times_30 = [t for t in utc_times if t >= limit_30_days]
+    count_30 = len(times_30)
+    if len(times_30) >= 2:
+        span_days = max((max(times_30) - min(times_30)).total_seconds() / 86400.0, 1.0)
     else:
         span_days = 30.0
     daily_freq = count_30 / span_days

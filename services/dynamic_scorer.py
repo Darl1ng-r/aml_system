@@ -178,7 +178,7 @@ def compute_dynamic_risk(
         "rule_escalated": rule_applied,
         "reconciled_contributions": reconciled_contributions,
         "attribution_sum": attribution_sum,
-        "efficiency_axiom_verified": (attribution_sum == final_score),
+        "efficiency_axiom_verified": math.isclose(attribution_sum, final_score, abs_tol=1e-4),
     }
 
     return {
