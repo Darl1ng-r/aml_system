@@ -210,12 +210,14 @@
     .info-row {
       display: flex;
       justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
       margin-bottom: 0.5rem;
       font-size: 0.8rem;
     }
     .info-row:last-child { margin-bottom: 0; }
-    .info-label { color: var(--text-muted); }
-    .info-val { font-family: 'JetBrains Mono', monospace; font-weight: 500; color: var(--text-main); }
+    .info-label { color: var(--text-muted); flex-shrink: 0; }
+    .info-val { font-family: 'JetBrains Mono', monospace; font-weight: 500; color: var(--text-main); text-align: right; }
 
     .legend {
       position: absolute;
@@ -442,17 +444,25 @@
         nodes: {
           shape: 'dot',
           size: 16,
-          font: { color: '#141517', face: 'Inter', size: 12 },
+          margin: 8,
+          font: { color: '#141517', face: 'Inter', size: 12, background: 'rgba(255,255,255,0.88)', strokeWidth: 0 },
           borderWidth: 2
         },
         edges: {
           color: { color: '#9CA1AB', highlight: '#F5A623' },
           arrows: { to: { enabled: true, scaleFactor: 0.6 } },
-          smooth: { type: 'continuous' }
+          font: { size: 10, color: '#3F434C', background: 'rgba(255,255,255,0.90)', strokeWidth: 0, align: 'top' },
+          smooth: { type: 'curvedCW', roundness: 0.16 }
         },
         physics: {
-          stabilization: false,
-          barnesHut: { gravitationalConstant: -3000, springLength: 120 }
+          stabilization: { enabled: true, iterations: 150, fit: true },
+          barnesHut: {
+            gravitationalConstant: -8500,
+            centralGravity: 0.15,
+            springLength: 210,
+            springConstant: 0.03,
+            avoidOverlap: 1
+          }
         },
         interaction: { hover: true, tooltipDelay: 100 }
       };

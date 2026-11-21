@@ -356,7 +356,7 @@
       </div>
       <div class="kpi-card">
         <div class="kpi-title">Median Turnaround</div>
-        <div class="kpi-val" style="color:var(--accent-amber)" id="kpiTurnaround">3.8h</div>
+        <div class="kpi-val" style="color:var(--accent-amber)" id="kpiTurnaround">--</div>
       </div>
     </div>
 
@@ -443,7 +443,10 @@
 
       try {
         const res = await fetch('/api/v1/metrics/executive', { credentials: 'include' });
-        if (!res.ok) throw new Error('Failed to load executive analytics');
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.detail || `HTTP ${res.status}`);
+        }
         const data = await res.json();
 
         // 1. KPI Cards

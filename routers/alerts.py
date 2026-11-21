@@ -242,6 +242,65 @@ def _process_neo4j_alert_record(record, nodes, edges, node_ids, edge_ids):
     _process_neo4j_edges(record, a_node, other_node, c_node, p_node, edges, edge_ids)
 
 
+async def _build_alert_graph_from_postgres(sender: str, receiver: str, tenant_id: str | None) -> dict:
+    """PostgreSQL 1-to-2 hop graph fallback when Neo4j has no synced nodes for the alert."""
+    nodes = []
+    edges = []
+    node_ids: set[str] = set()
+    edge_ids: set[str] = set()
+
+    def add_pg_node(acc_num: str, owner_name: str | None, risk_score: float | None, risk_cat: str | None):
+        if not acc_num or acc_num in node_ids:
+            return
+        node_ids.add(acc_num)
+        nodes.append({
+            "id": acc_num,
+            "label": owner_name or acc_num,
+            "type": "Account",
+            "properties": {
+                "account_number": acc_num,
+                "owner_name": owner_name or acc_num,
+                "risk_score": float(risk_score or 0.0),
+                "risk_category": risk_cat or ("HIGH" if float(risk_score or 0.0) >= 0.7 else "LOW"),
+            },
+        })
+
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT t.id, t.amount, t.timestamp, t.status,
+                   s.account_number AS s_acc, s.owner_name AS s_name, s.risk_score AS s_risk, s.risk_category AS s_cat,
+                   r.account_number AS r_acc, r.owner_name AS r_name, r.risk_score AS r_risk, r.risk_category AS r_cat
+            FROM transactions t
+            JOIN accounts s ON t.sender_account_id = s.id
+            JOIN accounts r ON t.receiver_account_id = r.id
+            WHERE s.account_number IN ($1, $2) OR r.account_number IN ($1, $2)
+            ORDER BY t.timestamp DESC
+            LIMIT 40;
+            """,
+            sender,
+            receiver,
+        )
+        for row in rows:
+            add_pg_node(row["s_acc"], row["s_name"], row["s_risk"], row["s_cat"])
+            add_pg_node(row["r_acc"], row["r_name"], row["r_risk"], row["r_cat"])
+            eid = f"pg_tx_{row['id']}"
+            if eid not in edge_ids:
+                edge_ids.add(eid)
+                edges.append({
+                    "id": eid,
+                    "source": row["s_acc"],
+                    "target": row["r_acc"],
+                    "type": "TRANSFERS_TO",
+                    "properties": {
+                        "amount": float(row["amount"] or 0.0),
+                        "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None,
+                        "status": row["status"],
+                    },
+                })
+    return {"nodes": nodes, "edges": edges}
+
+
 async def _build_alert_graph_from_neo4j(neo4j_driver, sender: str, receiver: str, tenant_id: str | None) -> dict:
     nodes = []
     edges = []
@@ -349,10 +408,20 @@ async def get_alert_graph(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
 
-    try:
-        return await _build_alert_graph_from_neo4j(neo4j_driver, sender, receiver, tenant_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Neo4j query failed: {str(e)}")
+    graph_payload = {"nodes": [], "edges": []}
+    if neo4j_driver is not None:
+        try:
+            graph_payload = await _build_alert_graph_from_neo4j(neo4j_driver, sender, receiver, tenant_id)
+        except Exception as e:
+            logger.warning("Neo4j alert graph lookup failed; falling back to PostgreSQL: %s", e)
+
+    if not graph_payload.get("nodes"):
+        try:
+            graph_payload = await _build_alert_graph_from_postgres(sender, receiver, tenant_id)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Graph query failed: {str(e)}")
+
+    return graph_payload
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 

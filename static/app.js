@@ -1411,14 +1411,22 @@ function _renderEntityKyc(entity) {
 function _renderLinkedEntitiesList(linkedList) {
     const entitiesCount = document.getElementById('ctx-entities-count');
     const entitiesList = document.getElementById('ctx-entities-list');
-    if (entitiesCount) entitiesCount.innerText = linkedList.length;
+    // Deduplicate identical counterparty entries
+    const seen = new Set();
+    const deduped = (linkedList || []).filter(e => {
+        const key = `${e.account_number || ''}|${e.name || ''}|${e.relation || ''}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+    if (entitiesCount) entitiesCount.innerText = deduped.length;
     if (!entitiesList) return;
 
-    if (linkedList.length === 0) {
+    if (deduped.length === 0) {
         entitiesList.innerHTML = '<div style="font-size:12px; color:var(--ink-soft); padding:8px 0;">No direct counterparties recorded.</div>';
         return;
     }
-    entitiesList.innerHTML = linkedList.map(e => `
+    entitiesList.innerHTML = deduped.map(e => `
         <div class="entity-card">
             <div class="entity-avatar" style="${e.high_risk ? 'background:var(--risk-high-bg); color:var(--risk-high);' : ''}">${_esc(e.avatar || String(e.name || '').slice(0, 2).toUpperCase())}</div>
             <div>

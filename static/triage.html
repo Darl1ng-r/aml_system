@@ -148,7 +148,9 @@
 
     .filter-pills {
       display: flex;
+      flex-wrap: wrap;
       gap: 6px;
+      row-gap: 8px;
       align-items: center;
     }
 
@@ -157,6 +159,8 @@
       border-radius: var(--r-pill);
       font-size: 12px;
       font-weight: 600;
+      white-space: nowrap;
+      flex-shrink: 0;
       border: 1px solid var(--panel-edge);
       background: var(--panel);
       color: var(--ink-soft);
@@ -196,7 +200,8 @@
       color: var(--ink);
     }
 
-    .search-box i {
+    .search-box i,
+    .search-box svg {
       position: absolute;
       left: 10px;
       top: 50%;
@@ -204,6 +209,7 @@
       color: var(--ink-soft);
       width: 15px;
       height: 15px;
+      pointer-events: none;
     }
 
     .triage-body {
@@ -280,6 +286,7 @@
       font-family: var(--font-data);
       font-size: 11px;
       font-weight: 600;
+      white-space: nowrap;
     }
 
     .score-badge.critical {
@@ -314,18 +321,23 @@
       background: #EFEFED;
       color: var(--ink-soft);
       font-weight: 500;
+      white-space: nowrap;
     }
 
-    /* Quick Triage Slide-over Drawer */
+    /* Quick Triage Slide-over Drawer (collapsed until a row is selected) */
     .drawer {
       width: 440px;
+      flex-shrink: 0;
       background: var(--panel);
       border: 1px solid var(--panel-edge);
       border-radius: var(--r-lg);
-      display: flex;
+      display: none;
       flex-direction: column;
       box-shadow: -4px 0 16px rgba(0,0,0,0.06);
       transition: transform var(--dur-f) ease;
+    }
+    .drawer.open {
+      display: flex;
     }
 
     .drawer-header {
@@ -1126,6 +1138,8 @@
     }
 
     function renderDrawer(alert, lockState) {
+      const drawerEl = document.querySelector('.drawer');
+      if (drawerEl) drawerEl.classList.add('open');
       document.getElementById('drawer-alert-id').innerText = `ALERT #${alert.id.substring(0, 8)}`;
       document.getElementById('drawer-alert-crumb').innerText = `${alert.rule_name || 'Monitoring Hit'} · ${alert.status}`;
       const actionsPanel = document.getElementById('drawer-actions-panel');
@@ -1326,6 +1340,8 @@
       }
       selectedAlert = null;
       currentLockToken = null;
+      const drawerEl = document.querySelector('.drawer');
+      if (drawerEl) drawerEl.classList.remove('open');
       document.getElementById('drawer-alert-id').innerText = 'Select an Alert';
       document.getElementById('drawer-alert-crumb').innerText = 'Click any row to open quick triage';
       document.getElementById('drawer-actions-panel').style.display = 'none';

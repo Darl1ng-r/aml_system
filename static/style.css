@@ -395,6 +395,13 @@ body:has(.triage-shell) {
 }
 
 /* ─── 3-PANE SHELL ───────────────────────────────────────── */
+body:has(.shell) {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
 .shell {
   display: grid;
   grid-template-columns: 72px 1fr 352px;
@@ -402,7 +409,8 @@ body:has(.triage-shell) {
   grid-template-areas:
     "topbar topbar topbar"
     "rail center context";
-  height: 100vh;
+  flex: 1;
+  min-height: 0;
   width: 100vw;
   overflow: hidden;
 }

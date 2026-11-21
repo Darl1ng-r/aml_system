@@ -308,13 +308,19 @@ async def _fetch_executive_counts(conn: Any) -> dict:
     median_triage = await conn.fetchval(
         """
         SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (
-            ORDER BY EXTRACT(EPOCH FROM (updated_at - created_at)) / 3600.0
+            ORDER BY EXTRACT(EPOCH FROM (COALESCE(res.resolved_at, a.fincen_submitted_at) - a.created_at)) / 3600.0
         )
-        FROM alerts
-        WHERE status LIKE 'CLOSED%'
-          AND updated_at IS NOT NULL
-          AND created_at IS NOT NULL
-          AND updated_at >= created_at;
+        FROM alerts a
+        LEFT JOIN LATERAL (
+            SELECT MAX(al.occurred_at) AS resolved_at
+            FROM audit_log al
+            WHERE al.resource_id = a.id::text
+              AND al.action IN ('CLOSE_FALSE_POSITIVE', 'RESOLVE_ALERT', 'FINCEN_SAR_FILED', 'UPDATE_ALERT')
+        ) res ON TRUE
+        WHERE a.status LIKE 'CLOSED%'
+          AND a.created_at IS NOT NULL
+          AND COALESCE(res.resolved_at, a.fincen_submitted_at) IS NOT NULL
+          AND COALESCE(res.resolved_at, a.fincen_submitted_at) >= a.created_at;
         """
     )
 
@@ -440,7 +446,7 @@ async def _fetch_executive_analytics(conn: Any) -> tuple[list[dict], dict, list[
 
 @router.get("/api/v1/metrics/executive")
 async def get_executive_metrics(
-    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "SUPER_ADMIN"]))
+    current_user: dict = Depends(RoleChecker(["ANALYST", "AUDITOR", "MLRO", "ADMIN", "SUPER_ADMIN"]))
 ):
     """
     Computes executive compliance KPIs, SLA breach trackers, SAR filing throughput,
