@@ -13,7 +13,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
 
   <!-- Core Stylesheet with Cache Busting -->
-  <link rel="stylesheet" href="/static/style.css?v=20261120-sys4">
+  <link rel="stylesheet" href="/static/style.css?v=20261121-sys5">
 
   <!-- Shared API Client (CSRF + HttpOnly Cookies + Logout) -->
   <script src="/static/api-client.js?v=20261120-v3"></script>
@@ -33,6 +33,8 @@
     }
 
     .triage-nav {
+      position: relative;
+      z-index: 1200;
       background: var(--sidebar);
       color: var(--sidebar-text-bright);
       padding: 10px 24px;
