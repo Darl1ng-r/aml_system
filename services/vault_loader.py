@@ -235,3 +235,15 @@ class VaultSecretsLoader:
                 logger.info("VaultSecretsLoader: secret renewal complete.")
             except Exception:
                 logger.exception("VaultSecretsLoader: renewal failed. Cached values remain active until next cycle.")
+
+    @classmethod
+    async def shutdown(cls) -> None:
+        """Cancels the background Vault token renewal loop on application shutdown."""
+        if cls._renewal_task is not None and not cls._renewal_task.done():
+            cls._renewal_task.cancel()
+            try:
+                await cls._renewal_task
+            except asyncio.CancelledError:
+                pass
+        cls._renewal_task = None
+        cls._client = None

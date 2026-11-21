@@ -167,7 +167,7 @@ async def _fetch_customer_activity(conn, acc_num: str, acc_uuid: uuid.UUID):
         ORDER BY timestamp DESC
         LIMIT 30;
         """,
-        acc_num
+        acc_uuid
     )
     recent_txs = [
         {
@@ -175,8 +175,8 @@ async def _fetch_customer_activity(conn, acc_num: str, acc_uuid: uuid.UUID):
             "amount": float(r["amount"]),
             "currency": r["currency"],
             "timestamp": r["timestamp"].isoformat() if r["timestamp"] else "",
-            "type": "OUTBOUND" if r["sender_account_id"] == acc_num else "INBOUND",
-            "counterparty": r["receiver_account_id"] if r["sender_account_id"] == acc_num else r["sender_account_id"]
+            "type": "OUTBOUND" if str(r["sender_account_id"]) in (str(acc_uuid), str(acc_num)) else "INBOUND",
+            "counterparty": str(r["receiver_account_id"] if str(r["sender_account_id"]) in (str(acc_uuid), str(acc_num)) else r["sender_account_id"])
         }
         for r in tx_rows
     ]
@@ -192,7 +192,7 @@ async def _fetch_customer_activity(conn, acc_num: str, acc_uuid: uuid.UUID):
         GROUP BY TO_CHAR(timestamp, 'YYYY-MM')
         ORDER BY month ASC;
         """,
-        acc_num
+        acc_uuid
     )
     monthly_trend = [
         {"month": r["month"], "tx_count": int(r["tx_count"]), "volume": float(r["total_volume"] or 0.0)}
@@ -208,7 +208,7 @@ async def _fetch_customer_activity(conn, acc_num: str, acc_uuid: uuid.UUID):
         ORDER BY a.created_at DESC
         LIMIT 15;
         """,
-        acc_num
+        acc_uuid
     )
     alerts = [
         {

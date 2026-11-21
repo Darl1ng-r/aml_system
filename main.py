@@ -263,6 +263,13 @@ async def shutdown_db_clients():
     except Exception as e:
         logger.warning(f"Failed to close Async Redis client: {e}")
 
+    # Cancel background Vault lease renewal task if running
+    try:
+        from services.vault_loader import VaultSecretsLoader
+        await VaultSecretsLoader.shutdown()
+    except Exception:
+        pass
+
     # Shutdown OpenTelemetry tracer
     try:
         from opentelemetry import trace

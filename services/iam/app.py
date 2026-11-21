@@ -11,6 +11,7 @@ contract verification, and optional standalone edge deployment if desired.
 """
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Dict, Any
@@ -135,7 +136,7 @@ async def readiness():
     is_ready = checks.get("postgres", False)
     status_code = status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE
     return Response(
-        content=f'{{"status": "{"UP" if is_ready else "DOWN"}", "checks": {checks}}}',
+        content=json.dumps({"status": "UP" if is_ready else "DOWN", "checks": checks}),
         status_code=status_code,
         media_type="application/json",
     )

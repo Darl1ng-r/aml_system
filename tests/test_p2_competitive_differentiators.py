@@ -374,3 +374,40 @@ async def test_p2_5_adverse_media_disambiguation_and_namesake_suppression():
     assert live_res["adverse_hits_count"] == 1
     assert live_res["highest_risk_score"] >= 0.70
     assert live_res["edd_recommended"] is True
+
+
+@pytest.mark.anyio
+async def test_audit_360_deep_review_polish():
+    """Verifies IAM readiness valid JSON + close_redis_client, customer UUID activity query, feature store ZREMRANGEBYSCORE, and VaultSecretsLoader.shutdown."""
+    from database.redis_db import close_redis_client
+    from routers.customers import _fetch_customer_activity
+    from services.feature_store import record_transaction_feature_event
+    from services.iam.app import iam_app
+    from services.vault_loader import VaultSecretsLoader
+
+    assert callable(close_redis_client)
+    await VaultSecretsLoader.shutdown()
+
+    # 1. IAM /health/readiness returns valid JSON (not Python dict repr)
+    iam_transport = ASGITransport(app=iam_app)
+    async with httpx.AsyncClient(transport=iam_transport, base_url="http://test") as ac:
+        res = await ac.get("/health/readiness")
+        parsed = json.loads(res.text)
+        assert parsed["status"] in ("UP", "DOWN")
+        assert isinstance(parsed["checks"], dict)
+
+    # 2. _fetch_customer_activity passes acc_uuid (UUID) into PostgreSQL queries
+    acc_uuid = uuid.uuid4()
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(return_value=[])
+    await _fetch_customer_activity(mock_conn, "DE8937040044", acc_uuid)
+    for call in mock_conn.fetch.call_args_list:
+        assert call.args[1] == acc_uuid
+
+    # 3. Feature store calls zremrangebyscore to bound 30-day sorted sets
+    mock_redis = AsyncMock()
+    with patch("services.feature_store.get_async_redis_client", AsyncMock(return_value=mock_redis)):
+        await record_transaction_feature_event("ACC-1", 500.0, "tx-1", ts_epoch=1700000000.0)
+        assert mock_redis.zadd.called
+        assert mock_redis.zremrangebyscore.called
+        assert mock_redis.expire.called

@@ -172,6 +172,8 @@ async def add_to_whitelist(
     }
 
     cache_key = f"{tenant_id}:{rule_upper}:{norm_name}"
+    if len(_LOCAL_WHITELIST_STORE) >= 5000:
+        _LOCAL_WHITELIST_STORE.clear()
     _LOCAL_WHITELIST_STORE[cache_key] = entry
     cust_cache_key = None
     if customer_id:

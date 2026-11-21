@@ -102,3 +102,21 @@ async def get_async_redis_pubsub_client():
     await client.ping()
     return client
 
+
+async def close_redis_client():
+    """Cleanly closes both sync and async Redis connections on application shutdown."""
+    global _redis_client, _async_redis_client, _async_redis_loop
+    if _async_redis_client is not None:
+        try:
+            await _async_redis_client.close()
+        except Exception:
+            pass
+        _async_redis_client = None
+        _async_redis_loop = None
+    if _redis_client is not None:
+        try:
+            _redis_client.close()
+        except Exception:
+            pass
+        _redis_client = None
+

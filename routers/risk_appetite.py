@@ -82,6 +82,8 @@ async def get_risk_appetite_settings(
             result["updated_by"] = row["updated_by"] or result["updated_by"]
             result["updated_at"] = row["updated_at"].isoformat() if row["updated_at"] else result["updated_at"]
             result["tenant_id"] = t_key
+            if len(_tenant_appetite_cache) >= 500:
+                _tenant_appetite_cache.clear()
             _tenant_appetite_cache[t_key] = result
             return result
     except Exception as e:

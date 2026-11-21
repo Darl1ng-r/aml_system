@@ -29,6 +29,9 @@ async def record_transaction_feature_event(account_id: str, amount: float, tx_id
     member = f"{tx_id}:{amount}"
     try:
         await redis.zadd(key, {member: ts_epoch})
+        # Prune entries older than 30 days so active accounts never grow Redis sorted sets unboundedly
+        if hasattr(redis, "zremrangebyscore"):
+            await redis.zremrangebyscore(key, "-inf", ts_epoch - (30 * 86400))
         # Set 30-day TTL on feature store sorted set
         await redis.expire(key, 30 * 86400)
     except Exception as e:
