@@ -353,7 +353,7 @@
     <div class="simulator-panel" id="simulator-section">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
         <div>
-          <h2 style="font-size:16px; font-weight:700; color:var(--ink);">🧪 Rule Testing Harness & Sandbox</h2>
+          <h2 style="font-size:16px; font-weight:700; color:var(--ink);">Rule Testing Harness &amp; Sandbox</h2>
           <div style="font-size:12px; color:var(--ink-soft);">Simulate synthetic transactions through the active engine without writing alerts or touching the database.</div>
         </div>
       </div>
@@ -383,14 +383,14 @@
           </div>
 
           <button type="submit" class="btn-save" style="width:100%; padding:10px;">
-            Evaluate Against Rules Engine
+            Run Sandbox Test
           </button>
         </form>
 
         <div style="background:#F5F4F0; border:1px solid var(--panel-edge); border-radius:var(--r-md); padding:14px;">
           <div style="font-size:12px; font-weight:700; text-transform:uppercase; margin-bottom:8px;">Evaluation Result</div>
           <div id="sim-results" style="font-size:13px; font-family:var(--font-data); color:var(--ink);">
-            <em>Click "Evaluate Against Rules Engine" to test payload...</em>
+            <em>Click "Run Sandbox Test" to evaluate a synthetic transaction...</em>
           </div>
         </div>
       </div>
@@ -467,8 +467,8 @@
                 </select>
               </div>
               <div style="display:flex; gap:6px;">
-                <button type="button" class="btn-save" style="background:#F5F4F0; color:#141517; border:1px solid var(--panel-edge);" onclick="backtestRule('${r.rule_name}')">Backtest 30d</button>
-                <button type="button" class="btn-save" onclick="saveRuleConfig('${r.rule_name}')">Save</button>
+                <button type="button" class="btn-save" style="background:#F5F4F0; color:#141517; border:1px solid var(--panel-edge);" onclick="backtestRule('${r.rule_name}')">Simulate 30-Day Impact</button>
+                <button type="button" class="btn-save" onclick="saveRuleConfig('${r.rule_name}')">Publish Rule Update</button>
               </div>
             </div>
             <div id="backtest-out-${r.rule_name}" style="display:none; margin-top:10px; padding:10px; border-radius:8px; background:#F5F4F0; border:1px solid var(--panel-edge); font-size:12px; font-family:var(--font-data);"></div>

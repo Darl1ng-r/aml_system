@@ -330,7 +330,7 @@
       </select>
 
       <button class="btn" onclick="togglePhysics()" id="physicsBtn">Freeze Layout</button>
-      <button class="btn" onclick="runCycleDetection()">Detect Cycles (Tarjan)</button>
+      <button class="btn" onclick="runCycleDetection()" title="Tarjan SCC cycle analysis">Find Circular Transfers</button>
     </div>
 
     <!-- Network Canvas -->
@@ -372,11 +372,11 @@
       </div>
 
       <div>
-        <div class="drawer-title">UBO Tree (&gt;25%) &amp; Hidden MDM Links</div>
+        <div class="drawer-title">Beneficial Ownership (&ge;25%) &amp; Linked Entities</div>
         <div class="info-card" style="display:flex; flex-direction:column; gap:8px;">
-          <div style="display:flex; gap:6px;">
-            <button type="button" class="btn" style="flex:1; font-size:0.74rem; padding:6px 8px;" onclick="inspectUboTree()">Resolve UBO (&gt;25%)</button>
-            <button type="button" class="btn" style="flex:1; font-size:0.74rem; padding:6px 8px;" onclick="inspectMdmLinks()">Find MDM Links</button>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button type="button" class="btn" style="flex:1; font-size:0.74rem; padding:6px 8px;" onclick="inspectUboTree()">Trace Beneficial Owners (&ge;25%)</button>
+            <button type="button" class="btn" style="flex:1; font-size:0.74rem; padding:6px 8px;" onclick="inspectMdmLinks()">Show Shared Devices &amp; Tax IDs</button>
           </div>
           <div id="uboMdmResults" style="font-size:0.76rem; color:var(--text-dim); line-height:1.45;">
             Select an entity or enter a company/account to inspect indirect equity &amp; shared devices/tax IDs.

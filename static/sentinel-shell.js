@@ -41,13 +41,49 @@
         style.id = 'sentinel-shell-styles';
         style.textContent = `
             .sentinel-shell-btn {
-                display: inline-flex; align-items: center; gap: 6px;
-                height: 30px; padding: 0 10px; border-radius: 7px;
+                display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+                min-height: 34px; min-width: 34px; padding: 0 10px; border-radius: 8px;
                 border: 1px solid rgba(255,255,255,0.14);
                 background: rgba(255,255,255,0.06); color: #E7E9EF;
                 font-size: 12px; font-family: 'Inter', sans-serif; font-weight: 500;
                 cursor: pointer; transition: background 0.15s, border-color 0.15s;
             }
+            @media (pointer: coarse), (max-width: 768px) {
+                .sentinel-shell-btn { min-height: 44px; min-width: 44px; }
+            }
+            .sentinel-profile-popover {
+                position: fixed; top: 62px; right: 18px; width: min(280px, calc(100vw - 24px));
+                z-index: 9998; background: #FFFFFF; color: #141517;
+                border: 1px solid rgba(20,21,23,0.14); border-radius: 12px;
+                box-shadow: 0 18px 42px rgba(20,21,23,0.22);
+                display: none; flex-direction: column; overflow: hidden;
+            }
+            .sentinel-profile-popover.open { display: flex; }
+            .sentinel-profile-head {
+                padding: 12px 14px; background: #F5F4F0;
+                border-bottom: 1px solid rgba(20,21,23,0.09);
+            }
+            .sentinel-profile-name { font-size: 13px; font-weight: 700; color: #141517; }
+            .sentinel-profile-meta {
+                font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5C6068;
+                margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+            }
+            .sentinel-profile-role {
+                display: inline-flex; padding: 2px 7px; border-radius: 999px;
+                background: #141517; color: #FFFFFF; font-size: 10px; font-weight: 600;
+            }
+            .sentinel-profile-actions { padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+            .sentinel-profile-action {
+                display: flex; align-items: center; justify-content: space-between;
+                width: 100%; padding: 9px 10px; border: none; background: transparent;
+                border-radius: 8px; color: #141517; font-size: 12.5px; font-weight: 500;
+                text-decoration: none; cursor: pointer; text-align: left;
+            }
+            .sentinel-profile-action:hover { background: #F0EFEA; }
+            .sentinel-profile-action--danger { color: #A82E27; }
+            .sentinel-profile-action--danger:hover { background: #FDF2F1; }
+            .sentinel-mobile-core-nav { display: none; }
+            @media (max-width: 768px) { .sentinel-mobile-core-nav { display: block; } }
             .sentinel-shell-btn:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.28); }
             .sentinel-shell-kbd {
                 font-family: 'JetBrains Mono', monospace; font-size: 10px;
@@ -413,9 +449,125 @@
         }
     });
 
+    // ── 4. Mobile Core Views Fallback inside Modules Dropdown (<= 768px) ─────
+    function injectMobileCoreNav() {
+        const menu =
+            document.getElementById('sentinel-modules-menu') ||
+            document.getElementById('app-modules-menu') ||
+            document.querySelector('.sentinel-dropdown-menu') ||
+            document.querySelector('.dropdown-menu');
+        if (!menu || menu.querySelector('.sentinel-mobile-core-nav')) return;
+
+        const isDarkDropdown = menu.classList.contains('dropdown-menu');
+        const itemClass = menu.querySelector('.sentinel-dropdown-item')
+            ? 'sentinel-dropdown-item'
+            : (isDarkDropdown ? 'dropdown-item' : 'sentinel-dropdown-item');
+        const labelClass = menu.querySelector('.sentinel-dropdown-label')
+            ? 'sentinel-dropdown-label'
+            : (isDarkDropdown ? 'dropdown-group-label' : 'sentinel-dropdown-label');
+        const dividerClass = menu.querySelector('.sentinel-dropdown-divider')
+            ? 'sentinel-dropdown-divider'
+            : (isDarkDropdown ? 'dropdown-divider' : 'sentinel-dropdown-divider');
+
+        const coreBlock = document.createElement('div');
+        coreBlock.className = 'sentinel-mobile-core-nav';
+        coreBlock.innerHTML = `
+            <div class="${labelClass}">Core Workspace</div>
+            <a href="/dashboard/executive" class="${itemClass}">Overview</a>
+            <a href="/alerts/triage" class="${itemClass}">Triage Queue</a>
+            <a href="/dashboard" class="${itemClass}">Investigations</a>
+            <a href="/network" class="${itemClass}">Network Explorer</a>
+            <div class="${dividerClass}"></div>
+        `;
+        menu.insertBefore(coreBlock, menu.firstChild);
+    }
+
+    // ── 5. Account & Session Popover (replaces forced /admin/users redirect) ─
+    let profilePopover = null;
+
+    function mountProfilePopover() {
+        const avatarBtn = document.getElementById('sentinel-user-avatar');
+        if (!avatarBtn || avatarBtn.dataset.sentinelProfileBound === '1') return;
+        avatarBtn.dataset.sentinelProfileBound = '1';
+        avatarBtn.removeAttribute('onclick');
+        avatarBtn.setAttribute('aria-haspopup', 'true');
+        avatarBtn.setAttribute('aria-expanded', 'false');
+
+        profilePopover = document.createElement('div');
+        profilePopover.className = 'sentinel-profile-popover';
+        profilePopover.setAttribute('role', 'dialog');
+        profilePopover.setAttribute('aria-label', 'Account Profile and Session');
+        profilePopover.innerHTML = `
+            <div class="sentinel-profile-head">
+                <div class="sentinel-profile-name" id="sentinel-prof-user">Authenticated Analyst</div>
+                <div class="sentinel-profile-meta">
+                    <span class="sentinel-profile-role" id="sentinel-prof-role">SESSION</span>
+                    <span id="sentinel-prof-tenant">Tenant: default</span>
+                </div>
+            </div>
+            <div class="sentinel-profile-actions">
+                <a href="/admin/users" class="sentinel-profile-action" id="sentinel-prof-rbac" style="display:none;">
+                    <span>Team &amp; Access Control</span><span>→</span>
+                </a>
+                <a href="/compliance/ops" class="sentinel-profile-action">
+                    <span>Compliance Ops Hub</span><span>→</span>
+                </a>
+                <button type="button" class="sentinel-profile-action sentinel-profile-action--danger" id="sentinel-prof-logout">
+                    <span>Sign Out</span><span>↪</span>
+                </button>
+            </div>
+        `;
+        document.body.appendChild(profilePopover);
+
+        async function loadProfileSession() {
+            try {
+                const resp = await fetch('/api/v1/auth/me', { credentials: 'include' });
+                if (!resp.ok) return;
+                const me = await resp.json();
+                const userEl = document.getElementById('sentinel-prof-user');
+                const roleEl = document.getElementById('sentinel-prof-role');
+                const tenantEl = document.getElementById('sentinel-prof-tenant');
+                const rbacEl = document.getElementById('sentinel-prof-rbac');
+                if (userEl) userEl.textContent = me.username || me.email || 'Compliance Officer';
+                const role = String(me.role || 'ANALYST').toUpperCase();
+                if (roleEl) roleEl.textContent = role;
+                if (tenantEl) tenantEl.textContent = `Tenant: ${me.tenant_id || 'default'}`;
+                if (rbacEl) rbacEl.style.display = ['ADMIN', 'MLRO', 'SUPERADMIN'].includes(role) ? 'flex' : 'none';
+            } catch (_) { /* ignore */ }
+        }
+
+        avatarBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const isOpen = profilePopover.classList.toggle('open');
+            avatarBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+            if (isOpen) {
+                if (notifPopover) notifPopover.classList.remove('open');
+                loadProfileSession();
+            }
+        });
+
+        profilePopover.querySelector('#sentinel-prof-logout').addEventListener('click', () => {
+            if (typeof window.logout === 'function') {
+                window.logout();
+            } else {
+                window.location.href = '/login';
+            }
+        });
+
+        document.addEventListener('click', (e) => {
+            if (profilePopover.classList.contains('open') && !profilePopover.contains(e.target) && !avatarBtn.contains(e.target)) {
+                profilePopover.classList.remove('open');
+                avatarBtn.setAttribute('aria-expanded', 'false');
+            }
+        });
+    }
+
     function bootstrap() {
         injectStyles();
         mountTopbarControls();
+        injectMobileCoreNav();
+        mountProfilePopover();
     }
 
     if (document.readyState === 'loading') {

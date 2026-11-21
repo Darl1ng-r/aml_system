@@ -320,32 +320,32 @@
         <h1 style="font-size:1.4rem; font-weight:700;">Immutable Audit Log Vault</h1>
         <p style="font-size:0.85rem; color:var(--text-muted); margin-top:3px;">Append-only regulatory audit registry under FFIEC, BSA 31 CFR 1010, and EU AMLD6 mandate.</p>
       </div>
-      <div style="display:flex; gap:0.5rem; align-items:center;">
-        <button class="btn" id="btnVerifyChain" onclick="verifyChainIntegrity()" style="border-color:rgba(16,185,129,0.4); color:#6ee7b7;">
-          <span id="verifySpinner" style="display:none;" class="spinner"></span> 🔒 Verify Chain Integrity
+      <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+        <button class="btn" id="btnVerifyChain" onclick="verifyChainIntegrity()" style="border-color:rgba(31,122,77,0.35); background:#EEF8F3; color:#16653E; font-weight:600;">
+          <span id="verifySpinner" style="display:none;" class="spinner"></span> Verify Hash Chain
         </button>
-        <button class="btn" onclick="exportSignedExaminerPacket()" data-role="MLRO,ADMIN,AUDITOR,GLOBAL_AUDITOR">📦 Signed Examiner Packet</button>
-        <button class="btn" onclick="createTimeBoxedAuditorRoom()" data-role="MLRO,ADMIN">🏛️ Create Auditor Room</button>
+        <button class="btn" onclick="exportSignedExaminerPacket()" data-role="MLRO,ADMIN,AUDITOR,GLOBAL_AUDITOR">Download Signed Exam Packet (ZIP)</button>
+        <button class="btn" onclick="createTimeBoxedAuditorRoom()" data-role="MLRO,ADMIN">Share Time-Boxed Examiner Room</button>
         <button class="btn" onclick="exportLogs('csv')">Export CSV (SHA-256)</button>
         <button class="btn" onclick="exportLogs('json')">Export JSON</button>
       </div>
     </div>
 
     <!-- Cryptographic Verification Seal Banner -->
-    <div id="chainVerificationCard" style="display:none; background:rgba(16, 185, 129, 0.08); border:1px solid rgba(16, 185, 129, 0.3); border-radius:8px; padding:1rem 1.25rem; font-size:0.8rem;">
+    <div id="chainVerificationCard" style="display:none; background:#EEF8F3; border:1px solid rgba(31,122,77,0.3); border-radius:8px; padding:1rem 1.25rem; font-size:0.8rem;">
       <div style="display:flex; justify-content:space-between; align-items:flex-start;">
         <div>
-          <div style="display:flex; align-items:center; gap:0.5rem; font-weight:600; color:#34d399; font-size:0.9rem;">
-            <span>🛡️ WORM Storage Integrity: Cryptographically Verified</span>
+          <div style="display:flex; align-items:center; gap:0.5rem; font-weight:600; color:#16653E; font-size:0.9rem;">
+            <span>WORM Storage Integrity: Cryptographically Verified</span>
             <span class="role-badge" id="chainStatusBadge">VALID</span>
           </div>
           <p style="color:var(--text-muted); margin-top:4px;" id="chainVerificationDetail">
             Sequential SHA-256 hash chaining validated across all indexed audit records. Zero tampering or unauthorized mutations detected.
           </p>
-          <div style="display:flex; gap:1.5rem; margin-top:0.5rem; font-family:'JetBrains Mono', monospace; font-size:0.7rem; color:var(--text-dim);">
-            <div>Records Verified: <span id="chainRecordsCount" style="color:var(--text-main);">0</span></div>
-            <div>Chain Root: <span id="chainGenesis" style="color:#7dd3fc;">...</span></div>
-            <div>Chain Head: <span id="chainHead" style="color:#7dd3fc;">...</span></div>
+          <div style="display:flex; gap:1.5rem; flex-wrap:wrap; margin-top:0.5rem; font-family:'JetBrains Mono', monospace; font-size:0.7rem; color:var(--text-dim);">
+            <div>Records Verified: <span id="chainRecordsCount" style="color:var(--text-main); font-weight:600;">0</span></div>
+            <div>Chain Root: <span id="chainGenesis" style="color:#0369A1; font-weight:600;">...</span></div>
+            <div>Chain Head: <span id="chainHead" style="color:#0369A1; font-weight:600;">...</span></div>
           </div>
         </div>
         <button onclick="document.getElementById('chainVerificationCard').style.display='none'" style="background:none; border:none; color:var(--text-dim); cursor:pointer; font-size:1rem;">&times;</button>
@@ -353,10 +353,10 @@
     </div>
 
     <!-- Filter Bar -->
-    <div class="filter-card">
-      <input type="text" id="actorFilter" aria-label="Filter by Actor" class="input-field" placeholder="Filter by Actor..." style="width:160px;">
+    <div class="filter-card" style="flex-wrap:wrap;">
+      <input type="text" id="actorFilter" aria-label="Filter by Actor" class="input-field" placeholder="Filter by Actor..." style="flex:1 1 160px; min-width:130px; max-width:220px;">
       
-      <select id="actionFilter" aria-label="Filter by Action" class="input-field" style="width:180px;">
+      <select id="actionFilter" aria-label="Filter by Action" class="input-field" style="flex:1 1 180px; min-width:140px; max-width:240px;">
         <option value="">All Actions</option>
         <option value="UPDATE_RULE">UPDATE_RULE</option>
         <option value="ACCOUNT_FROZEN">ACCOUNT_FROZEN</option>
@@ -367,7 +367,7 @@
         <option value="CDD_RESCREENING_WATCHLIST_HIT">CDD_RESCREENING_HIT</option>
       </select>
 
-      <select id="resourceFilter" aria-label="Filter by Resource" class="input-field" style="width:140px;">
+      <select id="resourceFilter" aria-label="Filter by Resource" class="input-field" style="flex:1 1 140px; min-width:120px; max-width:200px;">
         <option value="">All Resources</option>
         <option value="ALERT">ALERT</option>
         <option value="CASE">CASE</option>

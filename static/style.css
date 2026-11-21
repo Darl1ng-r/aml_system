@@ -1817,7 +1817,158 @@ svg.lucide, i[data-lucide] {
     display: none;
   }
   .btn-action, .btn-approve, .btn-reject {
-    min-height: 36px;
-    padding: 6px 12px;
+    min-height: 44px;
+    padding: 8px 14px;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * UI/UX Audit Remediation Layer — WCAG AA Contrast, Touch Targets & Consistency
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* 1. Unified Light-Surface Semantic Badges & Buttons (WCAG AA >= 5.4:1) */
+.status-badge, .score-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-family: var(--font-data, 'JetBrains Mono', monospace);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.status-pending, .badge-amber {
+  background: #FEF8EC !important;
+  color: #9A5B0A !important;
+  border: 1px solid rgba(184, 117, 20, 0.32) !important;
+}
+.status-approved, .badge-green, .btn-approve {
+  background: #EEF8F3 !important;
+  color: #16653E !important;
+  border: 1px solid rgba(31, 122, 77, 0.30) !important;
+}
+.btn-approve:hover {
+  background: #DCF2E6 !important;
+}
+.status-rejected, .badge-red, .btn-danger, .btn-reject {
+  background: #FDF2F1 !important;
+  color: #A82E27 !important;
+  border: 1px solid rgba(193, 59, 51, 0.32) !important;
+}
+.btn-danger:hover, .btn-reject:hover {
+  background: #FBE4E2 !important;
+}
+.status-draft {
+  background: #F0EFEA !important;
+  color: #3F434C !important;
+  border: 1px solid rgba(20, 21, 23, 0.16) !important;
+}
+
+/* 2. Ergonomic Click & Touch Targets (36px desktop / 44px touch) */
+.btn, .btn-action, .pill-btn, .tab-btn, .tab-pill {
+  min-height: 36px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.sentinel-icon-btn, .sentinel-shell-btn {
+  min-height: 34px;
+  min-width: 34px;
+}
+@media (pointer: coarse), (max-width: 768px) {
+  .btn, .btn-action, .pill-btn, .tab-btn, .tab-pill, .sentinel-icon-btn, .sentinel-shell-btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* 3. Table Row Hover & Keyboard Focus Affordance */
+table tbody tr {
+  transition: background-color 0.12s ease;
+}
+table tbody tr:hover {
+  background-color: rgba(20, 21, 23, 0.035) !important;
+}
+table tbody tr:focus-visible,
+.customer-item:focus-visible {
+  outline: 2px solid #F5A623;
+  outline-offset: -2px;
+}
+
+/* 4. Mobile Core Navigation Fallback inside Modules Dropdown */
+.sentinel-mobile-core-nav {
+  display: none;
+}
+@media (max-width: 768px) {
+  .sentinel-mobile-core-nav {
+    display: block;
+  }
+}
+
+/* 5. Formatted Compliance Report Metric Grids */
+.ops-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.ops-metric-card {
+  background: #F5F4F0;
+  border: 1px solid rgba(20, 21, 23, 0.10);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.ops-metric-label {
+  font-size: 11px;
+  color: #5C6068;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.ops-metric-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  font-weight: 700;
+  color: #141517;
+  word-break: break-word;
+}
+.ops-raw-details {
+  margin-top: 6px;
+}
+.ops-raw-details summary {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #4B4F5A;
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+}
+.ops-raw-details summary:hover {
+  color: #141517;
+}
+
+/* 6. Return-to-Triage Breadcrumb Bar */
+.triage-return-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  background: #F5F4F0;
+  border: 1px solid rgba(20, 21, 23, 0.12);
+  color: #141517;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+.triage-return-bar:hover {
+  background: #E8E6DF;
+  border-color: rgba(20, 21, 23, 0.25);
 }

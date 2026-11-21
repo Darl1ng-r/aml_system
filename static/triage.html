@@ -854,7 +854,7 @@
       }
 
       if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding:30px; color:var(--ink-soft);">No alerts match active filters.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; padding:32px; color:var(--ink-soft);">No alerts match your current filters. <button type="button" class="pill-btn" style="margin-left:10px;" onclick="resetTriageFilters()">Reset filters</button></td></tr>';
         return;
       }
 
@@ -880,7 +880,7 @@
 
         const isChecked = selectedAlertIds.has(a.id);
         return `
-          <tr class="${isSelected ? 'selected' : ''}" onclick="selectAlert('${a.id}')">
+          <tr class="${isSelected ? 'selected' : ''}" tabindex="0" onclick="selectAlert('${a.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectAlert('${a.id}');}">
             <td><input type="checkbox" class="triage-row-cb" data-alert-id="${a.id}" aria-label="Select alert #${a.id.substring(0,8)}" ${isChecked ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleAlertSelection('${a.id}', this.checked)"></td>
             <td style="font-family:var(--font-data); font-weight:600;">#${a.id.substring(0,8)}</td>
             <td><span class="rule-tag">${a.rule_name || 'MONITORING_HIT'}</span></td>
@@ -964,6 +964,18 @@
       } catch (err) {
         await window.SentinelDialog.alert(err.message || 'Bulk action failed.', { title: 'Bulk Triage Error' });
       }
+    }
+
+    function resetTriageFilters() {
+      currentSeverity = 'ALL';
+      currentStatus = 'ACTIVE';
+      entityGroupedMode = false;
+      const searchInput = document.getElementById('triage-search-input');
+      if (searchInput) searchInput.value = '';
+      document.querySelectorAll('.pill-btn[data-sev]').forEach(b => b.classList.toggle('active', b.dataset.sev === 'ALL'));
+      document.querySelectorAll('.pill-btn[data-status]').forEach(b => b.classList.toggle('active', b.dataset.status === 'ACTIVE'));
+      syncFiltersToUrl();
+      renderAlertsTable();
     }
 
     function applyTriagePreset(preset) {

@@ -84,7 +84,7 @@
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
       color: var(--text-main);
-      border-radius: 9px;
+      border-radius: 8px;
       padding: 0.45rem 0.65rem;
       font-size: 0.82rem;
       font-family: inherit;
@@ -93,15 +93,16 @@
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
       color: var(--text-main);
+      min-height: 36px;
       padding: 0.45rem 0.85rem;
-      border-radius: 9px;
+      border-radius: 8px;
       font-size: 0.8rem;
       font-weight: 600;
       cursor: pointer;
     }
     .btn-primary { background: #141517; border-color: #141517; color: #FFFFFF; }
-    .btn-emerald { background: var(--accent-emerald); border-color: var(--accent-emerald); color: #052e16; }
-    .btn-danger { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.4); color: #fca5a5; }
+    .btn-emerald { background: #EEF8F3; border-color: rgba(31,122,77,0.35); color: #16653E; }
+    .btn-danger { background: #FDF2F1; border-color: rgba(193,59,51,0.35); color: #A82E27; }
     table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
     th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border-subtle); }
     th { font-size: 0.7rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.04em; }
@@ -304,13 +305,13 @@
     <!-- 5. COMPLIANCE REPORTS & WATCHLISTS -->
     <section id="panel-reports" class="panel">
       <div class="card">
-        <div class="card-title"><span>Live Regulatory Reports &amp; Watchlist Providers</span><button class="btn btn-primary" onclick="loadReportsAndWatchlist()">Fetch Live Snapshots</button></div>
+        <div class="card-title"><span>Live Regulatory Reports &amp; Watchlist Providers</span><button class="btn btn-primary" onclick="loadReportsAndWatchlist()">Refresh Live Snapshots</button></div>
         <div class="grid-2">
-          <div><label>SAR Summary (/api/v1/reports/sar-summary)</label><pre id="repSar" class="json-box">Loading...</pre></div>
-          <div><label>CTR Summary (/api/v1/reports/ctr-summary)</label><pre id="repCtr" class="json-box">Loading...</pre></div>
-          <div><label>Alert-to-SAR Conversion (/api/v1/reports/conversion-rates)</label><pre id="repConv" class="json-box">Loading...</pre></div>
-          <div><label>KYC Verification Status (/api/v1/reports/kyc-status)</label><pre id="repKyc" class="json-box">Loading...</pre></div>
-          <div style="grid-column:1/-1;"><label>Live Watchlist Status (/api/v1/watchlist/status)</label><pre id="repWatchlist" class="json-box">Loading...</pre></div>
+          <div><label>Suspicious Activity Filings (30-Day Overview)</label><div id="repSar" class="ops-report-slot">Loading...</div></div>
+          <div><label>Currency Transaction Reports Summary</label><div id="repCtr" class="ops-report-slot">Loading...</div></div>
+          <div><label>Alert-to-SAR Conversion Funnel</label><div id="repConv" class="ops-report-slot">Loading...</div></div>
+          <div><label>KYC Verification Coverage</label><div id="repKyc" class="ops-report-slot">Loading...</div></div>
+          <div style="grid-column:1/-1;"><label>Sanctions &amp; Watchlist Data Feeds</label><div id="repWatchlist" class="ops-report-slot">Loading...</div></div>
         </div>
       </div>
     </section>
@@ -444,9 +445,9 @@
             <td>${c.status}</td>
             <td>${c.priority}</td>
             <td>${c.assigned_username || 'Unassigned'}</td>
-            <td style="display:flex; gap:6px;">
-              <button class="btn" style="padding:2px 8px; font-size:0.72rem;" onclick="addCaseNote('${c.id}')">+ Note</button>
-              ${c.status !== 'CLOSED' ? `<button class="btn btn-danger" style="padding:2px 8px; font-size:0.72rem;" onclick="closeCase('${c.id}')">Close</button>` : ''}
+            <td style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn" style="padding:6px 12px; font-size:0.75rem;" onclick="addCaseNote('${c.id}')">+ Add Note</button>
+              ${c.status !== 'CLOSED' ? `<button class="btn btn-danger" style="padding:6px 12px; font-size:0.75rem;" onclick="closeCase('${c.id}')">Close Case</button>` : ''}
             </td>
           </tr>
         `).join('');
@@ -628,7 +629,7 @@
             <td class="mono">$${Number(f.total_amount || 0).toLocaleString()}</td>
             <td>${f.status}</td>
             <td class="mono">${(f.filing_date || f.created_at || '').slice(0,10)}</td>
-            <td>${f.status !== 'FILED' ? `<button class="btn btn-emerald" style="padding:2px 8px; font-size:0.72rem;" onclick="submitCtr('${f.id}')">Submit CTR</button>` : 'Filed'}</td>
+            <td>${f.status !== 'FILED' ? `<button class="btn btn-emerald" style="padding:6px 12px; font-size:0.75rem;" onclick="submitCtr('${f.id}')">Submit CTR</button>` : 'Filed'}</td>
           </tr>
         `).join('');
       } catch (e) {
@@ -644,7 +645,48 @@
       } catch (err) { showToast(err.message); }
     }
 
-    // 5. Reports & Watchlists
+    // 5. Reports & Watchlists — Human-Readable Metric Cards + Collapsible Raw JSON
+    function formatMetricLabel(key) {
+      return String(key || '')
+        .replace(/_/g, ' ')
+        .replace(/\bpct\b/gi, '%')
+        .replace(/\bsar\b/gi, 'SAR')
+        .replace(/\bctr\b/gi, 'CTR')
+        .replace(/\bkyc\b/gi, 'KYC')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    function formatMetricValue(val) {
+      if (val === null || val === undefined) return '—';
+      if (typeof val === 'boolean') return val ? 'Active' : 'Inactive';
+      if (typeof val === 'number') return Number.isInteger(val) ? val.toLocaleString() : val.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      if (Array.isArray(val)) return `${val.length} item${val.length === 1 ? '' : 's'}`;
+      if (typeof val === 'object') return `${Object.keys(val).length} entries`;
+      return String(val);
+    }
+
+    function renderFormattedReport(el, data) {
+      const safe = window.escapeHtml || ((v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
+      const entries = (data && typeof data === 'object' && !Array.isArray(data))
+        ? Object.entries(data).filter(([, v]) => v !== null && typeof v !== 'object')
+        : [];
+      const cardsHtml = entries.length
+        ? `<div class="ops-metric-grid">${entries.slice(0, 6).map(([k, v]) => `
+            <div class="ops-metric-card">
+              <div class="ops-metric-label">${safe(formatMetricLabel(k))}</div>
+              <div class="ops-metric-val">${safe(formatMetricValue(v))}</div>
+            </div>
+          `).join('')}</div>`
+        : '';
+      el.innerHTML = `
+        ${cardsHtml}
+        <details class="ops-raw-details"${entries.length ? '' : ' open'}>
+          <summary>View Raw JSON</summary>
+          <pre class="json-box">${safe(JSON.stringify(data, null, 2))}</pre>
+        </details>
+      `;
+    }
+
     async function loadReportsAndWatchlist() {
       const targets = [
         ['repSar', '/api/v1/reports/sar-summary'],
@@ -657,9 +699,9 @@
         const el = document.getElementById(elId);
         try {
           const data = await apiJson(url);
-          el.innerText = JSON.stringify(data, null, 2);
+          renderFormattedReport(el, data);
         } catch (err) {
-          el.innerText = `Error: ${err.message}`;
+          el.innerHTML = `<div class="ops-metric-card" style="border-color:rgba(193,59,51,0.35); color:#A82E27; font-size:0.8rem;">Unable to load snapshot: ${(window.escapeHtml || String)(err.message)}</div>`;
         }
       }));
     }
@@ -796,8 +838,10 @@
             <td class="mono">${esc(q.status)}</td>
             <td>
               ${q.status === 'PENDING' ? `
-                <button class="btn" style="padding:2px 8px; font-size:0.72rem;" onclick="decideQa('${esc(q.review_id)}', 'PASSED')">Pass</button>
-                <button class="btn btn-danger" style="padding:2px 8px; font-size:0.72rem;" onclick="decideQa('${esc(q.review_id)}', 'FAILED_REOPENED')">Fail &amp; Reopen</button>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                  <button class="btn btn-emerald" style="padding:6px 12px; font-size:0.75rem;" onclick="decideQa('${esc(q.review_id)}', 'PASSED')">Pass</button>
+                  <button class="btn btn-danger" style="padding:6px 12px; font-size:0.75rem;" onclick="decideQa('${esc(q.review_id)}', 'FAILED_REOPENED')">Fail &amp; Reopen</button>
+                </div>
               ` : esc(q.qa_reviewer_username || 'Done')}
             </td>
           </tr>

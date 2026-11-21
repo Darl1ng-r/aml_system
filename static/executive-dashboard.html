@@ -198,8 +198,8 @@
     }
     .bar {
       width: 100%;
-      background: linear-gradient(180deg, var(--accent-cyan), var(--accent-blue));
-      border-radius: 4px 4px 0 0;
+      background: linear-gradient(180deg, #141517 0%, #3F4652 100%);
+      border-radius: 6px 6px 0 0;
       transition: height 0.4s ease;
       min-height: 4px;
     }
@@ -222,7 +222,7 @@
       justify-content: space-between;
       align-items: center;
       padding: 8px 0;
-      border-bottom: 1px solid rgba(255,255,255,0.03);
+      border-bottom: 1px solid rgba(20, 21, 23, 0.08);
       font-size: 0.8rem;
     }
     .typology-row:last-child { border-bottom: none; }
@@ -240,14 +240,16 @@
     }
     td { padding: 10px; border-bottom: 1px solid var(--border-subtle); color: var(--text-main); }
     .status-badge {
-      display: inline-block;
-      padding: 2px 6px;
-      border-radius: 4px;
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 9px;
+      border-radius: 999px;
       font-size: 0.68rem;
+      font-weight: 600;
       font-family: 'JetBrains Mono', monospace;
     }
-    .badge-red { background: #3D1A1A; color: #FCA5A5; border: 1px solid rgba(239, 68, 68, 0.3); }
-    .badge-amber { background: #2D2415; color: #FCD34D; border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-red { background: #FDF2F1; color: #A82E27; border: 1px solid rgba(193, 59, 51, 0.32); }
+    .badge-amber { background: #FEF8EC; color: #9A5B0A; border: 1px solid rgba(184, 117, 20, 0.32); }
 
     .toast {
       position: fixed;

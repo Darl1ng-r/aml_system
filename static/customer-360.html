@@ -440,15 +440,15 @@
             </div>
             <div style="font-size:0.75rem; color:var(--text-muted); margin-top:4px; font-family:'JetBrains Mono',monospace;">
               ACC: <span id="dossierAccNum" style="color:var(--text-main);">—</span> &bull;
-              BIC: <span id="dossierBic" style="color:#fff;">DEUTDEDDFXX</span> &bull;
+              BIC: <span id="dossierBic" style="color:var(--text-main); font-weight:600;">DEUTDEDDFXX</span> &bull;
               ONBOARDED: <span id="dossierCreated">2026-01-14</span>
             </div>
           </div>
         </div>
         <div class="hero-actions">
-          <button class="btn" onclick="rescreenCustomer()">Re-Screen Now</button>
-          <button class="btn" onclick="runLiveAdverseMedia()">OSINT Adverse Media</button>
-          <button class="btn" onclick="requestEdd()">Request EDD</button>
+          <button class="btn" onclick="rescreenCustomer()">Run Watchlist Check</button>
+          <button class="btn" onclick="runLiveAdverseMedia()">Screen Negative News</button>
+          <button class="btn" onclick="requestEdd()">Initiate EDD Review</button>
           <button class="btn btn-danger" id="freezeBtn" onclick="toggleFreeze()">Freeze Account</button>
           <a class="btn" id="networkGraphLink" href="/network">View Network ➔</a>
         </div>
@@ -648,7 +648,7 @@
       listEl.innerHTML = customerListCache.map(c => {
         const isActive = c.id === activeCustomerId;
         return `
-          <div class="customer-item ${isActive ? 'active' : ''}" onclick="selectCustomer('${c.id}')">
+          <div class="customer-item ${isActive ? 'active' : ''}" tabindex="0" role="button" onclick="selectCustomer('${c.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectCustomer('${c.id}');}">
             <div class="customer-name">${c.owner_name || 'Anonymous Account'}</div>
             <div class="customer-sub">${c.account_number} &bull; ${Math.round(c.risk_score * 100)}% Risk</div>
           </div>

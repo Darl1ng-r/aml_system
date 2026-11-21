@@ -177,6 +177,25 @@
     <!-- ── CENTER: EVIDENCE PANE ───────────────────────────── -->
     <main class="center" id="center-evidence-pane">
 
+      <a id="triage-return-bar" class="triage-return-bar" href="/alerts/triage" style="display:none;">← Back to Filtered Triage Queue</a>
+      <script>
+        (function() {
+          try {
+            const p = new URLSearchParams(window.location.search);
+            const fromTriage = p.get('from') === 'triage' || (document.referrer && document.referrer.includes('/alerts/triage'));
+            if (fromTriage) {
+              const bar = document.getElementById('triage-return-bar');
+              if (bar) {
+                if (document.referrer && document.referrer.includes('/alerts/triage')) {
+                  bar.href = document.referrer;
+                }
+                bar.style.display = 'inline-flex';
+              }
+            }
+          } catch (_) {}
+        })();
+      </script>
+
       <!-- Transaction Header -->
       <div class="txn-header">
         <div>
