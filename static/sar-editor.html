@@ -400,11 +400,11 @@
           </div>
           <div class="info-row">
             <span class="info-label">Status:</span>
-            <span class="info-val" id="ctxStatus" style="color:var(--accent-amber)">DRAFT</span>
+            <span class="status-badge status-draft" id="ctxStatus">DRAFT</span>
           </div>
           <div class="info-row">
             <span class="info-label">Author:</span>
-            <span class="info-val" id="ctxAuthor">-</span>
+            <span class="info-val" id="ctxAuthor">—</span>
           </div>
           <div class="info-row">
             <span class="info-label">BSA 30d Clock:</span>
@@ -413,8 +413,12 @@
         </div>
       </div>
 
+      <div id="unlinkedAlertNotice" style="display:none; background:#FEF8EC; border:1px solid rgba(184,117,20,0.32); color:#9A5B0A; border-radius:8px; padding:10px 12px; font-size:0.75rem; line-height:1.45;">
+        <strong>Standalone Draft Mode:</strong> No alert linked. Open an alert from <a href="/alerts/triage" style="color:#9A5B0A; font-weight:700; text-decoration:underline;">Triage</a> or <a href="/dashboard" style="color:#9A5B0A; font-weight:700; text-decoration:underline;">Investigations</a> to auto-populate subject, amount, and typology.
+      </div>
+
       <div>
-        <div class="pane-title">Subject & Counterparty</div>
+        <div class="pane-title">Subject &amp; Counterparty</div>
         <div class="info-card">
           <div class="info-row">
             <span class="info-label">Sender Account:</span>
@@ -422,31 +426,31 @@
           </div>
           <div class="info-row">
             <span class="info-label">Beneficiary:</span>
-            <span class="info-val" id="ctxReceiverAcc">US9128003920</span>
+            <span class="info-val" id="ctxReceiverAcc">—</span>
           </div>
           <div class="info-row">
             <span class="info-label">Amount:</span>
-            <span class="info-val" id="ctxAmount" style="color:var(--accent-emerald)">$49,500.00 USD</span>
+            <span class="info-val" id="ctxAmount" style="color:var(--accent-emerald)">—</span>
           </div>
         </div>
       </div>
 
       <div>
-        <div class="pane-title">Typology & Reasoning Code</div>
+        <div class="pane-title">Typology &amp; Reasoning Code</div>
         <div class="info-card">
           <div class="info-row">
             <span class="info-label">Rule Fired:</span>
-            <span class="info-val" id="ctxRule">STRUCTURING_SMURFING</span>
+            <span class="info-val" id="ctxRule">—</span>
           </div>
           <div class="info-row">
             <span class="info-label">Threat Level:</span>
-            <span class="info-val" id="ctxThreat" style="color:var(--accent-crimson)">CRITICAL</span>
+            <span class="info-val" id="ctxThreat" style="color:var(--accent-crimson)">—</span>
           </div>
           <div class="info-row">
             <span class="info-label">AI Risk Score:</span>
-            <span class="info-val" id="ctxScore">96%</span>
+            <span class="info-val" id="ctxScore">—</span>
           </div>
-          <div class="typology-tag">FATF R.20 / BSA Smurfing Pattern</div>
+          <div class="typology-tag" id="ctxTypologyTag">FATF R.20 / BSA Suspicious Activity</div>
         </div>
       </div>
 
@@ -460,14 +464,14 @@
 
     <!-- Column 2: Narrative Drafting Workspace -->
     <div class="narrative-pane">
-      <div class="toolbar-row">
+      <div class="toolbar-row" style="gap:12px; flex-wrap:wrap;">
         <div>
           <h2 style="font-size:1.15rem; font-weight:600;">Suspicious Activity Narrative</h2>
           <p style="font-size:0.8rem; color:var(--text-muted); margin-top:2px;">Complete 4-eyes compliant narrative before submitting for MLRO sign-off.</p>
         </div>
-        <div style="display:flex; align-items:center; gap:1.25rem;">
-          <div class="autosave-indicator" id="autosaveStatus">● Ready</div>
-          <div class="char-counter" id="charCounter">0 / 10,000 characters</div>
+        <div style="display:flex; align-items:center; gap:1rem; flex-shrink:0;">
+          <div class="autosave-indicator" id="autosaveStatus" style="white-space:nowrap;">● Ready</div>
+          <div class="char-counter" id="charCounter" style="white-space:nowrap;">0 / 10,000</div>
         </div>
       </div>
 
@@ -530,6 +534,10 @@
 
       // Parse draft_id or alert_id from URL path or query params
       const urlParams = new URLSearchParams(window.location.search);
+      const unlinkedEl = document.getElementById('unlinkedAlertNotice');
+      if (unlinkedEl && !urlParams.get('draft_id') && !urlParams.get('alert_id') && !window.location.pathname.match(/\/sar\/editor\/[^/]+/)) {
+        unlinkedEl.style.display = 'block';
+      }
       activeDraftId = urlParams.get('draft_id') || urlParams.get('id');
       activeAlertId = urlParams.get('alert_id') || '00000000-0000-0000-0000-000000000001';
 
