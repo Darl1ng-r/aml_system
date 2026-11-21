@@ -1310,9 +1310,9 @@
 
     function openCaseCockpit() {
       if (selectedAlert && selectedAlert.id) {
-        window.location.href = `/dashboard?alert_id=${encodeURIComponent(selectedAlert.id)}`;
+        window.location.href = `/dashboard?alert_id=${encodeURIComponent(selectedAlert.id)}&from=triage`;
       } else {
-        window.location.href = '/dashboard';
+        window.location.href = '/dashboard?from=triage';
       }
     }
 
