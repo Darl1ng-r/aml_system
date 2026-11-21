@@ -746,7 +746,7 @@
         return;
       }
       txHistoryBody.innerHTML = transactions.map(t => `
-        <tr style="border-bottom:1px solid rgba(255,255,255,0.03);">
+        <tr style="border-bottom:1px solid rgba(20,21,23,0.08);">
           <td style="padding:6px 0;"><span class="status-pill ${t.type === 'INBOUND' ? 'pill-green' : 'pill-amber'}">${t.type}</span></td>
           <td class="mono" style="font-size:0.75rem;">${t.counterparty}</td>
           <td class="mono" style="font-weight:600; color:#fff;">$${t.amount.toLocaleString()} ${t.currency}</td>
