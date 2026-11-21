@@ -123,6 +123,14 @@ class Settings(BaseSettings):
     vault_mount: str = "secret"
     vault_lease_renewal_seconds: int = 3600
 
+    # P2-2: Optional External LLM Co-Pilot (receives PII-tokenized payloads only)
+    llm_copilot_api_url: str = ""
+    llm_copilot_api_key: str = ""
+    llm_copilot_model: str = "gpt-4o-mini"
+
+    # P2-5: Live Adverse Media OSINT Connector (GDELT 2.0 default, free/no-key)
+    adverse_media_api_url: str = "https://api.gdeltproject.org/api/v2/doc/doc"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

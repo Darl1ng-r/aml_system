@@ -255,3 +255,96 @@ async def expand_graph_node(
             status_code=500,
             detail=f"Graph node expansion failed on both Neo4j ({neo_err}) and PostgreSQL ({pg_err})"
         )
+
+
+# ── P2-4: Multi-Layer Corporate UBO Ownership Tree (>25%) & Cross-Entity MDM ──
+
+from pydantic import BaseModel as _BaseModel, Field as _Field
+from observability.sanitizer import sanitize_text as _sanitize_text
+
+
+class UBOEdgeCreateRequest(_BaseModel):
+    parent_entity_name: str = _Field(..., min_length=2, max_length=200)
+    parent_entity_type: str = _Field(default="PERSON", pattern=r"^(PERSON|COMPANY)$")
+    child_company_name: str = _Field(..., min_length=2, max_length=200)
+    ownership_pct: float = _Field(..., gt=0.0, le=100.0)
+    jurisdiction: str = _Field(default="US", min_length=2, max_length=16)
+    tax_id: str | None = _Field(default=None, max_length=80)
+    verified_source: str = _Field(default="CORPORATE_REGISTRY", max_length=120)
+
+
+@router.post("/ubo/edges", status_code=201)
+async def create_ubo_ownership_edge(
+    payload: UBOEdgeCreateRequest,
+    current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
+):
+    """Records a corporate ownership edge for recursive >25% indirect UBO resolution."""
+    from database.postgres import get_async_db_conn
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        edge_id = await conn.fetchval(
+            """
+            INSERT INTO corporate_ownership_edges (
+                tenant_id, parent_entity_name, parent_entity_type, child_company_name,
+                ownership_pct, jurisdiction, tax_id, verified_source
+            )
+            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id;
+            """,
+            str(tenant_id),
+            _sanitize_text(payload.parent_entity_name),
+            payload.parent_entity_type,
+            _sanitize_text(payload.child_company_name),
+            payload.ownership_pct,
+            payload.jurisdiction.upper().strip(),
+            _sanitize_text(payload.tax_id) if payload.tax_id else None,
+            _sanitize_text(payload.verified_source),
+        )
+    return {
+        "edge_id": str(edge_id),
+        "parent_entity_name": payload.parent_entity_name,
+        "child_company_name": payload.child_company_name,
+        "ownership_pct": payload.ownership_pct,
+    }
+
+
+@router.get("/ubo/tree/{company_name}")
+async def get_ubo_ownership_tree(
+    company_name: str,
+    threshold_pct: float = Query(default=25.0, ge=1.0, le=100.0),
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
+):
+    """Resolves multi-layer indirect equity ownership & split-ownership aggregation (>25% CDD threshold)."""
+    from database.postgres import get_async_db_read_conn
+    from services.ubo_resolver import resolve_ubo_ownership_tree
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT parent_entity_name, parent_entity_type, child_company_name,
+                   ownership_pct, jurisdiction, tax_id
+            FROM corporate_ownership_edges
+            LIMIT 2000;
+            """
+        )
+    edges = [dict(r) for r in (rows or [])]
+    return resolve_ubo_ownership_tree(edges, target_company=company_name, threshold_pct=threshold_pct)
+
+
+@router.get("/mdm/links/{account_number}")
+async def get_cross_entity_mdm_links(
+    account_number: str,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
+):
+    """Uncovers hidden cross-entity MDM links sharing Tax IDs, device fingerprints, or beneficiary corridors."""
+    from database.postgres import get_async_db_read_conn
+    from services.ubo_resolver import find_cross_entity_mdm_links
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        return await find_cross_entity_mdm_links(conn=conn, account_number=account_number)

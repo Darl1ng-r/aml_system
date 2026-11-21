@@ -490,3 +490,32 @@ async def search_sanctions_and_pep(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Screening query failed: {str(e)}")
 
+
+class LiveAdverseMediaRequest(BaseModel):
+    subject_name: str = Field(..., min_length=2, max_length=200)
+    country: str | None = Field(default=None, max_length=64)
+    entity_type: str | None = Field(default=None, pattern=r"^(INDIVIDUAL|CORPORATE)$")
+    max_articles: int = Field(default=8, ge=1, le=20)
+
+
+@router.post("/adverse-media/live")
+async def screen_live_adverse_media_endpoint(
+    payload: LiveAdverseMediaRequest,
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
+):
+    """
+    P2-5 Live Adverse Media NLP Screening & Entity Disambiguation:
+    Queries GDELT 2.0 global OSINT news feed (6h Redis cached) with sentence-window
+    predicate proximity scoring and namesake false-positive suppression.
+    """
+    from services.adverse_media import screen_live_adverse_media
+
+    enforce_tenant_data_scope(current_user)
+    return await screen_live_adverse_media(
+        subject_name=payload.subject_name,
+        country=payload.country,
+        entity_type=payload.entity_type,
+        max_articles=payload.max_articles,
+    )
+

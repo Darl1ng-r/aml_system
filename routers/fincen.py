@@ -1064,3 +1064,31 @@ async def generate_sar_narrative(
         "model_version": "AML-Sentinel-NarrativeGen-v3.1"
     }
 
+
+class SARCpilotRequest(BaseModel):
+    alert_id: str
+    case_id: str | None = None
+
+
+@router.post("/sar/copilot")
+async def generate_sar_copilot_endpoint(
+    payload: SARCpilotRequest,
+    current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=20, window=60)),
+):
+    """
+    P2-2 Grounded SAR Narrative Co-Pilot:
+    Synthesizes a 5-part FinCEN narrative grounded strictly in verified PostgreSQL
+    transactions, case notes, and SHA-256 evidence artifacts with inline citations,
+    reversible PII tokenization, and numerical hallucination checks.
+    """
+    from services.sar_narrative import generate_grounded_sar_copilot
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    return await generate_grounded_sar_copilot(
+        alert_id=payload.alert_id,
+        tenant_id=str(tenant_id),
+        case_id=payload.case_id,
+        analyst_username=current_user.get("username"),
+    )
+

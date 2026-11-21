@@ -447,6 +447,7 @@
         </div>
         <div class="hero-actions">
           <button class="btn" onclick="rescreenCustomer()">Re-Screen Now</button>
+          <button class="btn" onclick="runLiveAdverseMedia()">OSINT Adverse Media</button>
           <button class="btn" onclick="requestEdd()">Request EDD</button>
           <button class="btn btn-danger" id="freezeBtn" onclick="toggleFreeze()">Freeze Account</button>
           <a class="btn" id="networkGraphLink" href="/network">View Network ➔</a>
@@ -919,6 +920,26 @@
         }
         showToast(isFrozen ? 'Account successfully unfrozen.' : 'Account frozen under regulatory mandate.');
         loadDossier(activeCustomerId);
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    async function runLiveAdverseMedia() {
+      const name = (document.getElementById('dossierName')?.innerText || '').trim();
+      if (!name) return;
+      showToast(`Screening live OSINT adverse media for ${name}...`);
+      try {
+        const res = await fetch('/api/v1/screening/adverse-media/live', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify({ subject_name: name, max_articles: 8 })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `OSINT screening failed (HTTP ${res.status})`);
+        const summary = `Scanned ${Number(data.total_articles_scanned || 0)} article(s) · ${Number(data.adverse_hits_count || 0)} verified adverse hit(s) · ${Number(data.false_positives_suppressed || 0)} namesake FP(s) suppressed · Highest Risk: ${Math.round(Number(data.highest_risk_score || 0) * 100)}%`;
+        await window.SentinelDialog.alert(summary, { title: 'Live Adverse Media NLP Screening' });
       } catch (err) {
         showToast(err.message);
       }

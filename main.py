@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
 from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist, jwks
-from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, evidence, audit, customers, siem, risk_appetite, webhooks, sso, search, notifications, qa
+from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, evidence, audit, customers, siem, risk_appetite, webhooks, sso, search, notifications, qa, rfi
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
@@ -432,6 +432,7 @@ app.include_router(sso.router)
 app.include_router(search.router)
 app.include_router(notifications.router)
 app.include_router(qa.router)
+app.include_router(rfi.router)
 app.include_router(risk_appetite.router)
 
 # Mount static files directory for dashboard styling and frontend client logic
@@ -545,6 +546,11 @@ def read_dashboard(request: Request):
 @app.get(LOGIN_ROUTE, response_class=FileResponse)
 def read_login():
     return FileResponse("static/login.html")
+
+@app.get("/rfi/{token}", response_class=FileResponse)
+def read_external_rfi_portal(token: str):
+    """Public white-label Customer/RM RFI upload portal (token-gated via /api/v1/rfi/public/{token})."""
+    return FileResponse("static/rfi-portal.html")
 
 @app.get("/alerts/triage", response_class=FileResponse)
 @app.get("/triage", response_class=FileResponse)

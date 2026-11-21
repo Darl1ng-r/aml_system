@@ -371,6 +371,19 @@
         </div>
       </div>
 
+      <div>
+        <div class="drawer-title">UBO Tree (&gt;25%) &amp; Hidden MDM Links</div>
+        <div class="info-card" style="display:flex; flex-direction:column; gap:8px;">
+          <div style="display:flex; gap:6px;">
+            <button type="button" class="btn" style="flex:1; font-size:0.74rem; padding:6px 8px;" onclick="inspectUboTree()">Resolve UBO (&gt;25%)</button>
+            <button type="button" class="btn" style="flex:1; font-size:0.74rem; padding:6px 8px;" onclick="inspectMdmLinks()">Find MDM Links</button>
+          </div>
+          <div id="uboMdmResults" style="font-size:0.76rem; color:var(--text-dim); line-height:1.45;">
+            Select an entity or enter a company/account to inspect indirect equity &amp; shared devices/tax IDs.
+          </div>
+        </div>
+      </div>
+
       <div style="margin-top:auto;">
         <button class="btn btn-primary" style="width:100%; justify-content:center;" id="dossierLinkBtn" onclick="openCustomerDossier()">Open in Customer 360 ➔</button>
       </div>
@@ -693,6 +706,58 @@
         window.location.href = `/customers/${encodeURIComponent(selectedNodeId)}`;
       } else {
         window.location.href = '/customers';
+      }
+    }
+
+    async function inspectUboTree() {
+      const box = document.getElementById('uboMdmResults');
+      const target = (document.getElementById('dLabel')?.innerText || '').trim();
+      const company = (target && target !== 'Select a node') ? target : (document.getElementById('entitySearch')?.value || '').trim();
+      if (!company) { showToast('Enter a company name first.'); return; }
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
+      try {
+        const res = await fetch(`/api/v1/network/ubo/tree/${encodeURIComponent(company)}`, { credentials: 'include' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const ubos = data.ultimate_beneficial_owners || [];
+        if (!ubos.length) {
+          box.textContent = `No indirect ownership edges recorded for "${company}".`;
+          return;
+        }
+        box.innerHTML = ubos.map(u => `
+          <div style="padding:4px 0; border-bottom:1px solid rgba(20,21,23,0.08);">
+            <strong>${esc(u.entity_name)}</strong> (${esc(u.entity_type)}) —
+            <span style="font-family:JetBrains Mono,monospace; font-weight:700; color:${u.exceeds_threshold ? '#C13B33' : '#1F7A4D'};">${Number(u.effective_ownership_pct)}%</span>
+            ${u.exceeds_threshold ? ' [UBO >25%]' : ''}${u.is_split_ownership ? ' [SPLIT]' : ''}
+          </div>
+        `).join('');
+      } catch (err) {
+        box.textContent = err.message;
+      }
+    }
+
+    async function inspectMdmLinks() {
+      const box = document.getElementById('uboMdmResults');
+      const acct = (document.getElementById('entitySearch')?.value || '').trim() || selectedNodeId || '';
+      if (!acct) { showToast('Enter an account number first.'); return; }
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
+      try {
+        const res = await fetch(`/api/v1/network/mdm/links/${encodeURIComponent(acct)}`, { credentials: 'include' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const links = data.links || [];
+        if (!links.length) {
+          box.textContent = `No hidden cross-entity MDM links found for ${acct}.`;
+          return;
+        }
+        box.innerHTML = links.map(l => `
+          <div style="padding:4px 0; border-bottom:1px solid rgba(20,21,23,0.08);">
+            <strong>${esc(l.link_type)}</strong> → ${esc(l.linked_owner_name || l.linked_account_number)}
+            <div style="font-size:0.7rem; color:#5C6068;">${esc(l.shared_attribute)} (${Math.round(Number(l.confidence) * 100)}% conf)</div>
+          </div>
+        `).join('');
+      } catch (err) {
+        box.textContent = err.message;
       }
     }
 

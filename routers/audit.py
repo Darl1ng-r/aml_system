@@ -414,3 +414,289 @@ async def get_audit_log_detail(
     except Exception as e:
         logger.exception("Failed to fetch audit log detail")
         raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+
+
+# ── P2-3: Cryptographically Signed Examiner Packet & Time-Boxed Auditor Rooms ──
+
+from datetime import timedelta as _timedelta
+from fastapi import status as _status
+from pydantic import Field as _Field
+from database.postgres import get_async_db_conn
+from observability.logging import log_audit_event
+from observability.sanitizer import sanitize_text
+from services.examiner_packet import (
+    build_signed_examiner_packet,
+    generate_auditor_room_token,
+    parse_auditor_room_token,
+)
+
+
+class AuditorRoomCreateRequest(BaseModel):
+    room_name: str = _Field(..., min_length=3, max_length=180)
+    examiner_org: str = _Field(default="Regulatory Examiner", min_length=2, max_length=180)
+    allowed_case_ids: List[str] = _Field(..., min_length=1, max_length=50)
+    expires_in_hours: int = _Field(default=72, ge=1, le=720)
+
+
+@router.post("/examiner-packet/{case_id}")
+async def export_signed_examiner_packet(
+    case_id: str,
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR", "GLOBAL_AUDITOR", "SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=15, window=60)),
+):
+    """Exports a regulator-ready RS256-signed ZIP dossier verifiable via /.well-known/jwks.json."""
+    try:
+        case_uuid = uuid.UUID(case_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid case ID.")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        try:
+            zip_bytes, manifest, zip_sha256 = await build_signed_examiner_packet(
+                conn=conn,
+                tenant_id=tenant_id,
+                case_id=case_uuid,
+                generated_by=current_user.get("username", "mlro"),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Case not found.")
+
+    log_audit_event(
+        event_type="EXAMINER_PACKET_EXPORTED",
+        actor_id=str(current_user.get("id", "")),
+        actor_role=current_user.get("role", "MLRO"),
+        action="EXPORT_EXAMINER_PACKET",
+        resource_type="CASE",
+        resource_id=case_id,
+        tenant_id=str(tenant_id),
+        details={"zip_sha256": zip_sha256, "case_number": manifest.get("case_number")},
+    )
+
+    fname = f"examiner_packet_{manifest.get('case_number') or case_id[:8]}.zip"
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Packet-SHA256": zip_sha256,
+            "X-Packet-Signature-Alg": "RS256",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.post("/rooms", status_code=_status.HTTP_201_CREATED)
+async def create_auditor_room(
+    payload: AuditorRoomCreateRequest,
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=15, window=60)),
+):
+    """Creates a time-boxed, revocable read-only Regulatory Auditor Room scoped to explicit case IDs."""
+    try:
+        case_uuids = [uuid.UUID(cid) for cid in payload.allowed_case_ids]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID in allowed_case_ids.")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    raw_token, token_hash = generate_auditor_room_token(tenant_id)
+    expires_at = datetime.now(timezone.utc) + _timedelta(hours=payload.expires_in_hours)
+    safe_name = sanitize_text(payload.room_name)
+    safe_org = sanitize_text(payload.examiner_org)
+
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        room_id = await conn.fetchval(
+            """
+            INSERT INTO auditor_rooms (
+                tenant_id, room_name, examiner_org, token_hash, allowed_case_ids, expires_at, created_by
+            )
+            VALUES ($1::uuid, $2, $3, $4, $5::uuid[], $6, $7)
+            RETURNING id;
+            """,
+            str(tenant_id),
+            safe_name,
+            safe_org,
+            token_hash,
+            case_uuids,
+            expires_at,
+            current_user.get("username", "mlro"),
+        )
+
+    log_audit_event(
+        event_type="AUDITOR_ROOM_CREATED",
+        actor_id=str(current_user.get("id", "")),
+        actor_role=current_user.get("role", "MLRO"),
+        action="CREATE_AUDITOR_ROOM",
+        resource_type="AUDITOR_ROOM",
+        resource_id=str(room_id),
+        tenant_id=str(tenant_id),
+        details={"room_name": safe_name, "examiner_org": safe_org, "case_count": len(case_uuids)},
+    )
+
+    return {
+        "room_id": str(room_id),
+        "room_name": safe_name,
+        "examiner_org": safe_org,
+        "allowed_case_ids": [str(c) for c in case_uuids],
+        "expires_at": expires_at.isoformat(),
+        "access_token": raw_token,
+        "view_url": f"/api/v1/audit/rooms/{raw_token}/view",
+    }
+
+
+@router.get("/rooms")
+async def list_auditor_rooms(
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR", "GLOBAL_AUDITOR", "SUPER_ADMIN"])),
+):
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, room_name, examiner_org, allowed_case_ids, expires_at, revoked_at,
+                   access_count, last_accessed_at, created_by, created_at
+            FROM auditor_rooms
+            ORDER BY created_at DESC
+            LIMIT 50;
+            """
+        )
+    return [
+        {
+            "room_id": str(r["id"]),
+            "room_name": r["room_name"],
+            "examiner_org": r["examiner_org"],
+            "allowed_case_ids": [str(c) for c in (r["allowed_case_ids"] or [])],
+            "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
+            "revoked": r["revoked_at"] is not None,
+            "access_count": int(r["access_count"] or 0),
+            "last_accessed_at": r["last_accessed_at"].isoformat() if r["last_accessed_at"] else None,
+            "created_by": r["created_by"],
+        }
+        for r in (rows or [])
+    ]
+
+
+@router.delete("/rooms/{room_id}")
+async def revoke_auditor_room(
+    room_id: str,
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "SUPER_ADMIN"])),
+):
+    try:
+        r_uuid = uuid.UUID(room_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid auditor room ID.")
+    tenant_id = enforce_tenant_data_scope(current_user)
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        revoked = await conn.fetchval(
+            "UPDATE auditor_rooms SET revoked_at = NOW() WHERE id = $1 AND revoked_at IS NULL RETURNING id;",
+            r_uuid,
+        )
+        if not revoked:
+            raise HTTPException(status_code=404, detail="Active auditor room not found.")
+    return {"room_id": room_id, "status": "REVOKED"}
+
+
+async def _validate_auditor_room_token(token: str):
+    tenant_id, token_hash = parse_auditor_room_token(token)
+    if not tenant_id:
+        raise HTTPException(status_code=403, detail="Invalid auditor room access token.")
+
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        room = await conn.fetchrow(
+            "SELECT * FROM auditor_rooms WHERE token_hash = $1;",
+            token_hash,
+        )
+        if not room:
+            raise HTTPException(status_code=403, detail="Invalid auditor room access token.")
+        if room.get("revoked_at") is not None:
+            raise HTTPException(status_code=403, detail="Auditor room access has been revoked.")
+        exp = room["expires_at"]
+        if exp and exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp and exp < datetime.now(timezone.utc):
+            raise HTTPException(status_code=_status.HTTP_410_GONE, detail="Auditor room access window has expired.")
+
+        await conn.execute(
+            "UPDATE auditor_rooms SET access_count = access_count + 1, last_accessed_at = NOW() WHERE id = $1;",
+            room["id"],
+        )
+        return tenant_id, dict(room)
+
+
+@router.get("/rooms/{token}/view")
+async def view_auditor_room(
+    token: str,
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
+):
+    """Read-only examiner portal returning strictly allowlisted case summaries for this Auditor Room."""
+    tenant_id, room = await _validate_auditor_room_token(token)
+    allowed_ids = [uuid.UUID(str(x)) for x in (room.get("allowed_case_ids") or [])]
+
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        cases_rows = await conn.fetch(
+            """
+            SELECT id, case_number, title, status, priority, created_at, closed_at
+            FROM cases
+            WHERE id = ANY($1::uuid[])
+            ORDER BY created_at DESC;
+            """,
+            allowed_ids,
+        )
+
+    return {
+        "room_name": room["room_name"],
+        "examiner_org": room["examiner_org"],
+        "expires_at": room["expires_at"].isoformat() if room.get("expires_at") else None,
+        "read_only": True,
+        "cases": [
+            {
+                "case_id": str(c["id"]),
+                "case_number": c["case_number"],
+                "title": c["title"],
+                "status": c["status"],
+                "priority": c["priority"],
+                "packet_download_url": f"/api/v1/audit/rooms/{token}/packet/{c['id']}",
+            }
+            for c in (cases_rows or [])
+        ],
+    }
+
+
+@router.get("/rooms/{token}/packet/{case_id}")
+async def download_auditor_room_packet(
+    token: str,
+    case_id: str,
+    _rate_limit=Depends(RateLimiter(limit=15, window=60)),
+):
+    """Streams a signed Examiner Packet ZIP if and only if `case_id` is in the Auditor Room allowlist."""
+    try:
+        case_uuid = uuid.UUID(case_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid case ID.")
+
+    tenant_id, room = await _validate_auditor_room_token(token)
+    allowed_strs = {str(x) for x in (room.get("allowed_case_ids") or [])}
+    if str(case_uuid) not in allowed_strs:
+        raise HTTPException(status_code=403, detail="Case is outside the authorized Auditor Room scope.")
+
+    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+        try:
+            zip_bytes, manifest, zip_sha256 = await build_signed_examiner_packet(
+                conn=conn,
+                tenant_id=tenant_id,
+                case_id=case_uuid,
+                generated_by=f"EXAMINER:{room['examiner_org']}",
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Case not found.")
+
+    fname = f"examiner_packet_{manifest.get('case_number') or case_id[:8]}.zip"
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Packet-SHA256": zip_sha256,
+            "X-Packet-Signature-Alg": "RS256",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

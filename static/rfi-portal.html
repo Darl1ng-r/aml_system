@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Secure Documentation Request | Sentinel Verification Portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #ECEBE7;
+      color: #141517;
+      font-family: 'Inter', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .portal-card {
+      width: min(580px, 100%);
+      background: #FFFFFF;
+      border: 1px solid rgba(20,21,23,0.12);
+      border-radius: 16px;
+      box-shadow: 0 20px 50px rgba(20,21,23,0.10);
+      overflow: hidden;
+    }
+    .portal-head {
+      background: #141517;
+      color: #F7F7F5;
+      padding: 20px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .portal-brand { font-family: 'Manrope', sans-serif; font-weight: 800; letter-spacing: 0.02em; font-size: 1rem; }
+    .portal-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: rgba(245,166,35,0.18);
+      color: #F5A623;
+      border: 1px solid rgba(245,166,35,0.35);
+    }
+    .portal-body { padding: 24px; display: flex; flex-direction: column; gap: 18px; }
+    .prompt-box {
+      background: #F5F4F0;
+      border: 1px solid rgba(20,21,23,0.09);
+      border-radius: 10px;
+      padding: 14px 16px;
+      font-size: 13.5px;
+      line-height: 1.55;
+      color: #141517;
+    }
+    .doc-list { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .doc-pill {
+      font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px;
+      background: #FFFFFF; border: 1px solid rgba(20,21,23,0.14); color: #141517;
+    }
+    label { font-size: 12.5px; font-weight: 600; display: block; margin-bottom: 6px; color: #141517; }
+    textarea {
+      width: 100%; min-height: 110px; padding: 12px; border-radius: 10px;
+      border: 1px solid rgba(20,21,23,0.18); font-family: inherit; font-size: 13.5px; resize: vertical;
+    }
+    .drop-zone {
+      border: 2px dashed rgba(20,21,23,0.22);
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+      background: #FAFAF8;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .drop-zone.dragover { border-color: #F5A623; background: #FFFDF8; }
+    .btn-submit {
+      width: 100%; padding: 12px 16px; border: none; border-radius: 10px;
+      background: #141517; color: #FFFFFF; font-weight: 600; font-size: 14px; cursor: pointer;
+    }
+    .btn-submit:hover { background: #26292F; }
+    .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status-banner {
+      padding: 14px 16px; border-radius: 10px; font-size: 13px; line-height: 1.5; display: none;
+    }
+    .status-banner.error { display: block; background: #FDF2F1; color: #C13B33; border: 1px solid rgba(193,59,51,0.3); }
+    .status-banner.success { display: block; background: #EEF8F3; color: #1F7A4D; border: 1px solid rgba(31,122,77,0.3); }
+    .mono { font-family: 'JetBrains Mono', monospace; font-size: 11.5px; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <main class="portal-card">
+    <header class="portal-head">
+      <div class="portal-brand">Secure Document Verification</div>
+      <span class="portal-badge" id="rfiRoleBadge">ENCRYPTED LINK</span>
+    </header>
+    <section class="portal-body">
+      <div id="rfiStatusBanner" class="status-banner" role="alert"></div>
+
+      <div id="rfiFormContainer">
+        <div class="prompt-box">
+          <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:#5C6068; margin-bottom:4px;">Information Requested</div>
+          <div id="rfiPromptText">Loading secure request details...</div>
+          <ul class="doc-list" id="rfiDocList"></ul>
+          <div style="font-size:11.5px; color:#5C6068; margin-top:10px;">Link expires: <span class="mono" id="rfiExpires">—</span></div>
+        </div>
+
+        <form id="rfiUploadForm" style="display:flex; flex-direction:column; gap:14px; margin-top:16px;">
+          <div>
+            <label for="rfiNotes">Explanation / Response Notes</label>
+            <textarea id="rfiNotes" required minlength="3" placeholder="Provide clarification regarding source of funds or commercial purpose..."></textarea>
+          </div>
+
+          <div>
+            <label for="rfiFile">Supporting Document (PDF, PNG, JPEG, CSV, TXT — max 25 MB)</label>
+            <div class="drop-zone" id="rfiDropZone">
+              <input type="file" id="rfiFile" accept=".pdf,.png,.jpg,.jpeg,.txt,.csv" style="display:none;">
+              <div id="rfiFileLabel" style="font-size:13px; color:#4B4F5A;">Drop file here or <strong>click to browse</strong></div>
+            </div>
+          </div>
+
+          <button type="submit" id="rfiSubmitBtn" class="btn-submit">Submit Documentation Securely</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      'use strict';
+      const segs = window.location.pathname.split('/').filter(Boolean);
+      const token = segs[segs.length - 1] || '';
+      const banner = document.getElementById('rfiStatusBanner');
+      const formWrap = document.getElementById('rfiFormContainer');
+      const dropZone = document.getElementById('rfiDropZone');
+      const fileInput = document.getElementById('rfiFile');
+      const fileLabel = document.getElementById('rfiFileLabel');
+
+      function showBanner(type, text) {
+        banner.className = 'status-banner ' + type;
+        banner.textContent = text;
+      }
+
+      dropZone.addEventListener('click', () => fileInput.click());
+      dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+      dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+      dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+          fileInput.files = e.dataTransfer.files;
+          fileLabel.textContent = `Selected: ${e.dataTransfer.files[0].name}`;
+        }
+      });
+      fileInput.addEventListener('change', () => {
+        if (fileInput.files && fileInput.files[0]) {
+          fileLabel.textContent = `Selected: ${fileInput.files[0].name}`;
+        }
+      });
+
+      async function loadPrompt() {
+        try {
+          const res = await fetch(`/api/v1/rfi/public/${encodeURIComponent(token)}`);
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            formWrap.style.display = 'none';
+            showBanner('error', data.detail || 'This documentation link is invalid or expired.');
+            return;
+          }
+          document.getElementById('rfiRoleBadge').textContent = data.recipient_role || 'SECURE RFI';
+          document.getElementById('rfiPromptText').textContent = data.prompt_message || '';
+          document.getElementById('rfiExpires').textContent = data.expires_at ? new Date(data.expires_at).toLocaleString() : '—';
+          const ul = document.getElementById('rfiDocList');
+          ul.innerHTML = '';
+          (data.requested_docs || []).forEach((doc) => {
+            const li = document.createElement('li');
+            li.className = 'doc-pill';
+            li.textContent = doc;
+            ul.appendChild(li);
+          });
+          if (data.status === 'SUBMITTED') {
+            formWrap.style.display = 'none';
+            showBanner('success', 'This documentation request has already been submitted. Thank you.');
+          }
+        } catch (err) {
+          formWrap.style.display = 'none';
+          showBanner('error', 'Unable to connect to verification server.');
+        }
+      }
+
+      document.getElementById('rfiUploadForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById('rfiSubmitBtn');
+        btn.disabled = true;
+        btn.textContent = 'Scanning & Encrypting Upload...';
+        try {
+          const fd = new FormData();
+          fd.append('response_notes', document.getElementById('rfiNotes').value.trim());
+          if (fileInput.files && fileInput.files[0]) {
+            fd.append('file', fileInput.files[0]);
+          }
+          const res = await fetch(`/api/v1/rfi/public/${encodeURIComponent(token)}/submit`, {
+            method: 'POST',
+            headers: { 'X-CSRF-Protection': '1' },
+            body: fd,
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.detail || `Submission failed (HTTP ${res.status})`);
+          formWrap.style.display = 'none';
+          const receipt = data.sha256_receipt ? ` SHA-256 Receipt: ${data.sha256_receipt}` : '';
+          showBanner('success', (data.message || 'Submitted successfully.') + receipt);
+        } catch (err) {
+          showBanner('error', err.message || 'Submission failed.');
+          btn.disabled = false;
+          btn.textContent = 'Submit Documentation Securely';
+        }
+      });
+
+      loadPrompt();
+    })();
+  </script>
+</body>
+</html>

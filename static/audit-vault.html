@@ -324,6 +324,8 @@
         <button class="btn" id="btnVerifyChain" onclick="verifyChainIntegrity()" style="border-color:rgba(16,185,129,0.4); color:#6ee7b7;">
           <span id="verifySpinner" style="display:none;" class="spinner"></span> 🔒 Verify Chain Integrity
         </button>
+        <button class="btn" onclick="exportSignedExaminerPacket()" data-role="MLRO,ADMIN,AUDITOR,GLOBAL_AUDITOR">📦 Signed Examiner Packet</button>
+        <button class="btn" onclick="createTimeBoxedAuditorRoom()" data-role="MLRO,ADMIN">🏛️ Create Auditor Room</button>
         <button class="btn" onclick="exportLogs('csv')">Export CSV (SHA-256)</button>
         <button class="btn" onclick="exportLogs('json')">Export JSON</button>
       </div>
@@ -612,6 +614,54 @@
       } finally {
         btn.disabled = false;
         spinner.style.display = 'none';
+      }
+    }
+
+    async function exportSignedExaminerPacket() {
+      const caseId = await window.SentinelDialog.prompt('Enter Case UUID to compile an RS256-Signed Examiner Packet (ZIP):', '', { title: 'Signed Examiner Packet (P2-3)' });
+      if (!caseId || !caseId.trim()) return;
+      try {
+        const res = await fetch(`/api/v1/audit/examiner-packet/${encodeURIComponent(caseId.trim())}`, {
+          method: 'POST',
+          headers: { 'X-CSRF-Protection': '1' },
+          credentials: 'include'
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `Packet export failed (HTTP ${res.status})`);
+        }
+        const sha = res.headers.get('X-Packet-SHA256') || '';
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `examiner_packet_${caseId.trim().slice(0, 8)}.zip`;
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast(`RS256 Examiner Packet downloaded (SHA-256: ${sha.slice(0, 12)}...).`);
+      } catch (err) {
+        showToast(err.message);
+      }
+    }
+
+    async function createTimeBoxedAuditorRoom() {
+      const roomName = await window.SentinelDialog.prompt('Auditor Room Name (e.g., OCC 2026 Exam):', 'OCC Q4 Examination', { title: 'Create Time-Boxed Auditor Room' });
+      if (!roomName) return;
+      const caseCsv = await window.SentinelDialog.prompt('Comma-separated allowlisted Case UUIDs:', '', { title: 'Authorized Case Scope' });
+      if (!caseCsv) return;
+      const allowed_case_ids = caseCsv.split(',').map(s => s.trim()).filter(Boolean);
+      try {
+        const res = await fetch('/api/v1/audit/rooms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          credentials: 'include',
+          body: JSON.stringify({ room_name: roomName.trim(), allowed_case_ids, expires_in_hours: 72 })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `Failed to create room (HTTP ${res.status})`);
+        await window.SentinelDialog.alert(`Auditor Room Created (72h Read-Only)\nView URL: ${data.view_url}\nToken (shown once): ${data.access_token}`, { title: 'Time-Boxed Auditor Room Ready' });
+      } catch (err) {
+        showToast(err.message);
       }
     }
 
