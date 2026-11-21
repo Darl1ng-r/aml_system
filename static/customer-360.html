@@ -177,13 +177,16 @@
       border-radius: 8px;
       padding: 1.25rem 1.5rem;
       display: flex;
+      flex-wrap: wrap;
       justify-content: space-between;
       align-items: center;
+      gap: 1rem;
     }
-    .hero-meta { display: flex; align-items: center; gap: 1.25rem; }
+    .hero-meta { display: flex; align-items: center; gap: 1.25rem; min-width: 260px; }
     .hero-avatar {
       width: 48px;
       height: 48px;
+      flex-shrink: 0;
       border-radius: 50%;
       background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
       display: flex;
@@ -193,7 +196,8 @@
       font-size: 1.1rem;
       color: #fff;
     }
-    .hero-actions { display: flex; gap: 0.5rem; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+    .hero-actions .btn { white-space: nowrap; text-decoration: none; }
 
     .grid-2 {
       display: grid;
@@ -715,7 +719,7 @@
       uboContainer.innerHTML = ubos.map(u => `
         <div class="ubo-tree-node">
           <div>
-            <strong style="color:#fff;">${u.name}</strong>
+            <strong style="color:var(--text-main);">${u.name}</strong>
             <div style="font-size:0.7rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">TAX-ID: ${u.tax_id} &bull; Beneficial Owner</div>
           </div>
           <span class="status-pill pill-amber">${u.percentage}% UBO</span>
@@ -730,10 +734,10 @@
         return;
       }
       alertHistoryList.innerHTML = alerts.map(a => `
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.04); font-size:0.75rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid rgba(20,21,23,0.08); font-size:0.75rem;">
           <div>
             <span class="status-pill ${a.threat_level === 'CRITICAL' ? 'pill-red' : 'pill-amber'}">${a.threat_level}</span>
-            <span style="color:#fff; margin-left:6px;">${a.rule_name}</span>
+            <span style="color:var(--text-main); font-weight:600; margin-left:6px;">${a.rule_name}</span>
           </div>
           <span style="font-family:'JetBrains Mono',monospace; color:var(--text-dim);">${a.created_at.slice(0,10)}</span>
         </div>
@@ -750,7 +754,7 @@
         <tr style="border-bottom:1px solid rgba(20,21,23,0.08);">
           <td style="padding:6px 0;"><span class="status-pill ${t.type === 'INBOUND' ? 'pill-green' : 'pill-amber'}">${t.type}</span></td>
           <td class="mono" style="font-size:0.75rem;">${t.counterparty}</td>
-          <td class="mono" style="font-weight:600; color:#fff;">$${t.amount.toLocaleString()} ${t.currency}</td>
+          <td class="mono" style="font-weight:600; color:var(--text-main);">$${t.amount.toLocaleString()} ${t.currency}</td>
           <td class="mono" style="font-size:0.7rem; color:var(--text-dim);">${t.timestamp.slice(0,16).replace('T', ' ')}</td>
         </tr>
       `).join('');
@@ -777,9 +781,18 @@
         unEl.innerText = isHighSanctions ? '⚠ UN CONSOLIDATED: REVIEW' : '✓ UN CONSOLIDATED: CLEARED';
       }
       if (pepEl) {
-        const pepFlag = pepScore >= 0.5;
+        const eddList = Array.isArray(d.edd_history) ? d.edd_history : [];
+        const pepEdd = eddList.find(e => String(e.trigger_reason || '').toUpperCase().includes('PEP'));
+        const pepFlag = pepScore >= 0.5 || Boolean(pepEdd);
         pepEl.className = `status-pill ${pepFlag ? 'pill-amber' : 'pill-green'}`;
-        pepEl.innerText = pepFlag ? `⚠ PEP RISK: ${Math.round(pepScore * 100)}%` : '✓ PEP: CLEARED';
+        if (pepScore >= 0.8) {
+          pepEl.innerText = `⚠ PEP RISK: ${Math.round(pepScore * 100)}%`;
+        } else if (pepEdd) {
+          const st = String(pepEdd.status || 'REVIEW').toUpperCase();
+          pepEl.innerText = st === 'RESOLVED' ? '⚠ PEP: HISTORICAL HIT (RESOLVED)' : `⚠ PEP: EDD ${st}`;
+        } else {
+          pepEl.innerText = '✓ PEP: CLEARED';
+        }
       }
       if (mediaEl) {
         const mediaFlag = mediaScore >= 0.5;
@@ -787,7 +800,8 @@
         mediaEl.innerText = mediaFlag ? `⚠ ADVERSE MEDIA: FLAGGED (${Math.round(mediaScore * 100)}%)` : '✓ ADVERSE MEDIA: 0 HITS';
       }
       if (lastScreenEl) {
-        lastScreenEl.innerText = d.updated_at ? d.updated_at.slice(0, 16).replace('T', ' ') + ' UTC' : 'Live DB Dossier';
+        const ts = d.updated_at || d.created_at;
+        lastScreenEl.innerText = ts ? ts.slice(0, 16).replace('T', ' ') + ' UTC' : 'Not yet screened';
       }
     }
 

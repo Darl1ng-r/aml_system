@@ -275,19 +275,30 @@ def _calculate_customer_risk_factors(
     tx_count: int,
     risk_score: float,
     pep_match_count: int = 0,
-    alerts: list[dict] | None = None
+    alerts: list[dict] | None = None,
+    edd_records: list[dict] | None = None
 ) -> dict:
     high_risk_bic = bool(swift_bic and len(swift_bic) >= 6 and swift_bic[4:6] in ["RU", "IR", "KP", "SY", "MM", "YE", "VE"])
     alert_rules = [str(a.get("rule_name", "")).upper() for a in (alerts or [])]
+    edd_reasons = [str(e.get("trigger_reason", "")).upper() for e in (edd_records or [])]
     has_pep_alert = any("PEP" in r or "SANCTION" in r for r in alert_rules)
+    has_pep_edd = any("PEP" in r for r in edd_reasons)
     has_media_alert = any("ADVERSE" in r or "MEDIA" in r or "SANCTION" in r for r in alert_rules)
 
-    pep_risk = 0.90 if (pep_match_count > 0 or has_pep_alert) else 0.05
+    if pep_match_count > 0 or has_pep_alert:
+        pep_risk = 0.90
+    elif has_pep_edd:
+        pep_risk = 0.65
+    else:
+        pep_risk = 0.05
+
     adverse_media_risk = 0.80 if has_media_alert else 0.05
+    geo_risk = 0.85 if high_risk_bic else (round(min(0.75, risk_score * 0.55), 2) if risk_score >= 0.70 else 0.15)
+    vel_risk = min(1.0, tx_count * 0.08) if tx_count > 0 else (round(min(0.80, risk_score * 0.70), 2) if risk_score >= 0.70 else 0.0)
 
     return {
-        "jurisdiction_risk": 0.85 if high_risk_bic else 0.15,
-        "velocity_risk": min(1.0, tx_count * 0.08),
+        "jurisdiction_risk": geo_risk,
+        "velocity_risk": vel_risk,
         "pep_risk": pep_risk,
         "adverse_media_risk": adverse_media_risk,
         "pep_hits": pep_match_count,
@@ -322,7 +333,7 @@ async def get_customer_dossier(
             """
             SELECT id, account_number, swift_bic, owner_name, status,
                    risk_score, risk_category, created_at, frozen_reason,
-                   freezing_order_ref, frozen_at
+                   freezing_order_ref, frozen_at, last_rescreened_at
             FROM accounts
             WHERE id = $1 AND tenant_id = $2;
             """,
@@ -353,21 +364,26 @@ async def get_customer_dossier(
     ubo_nodes = await _fetch_customer_ubo(acc_num, owner_name, id)
     risk_factors = _calculate_customer_risk_factors(
         acc["swift_bic"], len(recent_txs), risk_score,
-        pep_match_count=pep_match_count, alerts=alerts
+        pep_match_count=pep_match_count, alerts=alerts, edd_records=edd_records
     )
 
     # Mask sensitive details if role is AUDITOR
     is_auditor = current_user.get("role") in ["AUDITOR", "GLOBAL_AUDITOR"]
     display_owner = owner_name if not is_auditor else f"{owner_name[:2]}*** {owner_name.split()[-1][:1]}***"
 
-    if acc["risk_category"]:
-        risk_tier = acc["risk_category"]
-    elif risk_score >= 0.85:
-        risk_tier = "CRITICAL"
-    elif risk_score >= 0.70:
-        risk_tier = "HIGH"
-    else:
-        risk_tier = "STANDARD"
+    # Reconcile risk_tier with risk_score so a high/critical score never displays a stale LOW badge
+    tier_rank = {"LOW": 0, "STANDARD": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+    derived_tier = (
+        "CRITICAL" if risk_score >= 0.85
+        else ("HIGH" if risk_score >= 0.70 else ("MEDIUM" if risk_score >= 0.40 else "LOW"))
+    )
+    stored_tier = str(acc["risk_category"] or "").upper()
+    risk_tier = stored_tier if tier_rank.get(stored_tier, -1) >= tier_rank[derived_tier] else derived_tier
+    screened_ts = acc.get("last_rescreened_at") if hasattr(acc, "get") else None
+    updated_at_iso = (
+        screened_ts.isoformat() if screened_ts
+        else (acc["created_at"].isoformat() if acc["created_at"] else None)
+    )
 
     return {
         "id": str(acc["id"]),
@@ -379,6 +395,7 @@ async def get_customer_dossier(
         "risk_score": risk_score,
         "risk_breakdown": risk_factors,
         "created_at": acc["created_at"].isoformat() if acc["created_at"] else "",
+        "updated_at": updated_at_iso,
         "frozen_details": {
             "is_frozen": acc["status"] == "FROZEN",
             "reason": acc.get("frozen_reason"),
