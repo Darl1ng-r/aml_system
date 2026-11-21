@@ -225,9 +225,14 @@
         </form>
       </div>
       <div class="card">
-        <div class="card-title">
-          <span>Active Cases Registry</span>
-          <button class="btn" onclick="loadCases()">Refresh</button>
+        <div class="card-title" style="flex-wrap:wrap; gap:8px;">
+          <span>Cases Registry</span>
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <button type="button" class="tab-btn active" id="caseFilterAll" onclick="setCaseFilter('ALL')">All</button>
+            <button type="button" class="tab-btn" id="caseFilterOpen" onclick="setCaseFilter('OPEN')">Open</button>
+            <button type="button" class="tab-btn" id="caseFilterClosed" onclick="setCaseFilter('CLOSED')">Closed</button>
+            <button class="btn" onclick="loadCases()">Refresh</button>
+          </div>
         </div>
         <table>
           <thead><tr><th>Case #</th><th>Title</th><th>Status</th><th>Priority</th><th>Assignee</th><th>Actions</th></tr></thead>
@@ -429,28 +434,66 @@
     }
 
     // 1. Cases
+    let _casesCache = [];
+    let _caseStatusFilter = 'ALL';
+
+    function setCaseFilter(mode) {
+      _caseStatusFilter = mode;
+      ['All', 'Open', 'Closed'].forEach(lbl => {
+        const el = document.getElementById(`caseFilter${lbl}`);
+        if (el) el.classList.toggle('active', lbl.toUpperCase() === mode);
+      });
+      renderCasesTable();
+    }
+
+    function renderCasesTable() {
+      const tbody = document.getElementById('casesTbody');
+      const safe = window.escapeHtml || ((v) => String(v ?? ''));
+      const filtered = _casesCache.filter(c => {
+        const st = String(c.status || '').toUpperCase();
+        if (_caseStatusFilter === 'OPEN') return st !== 'CLOSED';
+        if (_caseStatusFilter === 'CLOSED') return st === 'CLOSED';
+        return true;
+      });
+      if (!filtered.length) {
+        const msg = _caseStatusFilter === 'OPEN'
+          ? 'No open investigation cases.'
+          : (_caseStatusFilter === 'CLOSED' ? 'No closed cases found.' : 'No cases found.');
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:1.25rem; color:var(--text-dim);">${msg}</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = filtered.map(c => {
+        const st = String(c.status || 'OPEN').toUpperCase();
+        const pr = String(c.priority || 'MEDIUM').toUpperCase();
+        const stCls = st === 'CLOSED'
+          ? 'status-draft'
+          : (st.includes('PENDING') ? 'status-pending' : 'status-approved');
+        const prCls = pr === 'CRITICAL'
+          ? 'badge-red'
+          : (pr === 'HIGH' ? 'badge-amber' : 'status-draft');
+        const actionsHtml = st !== 'CLOSED'
+          ? `<button class="btn" style="padding:6px 12px; font-size:0.75rem;" onclick="addCaseNote('${c.id}')">+ Add Note</button>
+             <button class="btn btn-danger" style="padding:6px 12px; font-size:0.75rem;" onclick="closeCase('${c.id}')">Close Case</button>`
+          : `<span style="font-size:0.75rem; color:var(--text-dim); font-family:'JetBrains Mono',monospace;">Archived (Read-Only)</span>`;
+        return `
+          <tr>
+            <td class="mono">${safe(c.case_number || String(c.id).slice(0,8))}</td>
+            <td style="font-weight:600; color:var(--text-main);">${safe(c.title)}</td>
+            <td><span class="status-badge ${stCls}">${safe(st)}</span></td>
+            <td><span class="status-badge ${prCls}">${safe(pr)}</span></td>
+            <td>${safe(c.assigned_username || 'Unassigned')}</td>
+            <td style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">${actionsHtml}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
     async function loadCases() {
       const tbody = document.getElementById('casesTbody');
       try {
         const data = await apiJson('/api/v1/cases');
-        const items = Array.isArray(data) ? data : (data.items || []);
-        if (!items.length) {
-          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-dim);">No cases found.</td></tr>';
-          return;
-        }
-        tbody.innerHTML = items.map(c => `
-          <tr>
-            <td class="mono">${c.case_number || String(c.id).slice(0,8)}</td>
-            <td style="font-weight:600; color:var(--text-main);">${c.title}</td>
-            <td>${c.status}</td>
-            <td>${c.priority}</td>
-            <td>${c.assigned_username || 'Unassigned'}</td>
-            <td style="display:flex; gap:8px; flex-wrap:wrap;">
-              <button class="btn" style="padding:6px 12px; font-size:0.75rem;" onclick="addCaseNote('${c.id}')">+ Add Note</button>
-              ${c.status !== 'CLOSED' ? `<button class="btn btn-danger" style="padding:6px 12px; font-size:0.75rem;" onclick="closeCase('${c.id}')">Close Case</button>` : ''}
-            </td>
-          </tr>
-        `).join('');
+        _casesCache = Array.isArray(data) ? data : (data.items || []);
+        renderCasesTable();
       } catch (e) {
         tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; color:var(--accent-crimson);">${e.message}</td></tr>`;
       }
