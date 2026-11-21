@@ -379,16 +379,16 @@ function setMockMode(enabled) {
 
 async function checkServerStatus() {
     try {
-        const response = await fetch(`${BASE_URL}/`, {
+        const response = await fetch(`${BASE_URL}/health/live`, {
             headers: {
                 'Accept': 'application/json',
                 ...getAuthHeaders()
             }
         });
         if (response.ok) {
-            const data = await response.json();
+            const data = await response.json().catch(() => ({ service: 'aml-platform' }));
             setMockMode(false);
-            log(`Connected to ingestion scoring core: ${data.service}`, 'success');
+            log(`Connected to ingestion scoring core: ${data.service || 'aml-platform'}`, 'success');
             return true;
         } else {
             throw new Error(`Server returned HTTP ${response.status}`);
