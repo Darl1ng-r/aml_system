@@ -1193,14 +1193,7 @@
         lockBannerHtml = `
           <div class="lock-banner locked-by-other">
             <i data-lucide="lock" style="width:16px; height:16px;"></i>
-            <span><strong>Locked by ${lockedBy}</strong> — You are viewing in read-only mode to prevent edit collisions.</span>
-          </div>
-        `;
-      } else if (lockState && lockState.locked) {
-        lockBannerHtml = `
-          <div class="lock-banner">
-            <i data-lucide="shield-check" style="width:16px; height:16px; color:#10B981;"></i>
-            <span><strong>Active Edit Lease Acquired</strong> — Heartbeat active (300s TTL).</span>
+            <span><strong>Currently being reviewed by ${lockedBy}</strong> — viewing in read-only mode.</span>
           </div>
         `;
       }

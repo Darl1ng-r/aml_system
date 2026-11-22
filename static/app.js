@@ -1159,14 +1159,8 @@ function _handleCaseLockAcquired(data, banner, textEl, timerEl, forceBtn, caseId
     currentCaseLockToken = data.lock?.lock_token;
     currentLockedCaseId = caseId;
     _setCaseEditingDisabled(false);
-    if (banner) {
-        banner.style.display = 'flex';
-        banner.style.background = '#FFFBEB';
-        banner.style.borderColor = '#FDE68A';
-        banner.style.color = '#92400E';
-    }
-    if (textEl) textEl.innerHTML = `🔒 <strong>You have exclusive edit lock on this case</strong> — Collision protection enabled.`;
-    if (timerEl) timerEl.innerText = 'Session lock renews in 5:00 (active)';
+    // Keep normal edit-lock acquisition silent; only display banner on conflict or lock revocation
+    if (banner) banner.style.display = 'none';
     if (forceBtn) forceBtn.style.display = 'none';
 
     caseLockHeartbeat = setInterval(async () => {
@@ -1182,7 +1176,13 @@ function _handleCaseLockAcquired(data, banner, textEl, timerEl, forceBtn, caseId
                 currentCaseLockToken = null;
                 currentLockedCaseId = null;
                 _setCaseEditingDisabled(true);
-                if (textEl) textEl.innerHTML = '⚠️ <strong>Case edit lock expired or was revoked</strong> — Reload case to re-acquire.';
+                if (banner) {
+                    banner.style.display = 'flex';
+                    banner.style.background = '#FDF2F1';
+                    banner.style.borderColor = 'rgba(193,59,51,0.35)';
+                    banner.style.color = '#A82E27';
+                }
+                if (textEl) textEl.innerHTML = '<strong>Session paused:</strong> Another user took over or your edit session expired. Reload to continue.';
                 if (timerEl) timerEl.innerText = 'Read-Only Mode';
             }
         } catch (err) {
