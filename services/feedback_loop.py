@@ -31,10 +31,11 @@ class ActiveLearningFeedbackService:
         alert_id: str,
         label: int,  # 0 = False Positive, 1 = True SAR
         analyst_id: str,
-        justification: str
+        justification: str,
+        tenant_id: Optional[str] = None,
     ) -> bool:
         """
-        Extracts transaction features from PostgreSQL and records labeled training sample.
+        Extracts transaction features from PostgreSQL and records tenant-scoped labeled training sample.
         """
         try:
             alert_uuid = uuid.UUID(alert_id)
@@ -44,26 +45,29 @@ class ActiveLearningFeedbackService:
             return False
 
         try:
-            async with get_async_db_conn() as conn:
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
                 # Query alert & transaction features
                 row = await conn.fetchrow(
                     """
-                    SELECT a.transaction_id, a.threat_level, a.rule_name,
+                    SELECT a.transaction_id, a.threat_level, a.rule_name, a.tenant_id,
                            t.amount, t.currency, t.timestamp,
                            s.risk_score AS sender_risk, r.risk_score AS receiver_risk
                     FROM alerts a
                     JOIN transactions t ON a.transaction_id = t.id
                     JOIN accounts s ON t.sender_account_id = s.id
                     JOIN accounts r ON t.receiver_account_id = r.id
-                    WHERE a.id = $1;
+                    WHERE a.id = $1
+                      AND ($2::text IS NULL OR a.tenant_id = $2::uuid);
                     """,
-                    alert_uuid
+                    alert_uuid,
+                    str(tenant_id) if tenant_id else None,
                 )
 
                 if not row:
                     logger.warning(f"Could not find alert {alert_id} for feedback sample ingestion.")
                     return False
 
+                resolved_tenant = str(tenant_id or row.get("tenant_id") or "")
                 features = {
                     "amount": float(row["amount"]),
                     "sender_risk": float(row["sender_risk"] or 0.1),
@@ -73,13 +77,16 @@ class ActiveLearningFeedbackService:
                     "threat_level": row["threat_level"]
                 }
 
-                # Record labeled sample in PostgreSQL ml_feedback_samples table
+                # Record labeled sample in PostgreSQL ml_feedback_samples table with tenant_id
                 await conn.execute(
                     """
-                    INSERT INTO ml_feedback_samples (alert_id, transaction_id, label, features_json, analyst_id, justification)
-                    VALUES ($1, $2, $3, $4, $5, $6);
+                    INSERT INTO ml_feedback_samples (
+                        alert_id, transaction_id, tenant_id, label, features_json, analyst_id, justification
+                    )
+                    VALUES ($1, $2, $3::uuid, $4, $5, $6, $7);
                     """,
-                    alert_uuid, row["transaction_id"], label, json.dumps(features), analyst_uuid, justification
+                    alert_uuid, row["transaction_id"], resolved_tenant or None,
+                    label, json.dumps(features), analyst_uuid, justification
                 )
 
                 logger.info(
@@ -88,10 +95,16 @@ class ActiveLearningFeedbackService:
                 )
 
                 # Check feedback count to trigger automatic online model retraining cycle in background
-                count = await conn.fetchval("SELECT COUNT(*) FROM ml_feedback_samples;")
+                if resolved_tenant:
+                    count = await conn.fetchval(
+                        "SELECT COUNT(*) FROM ml_feedback_samples WHERE tenant_id = $1::uuid;",
+                        resolved_tenant,
+                    )
+                else:
+                    count = await conn.fetchval("SELECT COUNT(*) FROM ml_feedback_samples;")
                 if count > 0 and count % 5 == 0:
                     logger.info(f"[Active Learning] Dispatching background online model retraining task ({count} samples recorded).")
-                    task = asyncio.create_task(self.retrain_model_with_feedback())
+                    task = asyncio.create_task(self.retrain_model_with_feedback(tenant_id=resolved_tenant or None))
                     _feedback_tasks.add(task)
                     task.add_done_callback(_feedback_tasks.discard)
 
@@ -100,22 +113,34 @@ class ActiveLearningFeedbackService:
             logger.exception("Failed to record analyst feedback")
             return False
 
-    async def retrain_model_with_feedback(self) -> Dict[str, Any]:
+    async def retrain_model_with_feedback(self, tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Retrains the Isolation Forest model using the active feedback dataset.
+        Retrains the Isolation Forest model using the active feedback dataset (tenant-scoped when provided).
         Down-weights feature anomalies that analysts verified as False Positives.
         """
         global _iforest_model
         try:
-            async with get_async_db_conn() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT features_json, label
-                    FROM ml_feedback_samples
-                    ORDER BY created_at DESC
-                    LIMIT 1000;
-                    """
-                )
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                if tenant_id:
+                    rows = await conn.fetch(
+                        """
+                        SELECT features_json, label
+                        FROM ml_feedback_samples
+                        WHERE tenant_id = $1::uuid
+                        ORDER BY created_at DESC
+                        LIMIT 1000;
+                        """,
+                        str(tenant_id),
+                    )
+                else:
+                    rows = await conn.fetch(
+                        """
+                        SELECT features_json, label
+                        FROM ml_feedback_samples
+                        ORDER BY created_at DESC
+                        LIMIT 1000;
+                        """
+                    )
 
                 if not rows:
                     return {"status": "NO_DATA", "samples_count": 0}

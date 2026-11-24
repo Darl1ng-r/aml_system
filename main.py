@@ -15,6 +15,7 @@ from observability.middleware import CorrelationIdMiddleware
 from services.trusted_proxy import TrustedProxyMiddleware
 from services.csrf import CSRFProtectionMiddleware
 import asyncio
+import hmac
 import logging
 
 # ── Structured JSON logging (called early; re-applied after Alembic in startup) ──
@@ -340,7 +341,7 @@ async def lifespan(app_instance: FastAPI):
     await shutdown_db_clients()
 
 
-is_prod = str(settings.environment).lower() == "production"
+is_prod = settings.is_production
 
 app = FastAPI(
     title="AML Compliance & Transaction Monitoring API",
@@ -360,14 +361,23 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # 5. Anti-CSRF protection middleware
 app.add_middleware(CSRFProtectionMiddleware)
 
-# 4. CORS for frontend dashboard console
+# 4. CORS for frontend dashboard console (strict method & header allowlists)
 allowed_origins_list = [origin.strip() for origin in settings.allowed_origins.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins_list,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-CSRF-Protection",
+        "X-Requested-With",
+        "Idempotency-Key",
+        "X-Idempotency-Key",
+        "X-Client-Mode",
+        "Accept",
+    ],
 )
 
 # 3. Browser security hardening headers (CSP, X-Frame-Options, X-Content-Type-Options)
@@ -391,16 +401,20 @@ def prometheus_metrics(
 ):
     """Exposes internal compliance, SLO, and performance metrics in Prometheus exposition format."""
     metrics_secret = getattr(settings, "metrics_secret", "") or os.getenv("METRICS_SECRET", "")
-    is_prod = str(settings.environment).lower() == "production"
+    is_prod_env = settings.is_production
     # PRR: Fail-closed in production or whenever METRICS_SECRET is configured
-    if is_prod or metrics_secret:
+    if is_prod_env or metrics_secret:
         token = None
         if authorization and authorization.startswith("Bearer "):
-            token = authorization.split(" ")[1]
+            token = authorization[7:].strip()
         elif x_metrics_token:
-            token = x_metrics_token
-        if not metrics_secret or token != metrics_secret:
-            raise HTTPException(status_code=401, detail="Unauthorized metrics scrape access.")
+            token = x_metrics_token.strip()
+        if not metrics_secret or not token or not hmac.compare_digest(token, metrics_secret):
+            raise HTTPException(
+                status_code=401,
+                detail="Unauthorized metrics scrape access.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     from observability.prometheus import generate_metrics_text
     return Response(
@@ -492,7 +506,8 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         return FileResponse("static/404.html", status_code=404)
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail}
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
     )
 
 @app.exception_handler(Exception)

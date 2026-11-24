@@ -117,8 +117,8 @@ def get_or_create_rsa_keypair() -> tuple[str, str]:
             logger.warning(f"Failed to parse JWT_PRIVATE_KEY_PEM: {e}")
 
     # 4. Check environment: ephemeral in-memory keys are strictly forbidden in production
-    env = os.getenv("ENVIRONMENT", getattr(settings, "environment", "development")).lower()
-    if env == "production":
+    env = os.getenv("ENVIRONMENT", getattr(settings, "environment", "development")).strip().lower()
+    if env in {"production", "prod"} or getattr(settings, "is_production", False):
         raise RuntimeError(
             "CRITICAL SECURITY FAILURE: Ephemeral in-memory RSA key generation is strictly forbidden in production! "
             "Mount an RSA private key file at /var/run/secrets/jwt/private.pem, provide JWT_PRIVATE_KEY_PEM in the "
@@ -240,11 +240,18 @@ def _is_pem_key(key: str) -> bool:
     return isinstance(key, str) and "-----BEGIN " in key
 
 
-def decode_jwt_with_rotation(token: str, algorithm: str | None = None) -> dict:
+def decode_jwt_with_rotation(
+    token: str,
+    algorithm: str | None = None,
+    allow_hs256_fallback: bool = False,
+) -> dict:
     """
     Decodes and verifies a JWT token against active RSA public keys and legacy symmetric fallback keys.
-    Strictly isolates asymmetric (RS256) and symmetric (HS256) key-algorithm pairs to prevent
-    JWT algorithm-confusion (CVE RS256->HS256) attacks.
+    Strictly enforces:
+      - Algorithm allowlist (RS256, HS256) and exact algorithm matching when `algorithm` is specified
+        (unless `allow_hs256_fallback=True` for deliberate zero-downtime migration).
+      - Strict asymmetric/symmetric key-to-algorithm binding (blocks RS256->HS256 confusion).
+      - Mandatory `exp` claim verification and `iss`/`aud` validation whenever present on token.
     """
     try:
         unverified_header = jwt.get_unverified_header(token)
@@ -256,15 +263,21 @@ def decode_jwt_with_rotation(token: str, algorithm: str | None = None) -> dict:
     if token_alg not in allowed_algs:
         raise jwt.InvalidAlgorithmError(f"Unsupported or unsafe JWT algorithm: '{token_alg}'")
 
-    # If caller explicitly restricted to a single algorithm and token header mismatches
+    # Strictly enforce caller's requested algorithm (AUTHN-04)
     if algorithm:
         req_alg = algorithm.upper()
-        # Allow HS256 fallback verification only during key-rotation when symmetric keys exist
         if req_alg not in allowed_algs:
             raise jwt.InvalidAlgorithmError(f"Unsupported requested algorithm: '{req_alg}'")
+        if token_alg != req_alg:
+            if not (allow_hs256_fallback and req_alg == "RS256" and token_alg == "HS256"):
+                raise jwt.InvalidAlgorithmError(
+                    f"JWT algorithm mismatch: token uses '{token_alg}', expected '{req_alg}'."
+                )
 
     verification_keys = get_jwt_verification_keys()
     last_exception = None
+    expected_iss = getattr(settings, "jwt_issuer", "aml-sentinel")
+    expected_aud = getattr(settings, "jwt_audience", "aml-sentinel-api")
 
     for key in verification_keys:
         key_is_rsa = _is_pem_key(key)
@@ -275,8 +288,33 @@ def decode_jwt_with_rotation(token: str, algorithm: str | None = None) -> dict:
             continue
 
         try:
-            payload = jwt.decode(token, key, algorithms=[token_alg])
+            payload = jwt.decode(
+                token,
+                key,
+                algorithms=[token_alg],
+                options={
+                    "verify_signature": True,
+                    "verify_exp": True,
+                    "verify_nbf": True,
+                    "verify_aud": False,
+                    "verify_iss": False,
+                    "require": ["exp"],
+                },
+            )
+            # Validate iss / aud strictly whenever present (or always in production)
+            tok_iss = payload.get("iss")
+            tok_aud = payload.get("aud")
+            if tok_iss is not None and tok_iss != expected_iss:
+                raise jwt.InvalidIssuerError("Invalid JWT issuer.")
+            if tok_aud is not None:
+                aud_list = tok_aud if isinstance(tok_aud, list) else [tok_aud]
+                if expected_aud not in aud_list:
+                    raise jwt.InvalidAudienceError("Invalid JWT audience.")
+            if settings.is_production and (tok_iss != expected_iss or tok_aud is None):
+                raise jwt.InvalidTokenError("Missing mandatory JWT issuer or audience claim in production.")
             return payload
+        except (jwt.InvalidIssuerError, jwt.InvalidAudienceError, jwt.ExpiredSignatureError):
+            raise
         except jwt.InvalidSignatureError as e:
             last_exception = e
             continue

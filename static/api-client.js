@@ -45,7 +45,10 @@
             if (!refreshPromise) {
                 refreshPromise = originalFetch('/api/v1/auth/refresh', {
                     method: 'POST',
-                    headers: { 'X-CSRF-Protection': '1' },
+                    headers: {
+                        'X-CSRF-Protection': '1',
+                        'X-Client-Mode': 'browser'
+                    },
                     credentials: 'include'
                 })
                     .then((r) => r.ok)
@@ -93,14 +96,9 @@
         window.__AML_FETCH_PATCHED__ = true;
     }
 
-    // 2. Shared auth headers helper (for code that builds explicit headers)
+    // 2. Shared auth headers helper (relies exclusively on HttpOnly session cookies + CSRF header)
     window.getAuthHeaders = function getAuthHeaders() {
-        const headers = { 'X-CSRF-Protection': '1' };
-        const token = localStorage.getItem('jwt_token') || localStorage.getItem('access_token');
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-        return headers;
+        return { 'X-CSRF-Protection': '1' };
     };
 
     // 3. Real server-side logout (revokes HttpOnly session cookies via backend)

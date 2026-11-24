@@ -98,7 +98,7 @@ async def verify_api_key(raw_key: str) -> Optional[Dict[str, Any]]:
 
     from database.postgres import get_async_db_read_conn
     try:
-        async with get_async_db_read_conn() as conn:
+        async with get_async_db_read_conn(auth_lookup=True) as conn:
             row = await conn.fetchrow(
                 """
                 SELECT id, tenant_id, name, hashed_secret, scopes, is_active, expires_at
@@ -116,9 +116,12 @@ async def verify_api_key(raw_key: str) -> Optional[Dict[str, Any]]:
             if row["expires_at"] and row["expires_at"] < datetime.now(timezone.utc):
                 return None
 
-            # Update last_used_at asynchronously
+            resolved_tenant_id = str(row["tenant_id"])
+
+            # Update last_used_at inside a tenant-scoped connection
             try:
-                await conn.execute("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1;", row["id"])
+                async with get_async_db_conn(tenant_id=resolved_tenant_id) as wconn:
+                    await wconn.execute("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1;", row["id"])
             except Exception:
                 pass
 

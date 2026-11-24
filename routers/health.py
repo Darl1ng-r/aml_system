@@ -15,6 +15,7 @@ Provides secure, topology-masked health endpoints:
         Returns full detailed component breakdown for monitoring & internal diagnostics.
 """
 
+import hmac
 import logging
 import os
 import time
@@ -24,7 +25,8 @@ from typing import Optional
 from fastapi import APIRouter, Header, Request, Depends
 from fastapi.responses import JSONResponse
 from config import settings
-from services.auth import RoleChecker
+from services.auth import RoleChecker, enforce_tenant_data_scope
+from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -40,20 +42,21 @@ def is_authenticated_health_request(
     """
     Validates whether the health request contains proper diagnostic clearance.
     Clearance granted via:
-      1. Matching X-Health-Token header (matching HEALTH_CHECK_SECRET env var)
+      1. Matching X-Health-Token header (constant-time match against HEALTH_CHECK_SECRET env var)
       2. Valid Bearer JWT access token
     """
     health_secret = os.getenv("HEALTH_CHECK_SECRET")
-    if health_secret and x_health_token == health_secret:
+    if health_secret and x_health_token and hmac.compare_digest(x_health_token, health_secret):
         return True
 
     if authorization and authorization.startswith("Bearer "):
-        token = authorization.split(" ")[1]
+        token = authorization[7:].strip()
         try:
             from services.secrets_manager import decode_jwt_with_rotation
 
-            decode_jwt_with_rotation(token, algorithm=settings.jwt_algorithm)
-            return True
+            payload = decode_jwt_with_rotation(token, algorithm=settings.jwt_algorithm)
+            if payload.get("type") in (None, "access"):
+                return True
         except Exception:
             pass
 
@@ -176,13 +179,16 @@ async def readiness(
 
 @router.get("/api/v1/health/system")
 async def get_system_topology_health(
-    current_user: dict = Depends(RoleChecker(["ADMIN", "SUPER_ADMIN"]))
+    current_user: dict = Depends(RoleChecker(["ADMIN", "SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """
-    Exposes complete institutional component health, pool utilization,
+    Exposes institutional component health, pool utilization,
     latencies, and service status for the Admin System Health command center.
+    Infrastructure addresses and raw exception strings are restricted to SUPER_ADMIN.
     """
     import asyncio
+    is_super_admin = str(current_user.get("role", "")).upper() == "SUPER_ADMIN"
     services = {}
 
     # 1. PostgreSQL
@@ -211,7 +217,7 @@ async def get_system_topology_health(
         else:
             services["postgres"] = {"status": "DEGRADED", "detail": "Pool not initialized"}
     except Exception as e:
-        services["postgres"] = {"status": "DOWN", "error": str(e)}
+        services["postgres"] = {"status": "DOWN", "error": str(e) if is_super_admin else "Service check failed"}
 
     # 2. Redis
     try:
@@ -228,7 +234,7 @@ async def get_system_topology_health(
         else:
             services["redis"] = {"status": "DOWN", "detail": "Client unavailable"}
     except Exception as e:
-        services["redis"] = {"status": "DOWN", "error": str(e)}
+        services["redis"] = {"status": "DOWN", "error": str(e) if is_super_admin else "Service check failed"}
 
     # 3. Elasticsearch
     try:
@@ -240,12 +246,12 @@ async def get_system_topology_health(
             services["elasticsearch"] = {
                 "status": "UP",
                 "latency_ms": round((time.monotonic() - t0) * 1000, 1),
-                "version": info.get("version", {}).get("number", "8.x")
+                "version": info.get("version", {}).get("number", "8.x") if is_super_admin else "managed"
             }
         else:
             services["elasticsearch"] = {"status": "DEGRADED"}
     except Exception as e:
-        services["elasticsearch"] = {"status": "DOWN", "error": str(e)}
+        services["elasticsearch"] = {"status": "DOWN", "error": str(e) if is_super_admin else "Service check failed"}
 
     # 4. Neo4j
     try:
@@ -262,7 +268,7 @@ async def get_system_topology_health(
         else:
             services["neo4j"] = {"status": "DEGRADED"}
     except Exception as e:
-        services["neo4j"] = {"status": "DOWN", "error": str(e)}
+        services["neo4j"] = {"status": "DOWN", "error": str(e) if is_super_admin else "Service check failed"}
 
     # 5. Redpanda / Kafka Messaging Bus (live TCP reachability probe)
     from config import KAFKA_BOOTSTRAP_SERVERS, TRANSACTIONS_TOPIC
@@ -273,20 +279,24 @@ async def get_system_topology_health(
         reader, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port_str)), timeout=1.5)
         writer.close()
         await writer.wait_closed()
-        services["redpanda"] = {
+        rp_info = {
             "status": "UP",
             "latency_ms": round((time.monotonic() - t0) * 1000, 1),
-            "bootstrap_servers": KAFKA_BOOTSTRAP_SERVERS,
             "default_topic": TRANSACTIONS_TOPIC,
             "mode": "STREAMING_AIOKAFKA"
         }
+        if is_super_admin:
+            rp_info["bootstrap_servers"] = KAFKA_BOOTSTRAP_SERVERS
+        services["redpanda"] = rp_info
     except Exception as e:
-        services["redpanda"] = {
+        rp_err = {
             "status": "DOWN",
-            "bootstrap_servers": KAFKA_BOOTSTRAP_SERVERS,
             "default_topic": TRANSACTIONS_TOPIC,
-            "error": str(e)
+            "error": str(e) if is_super_admin else "Broker unreachable"
         }
+        if is_super_admin:
+            rp_err["bootstrap_servers"] = KAFKA_BOOTSTRAP_SERVERS
+        services["redpanda"] = rp_err
 
     all_up = all(s.get("status") == "UP" for s in services.values())
     return {
@@ -298,10 +308,11 @@ async def get_system_topology_health(
 
 @router.get("/api/v1/admin/queue-health")
 async def get_queue_health(
-    current_user: dict = Depends(RoleChecker(["ADMIN", "SUPER_ADMIN"]))
+    current_user: dict = Depends(RoleChecker(["ADMIN", "SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """
-    Returns Kafka / Redpanda consumer lag metrics, partition offsets,
+    Returns tenant-scoped Kafka / Redpanda consumer lag metrics, partition offsets,
     and ingestion backpressure state for streaming data feeds.
     """
     from database.postgres import get_async_db_conn
@@ -311,14 +322,18 @@ async def get_queue_health(
     import asyncio
     from config import KAFKA_BOOTSTRAP_SERVERS
 
+    tenant_id = enforce_tenant_data_scope(current_user)
+    is_super_admin = str(current_user.get("role", "")).upper() == "SUPER_ADMIN"
+
     pending_outbox = 0
     outbox_error = None
     tx_rate_per_sec = 0.0
     alert_rate_per_sec = 0.0
     try:
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             pending_outbox = await conn.fetchval(
-                "SELECT COUNT(*) FROM transactional_outbox WHERE status IN ('PENDING', 'PROCESSING');"
+                "SELECT COUNT(*) FROM transactional_outbox WHERE tenant_id = $1::uuid AND status IN ('PENDING', 'PROCESSING');",
+                str(tenant_id),
             )
             if pending_outbox is None:
                 pending_outbox = 0
@@ -326,13 +341,15 @@ async def get_queue_health(
                 published_60s = await conn.fetchval(
                     """
                     SELECT COUNT(*) FROM transactional_outbox
-                    WHERE status = 'PUBLISHED' AND updated_at >= NOW() - INTERVAL '60 seconds';
-                    """
+                    WHERE tenant_id = $1::uuid AND status = 'PUBLISHED' AND updated_at >= NOW() - INTERVAL '60 seconds';
+                    """,
+                    str(tenant_id),
                 )
                 if isinstance(published_60s, (int, float)):
                     tx_rate_per_sec = round(float(published_60s) / 60.0, 2)
                 alerts_60s = await conn.fetchval(
-                    "SELECT COUNT(*) FROM alerts WHERE created_at >= NOW() - INTERVAL '60 seconds';"
+                    "SELECT COUNT(*) FROM alerts WHERE tenant_id = $1::uuid AND created_at >= NOW() - INTERVAL '60 seconds';",
+                    str(tenant_id),
                 )
                 if isinstance(alerts_60s, (int, float)):
                     alert_rate_per_sec = round(float(alerts_60s) / 60.0, 2)
@@ -340,7 +357,7 @@ async def get_queue_health(
                 pass
     except Exception as e:
         logger.exception("Failed to query queue health from transactional_outbox")
-        outbox_error = str(e)
+        outbox_error = str(e) if (is_super_admin or not settings.is_production) else "Queue telemetry database unavailable."
         pending_outbox = -1
 
     # Probe live Kafka / Redpanda broker connectivity

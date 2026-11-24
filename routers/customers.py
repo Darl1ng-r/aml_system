@@ -244,7 +244,12 @@ async def _fetch_customer_activity(conn, acc_num: str, acc_uuid: uuid.UUID):
     return recent_txs, monthly_trend, alerts, edd_records
 
 
-async def _fetch_customer_ubo(acc_num: str, owner_name: str, customer_id: str) -> list[dict]:
+async def _fetch_customer_ubo(
+    acc_num: str,
+    owner_name: str,
+    customer_id: str,
+    tenant_id: str | None = None,
+) -> list[dict]:
     ubo_nodes = []
     try:
         driver = await get_async_neo4j_driver()
@@ -252,11 +257,14 @@ async def _fetch_customer_ubo(acc_num: str, owner_name: str, customer_id: str) -
             result = await session.run(
                 """
                 MATCH (p:Person)-[r:OWNS_UBO]->(c:Company)
-                WHERE c.account_number = $acc_num OR c.name = $owner_name
+                WHERE ($tenant_id IS NULL OR (c.tenant_id = $tenant_id AND p.tenant_id = $tenant_id))
+                  AND (c.account_number = $acc_num OR c.name = $owner_name)
                 RETURN p.name as name, p.tax_id as tax_id, r.percentage as percentage
                 LIMIT 10;
                 """,
-                acc_num=acc_num, owner_name=owner_name
+                acc_num=acc_num,
+                owner_name=owner_name,
+                tenant_id=str(tenant_id) if tenant_id else None,
             )
             records = await result.data()
             for rec in records:
@@ -361,7 +369,7 @@ async def get_customer_dossier(
         except Exception:
             pep_match_count = 0
 
-    ubo_nodes = await _fetch_customer_ubo(acc_num, owner_name, id)
+    ubo_nodes = await _fetch_customer_ubo(acc_num, owner_name, id, tenant_id=str(tenant_id))
     risk_factors = _calculate_customer_risk_factors(
         acc["swift_bic"], len(recent_txs), risk_score,
         pep_match_count=pep_match_count, alerts=alerts, edd_records=edd_records

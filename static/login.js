@@ -240,7 +240,8 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
-                    'X-CSRF-Protection': '1'
+                    'X-CSRF-Protection': '1',
+                    'X-Client-Mode': 'browser'
                 },
                 body: formData,
                 credentials: 'include'
@@ -415,7 +416,8 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-CSRF-Protection': '1'
+                    'X-CSRF-Protection': '1',
+                    'X-Client-Mode': 'browser'
                 },
                 body: JSON.stringify({ mfa_ticket: currentMfaTicket, code: code }),
                 credentials: 'include'
@@ -462,13 +464,11 @@
 
     // ── Existing Session Verification ─────────────────────────────────────────
     async function checkExistingSession() {
-        const token = localStorage.getItem('jwt_token') || localStorage.getItem('access_token');
-        const isActive = localStorage.getItem('auth_session_active') === 'true';
-        if (!isActive && !token) return;
+        const isActive = localStorage.getItem('auth_session_active') === 'true' || sessionStorage.getItem('auth_active') === 'true';
+        if (!isActive) return;
 
         try {
             const headers = { 'X-CSRF-Protection': '1' };
-            if (token) headers['Authorization'] = 'Bearer ' + token;
             const res = await fetch('/api/v1/auth/me', { headers: headers, credentials: 'include' });
             if (res.ok) {
                 sessionStorage.setItem('auth_active', 'true');

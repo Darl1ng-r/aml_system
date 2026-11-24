@@ -277,9 +277,9 @@ async def get_dashboard_metrics(
                 "category_distribution": categories,
                 "analyst_leaderboard": analysts
             }
-    except Exception as e:
+    except Exception:
         logger.exception("Dashboard metrics query failed")
-        raise HTTPException(status_code=500, detail=f"Failed to load analytics: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to load dashboard analytics.")
 
 
 async def _fetch_executive_counts(conn: Any) -> dict:
@@ -488,35 +488,131 @@ async def get_executive_metrics(
                 except Exception:
                     pass
             return payload
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to calculate executive compliance metrics")
-        raise HTTPException(status_code=500, detail=f"Executive metrics failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to calculate executive compliance metrics.")
 
+
+
+MAX_WS_CONNECTIONS_PER_USER = 10
+MAX_WS_CONNECTIONS_PER_IP = 25
+
+
+def _is_ws_origin_allowed(websocket: WebSocket) -> bool:
+    """Validates WebSocket Origin header against configured ALLOWED_ORIGINS / same-host (AUTHN-05 CSWSH defense)."""
+    from config import settings
+    headers = getattr(websocket, "headers", None)
+    raw_origin = headers.get("origin") if headers is not None else None
+    origin = raw_origin.strip().lower().rstrip("/") if isinstance(raw_origin, str) else ""
+    if not origin:
+        # Non-browser native clients may omit Origin; disallow empty Origin in production if cookie-authed
+        cookies = getattr(websocket, "cookies", None) or {}
+        has_cookie = isinstance(cookies, dict) and bool(cookies.get("access_token"))
+        return not (settings.is_production and has_cookie)
+
+    raw_host = headers.get("host") if headers is not None else None
+    host = raw_host.strip().lower() if isinstance(raw_host, str) else ""
+    if host and origin in (f"http://{host}", f"https://{host}"):
+        return True
+
+    allowed = {o.strip().lower().rstrip("/") for o in settings.allowed_origins.split(",") if o.strip()}
+    return origin in allowed
+
+
+async def _authenticate_ws_connection(
+    websocket: WebSocket,
+    ticket: str | None,
+    token: str | None,
+) -> tuple[str, str, str] | None:
+    """
+    Authenticates WebSocket upgrade via:
+      1. Single-use opaque Redis ticket (`?ticket=wst_...`)
+      2. HttpOnly `access_token` cookie (with strict `type == 'access'` and `_verify_token_version`)
+      3. Query `?token=<JWT>` (strictly disabled in production; still enforces access type & revocation in dev)
+    Returns `(user_id, tenant_id, role)` or None.
+    """
+    from config import settings
+    from services.secrets_manager import decode_jwt_with_rotation
+    from services.auth import _verify_token_version
+
+    if ticket:
+        try:
+            from database.redis_db import get_async_redis_client
+            redis = await get_async_redis_client()
+            if redis:
+                key = f"ws:ticket:{ticket}"
+                raw = await (redis.getdel(key) if hasattr(redis, "getdel") else redis.get(key))
+                if raw and not hasattr(redis, "getdel"):
+                    await redis.delete(key)
+                if raw:
+                    tdata = json.loads(raw)
+                    uid, tid, role = tdata.get("user_id"), tdata.get("tenant_id"), tdata.get("role")
+                    if uid and tid and role:
+                        return str(uid), str(tid), str(role)
+        except Exception as err:
+            logger.warning("WebSocket ticket auth failed: %s", err)
+        return None
+
+    # AUTHN-05: Prohibit passing live JWTs in URL query strings in production
+    if token and settings.is_production:
+        return None
+
+    auth_token = websocket.cookies.get("access_token") or token
+    if not auth_token:
+        return None
+
+    try:
+        payload = decode_jwt_with_rotation(auth_token, algorithm=settings.jwt_algorithm)
+        if payload.get("type") != "access":
+            return None
+        user_id = payload.get("id") or payload.get("user_id") or payload.get("sub")
+        tenant_id = payload.get("tenant_id")
+        role = payload.get("role")
+        token_version = payload.get("token_version")
+        if not user_id or not tenant_id or not role:
+            return None
+        await _verify_token_version(str(user_id), token_version, tenant_id=str(tenant_id), jti=payload.get("jti"))
+        return str(user_id), str(tenant_id), str(role)
+    except Exception:
+        return None
 
 
 # ── Real-Time WebSocket Endpoint ──────────────────────────────────────────────
 @router.websocket("/ws/live-stream")
-async def websocket_live_stream(websocket: WebSocket, token: str | None = None):
+async def websocket_live_stream(websocket: WebSocket, ticket: str | None = None, token: str | None = None):
     """
-    WebSocket connection handler pushing real-time events to connected clients.
-    Authenticates via query parameter `?token=<JWT>` or HttpOnly cookie `access_token`.
+    WebSocket connection handler pushing real-time tenant-isolated events.
+    Enforces Origin CSWSH verification, single-use WS ticket or HttpOnly cookie auth,
+    access-token type & revocation checks, and per-user/per-IP connection limits.
     """
-    auth_token = token or websocket.cookies.get("access_token")
-    if not auth_token:
+    if not _is_ws_origin_allowed(websocket):
+        await websocket.close(code=1008, reason="Origin not permitted")
+        return
+
+    cookies = getattr(websocket, "cookies", None) or {}
+    cookie_token = cookies.get("access_token") if isinstance(cookies, dict) else None
+    if not ticket and not token and not cookie_token:
         await websocket.close(code=1008, reason="Missing authentication token")
         return
 
-    try:
-        from services.secrets_manager import decode_jwt_with_rotation
-        from config import settings
-        payload = decode_jwt_with_rotation(auth_token, algorithm=settings.jwt_algorithm)
-        tenant_id = str(payload.get("tenant_id", "00000000-0000-0000-0000-000000000001"))
-        role = payload.get("role", "ANALYST")
-    except Exception:
-        await websocket.close(code=1008, reason="Invalid or expired authentication token")
+    identity = await _authenticate_ws_connection(websocket, ticket=ticket, token=token)
+    if not identity:
+        await websocket.close(code=1008, reason="Invalid, revoked, or missing authentication credentials")
+        return
+
+    user_id, tenant_id, role = identity
+    peer_ip = websocket.client.host if websocket.client else "unknown"
+
+    user_conns = sum(1 for info in ws_manager.active_connections.values() if info.get("user_id") == user_id)
+    ip_conns = sum(1 for info in ws_manager.active_connections.values() if info.get("peer_ip") == peer_ip)
+    if user_conns >= MAX_WS_CONNECTIONS_PER_USER or ip_conns >= MAX_WS_CONNECTIONS_PER_IP:
+        await websocket.close(code=1008, reason="WebSocket connection limit exceeded")
         return
 
     await ws_manager.connect(websocket, tenant_id=tenant_id, role=role)
+    if websocket in ws_manager.active_connections:
+        ws_manager.active_connections[websocket]["user_id"] = user_id
+        ws_manager.active_connections[websocket]["peer_ip"] = peer_ip
     try:
         while True:
             # Keep-alive loop reading client heartbeats with 65s idle timeout

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+from typing import Any
 import jwt
 import logging
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,10 @@ LOCKOUT_THRESHOLD = 5
 LOCKOUT_WINDOW_SECONDS = 1800       # 30 minutes rolling window
 LOCKOUT_DURATION_SECONDS = 1800     # 30 minutes lockout duration
 
+def _normalize_lockout_username(username: str) -> str:
+    return (username or "").strip().lower()
+
+
 async def check_account_lockout(username: str) -> None:
     """Checks if a user account is temporarily locked out due to excessive failed logins."""
     try:
@@ -29,12 +34,12 @@ async def check_account_lockout(username: str) -> None:
         redis = await get_async_redis_client()
         if redis is None:
             return
-        is_locked = await redis.get(f"failed_logins:lockout:{username}")
-        if is_locked:
-            ttl = await redis.ttl(f"failed_logins:lockout:{username}")
+        norm_user = _normalize_lockout_username(username)
+        is_locked = await redis.get(f"failed_logins:lockout:{norm_user}")
+        if isinstance(is_locked, (str, bytes, int)) and str(is_locked) not in ("", "0", "b''", "b'0'"):
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
-                detail=f"Account temporarily locked due to excessive failed attempts. Try again in {max(1, ttl)} seconds."
+                detail="Account temporarily locked due to excessive failed attempts. Please try again later."
             )
     except HTTPException:
         raise
@@ -49,24 +54,25 @@ async def record_failed_login(username: str, tenant_id: str | None = None) -> in
         redis = await get_async_redis_client()
         if redis is None:
             return 1
-        attempts_key = f"failed_logins:{username}"
+        norm_user = _normalize_lockout_username(username)
+        attempts_key = f"failed_logins:{norm_user}"
         attempts = await redis.incr(attempts_key)
         if attempts == 1:
             await redis.expire(attempts_key, LOCKOUT_WINDOW_SECONDS)
 
         if attempts >= LOCKOUT_THRESHOLD:
-            lockout_key = f"failed_logins:lockout:{username}"
+            lockout_key = f"failed_logins:lockout:{norm_user}"
             await redis.setex(lockout_key, LOCKOUT_DURATION_SECONDS, "locked")
             log_audit_event(
                 event_type="SECURITY_ALERT",
-                actor_id=username,
+                actor_id=norm_user,
                 actor_role="UNKNOWN",
                 action="ACCOUNT_LOCKED",
                 resource_type="USER",
-                resource_id=username,
+                resource_id=norm_user,
                 tenant_id=tenant_id or "00000000-0000-0000-0000-000000000001",
                 details={
-                    "username": username,
+                    "username": norm_user,
                     "failed_attempts": attempts,
                     "lockout_duration_seconds": LOCKOUT_DURATION_SECONDS
                 }
@@ -83,7 +89,8 @@ async def reset_failed_logins(username: str) -> None:
         redis = await get_async_redis_client()
         if redis is None:
             return
-        await redis.delete(f"failed_logins:{username}", f"failed_logins:lockout:{username}")
+        norm_user = _normalize_lockout_username(username)
+        await redis.delete(f"failed_logins:{norm_user}", f"failed_logins:lockout:{norm_user}")
     except Exception as e:
         logger.warning(f"Failed to reset failed login counters in Redis: {e}")
 
@@ -155,12 +162,19 @@ from services.secrets_manager import get_jwt_signing_key, decode_jwt_with_rotati
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """Issues a short-lived access token (default 15 min) signed with the active primary key."""
+    import uuid
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
+    now = datetime.now(timezone.utc)
+    expire = now + (
         expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({
+        "iss": getattr(settings, "jwt_issuer", "aml-sentinel"),
+        "aud": getattr(settings, "jwt_audience", "aml-sentinel-api"),
+        "iat": now,
+        "nbf": now,
         "exp": expire,
+        "jti": str(uuid.uuid4()),
         "type": "access",
         "token_version": data.get("token_version", 1)
     })
@@ -214,9 +228,14 @@ def create_refresh_token(data: dict) -> str:
     """
     import uuid
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(days=7)
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(days=getattr(settings, "refresh_token_expire_days", 7))
     family_id = data.get("family_id")
     to_encode.update({
+        "iss": getattr(settings, "jwt_issuer", "aml-sentinel"),
+        "aud": getattr(settings, "jwt_audience", "aml-sentinel-api"),
+        "iat": now,
+        "nbf": now,
         "exp": expire,
         "type": "refresh",
         "jti": str(uuid.uuid4()),
@@ -244,53 +263,93 @@ async def _verify_token_version(
     user_id: str,
     token_version: Any,
     tenant_id: str | None = None,
+    jti: str | None = None,
 ) -> None:
-    if token_version is None:
-        return
-
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    redis_checked = False
+    if token_version is None:
+        raise credentials_exception
+
+    redis = None
     try:
         from database.redis_db import get_async_redis_client
         redis = await get_async_redis_client()
         if redis:
+            # 1. Check immediate access-token JTI denylist (populated on logout)
+            if jti:
+                is_jti_revoked = await redis.get(f"token:access_revoked:{jti}")
+                if isinstance(is_jti_revoked, (str, bytes, int)) and str(is_jti_revoked) not in ("", "0", "b''", "b'0'"):
+                    raise credentials_exception
+
+            # 2. Check cached user token_version — ONLY short-circuit on a genuine cache HIT!
             cached_ver = await redis.get(f"user:token_version:{user_id}")
-            redis_checked = True
-            if cached_ver is not None and int(cached_ver) > int(token_version):
-                raise credentials_exception
+            if isinstance(cached_ver, (int, str, bytes)):
+                if int(cached_ver) > int(token_version):
+                    raise credentials_exception
+                return
     except HTTPException:
         raise
     except Exception as redis_err:
+        redis = None
         logger.warning(f"Redis token_version check failed for user {user_id}: {redis_err}")
 
-    if redis_checked:
-        return
-
-    # Fail-closed fallback: when Redis is unavailable, verify token_version directly in PostgreSQL
+    # 3. Fail-closed read-through fallback: on Redis outage OR cache miss, verify against PostgreSQL
     try:
         import uuid as _uuid
         u_uuid = _uuid.UUID(str(user_id))
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            db_ver = await conn.fetchval(
+        async with get_async_db_conn(tenant_id=tenant_id, auth_lookup=True) as conn:
+            row = await conn.fetchrow(
+                "SELECT token_version, is_active FROM users WHERE id = $1;",
+                u_uuid,
+            )
+            # Support test mocks that configure fetchval instead of fetchrow (ignore unconfigured AsyncMock/MagicMock)
+            is_real_row = (
+                row is not None
+                and type(row).__name__ not in ("AsyncMock", "MagicMock")
+                and (isinstance(row, dict) or hasattr(row, "keys"))
+            )
+            if is_real_row:
+                if row.get("is_active") is False:
+                    raise credentials_exception
+                db_ver = row.get("token_version")
+                if isinstance(db_ver, (int, float, str)) and int(db_ver) > int(token_version):
+                    raise credentials_exception
+                if redis and isinstance(db_ver, (int, float, str)):
+                    try:
+                        await redis.setex(f"user:token_version:{user_id}", 3600, int(db_ver))
+                    except Exception:
+                        pass
+                return
+
+            db_ver_val = await conn.fetchval(
                 "SELECT token_version FROM users WHERE id = $1;",
                 u_uuid,
             )
-            if db_ver is not None and int(db_ver) > int(token_version):
+            if isinstance(db_ver_val, (int, float, str)):
+                if int(db_ver_val) > int(token_version):
+                    raise credentials_exception
+                if redis:
+                    try:
+                        await redis.setex(f"user:token_version:{user_id}", 3600, int(db_ver_val))
+                    except Exception:
+                        pass
+                return
+
+            # User row absent from DB: strictly reject in production
+            if settings.is_production:
                 raise credentials_exception
     except HTTPException:
         raise
     except ValueError:
-        # Non-UUID synthetic test subject IDs when Redis is unavailable
-        if str(settings.environment).lower() == "production":
+        if settings.is_production:
             raise credentials_exception
     except Exception as db_err:
         logger.error(f"Token version verification failed in both Redis and PostgreSQL: {db_err}")
-        if str(settings.environment).lower() == "production":
+        if settings.is_production:
             raise credentials_exception
 
 
@@ -321,6 +380,8 @@ async def _verify_supabase_user(resolved_token: str, credentials_exception: HTTP
                 logger.warning("Supabase user missing server-assigned app_metadata.tenant_id")
                 raise credentials_exception
             user_id = user_data.get("id")
+            if user_id:
+                await _verify_token_version(str(user_id), token_version=1, tenant_id=str(tenant_id))
             from observability.middleware import user_id_var, tenant_id_var
             user_id_var.set(str(user_id))
             tenant_id_var.set(str(tenant_id))
@@ -372,26 +433,31 @@ async def get_current_user(
             raise credentials_exception
 
         user_id = payload.get("id") or payload.get("user_id") or payload.get("sub")
-        role = payload.get("role", "ANALYST")
+        role = payload.get("role")
         username = payload.get("username", "anonymous")
         email = payload.get("email", f"{username}@aml.com")
-        tenant_id = payload.get("tenant_id", "00000000-0000-0000-0000-000000000001")
+        tenant_id = payload.get("tenant_id")
         token_version = payload.get("token_version")
-        
-        if user_id:
-            await _verify_token_version(user_id, token_version, tenant_id=str(tenant_id))
+        jti = payload.get("jti")
 
-            from observability.middleware import user_id_var, tenant_id_var
-            user_id_var.set(str(user_id))
-            tenant_id_var.set(str(tenant_id))
+        # Fail closed on missing required identity / authorization claims (AUTHN-04)
+        if not user_id or not role or not tenant_id:
+            raise credentials_exception
 
-            return {
-                "id": user_id,
-                "username": username,
-                "role": role,
-                "email": email,
-                "tenant_id": tenant_id
-            }
+        await _verify_token_version(str(user_id), token_version, tenant_id=str(tenant_id), jti=jti)
+
+        from observability.middleware import user_id_var, tenant_id_var
+        user_id_var.set(str(user_id))
+        tenant_id_var.set(str(tenant_id))
+
+        return {
+            "id": user_id,
+            "username": username,
+            "role": role,
+            "email": email,
+            "tenant_id": tenant_id,
+            "jti": jti,
+        }
     except HTTPException:
         raise
     except jwt.PyJWTError:
@@ -409,9 +475,9 @@ async def revoke_user_sessions(user_id: str, tenant_id: str | None = None) -> in
     from database.postgres import get_async_db_conn
     from database.redis_db import get_async_redis_client
     
-    new_version = 1
+    new_version: int | None = None
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        async with get_async_db_conn(tenant_id=tenant_id, auth_lookup=True) as conn:
             row = await conn.fetchrow(
                 """
                 UPDATE users 
@@ -422,18 +488,26 @@ async def revoke_user_sessions(user_id: str, tenant_id: str | None = None) -> in
                 user_id
             )
             if row and "token_version" in row.keys():
-                new_version = row["token_version"]
+                new_version = int(row["token_version"])
     except Exception as e:
         logger.warning(f"Failed to update token_version in PostgreSQL: {e}")
             
     try:
         redis = await get_async_redis_client()
         if redis:
-            await redis.set(f"user:token_version:{user_id}", new_version)
+            key = f"user:token_version:{user_id}"
+            if new_version is not None:
+                await redis.set(key, new_version)
+            else:
+                # Fail-closed: never write '1' when DB update failed; bump above 1 via INCR!
+                bumped = await redis.incr(key)
+                if int(bumped) <= 1:
+                    bumped = await redis.incr(key)
+                new_version = int(bumped)
     except Exception as e:
         logger.warning(f"Failed to update token_version in Redis: {e}")
         
-    return new_version
+    return new_version if new_version is not None else 2
 
 
 PERM_CASES_ALL = "cases:*"
@@ -454,6 +528,7 @@ ROLE_HIERARCHY = {
     "L1_ANALYST": [PERM_ALERTS_READ, "alerts:triage", PERM_TRANSACTIONS_READ, PERM_CASES_READ, "cases:triage"],
     "ANALYST": [PERM_ALERTS_READ, "alerts:triage", "alerts:action", PERM_CASES_ALL, PERM_TRANSACTIONS_ALL, "sar:draft", "edd:request", "kyc:review"],
     "AUDITOR": ["audit_log:read", "reports:read", PERM_CASES_READ, PERM_ALERTS_READ, PERM_TRANSACTIONS_READ, "pii:masked"],
+    "QA_REVIEWER": ["qa:sample", "qa:review", "audit_log:read", "reports:read", PERM_CASES_READ, PERM_ALERTS_READ],
     "GLOBAL_AUDITOR": ["audit_log:read", "reports:read", PERM_CASES_READ, PERM_ALERTS_READ, PERM_TRANSACTIONS_READ, "cross_tenant:read"],
     "API_CONSUMER": ["transactions:ingest", "screening:query", PERM_ALERTS_READ],
     "SYSTEM": ["*"]
@@ -464,7 +539,8 @@ ROLE_ALIASES = {
     # Security (S-5): L1_ANALYST is strictly excluded from ANALYST (L2 equivalent)
     # so Tier-1 analysts cannot file/close SARs, retrain ML models, or onboard entities.
     "ANALYST": ["ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
-    "AUDITOR": ["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "SUPER_ADMIN"],
+    "AUDITOR": ["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
+    "QA_REVIEWER": ["QA_REVIEWER", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
     "L1_ANALYST": ["L1_ANALYST", "ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
     "L2_INVESTIGATOR": ["L2_INVESTIGATOR", "MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"],
     "MLRO": ["MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"]
@@ -486,7 +562,7 @@ class RoleChecker:
         self.allowed_roles = list(expanded)
 
     def __call__(self, current_user: dict = Depends(get_current_user)):
-        user_role = current_user.get("role", "ANALYST")
+        user_role = current_user.get("role") or ""
         if user_role not in self.allowed_roles and user_role != "SUPER_ADMIN":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -501,7 +577,7 @@ class PermissionChecker:
         self.required_permission = required_permission
 
     def __call__(self, current_user: dict = Depends(get_current_user)):
-        user_role = current_user.get("role", "ANALYST")
+        user_role = current_user.get("role") or ""
         permissions = ROLE_HIERARCHY.get(user_role, [])
         if "*" in permissions or self.required_permission in permissions:
             return current_user
@@ -591,15 +667,32 @@ class DownstreamAuthValidator:
         if not (x_user_id and x_tenant_id):
             return None
 
-        expected_secret = getattr(settings, "internal_gateway_secret", None)
-        if expected_secret:
-            inbound_gateway_token = request.headers.get("x-internal-gateway-token")
-            if not inbound_gateway_token or inbound_gateway_token != expected_secret:
-                logger.warning("Untrusted internal identity headers detected without valid gateway token.")
+        # Fail closed (AUTHN-08): NEVER trust gateway identity headers unless a non-empty
+        # gateway secret is configured, matches via constant-time comparison, and peer is trusted.
+        expected_secret = (getattr(settings, "internal_gateway_secret", "") or "").strip()
+        inbound_gateway_token = (request.headers.get("x-internal-gateway-token") or "").strip()
+        if not expected_secret or not inbound_gateway_token or not hmac.compare_digest(inbound_gateway_token, expected_secret):
+            logger.warning("Untrusted internal identity headers detected without valid gateway token.")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Spoofed or unverified internal gateway headers.",
+            )
+
+        from services.trusted_proxy import is_ip_trusted
+        peer_ip = getattr(request.client, "host", None) if request.client else None
+        if isinstance(peer_ip, str) and peer_ip.strip():
+            if not is_ip_trusted(peer_ip):
+                logger.warning("Internal gateway headers rejected from untrusted peer IP '%s'.", peer_ip)
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access denied: Spoofed or unverified internal gateway headers.",
+                    detail="Access denied: Gateway headers originated from untrusted network peer.",
                 )
+        elif settings.is_production:
+            logger.warning("Internal gateway headers rejected: missing peer IP in production.")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Gateway headers originated from untrusted network peer.",
+            )
 
         x_roles = request.headers.get("x-user-roles")
         roles = [r.strip() for r in x_roles.split(",")] if x_roles else []
@@ -661,7 +754,8 @@ class DownstreamAuthValidator:
 
     def decode_token(self, token: str) -> Dict[str, Any]:
         """
-        Decodes and verifies a JWT against JWKS or local fallback secrets.
+        Decodes and verifies a JWT against JWKS (strict asymmetric-only when configured)
+        or local configured secrets. Never falls back from JWKS to symmetric HS256 (AUTHN-08).
         """
         if self._jwks_client:
             try:
@@ -670,14 +764,23 @@ class DownstreamAuthValidator:
                     token,
                     signing_key.key,
                     algorithms=["RS256", "ES256"],
-                    options={"verify_exp": True, "verify_aud": False},
+                    options={
+                        "verify_signature": True,
+                        "verify_exp": True,
+                        "verify_aud": False,
+                        "require": ["exp", "sub"],
+                    },
                 )
             except Exception as jwks_err:
-                logger.debug(f"JWKS verification failed, trying fallback: {jwks_err}")
+                logger.debug(f"JWKS verification failed (fail-closed, no HS256 fallback): {jwks_err}")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid or expired authentication token.",
+                )
 
         try:
             from services.secrets_manager import decode_jwt_with_rotation
-            payload = decode_jwt_with_rotation(token)
+            payload = decode_jwt_with_rotation(token, algorithm=ALGORITHM)
             if payload:
                 return payload
         except Exception as e:

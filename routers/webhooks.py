@@ -146,11 +146,27 @@ async def delete_webhook(
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         deleted = await conn.fetchval(
-            "DELETE FROM tenant_webhooks WHERE id = $1 RETURNING id;",
+            "DELETE FROM tenant_webhooks WHERE id = $1 AND tenant_id = $2::uuid RETURNING id;",
             hook_uuid,
+            str(tenant_id),
         )
         if not deleted:
             raise HTTPException(status_code=404, detail="Webhook not found.")
+        try:
+            from services.audit import record_audit_event_tx
+            await record_audit_event_tx(
+                conn=conn,
+                action="DELETE_WEBHOOK",
+                actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
+                actor_username=current_user.get("username", "admin"),
+                actor_role=current_user.get("role", "ADMIN"),
+                resource_type="WEBHOOK",
+                resource_id=webhook_id,
+                tenant_id=str(tenant_id),
+                details={"deleted": True},
+            )
+        except Exception as audit_err:
+            logger.warning(f"Transactional audit write skipped in delete_webhook: {audit_err}")
 
     return {"status": "DELETED", "id": webhook_id}
 
@@ -160,6 +176,7 @@ async def list_webhook_deliveries(
     webhook_id: str,
     limit: int = 50,
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     try:
         hook_uuid = uuid.UUID(webhook_id)

@@ -345,7 +345,7 @@ async def test_p1_5_qa_four_eyes_enforces_sod_and_reopens_failed_dismissal():
             assert "Segregation of Duties" in res_sod.json()["detail"]
 
     # Case 2: Independent QA reviewer fails dismissal -> reopens alert to OPEN
-    qa_token = _make_token(role="AUDITOR", username="qa.claire")
+    qa_token = _make_token(role="QA_REVIEWER", username="qa.claire")
     mock_conn_fail = AsyncMock()
     mock_conn_fail.fetchrow = AsyncMock(return_value={
         "id": review_id,

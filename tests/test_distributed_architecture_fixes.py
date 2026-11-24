@@ -276,7 +276,9 @@ async def test_websocket_ping_pong_heartbeat():
         mock_decode.return_value = {
             "sub": "user-123",
             "role": "ANALYST",
-            "tenant_id": TENANT_ID
+            "tenant_id": TENANT_ID,
+            "type": "access",
+            "token_version": 1,
         }
 
         # Send "ping" then simulate client disconnect
@@ -306,7 +308,9 @@ async def test_websocket_idle_timeout_closes_cleanly():
         mock_decode.return_value = {
             "sub": "user-123",
             "role": "ANALYST",
-            "tenant_id": TENANT_ID
+            "tenant_id": TENANT_ID,
+            "type": "access",
+            "token_version": 1,
         }
 
         await websocket_live_stream(websocket=mock_ws, token="valid.jwt.token")

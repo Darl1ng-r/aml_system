@@ -76,7 +76,7 @@ async def scan_bytes_for_malware(data: bytes) -> Tuple[bool, str]:
                 pass
     except Exception as exc:
         logger.error(f"ClamAV scan connection failed ({host}:{port}): {exc}")
-        if str(settings.environment).lower() == "production":
+        if settings.is_production:
             return False, "SCAN_UNAVAILABLE_FAIL_CLOSED"
         return True, "CLEAN_SCAN_SKIPPED_DEV"
 

@@ -229,11 +229,12 @@ async def build_signed_examiner_packet(
         """
         SELECT id, action, actor_username, actor_role, resource_type, resource_id, created_at
         FROM audit_log
-        WHERE resource_id = $1
+        WHERE resource_id = $1 AND tenant_id = $2::uuid
         ORDER BY created_at ASC
         LIMIT 200;
         """,
         str(case_uuid),
+        str(tenant_id),
     )
 
     def _norm(rows):

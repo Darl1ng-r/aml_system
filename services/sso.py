@@ -10,6 +10,7 @@ Supports Okta, Microsoft Entra ID (Azure AD), Google Workspace, and Auth0 via:
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import secrets
@@ -154,6 +155,8 @@ async def fetch_oidc_discovery(issuer_url: str) -> Dict[str, Any]:
     for req_field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
         if not doc.get(req_field):
             raise ValueError(f"OIDC discovery document missing mandatory field '{req_field}'.")
+        # AUTHN-07: Validate every nested OIDC discovery URL against SSRF / non-HTTPS / metadata IPs
+        doc[req_field] = validate_siem_destination_url(str(doc[req_field]))
 
     if redis:
         try:
@@ -176,10 +179,14 @@ def verify_oidc_id_token(
     Cryptographically verifies an OIDC ID Token using the IdP's JWKS keys,
     validating signature, exp, aud, iss, and nonce claims.
     """
+    if not expected_nonce:
+        raise jwt.InvalidTokenError("Missing expected OIDC nonce.")
+
     if signing_key_override is not None:
         key = signing_key_override
     else:
-        jwk_client = PyJWKClient(jwks_uri, cache_keys=True)
+        safe_jwks_uri = validate_siem_destination_url(jwks_uri)
+        jwk_client = PyJWKClient(safe_jwks_uri, cache_keys=True)
         key = jwk_client.get_signing_key_from_jwt(id_token).key
 
     claims = jwt.decode(
@@ -188,10 +195,11 @@ def verify_oidc_id_token(
         algorithms=["RS256", "ES256", "RS384", "RS512"],
         audience=client_id,
         issuer=issuer,
-        options={"verify_exp": True, "verify_aud": True, "verify_iss": True},
+        options={"verify_exp": True, "verify_aud": True, "verify_iss": True, "require": ["exp", "sub", "iss", "aud"]},
     )
 
-    if expected_nonce and claims.get("nonce") != expected_nonce:
+    token_nonce = str(claims.get("nonce") or "")
+    if not token_nonce or not hmac.compare_digest(token_nonce, str(expected_nonce)):
         raise jwt.InvalidTokenError("OIDC ID token nonce mismatch (possible replay attack).")
 
     return claims

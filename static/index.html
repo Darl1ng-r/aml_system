@@ -45,7 +45,7 @@
 
   <!-- Auth Guard: Client-side navigation check -->
   <script>
-    if (!sessionStorage.getItem('auth_active') && !localStorage.getItem('auth_session_active') && !localStorage.getItem('jwt_token')) {
+    if (!sessionStorage.getItem('auth_active') && !localStorage.getItem('auth_session_active')) {
       window.location.replace('/login');
     }
   </script>

@@ -308,9 +308,9 @@ async def get_account_by_id(
             }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to fetch account %s", id)
-        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch account details.")
 
 
 @router.get("/accounts")
@@ -358,6 +358,8 @@ async def list_accounts(
             response.headers["X-Total-Count"] = str(total_count or 0)
             response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
             return accounts
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         logger.exception("Failed to list accounts")
-        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list accounts.")

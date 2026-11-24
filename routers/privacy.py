@@ -137,6 +137,7 @@ async def list_legal_holds(
 ):
     """Internal compliance-only endpoint for inspecting active/released legal holds."""
     tenant_id = enforce_tenant_data_scope(current_user)
+    tenant_uuid = uuid.UUID(str(tenant_id))
     async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
         if account_id:
             try:
@@ -147,9 +148,10 @@ async def list_legal_holds(
                 """
                 SELECT id, account_id, case_id, reference_number, reason, is_active, created_by_username, created_at
                 FROM legal_holds
-                WHERE account_id = $1 AND ($2 = FALSE OR is_active = TRUE)
+                WHERE tenant_id = $1 AND account_id = $2 AND ($3 = FALSE OR is_active = TRUE)
                 ORDER BY created_at DESC;
                 """,
+                tenant_uuid,
                 acc_uuid,
                 active_only,
             )
@@ -158,10 +160,11 @@ async def list_legal_holds(
                 """
                 SELECT id, account_id, case_id, reference_number, reason, is_active, created_by_username, created_at
                 FROM legal_holds
-                WHERE ($1 = FALSE OR is_active = TRUE)
+                WHERE tenant_id = $1 AND ($2 = FALSE OR is_active = TRUE)
                 ORDER BY created_at DESC
                 LIMIT 200;
                 """,
+                tenant_uuid,
                 active_only,
             )
 
@@ -287,9 +290,10 @@ async def execute_gdpr_erasure(
 
         acc_id = acc["id"]
 
-        # 1. Non-bypassable active legal hold guard
+        # 1. Non-bypassable active legal hold guard (tenant-scoped)
         active_holds = await conn.fetchval(
-            "SELECT COUNT(*) FROM legal_holds WHERE account_id = $1 AND is_active = TRUE;",
+            "SELECT COUNT(*) FROM legal_holds WHERE tenant_id = $1 AND account_id = $2 AND is_active = TRUE;",
+            uuid.UUID(str(tenant_id)),
             acc_id,
         )
         if int(active_holds or 0) > 0:

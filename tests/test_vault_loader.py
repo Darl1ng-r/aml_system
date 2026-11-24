@@ -184,10 +184,10 @@ async def test_bootstrap_uses_dev_token_when_set(monkeypatch):
     from services import vault_loader
     vault_loader.VaultSecretsLoader._client = None
 
-    # Build URLs for all 7 secret paths
+    # Build URLs for all 8 secret paths (including aml/encryption for PII key)
     all_paths = [
         "aml/postgres", "aml/neo4j", "aml/elasticsearch",
-        "aml/jwt", "aml/fincen", "aml/watchlists", "aml/supabase"
+        "aml/jwt", "aml/encryption", "aml/fincen", "aml/watchlists", "aml/supabase"
     ]
 
     with respx.mock:
@@ -241,7 +241,7 @@ async def test_bootstrap_populates_secret_store(monkeypatch):
 
     all_paths = [
         "aml/postgres", "aml/neo4j", "aml/elasticsearch",
-        "aml/jwt", "aml/fincen", "aml/watchlists", "aml/supabase"
+        "aml/jwt", "aml/encryption", "aml/fincen", "aml/watchlists", "aml/supabase"
     ]
     renew_url = f"{VAULT_ADDR}/v1/auth/token/renew-self"
 
@@ -260,6 +260,7 @@ async def test_bootstrap_populates_secret_store(monkeypatch):
     assert vault_loader.SecretStore.is_loaded
     assert vault_loader.SecretStore.get("postgres.password") == "postgres_pw"
     assert vault_loader.SecretStore.get("jwt.password") == "jwt_pw"
+    assert vault_loader.SecretStore.get("encryption.password") == "encryption_pw"
 
 
 # ── T10/T11 — SecretStore get / require ──────────────────────────────────

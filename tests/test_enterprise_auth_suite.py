@@ -153,7 +153,10 @@ async def test_refresh_token_rotation_and_compromise_detection():
             data1 = res1.json()
             assert "access_token" in data1
             assert "refresh_token" in data1
-            assert redis_store.get(f"token:revoked:{token}") == "1"
+            import hashlib
+            tok_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            assert redis_store.get(f"token:revoked:{tok_hash}") == "1"
+            assert f"token:revoked:{token}" not in redis_store
 
             # Step 2: Compromise attack — re-submit the already revoked token
             res2 = await ac.post("/api/v1/auth/refresh", json={"refresh_token": token}, headers=headers)

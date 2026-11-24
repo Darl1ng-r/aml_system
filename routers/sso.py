@@ -10,6 +10,8 @@ Endpoints:
   - GET    /api/v1/auth/sso/{id}/callback         (Exchange code, verify ID token, JIT provision & issue cookies)
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import secrets
@@ -23,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, HttpUrl
 
+from config import settings
 from database.postgres import get_async_db_conn, get_async_db_read_conn, get_db_pool
 from observability.logging import log_audit_event
 from observability.sanitizer import sanitize_text
@@ -33,7 +36,7 @@ from services.auth import (
     create_refresh_token,
     enforce_tenant_data_scope,
 )
-from services.encryption import encrypt_pii, decrypt_pii
+from services.encryption import encrypt_pii, decrypt_pii, DecryptionError
 from services.rate_limiter import RateLimiter
 from services.siem_forwarder import validate_siem_destination_url
 from services.sso import (
@@ -65,6 +68,7 @@ class SSOProviderCreate(BaseModel):
 @router.get("/providers/public")
 async def list_public_sso_providers(
     tenant_id: str = Query(default="00000000-0000-0000-0000-000000000001"),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60, ip_only=True)),
 ):
     """Returns minimal public metadata (id + provider_name) so login.html can render active SSO buttons."""
     try:
@@ -190,6 +194,7 @@ async def create_sso_provider(
 async def delete_sso_provider(
     provider_id: str,
     current_user: dict = Depends(RoleChecker(["ADMIN", "SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=15, window=60)),
 ):
     try:
         p_uuid = uuid.UUID(provider_id)
@@ -201,6 +206,18 @@ async def delete_sso_provider(
         deleted = await conn.fetchval("DELETE FROM sso_providers WHERE id = $1 RETURNING id;", p_uuid)
         if not deleted:
             raise HTTPException(status_code=404, detail="SSO provider not found.")
+        from services.audit import record_audit_event_tx
+        await record_audit_event_tx(
+            conn=conn,
+            action="DELETE_SSO_PROVIDER",
+            actor_id=str(current_user.get("id", "")),
+            actor_username=current_user.get("username", "admin"),
+            actor_role=current_user.get("role", "ADMIN"),
+            resource_type="SSO_PROVIDER",
+            resource_id=provider_id,
+            tenant_id=str(tenant_id),
+            details={"provider_id": provider_id},
+        )
     return {"status": "DELETED", "id": provider_id}
 
 
@@ -225,24 +242,39 @@ async def _load_provider_for_login(provider_id: str, tenant_id: str) -> dict:
         return dict(row)
 
 
+def _sso_state_cookie_digest(state: str) -> str:
+    return hashlib.sha256(f"sso-state-bind:{state}".encode("utf-8")).hexdigest()
+
+
+def _resolve_sso_redirect_uri(request: Request, provider_id: str) -> str:
+    """Builds canonical OIDC redirect_uri from configured PUBLIC_BASE_URL to prevent Host header poisoning (AUTHN-02)."""
+    canonical = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+    if canonical:
+        return f"{canonical}/api/v1/auth/sso/{provider_id}/callback"
+    return str(request.url_for("sso_callback", provider_id=provider_id))
+
+
 @router.get("/{provider_id}/authorize")
 async def sso_authorize(
     provider_id: str,
     request: Request,
+    response: Response,
     tenant_id: str = Query(default="00000000-0000-0000-0000-000000000001"),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60, ip_only=True)),
 ):
-    """Initiates OIDC Authorization Code Flow with PKCE (S256), state, and nonce."""
+    """Initiates OIDC Authorization Code Flow with PKCE (S256), browser-bound state cookie, and nonce."""
     provider = await _load_provider_for_login(provider_id, tenant_id)
     try:
         discovery = await fetch_oidc_discovery(provider["issuer_url"])
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to load IdP OIDC discovery: {exc}")
+    except Exception:
+        logger.exception("Failed to load IdP OIDC discovery for provider %s", provider_id)
+        raise HTTPException(status_code=502, detail="Failed to load Identity Provider discovery metadata.")
 
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(24)
     code_verifier, code_challenge = generate_pkce_pair()
-    redirect_uri = str(request.url_for("sso_callback", provider_id=provider_id))
+    redirect_uri = _resolve_sso_redirect_uri(request, provider_id)
+    state_binding = _sso_state_cookie_digest(state)
 
     await store_sso_state(
         state,
@@ -252,6 +284,7 @@ async def sso_authorize(
             "nonce": nonce,
             "code_verifier": code_verifier,
             "redirect_uri": redirect_uri,
+            "state_binding": state_binding,
         },
     )
 
@@ -268,10 +301,31 @@ async def sso_authorize(
         }
     )
     auth_url = f"{discovery['authorization_endpoint']}?{params}"
+    is_secure = bool(settings.enable_tls or settings.is_production)
 
     if "application/json" in request.headers.get("accept", ""):
+        response.set_cookie(
+            key="sso_state_binding",
+            value=state_binding,
+            max_age=300,
+            httponly=True,
+            samesite="lax",
+            secure=is_secure,
+            path="/api/v1/auth/sso",
+        )
         return {"authorization_url": auth_url, "state": state}
-    return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
+
+    redirect_resp = RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
+    redirect_resp.set_cookie(
+        key="sso_state_binding",
+        value=state_binding,
+        max_age=300,
+        httponly=True,
+        samesite="lax",
+        secure=is_secure,
+        path="/api/v1/auth/sso",
+    )
+    return redirect_resp
 
 
 @router.get("/{provider_id}/callback", name="sso_callback")
@@ -281,23 +335,45 @@ async def sso_callback(
     response: Response,
     code: str = Query(...),
     state: str = Query(...),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60, ip_only=True)),
 ):
-    """Completes OIDC PKCE callback, verifies ID token via JWKS, JIT-provisions user, and sets HttpOnly cookies."""
+    """
+    Completes OIDC PKCE callback:
+      - Verifies single-use state + browser-bound CSRF cookie (`sso_state_binding`)
+      - Fails closed if encrypted client_secret fails decryption
+      - Verifies ID token via JWKS + constant-time nonce
+      - Requires `email_verified == True` when using email
+      - Provisions / matches strictly by deterministic `(issuer, sub)` UUID scoped to `tenant_id`
+        (never collides with or overwrites local password-managed accounts!)
+    """
     state_data = await consume_sso_state(state)
     if not state_data or state_data.get("provider_id") != str(provider_id):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired SSO state token.")
+
+    # AUTHN-02: Enforce RFC 6749 §10.12 browser state-binding cookie to block OAuth Login CSRF
+    expected_binding = state_data.get("state_binding") or _sso_state_cookie_digest(state)
+    cookie_binding = request.cookies.get("sso_state_binding") or ""
+    if not cookie_binding or not hmac.compare_digest(cookie_binding, str(expected_binding)):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO login CSRF validation failed: missing or mismatched browser state binding cookie.",
+        )
 
     tenant_id = str(state_data["tenant_id"])
     provider = await _load_provider_for_login(provider_id, tenant_id)
     discovery = await fetch_oidc_discovery(provider["issuer_url"])
 
+    # AUTHN-02: Fail closed if confidential client_secret_enc fails integrity/decryption
     client_secret = ""
     if provider.get("client_secret_enc"):
         try:
             client_secret = decrypt_pii(provider["client_secret_enc"], tenant_id=tenant_id) or ""
-        except Exception:
-            client_secret = ""
+        except (DecryptionError, Exception):
+            logger.error("Failed to decrypt OIDC client_secret for provider %s", provider_id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="SSO provider credentials could not be decrypted.",
+            )
 
     token_form = {
         "grant_type": "authorization_code",
@@ -317,8 +393,9 @@ async def sso_callback(
             token_data = token_resp.json()
     except HTTPException:
         raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"IdP token exchange error: {exc}")
+    except Exception:
+        logger.exception("IdP token exchange error for provider %s", provider_id)
+        raise HTTPException(status_code=502, detail="IdP token exchange failed.")
 
     id_token = token_data.get("id_token")
     if not id_token:
@@ -332,25 +409,54 @@ async def sso_callback(
             issuer=discovery.get("issuer", provider["issuer_url"]),
             expected_nonce=state_data["nonce"],
         )
-    except jwt.PyJWTError as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid OIDC ID token: {exc}")
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid OIDC ID token.")
 
-    email = claims.get("email") or claims.get("preferred_username") or ""
-    username = (email.split("@")[0] if "@" in email else email) or f"sso_{str(claims.get('sub', ''))[:12]}"
+    sub_claim = str(claims.get("sub") or "").strip()
+    if not sub_claim:
+        raise HTTPException(status_code=401, detail="OIDC ID token missing subject claim.")
+
+    # AUTHN-02: Require verified email before trusting email claim (prevents unverified-email takeover)
+    email = str(claims.get("email") or "").strip()
+    if email and claims.get("email_verified") is not True:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="OIDC identity email address is not verified by the Identity Provider.",
+        )
+
+    username = (email.split("@")[0] if "@" in email else str(claims.get("preferred_username") or "")) or f"sso_{sub_claim[:12]}"
     raw_mapping = provider.get("group_role_mapping")
     mapping = json.loads(raw_mapping) if isinstance(raw_mapping, str) else (raw_mapping or {})
     idp_groups = claims.get("groups") or claims.get("roles") or []
     assigned_role = resolve_role_from_groups(idp_groups, mapping, default_role=provider.get("default_role", "L1_ANALYST"))
 
-    # JIT user provisioning under tenant RLS
-    user_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{provider['issuer_url']}:{claims.get('sub')}"))
+    # AUTHN-02: Strict deterministic SSO identity binding scoped to (tenant_id, issuer, sub).
+    # NEVER match or overwrite existing local password-managed accounts by local-part username!
+    user_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}:{provider['issuer_url']}:{sub_claim}"))
+    sso_marker = f"sso_managed:{provider['id']}"
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        existing = await conn.fetchrow("SELECT id, token_version FROM users WHERE username = $1;", username)
+        existing = await conn.fetchrow(
+            "SELECT id, token_version, password_hash, is_active FROM users WHERE id = $1::uuid AND tenant_id = $2::uuid;",
+            user_id,
+            tenant_id,
+        )
         if existing:
-            user_id = str(existing["id"])
+            if existing.get("is_active") is False:
+                raise HTTPException(status_code=403, detail="SSO user account has been disabled.")
+            if not str(existing.get("password_hash") or "").startswith("sso_managed:"):
+                raise HTTPException(status_code=409, detail="Account collision with local user denied.")
             token_version = int(existing["token_version"] or 1)
-            await conn.execute("UPDATE users SET role = $1 WHERE id = $2;", assigned_role, existing["id"])
+            await conn.execute(
+                "UPDATE users SET role = $1 WHERE id = $2::uuid AND tenant_id = $3::uuid;",
+                assigned_role,
+                user_id,
+                tenant_id,
+            )
         else:
+            # Ensure username does not collide with an existing local user in this or any tenant
+            collision = await conn.fetchrow("SELECT id FROM users WHERE username = $1;", username)
+            if collision:
+                username = f"{username}_sso_{user_id[:6]}"
             token_version = 1
             await conn.execute(
                 """
@@ -361,7 +467,7 @@ async def sso_callback(
                 username,
                 assigned_role,
                 tenant_id,
-                f"sso_managed:{provider['id']}",
+                sso_marker,
             )
 
     family_id = f"fam_{uuid.uuid4().hex}"
@@ -393,7 +499,9 @@ async def sso_callback(
         details={"username": username, "provider": provider["provider_name"], "role": assigned_role},
     )
 
+    is_secure = bool(settings.enable_tls or settings.is_production)
     if "application/json" in request.headers.get("accept", ""):
+        response.delete_cookie("sso_state_binding", path="/api/v1/auth/sso", httponly=True, samesite="lax", secure=is_secure)
         set_auth_cookies(response, access_token, refresh_token)
         return {
             "access_token": access_token,
@@ -405,5 +513,6 @@ async def sso_callback(
         }
 
     redirect_resp = RedirectResponse(url="/dashboard/executive", status_code=status.HTTP_302_FOUND)
+    redirect_resp.delete_cookie("sso_state_binding", path="/api/v1/auth/sso", httponly=True, samesite="lax", secure=is_secure)
     set_auth_cookies(redirect_resp, access_token, refresh_token)
     return redirect_resp

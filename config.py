@@ -39,6 +39,10 @@ class Settings(BaseSettings):
 
     jwt_secret_key: str = ""
     jwt_algorithm: str = "RS256"
+    jwt_issuer: str = "aml-sentinel"
+    jwt_audience: str = "aml-sentinel-api"
+    # Canonical public base URL for OIDC SSO redirect_uri construction (prevents Host header poisoning)
+    public_base_url: str = ""
     # Short-lived access token — 15 minutes.
     # Clients should use the refresh token to silently renew.
     access_token_expire_minutes: int = 15
@@ -158,20 +162,34 @@ class Settings(BaseSettings):
         if self.internal_gateway_secret in {"aml-internal-gateway-secret-dev-only", ""}:
             raise ValueError("CRITICAL: Default internal_gateway_secret is forbidden in production environment!")
 
+    @property
+    def is_production(self) -> bool:
+        """Canonical production check recognizing both 'production' and 'prod' (HARD-03)."""
+        return str(self.environment).strip().lower() in {"production", "prod"}
+
     def _check_production_origins_and_metrics(self) -> None:
         # PRR Enforcement: In production, metrics_secret must be set and high-entropy
         if not self.metrics_secret or len(self.metrics_secret.strip()) < 16:
             raise ValueError("CRITICAL: METRICS_SECRET must be configured with >= 16 characters in production environment!")
 
-        # PRR Enforcement: In production, allowed_origins cannot contain localhost or wildcard
+        # PRR Enforcement: In production, allowed_origins must be explicit HTTPS domains (no wildcard, localhost, or plain HTTP)
         origins = [o.strip().lower() for o in self.allowed_origins.split(",") if o.strip()]
+        if not origins:
+            raise ValueError("CRITICAL: ALLOWED_ORIGINS must define at least one explicit HTTPS origin in production!")
         for origin in origins:
-            if origin == "*" or "localhost" in origin or "127.0.0.1" in origin:
-                raise ValueError(f"CRITICAL: Insecure ALLOWED_ORIGINS entry '{origin}' is forbidden in production! Must be explicit HTTPS domain.")
+            if (
+                origin == "*"
+                or "localhost" in origin
+                or "127.0.0.1" in origin
+                or not origin.startswith("https://")
+            ):
+                raise ValueError(
+                    f"CRITICAL: Insecure ALLOWED_ORIGINS entry '{origin}' is forbidden in production! Must be explicit HTTPS domain."
+                )
 
     @model_validator(mode="after")
     def validate_production_settings(self):
-        if str(self.environment).lower() != "production":
+        if not self.is_production:
             return self
 
         self._check_insecure_passwords()

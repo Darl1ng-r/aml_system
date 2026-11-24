@@ -15,6 +15,7 @@ import logging
 import asyncio
 from datetime import datetime, timezone
 from services.auth import RoleChecker, enforce_tenant_data_scope
+from services.rate_limiter import RateLimiter
 from database.postgres import get_async_db_conn
 from database.redis_db import get_async_redis_client
 from observability.logging import log_audit_event
@@ -57,7 +58,8 @@ class RuleTestPayload(BaseModel):
 
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_rules(
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """
     Lists all detection rules configured for the current tenant, including
@@ -162,7 +164,8 @@ async def _broadcast_rule_invalidation(rule_name: str) -> None:
 async def patch_rule(
     rule_name: str,
     payload: RulePatchPayload,
-    current_user: dict = Depends(RoleChecker(["ADMIN"]))
+    current_user: dict = Depends(RoleChecker(["ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
     """
     Updates rule thresholds, parameters, and/or enabled state.
@@ -235,6 +238,23 @@ async def patch_rule(
                 payload.change_reason or "Rule adjusted"
             )
 
+            # 3b. Transactional WORM audit record
+            try:
+                from services.audit import record_audit_event_tx
+                await record_audit_event_tx(
+                    conn=conn,
+                    action="UPDATE_RULE",
+                    actor_id=str(user_id or username),
+                    actor_username=username,
+                    actor_role=current_user.get("role", "ADMIN"),
+                    resource_type="RULE",
+                    resource_id=rule_name,
+                    tenant_id=str(tenant_id),
+                    details={"rule_name": rule_name, "version": new_version, "enabled": new_enabled, "mode": new_mode},
+                )
+            except Exception as audit_err:
+                logger.warning(f"Transactional audit write skipped in patch_rule: {audit_err}")
+
         # 4. Invalidate memory cache and broadcast to Redis
         await _broadcast_rule_invalidation(rule_name)
 
@@ -265,9 +285,11 @@ async def patch_rule(
             "config": new_config,
             "shadow_config": new_shadow if isinstance(new_shadow, dict) else (json.loads(new_shadow) if new_shadow else None),
         }
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         logger.exception("Failed to update rule %s", rule_name)
-        raise HTTPException(status_code=500, detail=f"Failed to update rule {rule_name}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update rule configuration.")
 
 
 @router.post("/{rule_name}/backtest")
@@ -275,6 +297,7 @@ async def backtest_rule_endpoint(
     rule_name: str,
     payload: RuleBacktestPayload,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=15, window=60)),
 ):
     """
     Read-only Historical Rule Backtesting (P1-2):
@@ -297,6 +320,7 @@ async def backtest_rule_endpoint(
 async def list_rule_shadow_hits(
     rule_name: str,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Lists silent Challenger Shadow Mode hits recorded for a rule without paging analysts."""
     from database.postgres import get_async_db_read_conn
@@ -308,11 +332,12 @@ async def list_rule_shadow_hits(
             SELECT id, rule_name, transaction_id, sender_account_id,
                    amount_base_usd, rule_version, matched_reason, created_at
             FROM rule_shadow_hits
-            WHERE rule_name = $1
+            WHERE rule_name = $1 AND tenant_id = $2::uuid
             ORDER BY created_at DESC
             LIMIT 100;
             """,
             rule_name.upper().strip(),
+            str(tenant_id),
         )
     return {
         "rule_name": rule_name.upper().strip(),
@@ -335,7 +360,8 @@ async def list_rule_shadow_hits(
 @router.get("/{rule_name}/history")
 async def get_rule_history(
     rule_name: str,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "AUDITOR"]))
+    current_user: dict = Depends(RoleChecker(["ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """
     Returns the immutable audit history of changes made to this rule.
@@ -374,7 +400,8 @@ async def get_rule_history(
 @router.post("/test")
 async def test_rule_simulation(
     payload: RuleTestPayload,
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "ADMIN", "ANALYST", "MLRO"]))
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "ADMIN", "ANALYST", "MLRO"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     """
     Rule Testing Harness: Evaluates a synthetic transaction against the current
@@ -402,21 +429,23 @@ async def test_rule_simulation(
     }
 
 
-# ── Backward Compatible Endpoints ─────────────────────────────────────────────
+# ── Backward Compatible Global Platform Endpoints (SUPER_ADMIN Only) ──────────
 @router.get("/config")
 async def get_legacy_rules_config(
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """Legacy endpoint returning full rules config dictionary."""
+    """Legacy endpoint returning default rules config dictionary."""
     return get_rules_config()
 
 
 @router.put("/config")
 async def update_legacy_rules_config(
     payload: dict,
-    current_user: dict = Depends(RoleChecker(["ADMIN"]))
+    current_user: dict = Depends(RoleChecker(["SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=10, window=60)),
 ):
-    """Legacy update method writing to local file, DB table, and broadcasting to Redis."""
+    """Global rules defaults update (SUPER_ADMIN only) writing to DB, local file, and Redis."""
     if "rules" not in payload:
         raise HTTPException(status_code=400, detail="Invalid format: 'rules' required")
     try:
@@ -430,8 +459,23 @@ async def update_legacy_rules_config(
                     VALUES ($1, $2);
                     """,
                     json.dumps(payload),
-                    current_user.get("username", "ADMIN")
+                    current_user.get("username", "SUPER_ADMIN")
                 )
+                try:
+                    from services.audit import record_audit_event_tx
+                    await record_audit_event_tx(
+                        conn=conn,
+                        action="UPDATE_GLOBAL_RULES_CONFIG",
+                        actor_id=str(current_user.get("id") or current_user.get("username") or "super_admin"),
+                        actor_username=current_user.get("username", "SUPER_ADMIN"),
+                        actor_role=current_user.get("role", "SUPER_ADMIN"),
+                        resource_type="GLOBAL_RULES_CONFIG",
+                        resource_id="rules_config.json",
+                        tenant_id=str(current_user.get("tenant_id")) if current_user.get("tenant_id") else None,
+                        details={"rule_keys": list((payload.get("rules") or {}).keys())},
+                    )
+                except Exception:
+                    pass
         except Exception as dbe:
             logger.warning(f"Failed to persist rules to PostgreSQL (falling back to disk): {dbe}")
 
@@ -454,5 +498,8 @@ async def update_legacy_rules_config(
             logger.warning(f"Failed to publish rules invalidation to Redis: {re}")
 
         return {"status": "SUCCESS", "message": "Rules configuration updated successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to update global rules configuration")
+        raise HTTPException(status_code=500, detail="Failed to update rules configuration.")

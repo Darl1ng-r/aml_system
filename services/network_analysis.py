@@ -231,7 +231,11 @@ def _add_edge_to_graph(graph: dict, sender: str, receiver: str) -> None:
 async def _fetch_graph_neo4j(tenant_id: str | None, min_epoch: int | None, limit: int) -> tuple[dict, bool]:
     query = """
         MATCH (s:Account)-[t:TRANSFERS_TO]->(r:Account)
-        WHERE ($tenant_id IS NULL OR t.tenant_id = $tenant_id OR s.tenant_id = $tenant_id)
+        WHERE ($tenant_id IS NULL OR (
+            s.tenant_id = $tenant_id
+            AND r.tenant_id = $tenant_id
+            AND (t.tenant_id IS NULL OR t.tenant_id = $tenant_id)
+        ))
           AND ($min_epoch IS NULL OR t.timestamp IS NULL OR t.timestamp >= $min_epoch)
         RETURN s.account_number AS sender, r.account_number AS receiver
         LIMIT $limit;
@@ -302,11 +306,11 @@ async def _detect_cypher_degrees(driver, tenant_id: str | None, min_epoch: int |
         MATCH (a:Account)
         WHERE ($tenant_id IS NULL OR a.tenant_id = $tenant_id)
         OPTIONAL MATCH (s:Account)-[t1:TRANSFERS_TO]->(a)
-        WHERE ($tenant_id IS NULL OR t1.tenant_id = $tenant_id)
+        WHERE ($tenant_id IS NULL OR (s.tenant_id = $tenant_id AND (t1.tenant_id IS NULL OR t1.tenant_id = $tenant_id)))
           AND ($min_epoch IS NULL OR t1.timestamp IS NULL OR t1.timestamp >= $min_epoch)
         WITH a, count(DISTINCT s) AS in_degree
         OPTIONAL MATCH (a)-[t2:TRANSFERS_TO]->(r:Account)
-        WHERE ($tenant_id IS NULL OR t2.tenant_id = $tenant_id)
+        WHERE ($tenant_id IS NULL OR (r.tenant_id = $tenant_id AND (t2.tenant_id IS NULL OR t2.tenant_id = $tenant_id)))
           AND ($min_epoch IS NULL OR t2.timestamp IS NULL OR t2.timestamp >= $min_epoch)
         WITH a, in_degree, count(DISTINCT r) AS out_degree
         WHERE (in_degree >= 3 AND out_degree <= 1) OR (out_degree >= 3 AND in_degree <= 1)
@@ -345,7 +349,10 @@ async def _detect_cypher_cycles(driver, tenant_id: str | None, min_epoch: int | 
     try:
         cycle_query = """
         MATCH path = (a:Account)-[t:TRANSFERS_TO*2..5]->(a)
-        WHERE ($tenant_id IS NULL OR ALL(rel IN relationships(path) WHERE rel.tenant_id = $tenant_id))
+        WHERE ($tenant_id IS NULL OR (
+            ALL(n IN nodes(path) WHERE n.tenant_id = $tenant_id)
+            AND ALL(rel IN relationships(path) WHERE rel.tenant_id IS NULL OR rel.tenant_id = $tenant_id)
+        ))
           AND ($min_epoch IS NULL OR ALL(rel IN relationships(path) WHERE rel.timestamp IS NULL OR rel.timestamp >= $min_epoch))
         WITH [n IN nodes(path) | n.account_number] AS node_list
         RETURN DISTINCT node_list AS cycle
@@ -369,7 +376,7 @@ async def _detect_cypher_cycles(driver, tenant_id: str | None, min_epoch: int | 
         logger.warning(f"Server-side Cypher cycle search failed ({e}), falling back to Tarjan SCC.")
         return circular_flows, False
 
-async def _detect_gds_betweenness(driver) -> tuple[list[dict], bool]:
+async def _detect_gds_betweenness(driver, tenant_id: str | None = None) -> tuple[list[dict], bool]:
     intermediaries: list[dict] = []
     if not driver:
         return intermediaries, False
@@ -377,13 +384,15 @@ async def _detect_gds_betweenness(driver) -> tuple[list[dict], bool]:
         gds_query = """
         CALL gds.betweenness.stream('amlGraph')
         YIELD nodeId, score
+        WITH gds.util.asNode(nodeId) AS node, score
         WHERE score > 0.0
-        RETURN gds.util.asNode(nodeId).account_number AS account_number, round(score, 4) AS betweenness_centrality
+          AND ($tenant_id IS NULL OR node.tenant_id = $tenant_id)
+        RETURN node.account_number AS account_number, round(score, 4) AS betweenness_centrality
         ORDER BY betweenness_centrality DESC
         LIMIT 50;
         """
         async with driver.session() as session:
-            res = await session.run(gds_query)
+            res = await session.run(gds_query, tenant_id=str(tenant_id) if tenant_id else None)
             async for record in res:
                 intermediaries.append({
                     "account_number": record["account_number"],
@@ -486,7 +495,7 @@ async def run_network_analysis(
     min_epoch = _calc_min_epoch(window_hours)
     fan_in_nodes, fan_out_nodes, cypher_degrees_success = await _detect_cypher_degrees(driver, tenant_id, min_epoch)
     circular_flows, cypher_cycles_success = await _detect_cypher_cycles(driver, tenant_id, min_epoch)
-    intermediaries, gds_success = await _detect_gds_betweenness(driver)
+    intermediaries, gds_success = await _detect_gds_betweenness(driver, tenant_id=tenant_id)
 
     if not cypher_degrees_success or not cypher_cycles_success or not gds_success:
         graph = await fetch_transaction_graph(tenant_id=tenant_id, limit=2000, window_hours=window_hours)
@@ -521,7 +530,11 @@ async def compute_transitive_counterparty_taint(
         driver = await get_async_neo4j_driver()
         cypher_query = """
         MATCH path = (origin:Account)-[t:TRANSFERS_TO*1..2]->(target:Account {account_number: $acc_num})
-        WHERE ($tenant_id IS NULL OR origin.tenant_id = $tenant_id)
+        WHERE ($tenant_id IS NULL OR (
+            target.tenant_id = $tenant_id
+            AND ALL(n IN nodes(path) WHERE n.tenant_id = $tenant_id)
+            AND ALL(rel IN relationships(path) WHERE rel.tenant_id IS NULL OR rel.tenant_id = $tenant_id)
+        ))
           AND coalesce(origin.risk_score, 0.0) >= 0.75
         WITH path, origin.risk_score AS upstream_risk, length(path) AS hops
         RETURN max(upstream_risk * ($decay ^ hops)) AS taint_score;

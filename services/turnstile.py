@@ -25,11 +25,11 @@ async def verify_turnstile_token(token: str | None, remote_ip: str | None = None
 
     # In local development or testing mode, allow bypass if token is mock or no production key
     if not token:
-        if settings.environment in {"development", "test"} or settings.allow_offline_dev:
+        if (not settings.is_production) and (settings.environment in {"development", "test"} or settings.allow_offline_dev):
             return True
         return False
 
-    if token in {"dummy_turnstile_token", "test_token", "cf-test-passed"} and settings.environment != "production":
+    if token in {"dummy_turnstile_token", "test_token", "cf-test-passed"} and not settings.is_production:
         return True
 
     payload = {
@@ -56,6 +56,6 @@ async def verify_turnstile_token(token: str | None, remote_ip: str | None = None
     except Exception as e:
         logger.warning(f"Turnstile siteverify unreachable: {e}")
         # In non-production environments, fail open on network error to allow continuous development
-        if settings.environment != "production":
+        if not settings.is_production:
             return True
         return False

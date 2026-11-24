@@ -1,8 +1,10 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
 from services.network_analysis import run_network_analysis
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/network", tags=["Network Analysis"])
 
 @router.get("/analysis")
@@ -22,13 +24,11 @@ async def get_network_analysis(
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
         return await run_network_analysis(tenant_id=str(tenant_id) if tenant_id else None, window_hours=window_hours)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Graph network analysis failed: {str(e)}")
-
-import logging
-
-logger = logging.getLogger(__name__)
-
+        logger.error(f"Graph network analysis failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Graph network analysis failed.")
 
 def _parse_neo4j_node(node) -> dict | None:
     if not node:
@@ -84,8 +84,11 @@ async def _expand_neo4j(entity_id: str, tenant_id: str | None, hops: int = 2) ->
     driver = await get_async_neo4j_driver()
     safe_hops = max(1, min(int(hops), 3))
     query = f"""
-    MATCH (start {{id: $entity_id}})-[r:TRANSFERS_TO|BELONGS_TO|OWNS_UBO*1..{safe_hops}]-(connected)
-    WHERE ($tenant_id IS NULL OR start.tenant_id = $tenant_id OR connected.tenant_id = $tenant_id)
+    MATCH p = (start {{id: $entity_id}})-[r:TRANSFERS_TO|BELONGS_TO|OWNS_UBO*1..{safe_hops}]-(connected)
+    WHERE ($tenant_id IS NULL OR (
+        ALL(n IN nodes(p) WHERE n.tenant_id = $tenant_id)
+        AND ALL(rel IN relationships(p) WHERE rel.tenant_id IS NULL OR rel.tenant_id = $tenant_id)
+    ))
     RETURN start, r, connected
     LIMIT 75;
     """
@@ -176,12 +179,18 @@ async def _expand_pg_fallback(entity_id: str, tenant_id: str | None, hops: int =
                 return {"nodes": [], "edges": [], "resolved_entity": None}
             target_entity = seed_row["account_number"]
 
+        escaped_entity = target_entity.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         rows = await conn.fetch(
             """
             WITH RECURSIVE visited_accounts(acc_id, depth) AS (
                 SELECT id, 0
                 FROM accounts
-                WHERE id::text = $1 OR account_number ILIKE $1 OR owner_name ILIKE $1
+                WHERE (
+                    id::text = $1
+                    OR account_number ILIKE $4 ESCAPE '\\'
+                    OR owner_name ILIKE $4 ESCAPE '\\'
+                )
+                  AND ($2::text IS NULL OR tenant_id = $2::uuid)
                 UNION
                 SELECT CASE
                            WHEN t.sender_account_id = v.acc_id THEN t.receiver_account_id
@@ -217,7 +226,7 @@ async def _expand_pg_fallback(entity_id: str, tenant_id: str | None, hops: int =
             ORDER BY t.timestamp DESC
             LIMIT 75;
             """,
-            target_entity, str(tenant_id) if tenant_id else None, safe_hops
+            target_entity, str(tenant_id) if tenant_id else None, safe_hops, escaped_entity
         )
     parsed = _parse_pg_rows(rows)
     parsed["resolved_entity"] = target_entity
@@ -250,10 +259,13 @@ async def expand_graph_node(
 
     try:
         return await _expand_pg_fallback(entity_id, tenant_id, hops=hops)
+    except HTTPException:
+        raise
     except Exception as pg_err:
+        logger.error(f"Graph node expansion failed on Neo4j ({neo_err}) and PostgreSQL ({pg_err})", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Graph node expansion failed on both Neo4j ({neo_err}) and PostgreSQL ({pg_err})"
+            detail="Graph node expansion failed."
         )
 
 
@@ -328,8 +340,10 @@ async def get_ubo_ownership_tree(
             SELECT parent_entity_name, parent_entity_type, child_company_name,
                    ownership_pct, jurisdiction, tax_id
             FROM corporate_ownership_edges
+            WHERE tenant_id = $1::uuid
             LIMIT 2000;
-            """
+            """,
+            str(tenant_id),
         )
     edges = [dict(r) for r in (rows or [])]
     return resolve_ubo_ownership_tree(edges, target_company=company_name, threshold_pct=threshold_pct)

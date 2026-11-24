@@ -98,14 +98,12 @@ def validate_siem_destination_url(raw_url: str) -> str:
 
 
 class SiemForwarderService:
+    """Stateless per-tenant SIEM forwarder backed exclusively by PostgreSQL `siem_configs`."""
+
     def __init__(self):
+        # Kept strictly read-only defaults; never store per-tenant URLs or tokens on this singleton.
         self.enabled: bool = True
-        self.destination_url: str = "https://siem.example.invalid/services/collector/event"
-        self.auth_token: str = ""
-        self.format: str = "SPLUNK_HEC"  # SPLUNK_HEC, ELASTICSEARCH, RFC5424_SYSLOG
-        self.total_forwarded: int = 0
-        self.last_dispatched_at: Optional[str] = None
-        self._buffer: list = []
+        self.format: str = "SPLUNK_HEC"
 
     def format_event(self, event_type: str, payload: Dict[str, Any], severity: str = "INFO") -> Dict[str, Any]:
         """Formats compliance event into Splunk HEC or standard SIEM schema."""
@@ -135,17 +133,13 @@ class SiemForwarderService:
         """
         Durably enqueues a compliance event into `transactional_outbox` (`SIEM_DISPATCH`)
         when `tenant_id` is supplied so OutboxRelayEngine delivers it via HTTPS with
-        exponential backoff and DLQ protection (V-03), eliminating the in-memory black hole.
+        exponential backoff and DLQ protection (V-03), eliminating shared in-memory state.
         """
         await asyncio.sleep(0)
         if not self.enabled:
             return False
 
         formatted = self.format_event(event_type, payload, severity)
-        self._buffer.append(formatted)
-        if len(self._buffer) > 1000:
-            self._buffer.pop(0)
-
         resolved_tenant = tenant_id or (payload.get("tenant_id") if isinstance(payload, dict) else None)
         if resolved_tenant:
             try:
@@ -163,20 +157,27 @@ class SiemForwarderService:
                 logger.error("Failed to durably enqueue SIEM event %s for tenant %s: %s", event_type, resolved_tenant, exc)
                 return False
 
-        self.total_forwarded += 1
-        self.last_dispatched_at = datetime.now(timezone.utc).isoformat()
         logger.debug(f"[SIEM] Durably queued compliance event: {event_type} (severity={severity})")
         return True
 
-    async def test_connection(self, target_url: Optional[str] = None, token: Optional[str] = None) -> Dict[str, Any]:
+    async def test_connection(
+        self,
+        target_url: Optional[str] = None,
+        token: Optional[str] = None,
+        fmt: str = "SPLUNK_HEC",
+    ) -> Dict[str, Any]:
         """Probes the external SIEM HTTP Event Collector with a synthetic heartbeat event."""
-        url = validate_siem_destination_url(target_url or self.destination_url)
-        tok = token or self.auth_token
+        if not target_url:
+            raise ValueError("No SIEM destination URL configured for this tenant.")
+        url = validate_siem_destination_url(target_url)
+        tok = token or ""
         test_payload = self.format_event("SIEM_HEARTBEAT_PROBE", {"status": "TEST_PROBE", "msg": "AML Sentinel Probe"})
 
         try:
             # Attempt HTTP call with short timeout and redirects disabled to prevent SSRF bypasses
-            headers = {"Authorization": f"Splunk {tok}", "Content-Type": "application/json"}
+            headers = {"Content-Type": "application/json"}
+            if tok:
+                headers["Authorization"] = f"Splunk {tok}" if str(fmt).upper() == "SPLUNK_HEC" else f"Bearer {tok}"
             async with httpx.AsyncClient(timeout=2.0, follow_redirects=False) as client:
                 res = await client.post(url, json=test_payload, headers=headers)
                 return {
@@ -186,27 +187,31 @@ class SiemForwarderService:
                     "message": "SIEM endpoint responded successfully."
                 }
         except Exception as e:
-            # In sandbox/local dev without a live Splunk server, return mock successful probe status
             logger.info(f"[SIEM] Probe dispatch simulated (local environment): {e}")
             return {
                 "status": "PROBE_DISPATCHED",
                 "target_url": url,
-                "message": f"Synthetic heartbeat generated and buffered successfully (external host unreachable in test environment: {type(e).__name__}).",
+                "message": f"Synthetic heartbeat generated (external host unreachable in test environment: {type(e).__name__}).",
                 "sample_payload": test_payload
             }
 
-    def get_status(self) -> Dict[str, Any]:
+    @staticmethod
+    def _unconfigured_tenant_status() -> Dict[str, Any]:
         return {
-            "enabled": self.enabled,
-            "destination_url": self.destination_url,
-            "format": self.format,
-            "total_forwarded": self.total_forwarded,
-            "buffered_events": len(self._buffer),
-            "last_dispatched_at": self.last_dispatched_at
+            "enabled": False,
+            "destination_url": "",
+            "format": "SPLUNK_HEC",
+            "total_forwarded": 0,
+            "buffered_events": 0,
+            "last_dispatched_at": None,
+            "persisted": False,
         }
 
+    def get_status(self) -> Dict[str, Any]:
+        return self._unconfigured_tenant_status()
+
     async def load_tenant_config(self, tenant_id: str) -> Dict[str, Any]:
-        """Loads persisted tenant SIEM config from PostgreSQL `siem_configs` (multi-pod consistent)."""
+        """Loads persisted tenant SIEM config from PostgreSQL `siem_configs` strictly scoped to tenant_id."""
         try:
             from database.postgres import get_async_db_read_conn
             async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
@@ -224,13 +229,48 @@ class SiemForwarderService:
                         "destination_url": row["destination_url"],
                         "format": row["format"],
                         "total_forwarded": int(row["total_forwarded"] or 0),
-                        "buffered_events": len(self._buffer),
+                        "buffered_events": 0,
                         "last_dispatched_at": row["last_dispatched_at"].isoformat() if row["last_dispatched_at"] else None,
                         "persisted": True,
                     }
         except Exception as exc:
-            logger.debug(f"Falling back to in-memory SIEM status (DB unavailable): {exc}")
-        return {**self.get_status(), "persisted": False}
+            logger.debug(f"Tenant SIEM config lookup returned unconfigured default: {exc}")
+        return self._unconfigured_tenant_status()
+
+    async def load_tenant_config_with_secret(self, tenant_id: str) -> Dict[str, Any]:
+        """Internal-only loader returning tenant SIEM config plus decrypted auth_token."""
+        try:
+            from database.postgres import get_async_db_read_conn
+            from services.encryption import decrypt_pii
+            async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT enabled, destination_url, auth_token_enc, format
+                    FROM siem_configs
+                    WHERE tenant_id = $1::uuid;
+                    """,
+                    str(tenant_id),
+                )
+                if row:
+                    token_plain = ""
+                    if row["auth_token_enc"]:
+                        token_plain = decrypt_pii(row["auth_token_enc"], tenant_id=str(tenant_id)) or ""
+                    return {
+                        "enabled": bool(row["enabled"]),
+                        "destination_url": row["destination_url"] or "",
+                        "auth_token": token_plain,
+                        "format": row["format"] or "SPLUNK_HEC",
+                        "persisted": True,
+                    }
+        except Exception as exc:
+            logger.warning(f"Failed to load tenant SIEM credentials: {exc}")
+        return {
+            "enabled": False,
+            "destination_url": "",
+            "auth_token": "",
+            "format": "SPLUNK_HEC",
+            "persisted": False,
+        }
 
     async def save_tenant_config(
         self,
@@ -241,43 +281,35 @@ class SiemForwarderService:
         fmt: str,
         updated_by: str,
     ) -> Dict[str, Any]:
-        """Persists tenant SIEM config to PostgreSQL `siem_configs` with encrypted token."""
+        """Persists tenant SIEM config exclusively to PostgreSQL `siem_configs` with encrypted token."""
         validated_url = validate_siem_destination_url(destination_url)
         normalized_fmt = (fmt or "SPLUNK_HEC").upper()
-        self.enabled = enabled
-        self.destination_url = validated_url
-        if auth_token:
-            self.auth_token = auth_token
-        self.format = normalized_fmt
 
-        try:
-            from database.postgres import get_async_db_conn
-            from services.encryption import encrypt_pii
-            enc_token = encrypt_pii(auth_token, tenant_id=str(tenant_id)) if auth_token else ""
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO siem_configs (
-                        tenant_id, enabled, destination_url, auth_token_enc, format, updated_by, updated_at
-                    )
-                    VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW())
-                    ON CONFLICT (tenant_id) DO UPDATE SET
-                        enabled = EXCLUDED.enabled,
-                        destination_url = EXCLUDED.destination_url,
-                        auth_token_enc = CASE WHEN EXCLUDED.auth_token_enc <> '' THEN EXCLUDED.auth_token_enc ELSE siem_configs.auth_token_enc END,
-                        format = EXCLUDED.format,
-                        updated_by = EXCLUDED.updated_by,
-                        updated_at = NOW();
-                    """,
-                    str(tenant_id),
-                    enabled,
-                    validated_url,
-                    enc_token,
-                    normalized_fmt,
-                    updated_by,
+        from database.postgres import get_async_db_conn
+        from services.encryption import encrypt_pii
+        enc_token = encrypt_pii(auth_token, tenant_id=str(tenant_id)) if auth_token else ""
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            await conn.execute(
+                """
+                INSERT INTO siem_configs (
+                    tenant_id, enabled, destination_url, auth_token_enc, format, updated_by, updated_at
                 )
-        except Exception as exc:
-            logger.warning(f"Failed to persist SIEM config to PostgreSQL (in-memory updated): {exc}")
+                VALUES ($1::uuid, $2, $3, $4, $5, $6, NOW())
+                ON CONFLICT (tenant_id) DO UPDATE SET
+                    enabled = EXCLUDED.enabled,
+                    destination_url = EXCLUDED.destination_url,
+                    auth_token_enc = CASE WHEN EXCLUDED.auth_token_enc <> '' THEN EXCLUDED.auth_token_enc ELSE siem_configs.auth_token_enc END,
+                    format = EXCLUDED.format,
+                    updated_by = EXCLUDED.updated_by,
+                    updated_at = NOW();
+                """,
+                str(tenant_id),
+                enabled,
+                validated_url,
+                enc_token,
+                normalized_fmt,
+                updated_by,
+            )
 
         return await self.load_tenant_config(tenant_id)
 

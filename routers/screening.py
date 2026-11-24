@@ -495,8 +495,11 @@ async def search_sanctions_and_pep(
                 logger.warning(f"Failed to save result to Redis cache: {e}")
 
         return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Screening query failed: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Screening query failed")
+        raise HTTPException(status_code=500, detail="Screening query failed.")
 
 
 class LiveAdverseMediaRequest(BaseModel):

@@ -92,30 +92,42 @@ def verify_totp_code(secret: str, code: str, window: int = 1, time_step: int = 3
     return False
 
 
+def _recovery_hmac_key() -> bytes:
+    """Derives a server-side pepper key for keyed HMAC-SHA256 recovery code hashing (AUTHN-06)."""
+    try:
+        from services.encryption import _get_encryption_key
+        return _get_encryption_key(tenant_id="mfa-recovery-codes")
+    except Exception:
+        return hashlib.sha256(b"aml-sentinel-mfa-recovery-fallback").digest()
+
+
+def _hash_recovery_code_hmac(code: str) -> str:
+    digest = hmac.new(_recovery_hmac_key(), code.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"hmac_v1:{digest}"
+
+
 def generate_recovery_codes(count: int = 8) -> Tuple[List[str], List[str]]:
     """
-    Generates single-use backup recovery codes.
+    Generates single-use backup recovery codes with 80 bits of CSPRNG entropy (10 bytes)
+    and stores server-peppered HMAC-SHA256 digests (`hmac_v1:<hex>`).
     Returns:
       (plaintext_codes_for_user, hashed_codes_for_database)
     """
     plaintext_codes = []
     hashed_codes = []
     for _ in range(count):
-        part1 = secrets.token_hex(3).upper()
-        part2 = secrets.token_hex(3).upper()
+        part1 = secrets.token_hex(5).upper()
+        part2 = secrets.token_hex(5).upper()
         code = f"{part1}-{part2}"
         plaintext_codes.append(code)
-        
-        # Hash with SHA-256 for secure DB storage
-        h = hashlib.sha256(code.encode("utf-8")).hexdigest()
-        hashed_codes.append(h)
+        hashed_codes.append(_hash_recovery_code_hmac(code))
 
     return plaintext_codes, hashed_codes
 
 
 def verify_and_consume_recovery_code(entered_code: str, stored_hashes: List[str]) -> Tuple[bool, List[str]]:
     """
-    Verifies a backup recovery code.
+    Verifies a backup recovery code (supports keyed `hmac_v1:` digests and legacy SHA-256).
     If valid, removes the consumed code from the stored list and returns (True, updated_hashes).
     If invalid, returns (False, stored_hashes).
     """
@@ -123,12 +135,14 @@ def verify_and_consume_recovery_code(entered_code: str, stored_hashes: List[str]
         return False, stored_hashes
 
     normalized = entered_code.strip().upper()
-    code_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    hmac_digest = _hash_recovery_code_hmac(normalized)
+    legacy_sha256 = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     remaining_hashes = []
     found = False
     for h in stored_hashes:
-        if hmac.compare_digest(h, code_hash) and not found:
+        expected = hmac_digest if str(h).startswith("hmac_v1:") else legacy_sha256
+        if hmac.compare_digest(str(h), expected) and not found:
             found = True
             # Skip adding to remaining_hashes -> consumes the single-use code
         else:

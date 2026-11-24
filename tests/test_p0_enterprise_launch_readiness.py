@@ -398,6 +398,7 @@ async def test_p0_6_oidc_callback_verifies_state_jwks_and_jit_provisions_mlro():
             "exp": int((datetime.now(timezone.utc) + timedelta(minutes=10)).timestamp()),
             "nonce": nonce,
             "email": "elena.mlro@bank.com",
+            "email_verified": True,
             "groups": ["AML-MLRO"],
         },
         priv_pem,
@@ -460,6 +461,9 @@ async def test_p0_6_oidc_callback_verifies_state_jwks_and_jit_provisions_mlro():
             signing_key_override=pub_pem,
         )
 
+    import hashlib
+    state_binding = hashlib.sha256(f"sso-state-bind:{state_token}".encode("utf-8")).hexdigest()
+
     transport = ASGITransport(app=app)
     with patch("routers.sso._load_provider_for_login", AsyncMock(return_value=provider_row)), \
          patch("routers.sso.fetch_oidc_discovery", AsyncMock(return_value=discovery_doc)), \
@@ -470,6 +474,7 @@ async def test_p0_6_oidc_callback_verifies_state_jwks_and_jit_provisions_mlro():
             res = await ac.get(
                 f"/api/v1/auth/sso/{provider_id}/callback?code=authcode123&state={state_token}",
                 headers={"Accept": "application/json"},
+                cookies={"sso_state_binding": state_binding},
             )
             assert res.status_code == 200
             body = res.json()
@@ -481,5 +486,6 @@ async def test_p0_6_oidc_callback_verifies_state_jwks_and_jit_provisions_mlro():
             res_replay = await ac.get(
                 f"/api/v1/auth/sso/{provider_id}/callback?code=authcode123&state={state_token}",
                 headers={"Accept": "application/json"},
+                cookies={"sso_state_binding": state_binding},
             )
             assert res_replay.status_code == 401

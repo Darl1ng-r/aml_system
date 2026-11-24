@@ -271,7 +271,7 @@ function navigateQueue(direction) {
 }
 
 async function initAuth() {
-    const sessionActive = localStorage.getItem('auth_session_active') === 'true' || localStorage.getItem('jwt_token');
+    const sessionActive = localStorage.getItem('auth_session_active') === 'true' || sessionStorage.getItem('auth_active') === 'true';
     if (!sessionActive) {
         window.location.href = '/login';
         return;
@@ -352,12 +352,7 @@ async function logout() {
 }
 
 function getAuthHeaders() {
-    const headers = { 'X-CSRF-Protection': '1' };
-    const token = localStorage.getItem('jwt_token') || localStorage.getItem('access_token');
-    if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-    }
-    return headers;
+    return { 'X-CSRF-Protection': '1' };
 }
 
 function setMockMode(enabled) {
@@ -462,10 +457,7 @@ function handleWebSocketEvent(data) {
 
 function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const token = localStorage.getItem('jwt_token');
-    const wsUrl = token
-        ? `${protocol}//${window.location.host}/ws/live-stream?token=${encodeURIComponent(token)}`
-        : `${protocol}//${window.location.host}/ws/live-stream`;
+    const wsUrl = `${protocol}//${window.location.host}/ws/live-stream`;
 
     try {
         if (liveWebSocket) {

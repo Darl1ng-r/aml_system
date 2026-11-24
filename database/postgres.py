@@ -70,7 +70,11 @@ async def close_db_pool():
         db_replica_pool = None
         logger.info("Read replica asyncpg connection pool closed.")
 
-async def _apply_rls_tenant_context(conn, tenant_id: str | None) -> None:
+async def _apply_rls_tenant_context(
+    conn,
+    tenant_id: str | None,
+    auth_lookup: bool = False,
+) -> None:
     """Sets transaction-scoped PostgreSQL RLS tenant context, failing closed on missing or invalid UUID."""
     if tenant_id:
         try:
@@ -81,19 +85,21 @@ async def _apply_rls_tenant_context(conn, tenant_id: str | None) -> None:
             raise ValueError(f"Invalid tenant_id format: '{tenant_id}'")
     else:
         await conn.execute("SELECT set_config('app.current_tenant_id', '00000000-0000-0000-0000-000000000000', true);")
+    if auth_lookup:
+        await conn.execute("SELECT set_config('app.auth_lookup', 'true', true);")
 
 
 @asynccontextmanager
-async def get_async_db_conn(tenant_id: str | None = None):
+async def get_async_db_conn(tenant_id: str | None = None, auth_lookup: bool = False):
     global db_pool
     if db_pool is None or getattr(db_pool, "_loop", None) is None or db_pool._loop.is_closed():
         await init_db_pool()
     async with db_pool.acquire(timeout=5.0) as conn, conn.transaction():
-        await _apply_rls_tenant_context(conn, tenant_id)
+        await _apply_rls_tenant_context(conn, tenant_id, auth_lookup=auth_lookup)
         yield conn
 
 @asynccontextmanager
-async def get_async_db_read_conn(tenant_id: str | None = None):
+async def get_async_db_read_conn(tenant_id: str | None = None, auth_lookup: bool = False):
     """Acquires a read-only database connection from the read-replica pool with fallback to primary."""
     global db_pool, db_replica_pool
     if db_replica_pool is None or getattr(db_replica_pool, "_loop", None) is None or db_replica_pool._loop.is_closed() or db_pool is None or getattr(db_pool, "_loop", None) is None or db_pool._loop.is_closed():
@@ -110,7 +116,7 @@ async def get_async_db_read_conn(tenant_id: str | None = None):
 
     try:
         async with conn.transaction(readonly=True):
-            await _apply_rls_tenant_context(conn, tenant_id)
+            await _apply_rls_tenant_context(conn, tenant_id, auth_lookup=auth_lookup)
             yield conn
     finally:
         if conn:

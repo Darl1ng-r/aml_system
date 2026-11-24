@@ -15,6 +15,11 @@ from fastapi import Request
 
 logger = logging.getLogger(__name__)
 
+LOOPBACK_TRUSTED_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+]
+
 DEFAULT_PROXY_CIDR_CONFIG = os.getenv("TRUSTED_PROXY_CIDRS", "")
 DEFAULT_TRUSTED_NETWORKS = [
     ipaddress.ip_network(cidr.strip())
@@ -29,10 +34,30 @@ DEFAULT_TRUSTED_NETWORKS = [
 ]
 
 
-def is_ip_trusted(ip_str: str, trusted_networks=DEFAULT_TRUSTED_NETWORKS) -> bool:
+def get_effective_trusted_networks(trusted_networks=None):
+    """Returns active trusted proxy CIDRs.
+    In production, if TRUSTED_PROXY_CIDRS is unset, fails narrow to loopback only so
+    untrusted lateral VPC peers cannot spoof X-Forwarded-For / X-Real-IP headers.
+    """
+    if trusted_networks is not None:
+        return trusted_networks
+    env_cfg = os.getenv("TRUSTED_PROXY_CIDRS", "").strip()
+    if env_cfg:
+        return [ipaddress.ip_network(cidr.strip()) for cidr in env_cfg.split(",") if cidr.strip()]
+    try:
+        from config import settings
+        if settings.is_production:
+            return LOOPBACK_TRUSTED_NETWORKS
+    except Exception:
+        pass
+    return DEFAULT_TRUSTED_NETWORKS
+
+
+def is_ip_trusted(ip_str: str, trusted_networks=None) -> bool:
+    nets = get_effective_trusted_networks(trusted_networks)
     try:
         ip = ipaddress.ip_address(ip_str.strip())
-        return any(ip in net for net in trusted_networks)
+        return any(ip in net for net in nets)
     except ValueError:
         return False
 
@@ -53,7 +78,9 @@ def _extract_ip_from_forwarded(forwarded: str, trusted_networks) -> str | None:
         if not is_ip_trusted(hop, trusted_networks):
             return hop
 
-    return valid_hops[0] if valid_hops else None
+    # All X-Forwarded-For hops are inside trusted proxy ranges; do not trust the
+    # client-controllable leftmost hop — fall back to direct peer_ip instead.
+    return None
 
 
 def _extract_ip_from_real_ip(real_ip: str) -> str | None:
@@ -65,24 +92,24 @@ def _extract_ip_from_real_ip(real_ip: str) -> str | None:
         return None
 
 
-def get_trusted_client_ip(request: Request, trusted_networks=DEFAULT_TRUSTED_NETWORKS) -> str:
+def get_trusted_client_ip(request: Request, trusted_networks=None) -> str:
     """
     Resolves the genuine client IP address.
-    Only trusts X-Forwarded-For / X-Real-IP if the direct TCP peer is within a trusted CIDR
-    (loopback, internal VPC, Kubernetes overlay).
+    Only trusts X-Forwarded-For / X-Real-IP if the direct TCP peer is within a trusted CIDR.
     If the direct peer is untrusted, all forwarded headers are rejected to prevent spoofing (CWE-290).
 
     When behind trusted proxies, inspects X-Forwarded-For in reverse order (right-to-left).
     The first IP from the right that is outside the trusted proxy CIDRs is the authentic client IP.
     """
+    nets = get_effective_trusted_networks(trusted_networks)
     peer_ip = request.client.host if request.client else "127.0.0.1"
 
-    if not is_ip_trusted(peer_ip, trusted_networks):
+    if not is_ip_trusted(peer_ip, nets):
         return peer_ip
 
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        client_ip = _extract_ip_from_forwarded(forwarded, trusted_networks)
+        client_ip = _extract_ip_from_forwarded(forwarded, nets)
         if client_ip:
             return client_ip
 
@@ -96,7 +123,7 @@ def get_trusted_client_ip(request: Request, trusted_networks=DEFAULT_TRUSTED_NET
 
 
 class TrustedProxyMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: ASGIApp, trusted_networks=DEFAULT_TRUSTED_NETWORKS):
+    def __init__(self, app: ASGIApp, trusted_networks=None):
         super().__init__(app)
         self.trusted_networks = trusted_networks
 

@@ -49,19 +49,33 @@ async def test_siem_forwarder(
 ):
     """Sends a synthetic test heartbeat probe to verify target SIEM connectivity."""
     tenant_id = enforce_tenant_data_scope(current_user)
-    target = str(payload.destination_url) if payload.destination_url else None
+    persisted = await siem_service.load_tenant_config_with_secret(str(tenant_id))
+    saved_url = persisted.get("destination_url") or ""
+    target = str(payload.destination_url) if payload.destination_url else saved_url
     if not target:
-        persisted = await siem_service.load_tenant_config(str(tenant_id))
-        target = persisted.get("destination_url")
-    if target:
-        try:
-            validate_siem_destination_url(target)
-        except ValueError as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No SIEM destination URL configured for this tenant.",
+        )
+
+    try:
+        validated_target = validate_siem_destination_url(target)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    # Never forward a persisted tenant auth_token to an arbitrary caller-supplied destination URL
+    if payload.auth_token is not None:
+        effective_token = payload.auth_token
+    elif saved_url and validated_target.rstrip("/") == saved_url.rstrip("/"):
+        effective_token = persisted.get("auth_token") or ""
+    else:
+        effective_token = ""
+
     try:
         result = await siem_service.test_connection(
-            target_url=target,
-            token=payload.auth_token
+            target_url=validated_target,
+            token=effective_token,
+            fmt=persisted.get("format") or "SPLUNK_HEC",
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))

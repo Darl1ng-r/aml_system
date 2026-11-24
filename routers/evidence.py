@@ -5,6 +5,7 @@ Endpoints for uploading, listing, downloading, and managing evidence documents,
 screenshots, and dossiers attached to AML cases.
 """
 
+import logging
 import os
 import re
 import uuid
@@ -19,6 +20,8 @@ from services.rate_limiter import RateLimiter
 from database.postgres import get_async_db_conn
 from observability.logging import log_audit_event
 from observability.sanitizer import sanitize_text
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
 MAX_EVIDENCE_BYTES = 25 * 1024 * 1024  # 25 MB hard cap
@@ -174,7 +177,8 @@ async def _resolve_case_uuid(
 @router.get("", response_model=List[EvidenceMetadata])
 async def list_case_evidence(
     case_id: str,
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
     """
     List all evidence attachments registered to an AML case (accepts case UUID or linked alert UUID).
@@ -219,8 +223,9 @@ async def list_case_evidence(
                 )
                 for r in rows
             ]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to query case evidence: {e}")
+    except Exception:
+        logger.exception("Failed to query case evidence")
+        raise HTTPException(status_code=500, detail="Failed to query case evidence.")
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -300,8 +305,9 @@ async def upload_case_evidence(
     object_key = f"{evidence_id}_{safe_filename}"
     try:
         stored_key = await backend.put_object(str(tenant_id), object_key, raw_bytes, safe_content_type)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to persist evidence artifact: {e}")
+    except Exception:
+        logger.exception("Failed to persist evidence artifact")
+        raise HTTPException(status_code=500, detail="Failed to persist evidence artifact.")
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -367,19 +373,21 @@ async def upload_case_evidence(
             "scan_status": scan_status,
             "uploaded_by": username
         }
-    except Exception as e:
+    except Exception:
         try:
             await backend.delete_object(str(tenant_id), stored_key)
         except Exception:
             pass
-        raise HTTPException(status_code=500, detail=f"Failed to record evidence: {e}")
+        logger.exception("Failed to record evidence metadata")
+        raise HTTPException(status_code=500, detail="Failed to record evidence.")
 
 
 @router.get("/{evidence_id}/download")
 async def download_case_evidence(
     case_id: str,
     evidence_id: str,
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
     """Downloads a stored evidence attachment for an AML case."""
     try:
@@ -437,10 +445,12 @@ async def download_case_evidence(
 async def delete_case_evidence(
     case_id: str,
     evidence_id: str,
-    current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"]))
+    current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
     Removes an evidence attachment from a case (authorized investigator/MLRO only).
+    Enforces tenant storage jailing and WORM retention policies prior to database deletion.
     """
     try:
         raw_uuid = uuid.UUID(case_id)
@@ -455,13 +465,28 @@ async def delete_case_evidence(
             case_uuid = await _resolve_case_uuid(conn, raw_uuid, tenant_id, current_user, auto_create=False)
             row = await conn.fetchrow(
                 """
-                SELECT storage_key, filename FROM case_evidence
+                SELECT storage_key, filename, storage_backend FROM case_evidence
                 WHERE id = $1 AND case_id = $2;
                 """,
                 ev_uuid, case_uuid
             )
             if not row:
                 raise HTTPException(status_code=404, detail="Evidence not found")
+
+            storage_key = row["storage_key"]
+            if storage_key:
+                from services.evidence_storage import LocalEvidenceBackend, S3EvidenceBackend
+                backend_type = (
+                    (row.get("storage_backend") if hasattr(row, "get") else None)
+                    or ("s3" if str(storage_key).startswith("s3://") else "local")
+                )
+                backend = S3EvidenceBackend() if backend_type == "s3" else LocalEvidenceBackend(EVIDENCE_STORAGE_DIR)
+                try:
+                    await backend.delete_object(str(tenant_id), storage_key)
+                except PermissionError as perm_err:
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(perm_err))
+                except ValueError as val_err:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(val_err))
 
             await conn.execute("DELETE FROM case_evidence WHERE id = $1;", ev_uuid)
 
@@ -479,13 +504,6 @@ async def delete_case_evidence(
                 details={"evidence_id": evidence_id, "filename": row["filename"]},
             )
 
-            storage_key = row["storage_key"]
-            if storage_key and os.path.exists(storage_key):
-                try:
-                    os.remove(storage_key)
-                except Exception:
-                    pass
-
         log_audit_event(
             event_type="CASE_EVIDENCE_DELETED",
             actor_id=str(current_user.get("id")),
@@ -500,5 +518,6 @@ async def delete_case_evidence(
         return {"status": "DELETED", "evidence_id": evidence_id}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete evidence: {e}")
+    except Exception:
+        logger.exception("Failed to delete case evidence")
+        raise HTTPException(status_code=500, detail="Failed to delete evidence.")

@@ -16,7 +16,7 @@ import logging
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from database.postgres import get_async_db_conn
-from services.auth import RoleChecker
+from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.feedback_loop import feedback_service
 from services.rate_limiter import RateLimiter
 
@@ -28,25 +28,29 @@ router = APIRouter(prefix="/api/v1/ml", tags=["Machine Learning & Feedback Loop"
 @router.post("/retrain", status_code=status.HTTP_202_ACCEPTED)
 async def retrain_model_now(
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "MLRO"])),
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=5, window=60))
 ):
     """
     Triggers an active online retraining cycle using human-validated analyst feedback asynchronously.
     Returns 202 Accepted immediately to prevent blocking the HTTP response.
     """
+    tenant_id = enforce_tenant_data_scope(current_user)
+
     async def _async_retrain_and_broadcast():
         try:
-            result = await feedback_service.retrain_model_with_feedback()
+            result = await feedback_service.retrain_model_with_feedback(tenant_id=str(tenant_id))
             if result.get("status") == "RETRAINED":
                 from routers.metrics import ws_manager
-                await ws_manager.broadcast({
-                    "event": "ML_MODEL_RETRAINED",
-                    "is_system_broadcast": True,
-                    "samples_count": result["samples_count"],
-                    "false_positives_learned": result["false_positives_learned"],
-                    "retrained_by": current_user["username"]
-                })
+                await ws_manager.broadcast(
+                    {
+                        "event": "ML_MODEL_RETRAINED",
+                        "samples_count": result["samples_count"],
+                        "false_positives_learned": result["false_positives_learned"],
+                        "retrained_by": current_user["username"],
+                    },
+                    target_tenant_id=str(tenant_id),
+                )
         except Exception:
             logger.exception("Async model retraining failed")
 
@@ -65,13 +69,23 @@ async def get_feedback_stats(
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
-    Retrieves feedback loop metrics, false positive counts, and model retraining health.
+    Retrieves tenant-scoped feedback loop metrics, false positive counts, and model retraining health.
     """
+    tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_conn() as conn:
-            total_samples = await conn.fetchval("SELECT COUNT(*) FROM ml_feedback_samples;")
-            fp_count = await conn.fetchval("SELECT COUNT(*) FROM ml_feedback_samples WHERE label = 0;")
-            sar_count = await conn.fetchval("SELECT COUNT(*) FROM ml_feedback_samples WHERE label = 1;")
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            total_samples = await conn.fetchval(
+                "SELECT COUNT(*) FROM ml_feedback_samples WHERE tenant_id = $1::uuid;",
+                str(tenant_id),
+            )
+            fp_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM ml_feedback_samples WHERE tenant_id = $1::uuid AND label = 0;",
+                str(tenant_id),
+            )
+            sar_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM ml_feedback_samples WHERE tenant_id = $1::uuid AND label = 1;",
+                str(tenant_id),
+            )
 
             fp_reduction_rate = round((fp_count / total_samples * 100), 1) if total_samples and total_samples > 0 else 0.0
 
@@ -82,9 +96,9 @@ async def get_feedback_stats(
                 "false_positive_reduction_rate": f"{fp_reduction_rate}%",
                 "active_learning_status": "ACTIVE_ONLINE_RETRAINING"
             }
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to query feedback stats")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch feedback stats: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch feedback stats.")
 
 
 def _resolve_attributions(parsed: dict, row: Any) -> dict:
@@ -142,17 +156,19 @@ async def get_alert_explainability(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid alert ID format.")
 
+    tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_conn() as conn:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             row = await conn.fetchrow(
                 """
                 SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score,
                        a.explainability_payload, t.amount, t.currency
                 FROM alerts a
                 LEFT JOIN transactions t ON a.transaction_id = t.id
-                WHERE a.id = $1;
+                WHERE a.id = $1 AND a.tenant_id = $2::uuid;
                 """,
-                a_uuid
+                a_uuid,
+                str(tenant_id),
             )
 
         if not row:
@@ -189,9 +205,9 @@ async def get_alert_explainability(
         }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Explainability lookup error")
-        raise HTTPException(status_code=500, detail=f"Explainability lookup failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Explainability lookup failed.")
 
 
 def _load_model_report_artifact() -> dict:

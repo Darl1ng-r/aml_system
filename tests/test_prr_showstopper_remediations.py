@@ -121,9 +121,11 @@ def test_pii_encryption_hkdf_derivation_and_roundtrip():
 
 @pytest.mark.asyncio
 async def test_fincen_sar_submit_blocks_unapproved_direct_filing_by_analyst():
-    """Verify that an analyst calling /sar/submit without an approved MLRO-signed draft receives 403 Forbidden."""
+    """Verify that an analyst is blocked by RBAC and an MLRO without an approved draft receives 403 Four-Eyes Violation."""
     analyst_id = uuid.uuid4()
+    mlro_id = uuid.uuid4()
     analyst_token = make_token("ANALYST", user_id=analyst_id)
+    mlro_token = make_token("MLRO", user_id=mlro_id)
     alert_id = str(uuid.uuid4())
 
     mock_conn = AsyncMock()
@@ -148,10 +150,26 @@ async def test_fincen_sar_submit_blocks_unapproved_direct_filing_by_analyst():
          patch("routers.fincen.check_idempotency", AsyncMock(return_value=(False, None))):
 
         transport = httpx.ASGITransport(app=app)
+        # 1. ANALYST lacks sar:submit permission -> 403 Forbidden
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
             headers={"Authorization": f"Bearer {analyst_token}", "X-CSRF-Protection": "1"}
+        ) as ac:
+            res_analyst = await ac.post(
+                "/api/v1/fincen/sar/submit",
+                json={
+                    "alert_id": alert_id,
+                    "sar_xml": "<SuspiciousActivityReport><Narrative>Test</Narrative></SuspiciousActivityReport>"
+                }
+            )
+            assert res_analyst.status_code == 403
+
+        # 2. Even an MLRO cannot file without an approved SAR draft -> 403 Four-Eyes Principle Violation
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {mlro_token}", "X-CSRF-Protection": "1"}
         ) as ac:
             res = await ac.post(
                 "/api/v1/fincen/sar/submit",
@@ -166,10 +184,10 @@ async def test_fincen_sar_submit_blocks_unapproved_direct_filing_by_analyst():
 
 @pytest.mark.asyncio
 async def test_fincen_sar_submit_succeeds_with_mlro_approved_draft():
-    """Verify that /sar/submit succeeds when a valid MLRO-approved draft is provided."""
+    """Verify that /sar/submit succeeds when an MLRO submits a valid MLRO-approved draft."""
     analyst_id = uuid.uuid4()
     mlro_id = uuid.uuid4()
-    analyst_token = make_token("ANALYST", user_id=analyst_id)
+    mlro_token = make_token("MLRO", user_id=mlro_id)
     alert_id = str(uuid.uuid4())
     draft_id = str(uuid.uuid4())
 
@@ -217,7 +235,7 @@ async def test_fincen_sar_submit_succeeds_with_mlro_approved_draft():
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
-            headers={"Authorization": f"Bearer {analyst_token}", "X-CSRF-Protection": "1"}
+            headers={"Authorization": f"Bearer {mlro_token}", "X-CSRF-Protection": "1"}
         ) as ac:
             res = await ac.post(
                 "/api/v1/fincen/sar/submit",

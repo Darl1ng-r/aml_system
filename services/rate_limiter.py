@@ -115,14 +115,18 @@ async def _check_redis_rate_limit(redis, key: str, limit: int, window: int) -> N
 
 
 class RateLimiter:
-    def __init__(self, limit: int, window: int, fail_closed: bool = False):
+    def __init__(self, limit: int, window: int, fail_closed: bool = False, ip_only: bool = False):
         self.limit = limit
         self.window = window
         self.fail_closed = fail_closed
+        self.ip_only = ip_only
 
     async def __call__(self, request: Request):
         client_ip = _resolve_rate_limit_client_ip(request)
-        user_id, tenant_id = _extract_user_and_tenant(request)
+        if self.ip_only:
+            user_id, tenant_id = None, None
+        else:
+            user_id, tenant_id = _extract_user_and_tenant(request)
         key = _build_rate_limit_key(request, client_ip, user_id, tenant_id)
 
         try:
@@ -134,7 +138,7 @@ class RateLimiter:
             raise
         except Exception as e:
             from config import settings
-            if self.fail_closed and str(settings.environment).lower() == "production":
+            if self.fail_closed and settings.is_production:
                 logger.error(f"Rate limiter fail-closed triggered due to Redis outage: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -144,7 +148,7 @@ class RateLimiter:
             logger.warning(f"Rate limiter failed to communicate with Redis: {e}. Falling back to in-process limiter.")
 
         from config import settings
-        if self.fail_closed and str(settings.environment).lower() == "production":
+        if self.fail_closed and settings.is_production:
             logger.error("Rate limiter fail-closed triggered: Redis client returned None.")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

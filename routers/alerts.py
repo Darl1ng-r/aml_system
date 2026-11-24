@@ -161,8 +161,11 @@ async def list_alerts(
             response.headers["X-Total-Count"] = str(total_count or 0)
             response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
             return alerts
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list alerts: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to list alerts")
+        raise HTTPException(status_code=500, detail="Failed to list alerts.")
 
 async def _fetch_alert_sender_receiver(alert_uuid: uuid.UUID, tenant_id: str | None) -> tuple[str, str]:
     async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
@@ -311,7 +314,7 @@ async def _build_alert_graph_from_neo4j(neo4j_driver, sender: str, receiver: str
     MATCH (a:Account) WHERE a.account_number IN [$sender, $receiver]
       AND ($tenant_id IS NULL OR a.tenant_id = $tenant_id)
     OPTIONAL MATCH (a)-[t:TRANSFERS_TO]-(other:Account)
-      WHERE ($tenant_id IS NULL OR other.tenant_id = $tenant_id OR t.tenant_id = $tenant_id)
+      WHERE ($tenant_id IS NULL OR (other.tenant_id = $tenant_id AND (t.tenant_id IS NULL OR t.tenant_id = $tenant_id)))
     OPTIONAL MATCH (a)-[b:BELONGS_TO]->(c:Company)
       WHERE ($tenant_id IS NULL OR c.tenant_id = $tenant_id)
     OPTIONAL MATCH (p:Person)-[u:OWNS_UBO]->(c)
@@ -407,8 +410,9 @@ async def get_alert_graph(
         sender, receiver = await _fetch_alert_sender_receiver(alert_uuid, tenant_id)
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+    except Exception:
+        logger.exception("Failed to load alert sender/receiver for graph")
+        raise HTTPException(status_code=500, detail="Failed to query alert graph data.")
 
     graph_payload = {"nodes": [], "edges": []}
     if neo4j_driver is not None:
@@ -420,8 +424,9 @@ async def get_alert_graph(
     if not graph_payload.get("nodes"):
         try:
             graph_payload = await _build_alert_graph_from_postgres(sender, receiver, tenant_id)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Graph query failed: {str(e)}")
+        except Exception:
+            logger.exception("PostgreSQL alert graph fallback failed")
+            raise HTTPException(status_code=500, detail="Graph query failed.")
 
     return graph_payload
 
@@ -582,9 +587,9 @@ async def resolve_alert(
         return {"status": status, "sar_xml": sar_xml, "sar_narrative": sar_narrative}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to resolve alert")
-        raise HTTPException(status_code=500, detail=f"Failed to resolve alert: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to resolve alert.")
 
 
 @router.get("/{id}/narrative")
@@ -606,9 +611,11 @@ async def get_alert_sar_narrative(
             analyst_id=current_user.get("username", "ANALYST")
         )
         return narrative_res
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         logger.exception("Failed to generate SAR narrative for alert %s", id)
-        raise HTTPException(status_code=500, detail=f"Failed to generate SAR narrative: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to generate SAR narrative.")
 
 
 class AlertAssignment(BaseModel):
@@ -629,18 +636,18 @@ async def assign_alert(
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            # Resolve user ID from username
+            # Resolve user ID from username within caller's tenant
             officer = await conn.fetchrow(
-                "SELECT id FROM users WHERE username = $1;",
-                payload.officer_username
+                "SELECT id FROM users WHERE username = $1 AND tenant_id = $2::uuid;",
+                payload.officer_username, str(tenant_id)
             )
             if not officer:
                 raise HTTPException(status_code=404, detail=f"Officer '{payload.officer_username}' not found.")
 
             # Update assigned_officer_id
             updated = await conn.execute(
-                "UPDATE alerts SET assigned_officer_id = $1 WHERE id = $2;",
-                officer["id"], uuid.UUID(id)
+                "UPDATE alerts SET assigned_officer_id = $1 WHERE id = $2 AND tenant_id = $3::uuid;",
+                officer["id"], uuid.UUID(id), str(tenant_id)
             )
             if updated == UPDATE_ZERO:
                 raise HTTPException(status_code=404, detail=ALERT_NOT_FOUND)
@@ -657,8 +664,9 @@ async def assign_alert(
             return {"alert_id": id, "assigned_officer": payload.officer_username, "status": "ASSIGNED"}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to assign alert: {str(e)}")
+    except Exception:
+        logger.exception("Failed to assign alert %s", id)
+        raise HTTPException(status_code=500, detail="Failed to assign alert.")
 
 
 class AlertEscalate(BaseModel):
@@ -808,9 +816,9 @@ async def escalate_alert(
             return resp_body
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to escalate alert")
-        raise HTTPException(status_code=500, detail=f"Failed to escalate alert: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to escalate alert.")
 
 
 def _get_row_field(row, field: str, default=None):
@@ -926,15 +934,16 @@ async def claim_alert(
             }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to claim alert")
-        raise HTTPException(status_code=500, detail=f"Failed to claim alert: {e}")
+        raise HTTPException(status_code=500, detail="Failed to claim alert.")
 
 
 @router.get("/{id}/escalations")
 async def get_alert_escalations(
     id: str,
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
     """
     Returns the complete escalation audit chain for an alert (Tier 1 -> Tier 2 -> MLRO handoffs).
@@ -1261,9 +1270,9 @@ async def get_alert_details(
             return _build_alert_details_response(row, profile, history, prior_alerts, linked_entities)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to load alert details")
-        raise HTTPException(status_code=500, detail=f"Failed to load alert details: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to load alert details.")
 
 
 class BulkAlertAction(BaseModel):
@@ -1383,10 +1392,15 @@ async def bulk_resolve_alerts(
       - CLOSE_SAR / CLOSE_FALSE_POSITIVE: Strictly restricted to L2_INVESTIGATOR / ANALYST / MLRO / ADMIN
     """
     caller_role = str(current_user.get("role") or "").upper()
-    if payload.action in ("CLOSE_SAR", "CLOSE_FALSE_POSITIVE") and caller_role == "L1_ANALYST":
+    if payload.action in ("CLOSE_SAR", "CLOSE_FALSE_POSITIVE", "ASSIGN") and caller_role == "L1_ANALYST":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Privilege Separation: L1_ANALYST cannot bulk-close alerts; escalate or claim instead.",
+            detail="Privilege Separation: L1_ANALYST cannot bulk-close or reassign alerts; escalate or claim instead.",
+        )
+    if payload.action == "CLOSE_SAR" and caller_role not in ("MLRO", "ADMIN", "TENANT_ADMIN", "SUPER_ADMIN"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Privilege Separation: Bulk CLOSE_SAR requires MLRO or ADMIN authorization.",
         )
 
     try:
@@ -1403,8 +1417,9 @@ async def bulk_resolve_alerts(
                 target_user_id = None
                 if payload.action == "ASSIGN" and payload.assignee_username:
                     target_user_id = await conn.fetchval(
-                        "SELECT id FROM users WHERE username = $1;",
+                        "SELECT id FROM users WHERE username = $1 AND tenant_id = $2::uuid;",
                         payload.assignee_username.strip(),
+                        str(tenant_id),
                     )
                     if not target_user_id:
                         raise HTTPException(status_code=404, detail=f"Assignee '{payload.assignee_username}' not found.")
@@ -1483,9 +1498,9 @@ async def bulk_resolve_alerts(
             }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Bulk alert action failed")
-        raise HTTPException(status_code=500, detail=f"Bulk action failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Bulk alert action failed.")
 
 
 def sanitize_csv_cell(value: object) -> object:
@@ -1666,9 +1681,11 @@ async def export_alerts_pdf(
             </html>
             """
             return HTMLResponse(content=html_content)
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         logger.exception("PDF/HTML report generation failed")
-        raise HTTPException(status_code=500, detail=f"Report export failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Report export failed.")
 
 def generate_sar_xml(alert_data, justification: str) -> str:
     """

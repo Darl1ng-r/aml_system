@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/v1/watchlist", tags=["Global Watchlist Managemen
 @router.post("/sync-jobs", status_code=status.HTTP_202_ACCEPTED)
 @router.post("/sync")
 async def sync_watchlists(
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    current_user: dict = Depends(RoleChecker(["ADMIN", "MLRO", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=5, window=60))
 ):
     """
@@ -35,19 +35,18 @@ async def sync_watchlists(
     try:
         result = await watchlist_sync_engine.sync_all_watchlists()
 
-        # Broadcast real-time WebSocket update
+        # Broadcast real-time WebSocket update without leaking actor username across tenants
         from routers.metrics import ws_manager
         await ws_manager.broadcast({
             "event": "WATCHLIST_SYNCED",
             "is_system_broadcast": True,
             "total_records": result["total_records_processed"],
-            "synced_by": current_user["username"]
         })
 
         return result
-    except Exception as e:
+    except Exception:
         logger.exception("Watchlist synchronization failed")
-        raise HTTPException(status_code=500, detail=f"Watchlist sync failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Watchlist synchronization failed.")
 
 
 @router.post("/rescreen")
@@ -65,9 +64,9 @@ async def trigger_cdd_rescreen(
     try:
         res = await trigger_ongoing_cdd_rescreening(tenant_id=str(tenant_id))
         return res
-    except Exception as e:
+    except Exception:
         logger.exception("CDD re-screening invocation failed")
-        raise HTTPException(status_code=500, detail=f"CDD re-screening failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="CDD re-screening failed.")
 
 
 @router.get("/status")

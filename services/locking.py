@@ -22,13 +22,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LOCK_TTL_SECONDS = 300  # 5 minutes
 
-# Atomic Lua compare-and-set / compare-and-delete scripts (prevents TOCTOU race conditions)
+# Atomic Lua compare-and-set / compare-and-delete scripts (strict JSON field match; prevents TOCTOU & substring bypass)
 _LUA_COMPARE_AND_SET = """
 local current = redis.call('GET', KEYS[1])
 if not current then
     return 0
 end
-if string.find(current, ARGV[1], 1, true) then
+local ok, parsed = pcall(cjson.decode, current)
+if not ok or type(parsed) ~= 'table' then
+    return -1
+end
+if tostring(parsed['locked_by']) == ARGV[1] then
     redis.call('SET', KEYS[1], ARGV[2], 'EX', tonumber(ARGV[3]))
     return 1
 end
@@ -40,15 +44,25 @@ local current = redis.call('GET', KEYS[1])
 if not current then
     return 1
 end
-if string.find(current, ARGV[1], 1, true) then
+local ok, parsed = pcall(cjson.decode, current)
+if not ok or type(parsed) ~= 'table' then
+    return -1
+end
+if tostring(parsed['locked_by']) == ARGV[1] then
     return redis.call('DEL', KEYS[1])
 end
 return -1
 """
 
 
-def _redis_key(resource_type: str, resource_id: str) -> str:
-    return f"aml:lock:{resource_type.upper()}:{resource_id}"
+def _redis_key(resource_type: str, resource_id: str, tenant_id: Optional[str] = None) -> str:
+    scope = str(tenant_id).strip() if tenant_id else "global"
+    return f"aml:lock:{scope}:{resource_type.upper()}:{resource_id}"
+
+
+def _sanitize_public_lock_info(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Strips secret lock_token before returning lock metadata to non-holders."""
+    return {k: v for k, v in data.items() if k != "lock_token"}
 
 
 async def _try_acquire_redis_lease(
@@ -83,18 +97,18 @@ async def _try_acquire_redis_lease(
                 # Atomic compare-and-set renewal via Lua when supported
                 if hasattr(redis, "eval"):
                     try:
-                        owner_marker = f'"locked_by": "{user_id}"'
-                        res = await redis.eval(_LUA_COMPARE_AND_SET, 1, key, owner_marker, payload_json, str(ttl_seconds))
+                        res = await redis.eval(_LUA_COMPARE_AND_SET, 1, key, str(user_id), payload_json, str(ttl_seconds))
                         if res == -1:
                             refreshed = await redis.get(key)
-                            return True, (False, json.loads(refreshed) if refreshed else existing_data)
+                            conflict = json.loads(refreshed) if refreshed else existing_data
+                            return True, (False, _sanitize_public_lock_info(conflict))
                     except Exception:
                         await redis.set(key, payload_json, ex=ttl_seconds)
                 else:
                     await redis.set(key, payload_json, ex=ttl_seconds)
                 await _persist_lock_to_db(res_type, resource_id, user_id, username, tenant_id, expires_at, lock_token)
                 return True, (True, lock_payload)
-            return True, (False, existing_data)
+            return True, (False, _sanitize_public_lock_info(existing_data))
     except Exception as e:
         logger.warning(f"Redis lock check failed, falling back to PostgreSQL: {e}")
     return False, None
@@ -114,12 +128,13 @@ async def _persist_and_validate_db_lock(
         existing_row = await conn.fetchrow(
             """
             SELECT resource_type, resource_id, locked_by, locked_by_name,
-                   locked_at, expires_at, lock_token
+                   locked_at, expires_at
             FROM resource_locks
             WHERE resource_type = $1 AND resource_id = $2
+              AND tenant_id = $3
               AND expires_at > NOW() AND released_at IS NULL;
             """,
-            res_type, uuid.UUID(str(resource_id))
+            res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(tenant_id))
         )
         if existing_row:
             existing_user = str(existing_row["locked_by"])
@@ -130,7 +145,6 @@ async def _persist_and_validate_db_lock(
                     "locked_by": existing_user,
                     "locked_by_name": existing_row["locked_by_name"],
                     "expires_at": existing_row["expires_at"].isoformat() if existing_row["expires_at"] else None,
-                    "lock_token": str(existing_row["lock_token"]) if existing_row["lock_token"] else None
                 }
 
         acquired_owner = await conn.fetchval(
@@ -148,9 +162,12 @@ async def _persist_and_validate_db_lock(
                 lock_token = EXCLUDED.lock_token,
                 released_at = NULL,
                 force_broken_by = NULL
-            WHERE resource_locks.expires_at <= NOW()
-               OR resource_locks.released_at IS NOT NULL
-               OR resource_locks.locked_by = EXCLUDED.locked_by
+            WHERE resource_locks.tenant_id = EXCLUDED.tenant_id
+              AND (
+                  resource_locks.expires_at <= NOW()
+                  OR resource_locks.released_at IS NOT NULL
+                  OR resource_locks.locked_by = EXCLUDED.locked_by
+              )
             RETURNING locked_by;
             """,
             res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(user_id)), username,
@@ -161,11 +178,11 @@ async def _persist_and_validate_db_lock(
             holder_row = await conn.fetchrow(
                 """
                 SELECT resource_type, resource_id, locked_by, locked_by_name,
-                       locked_at, expires_at, lock_token
+                       locked_at, expires_at
                 FROM resource_locks
-                WHERE resource_type = $1 AND resource_id = $2;
+                WHERE resource_type = $1 AND resource_id = $2 AND tenant_id = $3;
                 """,
-                res_type, uuid.UUID(str(resource_id))
+                res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(tenant_id))
             )
             if holder_row and str(holder_row["locked_by"]) != str(user_id):
                 return False, {
@@ -174,7 +191,6 @@ async def _persist_and_validate_db_lock(
                     "locked_by": str(holder_row["locked_by"]),
                     "locked_by_name": holder_row["locked_by_name"],
                     "expires_at": holder_row["expires_at"].isoformat() if holder_row["expires_at"] else None,
-                    "lock_token": str(holder_row["lock_token"]) if holder_row["lock_token"] else None
                 }
     return True, None
 
@@ -209,9 +225,9 @@ async def acquire_resource_lock(
         "ttl_seconds": ttl_seconds
     }
 
-    # 1. Try acquiring in Redis first
+    # 1. Try acquiring in Redis first (tenant-namespaced key)
     redis = await get_async_redis_client()
-    key = _redis_key(res_type, resource_id)
+    key = _redis_key(res_type, resource_id, tenant_id=tenant_id)
 
     if redis:
         handled, result = await _try_acquire_redis_lease(
@@ -261,7 +277,8 @@ async def _persist_lock_to_db(
                     expires_at = EXCLUDED.expires_at,
                     lock_token = EXCLUDED.lock_token,
                     released_at = NULL,
-                    force_broken_by = NULL;
+                    force_broken_by = NULL
+                WHERE resource_locks.tenant_id = EXCLUDED.tenant_id;
                 """,
                 resource_type, uuid.UUID(str(resource_id)), uuid.UUID(str(user_id)), username,
                 uuid.UUID(str(tenant_id)), expires_at, uuid.UUID(lock_token)
@@ -278,7 +295,8 @@ async def _refresh_redis_lease(
     new_expires_at: datetime,
     ttl_seconds: int,
     res_type: str,
-    resource_id: str
+    resource_id: str,
+    tenant_id: Optional[str] = None,
 ) -> Tuple[bool, Optional[Tuple[bool, Dict[str, Any]]]]:
     try:
         raw = await redis.get(key)
@@ -290,7 +308,7 @@ async def _refresh_redis_lease(
                 data["expires_at"] = new_expires_at.isoformat()
                 data["ttl_seconds"] = ttl_seconds
                 await redis.set(key, json.dumps(data), ex=ttl_seconds)
-                await _update_db_expiry(res_type, resource_id, new_expires_at)
+                await _update_db_expiry(res_type, resource_id, new_expires_at, tenant_id=tenant_id)
                 return True, (True, data)
             return True, (False, {"detail": "Lock held by different user", "current_holder": data.get("locked_by_name")})
     except Exception as e:
@@ -304,20 +322,35 @@ async def _refresh_db_lease(
     user_id: str,
     lock_token: Optional[str],
     new_expires_at: datetime,
-    ttl_seconds: int
+    ttl_seconds: int,
+    tenant_id: Optional[str] = None,
 ) -> Tuple[bool, Optional[Tuple[bool, Dict[str, Any]]]]:
     try:
-        async with get_async_db_conn() as conn:
-            row = await conn.fetchrow(
-                """
-                UPDATE resource_locks
-                SET expires_at = $1
-                WHERE resource_type = $2 AND resource_id = $3
-                  AND locked_by = $4 AND (released_at IS NULL OR expires_at > NOW())
-                RETURNING resource_type, resource_id, locked_by, locked_by_name, expires_at, lock_token;
-                """,
-                new_expires_at, res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(user_id))
-            )
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            if tenant_id:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE resource_locks
+                    SET expires_at = $1
+                    WHERE resource_type = $2 AND resource_id = $3
+                      AND locked_by = $4 AND tenant_id = $5
+                      AND (released_at IS NULL OR expires_at > NOW())
+                    RETURNING resource_type, resource_id, locked_by, locked_by_name, expires_at, lock_token;
+                    """,
+                    new_expires_at, res_type, uuid.UUID(str(resource_id)),
+                    uuid.UUID(str(user_id)), uuid.UUID(str(tenant_id))
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE resource_locks
+                    SET expires_at = $1
+                    WHERE resource_type = $2 AND resource_id = $3
+                      AND locked_by = $4 AND (released_at IS NULL OR expires_at > NOW())
+                    RETURNING resource_type, resource_id, locked_by, locked_by_name, expires_at, lock_token;
+                    """,
+                    new_expires_at, res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(user_id))
+                )
             if row:
                 if lock_token and row["lock_token"] and str(row["lock_token"]) != str(lock_token):
                     return True, (False, {"detail": "Invalid lock token"})
@@ -339,27 +372,28 @@ async def refresh_resource_lock(
     resource_id: str,
     user_id: str,
     lock_token: Optional[str] = None,
-    ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS
+    ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
+    tenant_id: Optional[str] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     """
-    Heartbeat / refresh lock lease TTL.
+    Heartbeat / refresh lock lease TTL (tenant-scoped).
     """
     res_type = resource_type.upper()
     now = datetime.now(timezone.utc)
     new_expires_at = now + timedelta(seconds=ttl_seconds)
 
     redis = await get_async_redis_client()
-    key = _redis_key(res_type, resource_id)
+    key = _redis_key(res_type, resource_id, tenant_id=tenant_id)
 
     if redis:
         handled, result = await _refresh_redis_lease(
-            redis, key, user_id, lock_token, new_expires_at, ttl_seconds, res_type, resource_id
+            redis, key, user_id, lock_token, new_expires_at, ttl_seconds, res_type, resource_id, tenant_id=tenant_id
         )
         if handled and result is not None:
             return result
 
     handled_db, db_result = await _refresh_db_lease(
-        res_type, resource_id, user_id, lock_token, new_expires_at, ttl_seconds
+        res_type, resource_id, user_id, lock_token, new_expires_at, ttl_seconds, tenant_id=tenant_id
     )
     if handled_db and db_result is not None:
         return db_result
@@ -367,17 +401,32 @@ async def refresh_resource_lock(
     return False, {"detail": "Lock not found or expired"}
 
 
-async def _update_db_expiry(resource_type: str, resource_id: str, new_expires_at: datetime):
+async def _update_db_expiry(
+    resource_type: str,
+    resource_id: str,
+    new_expires_at: datetime,
+    tenant_id: Optional[str] = None,
+):
     try:
-        async with get_async_db_conn() as conn:
-            await conn.execute(
-                """
-                UPDATE resource_locks
-                SET expires_at = $1
-                WHERE resource_type = $2 AND resource_id = $3;
-                """,
-                new_expires_at, resource_type, uuid.UUID(str(resource_id))
-            )
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            if tenant_id:
+                await conn.execute(
+                    """
+                    UPDATE resource_locks
+                    SET expires_at = $1
+                    WHERE resource_type = $2 AND resource_id = $3 AND tenant_id = $4;
+                    """,
+                    new_expires_at, resource_type, uuid.UUID(str(resource_id)), uuid.UUID(str(tenant_id))
+                )
+            else:
+                await conn.execute(
+                    """
+                    UPDATE resource_locks
+                    SET expires_at = $1
+                    WHERE resource_type = $2 AND resource_id = $3;
+                    """,
+                    new_expires_at, resource_type, uuid.UUID(str(resource_id))
+                )
     except Exception:
         pass
 
@@ -392,19 +441,18 @@ async def release_resource_lock(
 ) -> Tuple[bool, str]:
     """
     Releases an active lock lease atomically (Lua compare-and-delete in Redis + tenant-scoped PG update).
-    If force=True, allows MLRO / ADMIN to break another analyst's lock.
+    If force=True, allows MLRO / ADMIN to break another analyst's lock within their tenant.
     """
     res_type = resource_type.upper()
     redis = await get_async_redis_client()
-    key = _redis_key(res_type, resource_id)
+    key = _redis_key(res_type, resource_id, tenant_id=tenant_id)
 
     if redis:
         try:
             if force:
                 await redis.delete(key)
             elif hasattr(redis, "eval"):
-                owner_marker = f'"locked_by": "{user_id}"'
-                res = await redis.eval(_LUA_COMPARE_AND_DEL, 1, key, owner_marker)
+                res = await redis.eval(_LUA_COMPARE_AND_DEL, 1, key, str(user_id))
                 if res == -1:
                     raw = await redis.get(key)
                     holder = json.loads(raw).get("locked_by_name") if raw else "another user"
@@ -420,18 +468,28 @@ async def release_resource_lock(
         except Exception as e:
             logger.warning(f"Redis release error: {e}")
 
-    # Mark released in DB
+    # Mark released in DB (explicitly tenant-scoped)
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             if force:
-                await conn.execute(
-                    """
-                    UPDATE resource_locks
-                    SET released_at = NOW(), force_broken_by = $1
-                    WHERE resource_type = $2 AND resource_id = $3;
-                    """,
-                    uuid.UUID(str(user_id)), res_type, uuid.UUID(str(resource_id))
-                )
+                if tenant_id:
+                    await conn.execute(
+                        """
+                        UPDATE resource_locks
+                        SET released_at = NOW(), force_broken_by = $1
+                        WHERE resource_type = $2 AND resource_id = $3 AND tenant_id = $4;
+                        """,
+                        uuid.UUID(str(user_id)), res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(tenant_id))
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE resource_locks
+                        SET released_at = NOW(), force_broken_by = $1
+                        WHERE resource_type = $2 AND resource_id = $3;
+                        """,
+                        uuid.UUID(str(user_id)), res_type, uuid.UUID(str(resource_id))
+                    )
                 log_audit_event(
                     event_type="LOCK_FORCE_BROKEN",
                     actor_id=str(user_id),
@@ -439,17 +497,28 @@ async def release_resource_lock(
                     action="FORCE_UNLOCK",
                     resource_type=res_type,
                     resource_id=str(resource_id),
-                    details={"message": f"Lock forcibly cleared by {user_role}"}
+                    details={"message": f"Lock forcibly cleared by {user_role}", "tenant_id": str(tenant_id) if tenant_id else None}
                 )
             else:
-                await conn.execute(
-                    """
-                    UPDATE resource_locks
-                    SET released_at = NOW()
-                    WHERE resource_type = $1 AND resource_id = $2 AND locked_by = $3;
-                    """,
-                    res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(user_id))
-                )
+                if tenant_id:
+                    await conn.execute(
+                        """
+                        UPDATE resource_locks
+                        SET released_at = NOW()
+                        WHERE resource_type = $1 AND resource_id = $2
+                          AND locked_by = $3 AND tenant_id = $4;
+                        """,
+                        res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(user_id)), uuid.UUID(str(tenant_id))
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE resource_locks
+                        SET released_at = NOW()
+                        WHERE resource_type = $1 AND resource_id = $2 AND locked_by = $3;
+                        """,
+                        res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(user_id))
+                    )
     except Exception as e:
         logger.exception(f"DB release lock error: {e}")
 
@@ -458,21 +527,23 @@ async def release_resource_lock(
 
 async def get_resource_lock_status(
     resource_type: str,
-    resource_id: str
+    resource_id: str,
+    tenant_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Checks who currently holds the lock on a resource and seconds remaining.
+    Checks who currently holds the lock on a resource within the caller's tenant.
+    Never exposes secret lock_token to callers.
     """
     res_type = resource_type.upper()
     redis = await get_async_redis_client()
-    key = _redis_key(res_type, resource_id)
+    key = _redis_key(res_type, resource_id, tenant_id=tenant_id)
 
     if redis:
         try:
             raw = await redis.get(key)
             ttl = await redis.ttl(key)
             if raw and ttl > 0:
-                data = json.loads(raw)
+                data = _sanitize_public_lock_info(json.loads(raw))
                 data["seconds_remaining"] = ttl
                 data["is_locked"] = True
                 return data
@@ -481,17 +552,30 @@ async def get_resource_lock_status(
 
     # Check database
     try:
-        async with get_async_db_conn() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT resource_type, resource_id, locked_by, locked_by_name,
-                       locked_at, expires_at, lock_token
-                FROM resource_locks
-                WHERE resource_type = $1 AND resource_id = $2
-                  AND expires_at > NOW() AND released_at IS NULL;
-                """,
-                res_type, uuid.UUID(str(resource_id))
-            )
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            if tenant_id:
+                row = await conn.fetchrow(
+                    """
+                    SELECT resource_type, resource_id, locked_by, locked_by_name,
+                           locked_at, expires_at
+                    FROM resource_locks
+                    WHERE resource_type = $1 AND resource_id = $2
+                      AND tenant_id = $3
+                      AND expires_at > NOW() AND released_at IS NULL;
+                    """,
+                    res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(tenant_id))
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT resource_type, resource_id, locked_by, locked_by_name,
+                           locked_at, expires_at
+                    FROM resource_locks
+                    WHERE resource_type = $1 AND resource_id = $2
+                      AND expires_at > NOW() AND released_at IS NULL;
+                    """,
+                    res_type, uuid.UUID(str(resource_id))
+                )
             if row:
                 now = datetime.now(timezone.utc)
                 remaining = max(0, int((row["expires_at"] - now).total_seconds()))

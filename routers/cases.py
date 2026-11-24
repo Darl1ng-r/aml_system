@@ -43,7 +43,7 @@ class CaseCreateRequest(BaseModel):
 class CaseUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=3, max_length=200)
     priority: Optional[str] = Field(None, pattern=r"^(LOW|MEDIUM|HIGH|CRITICAL)$")
-    status: Optional[str] = Field(None, pattern=r"^(OPEN|INVESTIGATING|PENDING_EDD|PENDING_SAR|CLOSED)$")
+    status: Optional[str] = Field(None, pattern=r"^(OPEN|INVESTIGATING|PENDING_EDD|PENDING_SAR)$")
     assigned_to: Optional[str] = None
     narrative: Optional[str] = Field(None, max_length=5000)
 
@@ -134,6 +134,28 @@ async def create_case(
             user_uuid = None
 
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        # Validate alert_ids belong to the caller's tenant BEFORE linking into case_alerts
+        validated_alert_uuids: list[uuid.UUID] = []
+        if payload.alert_ids:
+            parsed_uuids: list[uuid.UUID] = []
+            for alert_str in payload.alert_ids:
+                try:
+                    parsed_uuids.append(uuid.UUID(alert_str))
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid alert UUID format: {alert_str}")
+            owned_rows = await conn.fetch(
+                "SELECT id FROM alerts WHERE id = ANY($1::uuid[]) AND tenant_id = $2;",
+                parsed_uuids, tenant_uuid
+            )
+            owned_ids = {r["id"] for r in (owned_rows or [])}
+            missing = [str(u) for u in parsed_uuids if u not in owned_ids]
+            if missing:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="One or more alert_ids do not exist in your tenant."
+                )
+            validated_alert_uuids = parsed_uuids
+
         case_id = await conn.fetchval(
             """
             INSERT INTO cases (
@@ -147,20 +169,16 @@ async def create_case(
             subject_acc_uuid, payload.narrative
         )
 
-        # Link any associated alert IDs
-        for alert_str in payload.alert_ids:
-            try:
-                alert_uuid = uuid.UUID(alert_str)
-                await conn.execute(
-                    """
-                    INSERT INTO case_alerts (case_id, alert_id)
-                    VALUES ($1, $2)
-                    ON CONFLICT DO NOTHING;
-                    """,
-                    case_id, alert_uuid
-                )
-            except ValueError:
-                pass
+        # Link validated tenant-owned alert IDs
+        for alert_uuid in validated_alert_uuids:
+            await conn.execute(
+                """
+                INSERT INTO case_alerts (case_id, alert_id)
+                VALUES ($1, $2)
+                ON CONFLICT DO NOTHING;
+                """,
+                case_id, alert_uuid
+            )
 
         if response:
             response.headers["Location"] = f"/api/v1/cases/{case_id}"
@@ -171,7 +189,7 @@ async def create_case(
             "title": payload.title,
             "status": "OPEN",
             "priority": payload.priority,
-            "alert_count": len(payload.alert_ids)
+            "alert_count": len(validated_alert_uuids)
         }
 
 
@@ -325,7 +343,7 @@ async def add_case_note(
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
 
         # State transition check (STATE-01): cannot add notes to closed case without elevated privileges
-        if case_row["status"] == "CLOSED" and current_user.get("role") not in ("ADMIN", "MLRO"):
+        if case_row["status"] == "CLOSED" and current_user.get("role") not in ("ADMIN", "MLRO", "TENANT_ADMIN", "SUPER_ADMIN"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid workflow state: Cannot append notes to a CLOSED case without MLRO or Admin authorization."
@@ -366,8 +384,6 @@ def _build_case_updates(payload: CaseUpdateRequest) -> tuple[list[str], list[Any
         updates.append(f"status = ${p_idx}")
         params.append(payload.status)
         p_idx += 1
-        if payload.status == "CLOSED":
-            updates.append("closed_at = NOW()")
     if payload.assigned_to is not None:
         try:
             assigned_uuid = uuid.UUID(payload.assigned_to) if payload.assigned_to else None
@@ -455,9 +471,9 @@ async def close_case(
                 closure_reason = $1,
                 closed_at = NOW(),
                 updated_at = NOW()
-            WHERE id = $2 AND status != 'CLOSED';
+            WHERE id = $2 AND tenant_id = $3 AND status != 'CLOSED';
             """,
-            payload.closure_reason, case_uuid
+            payload.closure_reason, case_uuid, uuid.UUID(str(tenant_id))
         )
 
         # Add closure note to timeline

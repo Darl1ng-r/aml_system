@@ -12,6 +12,7 @@ Provides HTTP API endpoints for electronic FinCEN SAR transmission:
 """
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
@@ -19,7 +20,7 @@ from pydantic import BaseModel, Field, field_validator
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from database.postgres import get_async_db_conn
-from services.auth import RoleChecker, enforce_tenant_data_scope
+from services.auth import PermissionChecker, RoleChecker, enforce_tenant_data_scope
 from services.fincen_efiling import fincen_client
 from services.rate_limiter import RateLimiter
 from services.idempotency import check_idempotency, save_idempotency_result, clear_idempotency_key
@@ -138,14 +139,19 @@ async def _validate_maker_checker(
     payload: FinCENSubmissionRequest,
     alert_uuid: uuid.UUID,
     current_user: dict,
-    is_mismatched_mock: bool
+    is_mismatched_mock: bool,
+    tenant_id: Any = None,
 ) -> Any:
     if payload.draft_id:
         try:
             d_uuid = uuid.UUID(str(payload.draft_id))
             draft = await conn.fetchrow(
-                "SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username FROM sar_drafts WHERE id = $1;",
-                d_uuid
+                """
+                SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username, xml_payload
+                FROM sar_drafts
+                WHERE id = $1 AND ($2::text IS NULL OR tenant_id = $2::uuid);
+                """,
+                d_uuid, str(tenant_id) if tenant_id else None,
             )
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid draft_id format.")
@@ -153,8 +159,14 @@ async def _validate_maker_checker(
             raise HTTPException(status_code=404, detail="Referenced SAR draft does not exist.")
     else:
         draft = await conn.fetchrow(
-            "SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username FROM sar_drafts WHERE alert_id = $1 AND status = 'APPROVED' ORDER BY created_at DESC LIMIT 1;",
-            alert_uuid
+            """
+            SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username, xml_payload
+            FROM sar_drafts
+            WHERE alert_id = $1 AND status = 'APPROVED'
+              AND ($2::text IS NULL OR tenant_id = $2::uuid)
+            ORDER BY created_at DESC LIMIT 1;
+            """,
+            alert_uuid, str(tenant_id) if tenant_id else None,
         )
 
     if is_mismatched_mock:
@@ -165,26 +177,40 @@ async def _validate_maker_checker(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Four-Eyes Principle Violation: Electronic filing requires a validated SAR draft with status 'APPROVED' and verified MLRO review signature."
         )
-    if draft.get("status") != "APPROVED":
+    draft_alert_id = _extract_row_field(draft, "alert_id")
+    if draft_alert_id and str(draft_alert_id) != str(alert_uuid):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Four-Eyes Principle Violation: SAR draft is {draft.get('status')}; must be APPROVED by an MLRO before filing."
+            detail="Four-Eyes Principle Violation: Referenced SAR draft does not belong to target alert_id."
         )
-    if not draft.get("reviewed_by"):
+    if _extract_row_field(draft, "status") != "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Four-Eyes Principle Violation: SAR draft is {_extract_row_field(draft, 'status')}; must be APPROVED by an MLRO before filing."
+        )
+    if not _extract_row_field(draft, "reviewed_by"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Segregation of Duties Violation: SAR draft lacks verified MLRO review signature."
         )
     caller_role = current_user.get("role", "")
-    is_same_author = (
-        draft.get("drafted_by") and
-        str(draft.get("drafted_by")) == str(draft.get("reviewed_by"))
-    )
+    drafted_by = _extract_row_field(draft, "drafted_by")
+    reviewed_by = _extract_row_field(draft, "reviewed_by")
+    is_same_author = bool(drafted_by and str(drafted_by) == str(reviewed_by))
     if is_same_author and caller_role != "SUPER_ADMIN":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Segregation of Duties Violation: Filer cannot be both the author and the sole approver of the SAR draft."
         )
+
+    approved_xml = _extract_row_field(draft, "xml_payload")
+    if isinstance(approved_xml, str) and approved_xml.strip() and payload.sar_xml:
+        norm_approved = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufeff]", "", approved_xml).strip()
+        if payload.sar_xml.strip() != norm_approved:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Integrity Violation: Submitted SAR XML does not match the MLRO-approved draft payload."
+            )
     return draft
 
 
@@ -201,7 +227,7 @@ async def _execute_fincen_gateway_submission(
             await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
         await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(ve))
-    except Exception as e:
+    except Exception:
         logger.exception("FinCEN SAR submission failed")
         try:
             async with get_async_db_conn(tenant_id=tenant_id) as conn:
@@ -209,7 +235,7 @@ async def _execute_fincen_gateway_submission(
         except Exception:
             pass
         await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"FinCEN filing failed: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="FinCEN regulatory gateway submission failed.")
 
 
 async def _persist_fincen_receipt(
@@ -345,12 +371,12 @@ async def submit_sar_to_fincen(
     request: Request,
     payload: FinCENSubmissionRequest,
     response: Response = None,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "MLRO", "ANALYST"])),
+    current_user: dict = Depends(PermissionChecker("sar:submit")),
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
     """
     Submits a Suspicious Activity Report XML electronically to the U.S. FinCEN BSA E-Filing Gateway.
-    Enforces idempotency, pre-flight duplicate submission guards, and atomic filing status tracking.
+    Enforces idempotency, pre-flight duplicate submission guards, fail-closed Four-Eyes SoD, and atomic filing status tracking.
     """
     try:
         alert_uuid = uuid.UUID(payload.alert_id)
@@ -382,12 +408,14 @@ async def submit_sar_to_fincen(
             headers=headers
         )
 
-    # 3. PostgreSQL Pre-flight check & Maker-Checker validation
+    # 3. PostgreSQL Pre-flight check & Maker-Checker validation (strictly fail-closed!)
     draft_to_validate = None
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             is_mismatched_mock = await _check_preflight_alert(conn, alert_uuid, idemp_key, tenant_id)
-            draft_to_validate = await _validate_maker_checker(conn, payload, alert_uuid, current_user, is_mismatched_mock)
+            draft_to_validate = await _validate_maker_checker(
+                conn, payload, alert_uuid, current_user, is_mismatched_mock, tenant_id=tenant_id
+            )
 
             # Set state to FILING_PENDING to prevent concurrent double-filing
             await conn.execute(
@@ -401,7 +429,12 @@ async def submit_sar_to_fincen(
     except HTTPException:
         raise
     except Exception as db_err:
-        logger.warning(f"Pre-flight filing check warning: {db_err}")
+        logger.error("Pre-flight FinCEN compliance verification failed (fail-closed): %s", db_err)
+        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Pre-flight compliance verification unavailable; SAR filing rejected (fail-closed)."
+        )
 
     # 3b. Resolve XML payload from approved SAR draft when not passed inline
     if not payload.sar_xml or len(payload.sar_xml) < 10:
@@ -412,8 +445,9 @@ async def submit_sar_to_fincen(
             try:
                 async with get_async_db_conn(tenant_id=tenant_id) as conn:
                     d_row = await conn.fetchrow(
-                        "SELECT xml_payload, narrative FROM sar_drafts WHERE id = $1;",
-                        uuid.UUID(payload.draft_id)
+                        "SELECT xml_payload, narrative FROM sar_drafts WHERE id = $1 AND tenant_id = $2::uuid;",
+                        uuid.UUID(payload.draft_id),
+                        str(tenant_id),
                     )
                     if d_row:
                         resolved_xml = d_row.get("xml_payload") or (
@@ -435,9 +469,9 @@ async def submit_sar_to_fincen(
         return await _persist_fincen_receipt(receipt, payload, alert_uuid, draft_to_validate, current_user, tenant_id, idemp_key, response)
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("FinCEN SAR post-filing persistence failed")
-        raise HTTPException(status_code=500, detail=f"FinCEN filing post-processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="FinCEN filing post-processing failed.")
 
 
 @router.get("/sars/{id}")
@@ -480,14 +514,15 @@ async def get_fincen_status(
             }
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to query FinCEN status: {str(e)}")
+    except Exception:
+        logger.exception("Failed to query FinCEN status")
+        raise HTTPException(status_code=500, detail="Failed to query FinCEN status.")
 
 
 @router.post("/sar/drafts", status_code=status.HTTP_201_CREATED)
 async def create_sar_draft(
     payload: SARDraftCreate,
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
@@ -828,10 +863,10 @@ async def get_sar_draft(
 async def update_sar_draft(
     id: str,
     payload: SARDraftUpdate,
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
-    """Updates narrative or xml_payload of an open or in-progress SAR draft."""
+    """Updates narrative or xml_payload of an open or rejected SAR draft (frozen once submitted for MLRO review)."""
     try:
         draft_uuid = uuid.UUID(id)
     except ValueError:
@@ -846,7 +881,7 @@ async def update_sar_draft(
         if not draft:
             raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
 
-        if draft["status"] in ["APPROVED", "FILED"]:
+        if draft["status"] in ("PENDING_MLRO_REVIEW", "APPROVED", "FILED"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot edit SAR draft in '{draft['status']}' state."
@@ -863,9 +898,9 @@ async def update_sar_draft(
                 xml_payload = COALESCE($2, xml_payload),
                 status = $3,
                 updated_at = NOW()
-            WHERE id = $4;
+            WHERE id = $4 AND tenant_id = $5;
             """,
-            new_narrative, new_xml, new_status, draft_uuid
+            new_narrative, new_xml, new_status, draft_uuid, uuid.UUID(str(tenant_id))
         )
 
         return {
@@ -878,7 +913,8 @@ async def update_sar_draft(
 @router.post("/sar/preview")
 async def preview_sar_xml(
     payload: SARPreviewRequest,
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """Generates a live preview XML payload in either FinCEN BSA or UNODC EU goAML format."""
     from services.goaml import generate_goaml_xml
@@ -949,16 +985,21 @@ async def preview_sar_xml(
 async def export_sar_draft_xml(
     id: str,
     format: str = "FINCEN",
-    current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"]))
+    current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """Downloads the generated XML representation for a draft in FinCEN or EU goAML schema."""
+    fmt_upper = str(format or "FINCEN").upper().strip()
+    if fmt_upper not in ("FINCEN", "GOAML"):
+        raise HTTPException(status_code=400, detail="Invalid export format. Must be 'FINCEN' or 'GOAML'.")
+
     draft_data = await get_sar_draft(id=id, current_user=current_user)
     alert_info = draft_data.get("alert_details", {})
 
     prev_req = SARPreviewRequest(
         alert_id=draft_data.get("alert_id"),
         narrative=draft_data.get("narrative") or "Suspicious activity detected.",
-        format=format.upper(),
+        format=fmt_upper,
         amount=alert_info.get("amount"),
         currency=alert_info.get("currency"),
         sender_name=alert_info.get("sender_account"),
@@ -966,10 +1007,11 @@ async def export_sar_draft_xml(
     )
 
     preview_res = await preview_sar_xml(payload=prev_req, current_user=current_user)
+    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", str(id))[:64]
     return Response(
         content=preview_res["xml"],
         media_type="application/xml",
-        headers={"Content-Disposition": f"attachment; filename=sar_{id}_{format.lower()}.xml"}
+        headers={"Content-Disposition": f'attachment; filename="sar_{safe_id}_{fmt_upper.lower()}.xml"'}
     )
 
 
@@ -1077,7 +1119,7 @@ def _format_regulatory_narrative(ctx: dict) -> str:
 @router.post("/sar/generate-narrative")
 async def generate_sar_narrative(
     payload: SARNarrativeGenerationRequest,
-    current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
@@ -1107,7 +1149,7 @@ class SARCpilotRequest(BaseModel):
 @router.post("/sar/copilot")
 async def generate_sar_copilot_endpoint(
     payload: SARCpilotRequest,
-    current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
     """

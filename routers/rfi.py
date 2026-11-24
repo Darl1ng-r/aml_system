@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field, field_validator
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
@@ -72,7 +72,7 @@ async def create_case_rfi(
     case_id: str,
     payload: RFICreateRequest,
     request: Request,
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ) -> Dict[str, Any]:
     """Issues a tokenized external RFI link and automatically pauses the case SLA clock."""
@@ -144,6 +144,7 @@ async def create_case_rfi(
 async def list_case_rfis(
     case_id: str,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ) -> List[Dict[str, Any]]:
     try:
         case_uuid = uuid.UUID(case_id)
@@ -185,6 +186,7 @@ async def list_case_rfis(
 async def cancel_rfi(
     rfi_id: str,
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ) -> Dict[str, Any]:
     try:
         rfi_uuid = uuid.UUID(rfi_id)
@@ -193,24 +195,42 @@ async def cancel_rfi(
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         row = await conn.fetchrow(
-            "UPDATE rfi_requests SET status = 'CANCELLED' WHERE id = $1 AND status = 'OPEN' RETURNING case_id;",
-            rfi_uuid,
+            "UPDATE rfi_requests SET status = 'CANCELLED' WHERE id = $1 AND tenant_id = $2::uuid AND status = 'OPEN' RETURNING case_id;",
+            rfi_uuid, str(tenant_id),
         )
         if not row:
             raise HTTPException(status_code=404, detail="Open RFI not found.")
         resumed_secs = await resume_case_sla_after_rfi(conn, row["case_id"])
+        try:
+            from services.audit import record_audit_event_tx
+            await record_audit_event_tx(
+                conn=conn,
+                action="CANCEL_RFI",
+                actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
+                actor_username=current_user.get("username", "investigator"),
+                actor_role=current_user.get("role", "L2_INVESTIGATOR"),
+                resource_type="RFI",
+                resource_id=rfi_id,
+                tenant_id=str(tenant_id),
+                details={"case_id": str(row["case_id"]), "sla_paused_seconds_added": resumed_secs},
+            )
+        except Exception as audit_err:
+            logger.warning(f"Transactional audit write skipped in cancel_rfi: {audit_err}")
     return {"rfi_id": rfi_id, "status": "CANCELLED", "sla_paused_seconds_added": resumed_secs}
 
 
 @router.get("/public/{token}")
 async def get_public_rfi_prompt(
     token: str,
+    response: Response,
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ) -> Dict[str, Any]:
     """
     Unauthenticated token-gated RFI metadata endpoint.
     Strictly customer-safe: NEVER leaks internal case titles, risk scores, or SAR/AML metadata.
     """
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
     tenant_id, token_hash = parse_rfi_token(token)
     if not tenant_id:
         raise HTTPException(status_code=404, detail="Invalid or expired documentation link.")
@@ -241,6 +261,7 @@ async def get_public_rfi_prompt(
 @router.post("/public/{token}/submit")
 async def submit_public_rfi_response(
     token: str,
+    response: Response,
     response_notes: str = Form(..., min_length=3, max_length=4000),
     file: Optional[UploadFile] = File(default=None),
     _rate_limit=Depends(RateLimiter(limit=15, window=60)),
@@ -252,6 +273,8 @@ async def submit_public_rfi_response(
       - Persists file via P0-3 EvidenceStorageBackend with SHA-256 chain of custody
       - Automatically resumes the case SLA clock and notifies the investigator
     """
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
     tenant_id, token_hash = parse_rfi_token(token)
     if not tenant_id:
         raise HTTPException(status_code=404, detail="Invalid documentation request link.")

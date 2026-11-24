@@ -47,6 +47,7 @@ _SECRET_PATHS = [
     "aml/neo4j",
     "aml/elasticsearch",
     "aml/jwt",
+    "aml/encryption",
     "aml/fincen",
     "aml/watchlists",
     "aml/supabase",
@@ -160,6 +161,12 @@ class VaultSecretsLoader:
         # ── Authenticate ─────────────────────────────────────────────────
         dev_token = os.getenv("VAULT_DEV_TOKEN", "").strip()
         if dev_token:
+            from config import settings
+            if settings.is_production or os.getenv("ENVIRONMENT", "").strip().lower() in {"production", "prod"}:
+                raise RuntimeError(
+                    "CRITICAL SECURITY VIOLATION: VAULT_DEV_TOKEN is strictly prohibited in production. "
+                    "Use AppRole (VAULT_ROLE_ID / VAULT_SECRET_ID) instead."
+                )
             # Dev convenience — never for production
             await client.authenticate_token(dev_token)
             logger.warning(

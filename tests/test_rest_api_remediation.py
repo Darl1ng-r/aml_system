@@ -443,8 +443,8 @@ async def test_rest_screening_idempotent_get(analyst_token):
 # ── 6. FinCEN & STR Batch: POST 201 + Location, GET symmetrical ──────────────
 
 @pytest.mark.anyio
-async def test_rest_fincen_and_str_batches(analyst_token):
-    """Verify FinCEN SARs and STR batch RESTful resource creation and read."""
+async def test_rest_fincen_and_str_batches(admin_token):
+    """Verify FinCEN SARs and STR batch RESTful resource creation and read (MLRO/ADMIN authorized)."""
     sar_id = str(uuid.uuid4())
     batch_id = str(uuid.uuid4())
 
@@ -502,7 +502,7 @@ async def test_rest_fincen_and_str_batches(analyst_token):
          patch("routers.metrics.ws_manager.broadcast", new_callable=AsyncMock):
 
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {analyst_token}"}) as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {admin_token}"}) as ac:
             # 1. POST /api/v1/fincen/sars -> 201 Created + Location
             alert_id = str(uuid.uuid4())
             resp_sar = await ac.post(
@@ -550,8 +550,15 @@ async def test_rest_watchlist_sync_jobs_accepted(admin_token):
 # ── 8. Rules: Persistence in Postgres + Redis PubSub Invalidation ────────────
 
 @pytest.mark.anyio
-async def test_rest_rules_config_persistence_and_pubsub(admin_token):
-    """Verify PUT /api/v1/rules/config persists to PostgreSQL and publishes invalidation to Redis."""
+async def test_rest_rules_config_persistence_and_pubsub():
+    """Verify PUT /api/v1/rules/config (SUPER_ADMIN only) persists to PostgreSQL and publishes invalidation to Redis."""
+    super_admin_token = create_access_token({
+        "sub": str(uuid.uuid4()),
+        "role": "SUPER_ADMIN",
+        "username": "platform_super_admin",
+        "tenant_id": TENANT_DEFAULT_ID,
+        "token_version": 1,
+    })
     mock_conn = AsyncMock()
     mock_conn.execute.return_value = "INSERT 0 1"
 
@@ -567,7 +574,7 @@ async def test_rest_rules_config_persistence_and_pubsub(admin_token):
          patch("builtins.open", MagicMock()):
 
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {admin_token}"}) as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {super_admin_token}"}) as ac:
             resp = await ac.put(
                 "/api/v1/rules/config",
                 json={
@@ -584,8 +591,7 @@ async def test_rest_rules_config_persistence_and_pubsub(admin_token):
 
             # Check DB execution was called with INSERT into rules_configuration
             assert mock_conn.execute.called
-            insert_query = mock_conn.execute.call_args[0][0]
-            assert "rules_configuration" in insert_query
+            assert any("rules_configuration" in str(c.args[0]) for c in mock_conn.execute.call_args_list)
 
             # Check Redis publish was called with aml:rules:cache_invalidate
             assert mock_redis.publish.called

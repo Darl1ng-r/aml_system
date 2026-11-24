@@ -104,10 +104,30 @@ async def mark_notification_read(
         raise HTTPException(status_code=400, detail="Invalid notification ID.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
+    user_role = str(current_user.get("role") or "").upper()
+    user_id = current_user.get("id") or current_user.get("sub")
+    user_uuid = None
+    if user_id:
+        try:
+            user_uuid = uuid.UUID(str(user_id))
+        except ValueError:
+            user_uuid = None
+
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         updated = await conn.fetchval(
-            "UPDATE notifications SET is_read = TRUE WHERE id = $1 RETURNING id;",
+            """
+            UPDATE notifications
+            SET is_read = TRUE
+            WHERE id = $1
+              AND tenant_id = $4::uuid
+              AND (recipient_user_id IS NULL OR recipient_user_id = $2)
+              AND (recipient_role IS NULL OR recipient_role = $3 OR $3 IN ('ADMIN', 'TENANT_ADMIN', 'SUPER_ADMIN'))
+            RETURNING id;
+            """,
             nid,
+            user_uuid,
+            user_role,
+            str(tenant_id),
         )
         if not updated:
             raise HTTPException(status_code=404, detail="Notification not found.")

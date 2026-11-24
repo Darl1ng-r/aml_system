@@ -44,7 +44,7 @@ class QAReviewDecision(BaseModel):
 @router.post("/sample", status_code=status.HTTP_201_CREATED)
 async def create_qa_sample(
     payload: QASampleRequest,
-    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR", "SUPER_ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "QA_REVIEWER", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=15, window=60)),
 ) -> Dict[str, Any]:
     """Randomly samples a percentage of closed False Positive alerts into the QA queue."""
@@ -63,7 +63,7 @@ async def create_qa_sample(
 async def get_qa_queue(
     status_filter: Optional[str] = Query(default=None, pattern=r"^(PENDING|PASSED|FAILED_REOPENED)$"),
     limit: int = Query(default=50, ge=1, le=100),
-    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR", "SUPER_ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "QA_REVIEWER", "AUDITOR", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ) -> Dict[str, Any]:
     """Lists QA sampling queue entries along with tenant QA Pass Rate KPI."""
@@ -140,7 +140,7 @@ async def get_qa_queue(
 async def submit_qa_review(
     review_id: str,
     payload: QAReviewDecision,
-    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR", "SUPER_ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "QA_REVIEWER", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ) -> Dict[str, Any]:
     """
@@ -155,11 +155,13 @@ async def submit_qa_review(
 
     tenant_id = enforce_tenant_data_scope(current_user)
     reviewer_username = str(current_user.get("username") or "").strip()
+    reviewer_id = str(current_user.get("id") or "").strip()
 
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM qa_reviews WHERE id = $1 FOR UPDATE;",
+            "SELECT * FROM qa_reviews WHERE id = $1 AND tenant_id = $2::uuid FOR UPDATE;",
             rev_uuid,
+            str(tenant_id),
         )
         if not row:
             raise HTTPException(status_code=404, detail="QA review item not found.")
@@ -170,7 +172,10 @@ async def submit_qa_review(
             )
 
         orig_analyst = str(row["original_analyst_username"] or "").strip()
-        if orig_analyst and orig_analyst.lower() == reviewer_username.lower():
+        orig_analyst_id = str(row.get("original_analyst_id") or "").strip() if hasattr(row, "get") else ""
+        if (orig_analyst_id and reviewer_id and orig_analyst_id == reviewer_id) or (
+            orig_analyst and orig_analyst.lower() == reviewer_username.lower()
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Segregation of Duties Violation: QA reviewer cannot audit their own dismissed alert.",
@@ -183,20 +188,22 @@ async def submit_qa_review(
                 qa_reviewer_username = $2,
                 qa_notes = $3,
                 reviewed_at = NOW()
-            WHERE id = $4;
+            WHERE id = $4 AND tenant_id = $5::uuid;
             """,
             payload.decision,
             reviewer_username,
             payload.notes,
             rev_uuid,
+            str(tenant_id),
         )
 
         reopened = False
         if payload.decision == "FAILED_REOPENED":
             reopened = True
             await conn.execute(
-                "UPDATE alerts SET status = 'OPEN' WHERE id = $1;",
+                "UPDATE alerts SET status = 'OPEN' WHERE id = $1 AND tenant_id = $2::uuid;",
                 row["alert_id"],
+                str(tenant_id),
             )
             await create_notification(
                 conn=conn,
@@ -211,6 +218,22 @@ async def submit_qa_review(
                 resource_id=str(row["alert_id"]),
                 dedup_hours=0,
             )
+
+        try:
+            from services.audit import record_audit_event_tx
+            await record_audit_event_tx(
+                conn=conn,
+                action=f"QA_REVIEW_{payload.decision}",
+                actor_id=str(current_user.get("id") or reviewer_username),
+                actor_username=reviewer_username,
+                actor_role=current_user.get("role", "QA_REVIEWER"),
+                resource_type="QA_REVIEW",
+                resource_id=review_id,
+                tenant_id=str(tenant_id),
+                details={"alert_id": str(row["alert_id"]), "decision": payload.decision, "reopened": reopened},
+            )
+        except Exception as audit_err:
+            logger.warning(f"Transactional audit write skipped in submit_qa_review: {audit_err}")
 
     log_audit_event(
         event_type=f"QA_REVIEW_{payload.decision}",

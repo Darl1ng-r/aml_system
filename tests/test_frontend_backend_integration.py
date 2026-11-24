@@ -242,7 +242,9 @@ async def test_websocket_accepts_token_param():
         mock_decode.return_value = {
             "sub": "user-123",
             "role": "ANALYST",
-            "tenant_id": "00000000-0000-0000-0000-000000000001"
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "type": "access",
+            "token_version": 1,
         }
 
         # Simulate client connecting and then disconnecting immediately
@@ -265,7 +267,9 @@ async def test_websocket_accepts_cookie_when_token_param_missing():
         mock_decode.return_value = {
             "sub": "user-123",
             "role": "ANALYST",
-            "tenant_id": "00000000-0000-0000-0000-000000000001"
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "type": "access",
+            "token_version": 1,
         }
 
         mock_ws.receive_text.side_effect = Exception("Client disconnected")

@@ -972,9 +972,9 @@ async def get_transaction_by_id(
             }
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to fetch transaction %s", id)
-        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch transaction details.")
 
 
 def _serialize_tx_row(r: Any) -> dict:
@@ -1079,6 +1079,8 @@ async def list_transactions(
                 response.headers["X-Total-Count"] = str(total_count)
             response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Next-Cursor-Timestamp, X-Next-Cursor-ID"
             return transactions
-    except Exception as e:
+    except HTTPException:
+        raise
+    except Exception:
         logger.exception("Failed to list transactions")
-        raise HTTPException(status_code=500, detail=f"Database query failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to list transactions.")

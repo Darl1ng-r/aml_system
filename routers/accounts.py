@@ -13,10 +13,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field, field_validator
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
-from services.auth import RoleChecker, enforce_tenant_data_scope
+from services.auth import PermissionChecker, RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
 from services.audit import record_audit_event_tx
 from observability.sanitizer import sanitize_text
+
+
+def _mask_document_number(doc_num: str) -> str:
+    clean = str(doc_num or "").strip()
+    if len(clean) <= 4:
+        return "****"
+    return f"***{clean[-4:]}"
 
 logger = logging.getLogger(__name__)
 
@@ -95,14 +102,28 @@ async def verify_account_cip(
         if not acc:
             raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
-        await conn.execute(
+        if str(acc["status"] or "").upper() != "CIP_PENDING":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Account is in '{acc['status']}' state; CIP verification is only permitted for CIP_PENDING accounts."
+            )
+
+        updated_id = await conn.fetchval(
             """
             UPDATE accounts
             SET status = 'ACTIVE'
-            WHERE id = $1;
+            WHERE id = $1 AND tenant_id = $2 AND status = 'CIP_PENDING'
+            RETURNING id;
             """,
-            acc_uuid
+            acc_uuid, uuid.UUID(str(tenant_id))
         )
+        if not updated_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Account state changed concurrently; CIP verification aborted."
+            )
+
+        masked_doc = _mask_document_number(payload.document_number)
 
         # Synchronous in-transaction audit persistence (AUDIT-01)
         try:
@@ -117,14 +138,14 @@ async def verify_account_cip(
                 actor_username=current_user.get("username"),
                 before_state={"status": acc["status"]},
                 after_state={"status": "ACTIVE"},
-                details={"document_type": payload.document_type, "document_number": payload.document_number}
+                details={"document_type": payload.document_type, "document_number_masked": masked_doc}
             )
         except Exception as audit_err:
             logger.warning(f"Audit log writing failed in verify_account_cip: {audit_err}")
 
         logger.info(
             f"CIP verified for account {id} by '{current_user.get('username')}' "
-            f"using {payload.document_type} ({payload.document_number})"
+            f"using {payload.document_type} ({masked_doc})"
         )
 
         return {
@@ -141,7 +162,7 @@ async def verify_account_cip(
 async def freeze_account(
     id: str,
     payload: AccountFreezeRequest,
-    current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "L2_INVESTIGATOR"])),
+    current_user: dict = Depends(PermissionChecker("accounts:freeze")),
     _rate_limit=Depends(RateLimiter(limit=20, window=60))
 ):
     try:
@@ -295,7 +316,7 @@ async def unfreeze_account(
 @edd_router.post("/requests", status_code=status.HTTP_201_CREATED)
 async def create_edd_request(
     payload: EDDCreateRequest,
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     try:
@@ -307,11 +328,17 @@ async def create_edd_request(
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         acc = await conn.fetchrow(
-            "SELECT id FROM accounts WHERE id = $1 AND tenant_id = $2;",
+            "SELECT id, status FROM accounts WHERE id = $1 AND tenant_id = $2;",
             acc_uuid, uuid.UUID(str(tenant_id))
         )
         if not acc:
             raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
+
+        if str(acc.get("status") or "").upper() in ("FROZEN", "CLOSED"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Cannot transition {acc['status']} account to EDD_REQUIRED."
+            )
 
         user_uuid = uuid.UUID(str(current_user["id"])) if current_user.get("id") else None
 
@@ -329,8 +356,15 @@ async def create_edd_request(
             user_uuid, current_user.get("username", "analyst")
         )
 
-        # Mark account as EDD_REQUIRED
-        await conn.execute("UPDATE accounts SET status = 'EDD_REQUIRED' WHERE id = $1;", acc_uuid)
+        # Mark account as EDD_REQUIRED without ever overriding FROZEN/CLOSED status
+        await conn.execute(
+            """
+            UPDATE accounts
+            SET status = 'EDD_REQUIRED'
+            WHERE id = $1 AND tenant_id = $2 AND status NOT IN ('FROZEN', 'CLOSED');
+            """,
+            acc_uuid, uuid.UUID(str(tenant_id))
+        )
 
         return {
             "edd_id": str(edd_id),
