@@ -33,7 +33,17 @@ async def record_outbox_event(
     Must be called with an active transaction connection `conn`.
     """
     event_id = str(uuid.uuid4())
-    headers_dict = headers or {}
+    headers_dict = dict(headers) if headers else {}
+
+    # Propagate request Correlation-ID across async worker boundaries (T-06)
+    if "correlation_id" not in headers_dict:
+        try:
+            from observability.middleware import correlation_id_var
+            cid = correlation_id_var.get()
+            if cid:
+                headers_dict["correlation_id"] = cid
+        except Exception:
+            pass
 
     # Automatically capture OpenTelemetry traceparent if not explicitly supplied
     if "traceparent" not in headers_dict:
@@ -91,7 +101,13 @@ async def fetch_pending_outbox_events(
         WITH selected AS (
             SELECT id
             FROM transactional_outbox
-            WHERE status = 'PENDING'
+            WHERE (
+                status = 'PENDING'
+                AND (
+                    headers->>'next_retry_at' IS NULL
+                    OR (headers->>'next_retry_at')::timestamptz <= NOW()
+                )
+            )
                OR (status = 'PROCESSING' AND (
                    headers->>'leased_at' IS NULL 
                    OR (headers->>'leased_at')::timestamptz < NOW() - INTERVAL '300 seconds'
@@ -137,18 +153,35 @@ async def mark_outbox_event_published(conn, event_id: str) -> None:
 
 
 async def mark_outbox_event_failed(
-    conn, event_id: str, error_msg: str, max_retries: int = 5
+    conn,
+    event_id: str,
+    error_msg: str,
+    max_retries: int = 5,
+    base_backoff_seconds: float = 5.0,
 ) -> None:
-    """Records an outbox publishing failure with retry counting and DLQ routing."""
+    """
+    Records an outbox publishing failure with retry counting, exponential backoff
+    (`next_retry_at` in headers: 5s, 10s, 20s, 40s, 80s...), and DLQ routing.
+    """
     query = """
         UPDATE transactional_outbox
         SET retry_count = retry_count + 1,
             last_error = $2,
-            status = CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END
+            status = CASE WHEN retry_count + 1 >= $3 THEN 'FAILED' ELSE 'PENDING' END,
+            headers = CASE
+                WHEN retry_count + 1 >= $3 THEN COALESCE(headers, '{}'::jsonb)
+                ELSE jsonb_set(
+                    COALESCE(headers, '{}'::jsonb),
+                    '{next_retry_at}',
+                    to_jsonb(
+                        (NOW() + make_interval(secs => ($4::double precision * POWER(2, LEAST(retry_count, 8)))))::text
+                    )
+                )
+            END
         WHERE id = $1::uuid
         RETURNING retry_count, status;
     """
-    row = await conn.fetchrow(query, event_id, error_msg, max_retries)
+    row = await conn.fetchrow(query, event_id, error_msg, max_retries, float(base_backoff_seconds))
     if row and row["status"] == "FAILED":
         logger.critical(
             f"[OUTBOX-DLQ] Outbox event {event_id} marked as FAILED after {row['retry_count']} retries. "
@@ -232,6 +265,12 @@ class OutboxRelayEngine:
                 ok, err = await dispatch_webhook_outbox_event(event)
                 return event_id, ok, err
 
+            # P3 / V-03: Route durable SIEM compliance outbox rows to signed HTTPS forwarder
+            if event.get("aggregate_type") == "SIEM_DISPATCH":
+                from services.siem_forwarder import dispatch_siem_outbox_event
+                ok, err = await dispatch_siem_outbox_event(event)
+                return event_id, ok, err
+
             payload = event["payload"]
             # Partition by sender account when present (eliminates single-tenant hot partitions),
             # falling back to tenant_id then aggregate_id for non-account domain events
@@ -248,15 +287,24 @@ class OutboxRelayEngine:
             if not topic and event.get("event_type") == "aml.core.transaction.buffered.v1":
                 topic = "aml.transactions.raw"
 
-            # Propagate W3C traceparent into payload envelope if present in outbox headers
-            if headers.get("traceparent") and isinstance(payload, dict) and "_traceparent" not in payload:
-                payload = {**payload, "_traceparent": headers["traceparent"]}
+            # Propagate W3C traceparent and Correlation-ID into payload envelope if present in outbox headers
+            if isinstance(payload, dict):
+                enriched = None
+                if headers.get("traceparent") and "_traceparent" not in payload:
+                    enriched = {**(enriched or payload), "_traceparent": headers["traceparent"]}
+                if headers.get("correlation_id") and "_correlation_id" not in payload:
+                    enriched = {**(enriched or payload), "_correlation_id": headers["correlation_id"]}
+                if enriched is not None:
+                    payload = enriched
 
-            success = await publish_transaction_async(
-                payload,
-                key=str(partition_key) if partition_key else None,
-                topic=topic,
-            )
+            pub_kwargs: dict[str, Any] = {
+                "key": str(partition_key) if partition_key else None,
+                "topic": topic,
+            }
+            if headers.get("correlation_id"):
+                pub_kwargs["correlation_id"] = headers["correlation_id"]
+
+            success = await publish_transaction_async(payload, **pub_kwargs)
             if success:
                 return event_id, True, None
             return event_id, False, "Broker publish returned False"

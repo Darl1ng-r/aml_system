@@ -115,14 +115,16 @@ async def test_p2_1_rfi_lifecycle_zero_tipping_off_malware_reject_and_sla_resume
         {"id": rfi_id, "case_id": case_id, "recipient_role": "CUSTOMER", "status": "OPEN", "expires_at": expires},
         {"sla_paused_at": datetime.now(timezone.utc) - timedelta(minutes=10), "sla_paused_seconds": 0, "status": "PENDING_EDD"},
     ])
-    mock_conn_ok.fetchval = AsyncMock(side_effect=[uuid.uuid4(), uuid.uuid4()])
+    mock_conn_ok.fetchval = AsyncMock(side_effect=[uuid.uuid4(), uuid.uuid4(), None])
     mock_conn_ok.execute = AsyncMock()
     ctx_ok = AsyncMock()
     ctx_ok.__aenter__.return_value = mock_conn_ok
     ctx_ok.__aexit__.return_value = None
 
     mock_backend = AsyncMock()
-    mock_backend.store = AsyncMock(return_value={"storage_path": "/tmp/rfi_doc.pdf", "storage_backend": "local"})
+    mock_backend.backend_name = "local"
+    mock_backend.put_object = AsyncMock(return_value="/tmp/rfi_doc.pdf")
+    mock_backend.delete_object = AsyncMock()
 
     with patch("routers.rfi.get_async_db_conn", return_value=ctx_ok), \
          patch("routers.rfi.get_evidence_storage_backend", return_value=mock_backend):

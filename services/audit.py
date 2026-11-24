@@ -19,6 +19,9 @@ logger = logging.getLogger("aml.audit")
 
 GENESIS_AUDIT_HASH = "GENESIS_ROOT_CHAIN_00000000000000000000000000000000"
 
+# Strong task references prevent Python GC from silently cancelling queued audit inserts (T-06)
+_audit_tasks: set[asyncio.Task] = set()
+
 
 def compute_audit_record_hash(
     prev_hash: str,
@@ -68,6 +71,17 @@ async def record_audit_event_tx(
         except ValueError:
             t_uuid = None
 
+    async def _run_in_savepoint(fn):
+        """Executes a SQL call inside a nested SAVEPOINT when supported so caught errors never abort the outer tx (T-01)."""
+        import inspect
+        tx_factory = getattr(conn, "transaction", None)
+        if callable(tx_factory) and not inspect.iscoroutinefunction(tx_factory):
+            sp = tx_factory()
+            if hasattr(sp, "__aenter__"):
+                async with sp:
+                    return await fn()
+        return await fn()
+
     prev_hash = GENESIS_AUDIT_HASH
     try:
         if t_uuid is not None and hasattr(conn, "fetchval"):
@@ -75,20 +89,24 @@ async def record_audit_event_tx(
             # so concurrent requests never fork prev_hash (prevents false TAMPERED chains).
             if hasattr(conn, "execute"):
                 try:
-                    await conn.execute(
-                        "SELECT pg_advisory_xact_lock(hashtext('audit_log_chain:' || $1));",
-                        str(t_uuid),
+                    await _run_in_savepoint(
+                        lambda: conn.execute(
+                            "SELECT pg_advisory_xact_lock(hashtext('audit_log_chain:' || $1));",
+                            str(t_uuid),
+                        )
                     )
                 except Exception:
                     pass
-            last_hash = await conn.fetchval(
-                """
-                SELECT record_hash FROM audit_log
-                WHERE tenant_id = $1 AND record_hash IS NOT NULL
-                ORDER BY created_at DESC, id DESC
-                LIMIT 1;
-                """,
-                t_uuid
+            last_hash = await _run_in_savepoint(
+                lambda: conn.fetchval(
+                    """
+                    SELECT record_hash FROM audit_log
+                    WHERE tenant_id = $1 AND record_hash IS NOT NULL
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1;
+                    """,
+                    t_uuid
+                )
             )
             if isinstance(last_hash, str) and len(last_hash) == 64:
                 prev_hash = last_hash
@@ -109,32 +127,34 @@ async def record_audit_event_tx(
     )
 
     try:
-        await conn.execute(
-            """
-            INSERT INTO audit_log (
-                tenant_id, actor_id, actor_username, actor_role,
-                actor_ip, actor_user_agent, session_id,
-                action, resource_type, resource_id,
-                before_state, after_state, details,
-                created_at, prev_hash, record_hash
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
-            """,
-            t_uuid,
-            str(actor_id),
-            actor_username or str(actor_id),
-            str(actor_role),
-            actor_ip,
-            actor_user_agent,
-            session_id,
-            action,
-            resource_type,
-            str(resource_id),
-            json.dumps(before_state) if before_state is not None else None,
-            json.dumps(after_state) if after_state is not None else None,
-            json.dumps(details or {}),
-            created_at,
-            prev_hash,
-            record_hash
+        await _run_in_savepoint(
+            lambda: conn.execute(
+                """
+                INSERT INTO audit_log (
+                    tenant_id, actor_id, actor_username, actor_role,
+                    actor_ip, actor_user_agent, session_id,
+                    action, resource_type, resource_id,
+                    before_state, after_state, details,
+                    created_at, prev_hash, record_hash
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16);
+                """,
+                t_uuid,
+                str(actor_id),
+                actor_username or str(actor_id),
+                str(actor_role),
+                actor_ip,
+                actor_user_agent,
+                session_id,
+                action,
+                resource_type,
+                str(resource_id),
+                json.dumps(before_state) if before_state is not None else None,
+                json.dumps(after_state) if after_state is not None else None,
+                json.dumps(details or {}),
+                created_at,
+                prev_hash,
+                record_hash
+            )
         )
     except Exception:
         # Backward-compatible fallback if migration 028 columns are not yet present
@@ -223,7 +243,7 @@ def queue_audit_event(
     """
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(
+        task = loop.create_task(
             record_audit_event_async(
                 action=action,
                 actor_id=actor_id,
@@ -240,6 +260,8 @@ def queue_audit_event(
                 details=details
             )
         )
+        _audit_tasks.add(task)
+        task.add_done_callback(_audit_tasks.discard)
     except RuntimeError:
         # No running event loop (e.g. sync unit test without loop)
         pass

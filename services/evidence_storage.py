@@ -269,8 +269,13 @@ class S3EvidenceBackend:
             await client.delete(url, headers=headers)
 
 
-def get_evidence_storage_backend(local_base_dir: str) -> EvidenceStorageBackend:
+DEFAULT_LOCAL_EVIDENCE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "storage", "evidence")
+)
+
+
+def get_evidence_storage_backend(local_base_dir: str | None = None) -> EvidenceStorageBackend:
     mode = str(getattr(settings, "evidence_storage_backend", "local")).lower()
     if mode == "s3" and getattr(settings, "evidence_s3_bucket", ""):
         return S3EvidenceBackend()
-    return LocalEvidenceBackend(local_base_dir)
+    return LocalEvidenceBackend(local_base_dir or DEFAULT_LOCAL_EVIDENCE_DIR)

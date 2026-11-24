@@ -275,105 +275,144 @@ async def submit_public_rfi_response(
         evidence_ids: List[uuid.UUID] = []
         uploaded_sha256: Optional[str] = None
         uploaded_filename: Optional[str] = None
+        stored_backend = None
+        stored_key: Optional[str] = None
 
-        if file is not None and file.filename:
-            safe_name = _sanitize_evidence_filename(file.filename)
-            ext = os.path.splitext(safe_name)[1].lower()
-            mime = (file.content_type or "application/octet-stream").lower().split(";")[0].strip()
-            if ext in FORBIDDEN_EXTENSIONS or mime not in ALLOWED_EVIDENCE_MIMES:
-                raise HTTPException(status_code=400, detail="Unsupported document type. Upload PDF, PNG, JPEG, TXT, or CSV.")
+        try:
+            if file is not None and file.filename:
+                safe_name = _sanitize_evidence_filename(file.filename)
+                ext = os.path.splitext(safe_name)[1].lower()
+                mime = (file.content_type or "application/octet-stream").lower().split(";")[0].strip()
+                if ext in FORBIDDEN_EXTENSIONS or mime not in ALLOWED_EVIDENCE_MIMES:
+                    raise HTTPException(status_code=400, detail="Unsupported document type. Upload PDF, PNG, JPEG, TXT, or CSV.")
 
-            raw_bytes = await file.read(MAX_EVIDENCE_BYTES + 1)
-            if len(raw_bytes) > MAX_EVIDENCE_BYTES:
-                raise HTTPException(status_code=413, detail="Uploaded document exceeds the 25 MB limit.")
+                raw_bytes = await file.read(MAX_EVIDENCE_BYTES + 1)
+                if len(raw_bytes) > MAX_EVIDENCE_BYTES:
+                    raise HTTPException(status_code=413, detail="Uploaded document exceeds the 25 MB limit.")
 
-            is_clean, scan_detail = await scan_bytes_for_malware(raw_bytes)
-            if not is_clean:
-                log_audit_event(
-                    event_type="SECURITY_ALERT",
-                    actor_id=f"rfi:{rfi['id']}",
-                    actor_role="EXTERNAL_RFI",
-                    action="MALWARE_BLOCKED_RFI_UPLOAD",
-                    resource_type="RFI",
-                    resource_id=str(rfi["id"]),
-                    tenant_id=tenant_id,
-                    details={"file_name": safe_name, "scanner": scan_detail},
+                is_clean, scan_detail = await scan_bytes_for_malware(raw_bytes)
+                if not is_clean:
+                    log_audit_event(
+                        event_type="SECURITY_ALERT",
+                        actor_id=f"rfi:{rfi['id']}",
+                        actor_role="EXTERNAL_RFI",
+                        action="MALWARE_BLOCKED_RFI_UPLOAD",
+                        resource_type="RFI",
+                        resource_id=str(rfi["id"]),
+                        tenant_id=tenant_id,
+                        details={"file_name": safe_name, "scanner": scan_detail},
+                    )
+                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"File rejected by security scanner: {scan_detail}")
+
+                uploaded_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+                uploaded_filename = safe_name
+                evidence_id = uuid.uuid4()
+                stored_backend = get_evidence_storage_backend()
+                object_key = f"rfi_{evidence_id}_{safe_name}"
+                stored_key = await stored_backend.put_object(
+                    str(tenant_id),
+                    object_key,
+                    raw_bytes,
+                    mime,
                 )
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"File rejected by security scanner: {scan_detail}")
 
-            uploaded_sha256 = hashlib.sha256(raw_bytes).hexdigest()
-            uploaded_filename = safe_name
-            backend = get_evidence_storage_backend()
-            unique_name = f"rfi_{uuid.uuid4().hex[:8]}_{safe_name}"
-            stored = await backend.store(
-                tenant_id=tenant_id,
-                case_id=str(rfi["case_id"]),
-                filename=unique_name,
-                data=raw_bytes,
-                mime_type=mime,
-            )
+                # V-02: Insert using canonical `case_evidence` production column names
+                ev_id = await conn.fetchval(
+                    """
+                    INSERT INTO case_evidence (
+                        id, case_id, tenant_id, filename, content_type, file_size,
+                        storage_key, sha256_digest, storage_backend, scan_status,
+                        uploaded_by_name, description
+                    )
+                    VALUES ($1, $2, $3::uuid, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    RETURNING id;
+                    """,
+                    evidence_id,
+                    rfi["case_id"],
+                    tenant_id,
+                    safe_name,
+                    mime,
+                    len(raw_bytes),
+                    stored_key,
+                    uploaded_sha256,
+                    getattr(stored_backend, "backend_name", "local"),
+                    scan_detail or "CLEAN",
+                    f"EXTERNAL_{rfi['recipient_role']}",
+                    f"Submitted via External RFI Portal ({rfi['id']})",
+                )
+                evidence_ids.append(ev_id or evidence_id)
 
-            ev_id = await conn.fetchval(
+            await conn.execute(
                 """
-                INSERT INTO case_evidence (
-                    tenant_id, case_id, file_name, mime_type, file_size_bytes,
-                    storage_path, sha256_digest, storage_backend, scan_status,
-                    uploaded_by_username, description
-                )
-                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, 'CLEAN', $9, $10)
-                RETURNING id;
+                UPDATE rfi_requests
+                SET status = 'SUBMITTED',
+                    response_notes = $1,
+                    submitted_evidence_ids = $2::uuid[],
+                    submitted_at = NOW()
+                WHERE id = $3;
                 """,
-                tenant_id,
-                rfi["case_id"],
-                safe_name,
-                mime,
-                len(raw_bytes),
-                stored["storage_path"],
-                uploaded_sha256,
-                stored["storage_backend"],
-                f"EXTERNAL_{rfi['recipient_role']}",
-                f"Submitted via External RFI Portal ({rfi['id']})",
+                safe_notes,
+                evidence_ids,
+                rfi["id"],
             )
-            evidence_ids.append(ev_id)
 
-        await conn.execute(
-            """
-            UPDATE rfi_requests
-            SET status = 'SUBMITTED',
-                response_notes = $1,
-                submitted_evidence_ids = $2::uuid[],
-                submitted_at = NOW()
-            WHERE id = $3;
-            """,
-            safe_notes,
-            evidence_ids,
-            rfi["id"],
-        )
+            # Resume case SLA clock automatically & log timeline note
+            paused_delta = await resume_case_sla_after_rfi(conn, rfi["case_id"])
+            await conn.execute(
+                """
+                INSERT INTO case_notes (case_id, author_id, author_username, note)
+                VALUES ($1, NULL, $2, $3);
+                """,
+                rfi["case_id"],
+                f"EXTERNAL_{rfi['recipient_role']}",
+                f"External RFI submitted (SLA resumed after +{paused_delta}s pause): {safe_notes[:500]}",
+            )
+            await create_notification(
+                conn=conn,
+                tenant_id=tenant_id,
+                category="RFI_SUBMITTED",
+                severity="INFO",
+                recipient_role="L2_INVESTIGATOR",
+                title=f"RFI Response Received ({rfi['recipient_role']})",
+                body=f"Supporting documentation uploaded for Case {str(rfi['case_id'])[:8]}. Case SLA clock has automatically resumed.",
+                link_url=f"/dashboard?case_id={rfi['case_id']}",
+                resource_type="CASE",
+                resource_id=str(rfi["case_id"]),
+                dedup_hours=0,
+            )
 
-        # Resume case SLA clock automatically & log timeline note
-        paused_delta = await resume_case_sla_after_rfi(conn, rfi["case_id"])
-        await conn.execute(
-            """
-            INSERT INTO case_notes (case_id, author_id, author_username, note)
-            VALUES ($1, NULL, $2, $3);
-            """,
-            rfi["case_id"],
-            f"EXTERNAL_{rfi['recipient_role']}",
-            f"External RFI submitted (SLA resumed after +{paused_delta}s pause): {safe_notes[:500]}",
-        )
-        await create_notification(
-            conn=conn,
-            tenant_id=tenant_id,
-            category="RFI_SUBMITTED",
-            severity="INFO",
-            recipient_role="L2_INVESTIGATOR",
-            title=f"RFI Response Received ({rfi['recipient_role']})",
-            body=f"Supporting documentation uploaded for Case {str(rfi['case_id'])[:8]}. Case SLA clock has automatically resumed.",
-            link_url=f"/dashboard?case_id={rfi['case_id']}",
-            resource_type="CASE",
-            resource_id=str(rfi["case_id"]),
-            dedup_hours=0,
-        )
+            # T-06: Record cryptographic WORM audit_log inside the RFI submission transaction
+            from services.audit import record_audit_event_tx
+            await record_audit_event_tx(
+                conn=conn,
+                action="EXTERNAL_RFI_SUBMITTED",
+                actor_id=f"rfi:{rfi['id']}",
+                actor_username=f"EXTERNAL_{rfi['recipient_role']}",
+                actor_role="EXTERNAL_RFI",
+                resource_type="CASE",
+                resource_id=str(rfi["case_id"]),
+                tenant_id=str(tenant_id),
+                details={
+                    "rfi_id": str(rfi["id"]),
+                    "filename": uploaded_filename,
+                    "sha256": uploaded_sha256,
+                    "evidence_ids": [str(eid) for eid in evidence_ids],
+                },
+            )
+        except HTTPException:
+            if stored_backend is not None and stored_key:
+                try:
+                    await stored_backend.delete_object(str(tenant_id), stored_key)
+                except Exception:
+                    pass
+            raise
+        except Exception:
+            if stored_backend is not None and stored_key:
+                try:
+                    await stored_backend.delete_object(str(tenant_id), stored_key)
+                except Exception:
+                    pass
+            raise
 
     return {
         "status": "SUBMITTED",

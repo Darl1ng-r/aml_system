@@ -235,22 +235,36 @@ async def _persist_fincen_receipt(
         )
         if draft_to_validate and draft_to_validate.get("id"):
             try:
-                # P0-4: Record 90-day Continuing Activity SAR statutory clock upon filing
-                await conn.execute(
-                    """
-                    UPDATE sar_drafts
-                    SET status = 'FILED',
-                        fincen_tracking_id = $2,
-                        xsd_validated = TRUE,
-                        continuing_activity_due_at = NOW() + INTERVAL '90 days',
-                        updated_at = NOW()
-                    WHERE id = $1;
-                    """,
-                    draft_to_validate["id"],
-                    receipt.get("fincen_tracking_id"),
-                )
-            except Exception:
-                pass
+                # T-01: Run optional sar_drafts update inside a PostgreSQL SAVEPOINT so a caught error
+                # never poisons the outer transaction (enqueue_webhook_event_tx & record_audit_event_tx).
+                async def _mark_draft_filed():
+                    await conn.execute(
+                        """
+                        UPDATE sar_drafts
+                        SET status = 'FILED',
+                            fincen_tracking_id = $2,
+                            xsd_validated = TRUE,
+                            continuing_activity_due_at = NOW() + INTERVAL '90 days',
+                            updated_at = NOW()
+                        WHERE id = $1;
+                        """,
+                        draft_to_validate["id"],
+                        receipt.get("fincen_tracking_id"),
+                    )
+
+                import inspect
+                tx_factory = getattr(conn, "transaction", None)
+                if callable(tx_factory) and not inspect.iscoroutinefunction(tx_factory):
+                    sp = tx_factory()
+                    if hasattr(sp, "__aenter__"):
+                        async with sp:
+                            await _mark_draft_filed()
+                    else:
+                        await _mark_draft_filed()
+                else:
+                    await _mark_draft_filed()
+            except Exception as ex_draft:
+                logger.warning("Could not update sar_drafts filing receipt for draft %s: %s", draft_to_validate.get("id"), ex_draft)
 
         # P0-2: Enqueue signed SAR_FILED outbound webhook inside the filing transaction
         from services.webhooks import enqueue_webhook_event_tx
@@ -264,6 +278,26 @@ async def _persist_fincen_receipt(
                 "fincen_tracking_id": receipt["fincen_tracking_id"],
                 "status": receipt["status"],
                 "submitted_by": current_user["username"],
+            },
+        )
+
+        # T-06: Record cryptographic WORM audit_log inside the FinCEN SAR filing transaction
+        from services.audit import record_audit_event_tx
+        await record_audit_event_tx(
+            conn=conn,
+            action="FINCEN_SAR_FILED",
+            actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
+            actor_username=current_user.get("username", "mlro"),
+            actor_role=current_user.get("role", "MLRO"),
+            resource_type="SAR",
+            resource_id=str(payload.alert_id),
+            tenant_id=str(tenant_id) if tenant_id else None,
+            details={
+                "alert_id": payload.alert_id,
+                "fincen_tracking_id": receipt["fincen_tracking_id"],
+                "status": receipt["status"],
+                "ack_code": receipt.get("fincen_ack_code"),
+                "sandbox": receipt.get("sandbox", True),
             },
         )
 

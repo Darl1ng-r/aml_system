@@ -320,6 +320,25 @@ async def upload_case_evidence(
                 file_size, stored_key, sha256_digest, backend.backend_name, scan_status,
                 user_uuid, username, safe_description, parsed_tags
             )
+            # T-06: Persist cryptographic WORM audit_log entry inside the upload transaction
+            from services.audit import record_audit_event_tx
+            await record_audit_event_tx(
+                conn=conn,
+                action="UPLOAD_EVIDENCE",
+                actor_id=str(user_id or username),
+                actor_username=username,
+                actor_role=current_user.get("role", "ANALYST"),
+                resource_type="CASE",
+                resource_id=str(resolved_case_uuid),
+                tenant_id=str(tenant_id),
+                details={
+                    "evidence_id": str(evidence_id),
+                    "filename": safe_filename,
+                    "size": file_size,
+                    "sha256": sha256_digest,
+                    "storage_backend": backend.backend_name,
+                },
+            )
 
         log_audit_event(
             event_type="CASE_EVIDENCE_ATTACHED",
@@ -445,6 +464,20 @@ async def delete_case_evidence(
                 raise HTTPException(status_code=404, detail="Evidence not found")
 
             await conn.execute("DELETE FROM case_evidence WHERE id = $1;", ev_uuid)
+
+            # T-06: Persist cryptographic WORM audit_log entry inside the delete transaction
+            from services.audit import record_audit_event_tx
+            await record_audit_event_tx(
+                conn=conn,
+                action="DELETE_EVIDENCE",
+                actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
+                actor_username=current_user.get("username", "Investigator"),
+                actor_role=current_user.get("role", "ANALYST"),
+                resource_type="CASE",
+                resource_id=str(case_uuid),
+                tenant_id=str(tenant_id),
+                details={"evidence_id": evidence_id, "filename": row["filename"]},
+            )
 
             storage_key = row["storage_key"]
             if storage_key and os.path.exists(storage_key):

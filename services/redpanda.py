@@ -24,18 +24,28 @@ _background_tasks: set[asyncio.Future] = set()
 
 
 # ── OpenTelemetry trace-context helpers ────────────────────────────────────────
-def _inject_trace_headers() -> list[tuple[str, bytes]]:
-    """Returns Kafka headers carrying the current W3C traceparent."""
+def _inject_trace_headers(correlation_id: Optional[str] = None) -> list[tuple[str, bytes]]:
+    """Returns Kafka headers carrying the current W3C traceparent and X-Correlation-ID."""
+    headers: list[tuple[str, bytes]] = []
     try:
-        from opentelemetry import context as otel_context
-        from opentelemetry.propagators import textmap
         from opentelemetry.propagate import inject
 
         carrier: dict[str, str] = {}
         inject(carrier)
-        return [(k, v.encode("utf-8")) for k, v in carrier.items()]
+        headers.extend((k, v.encode("utf-8")) for k, v in carrier.items())
     except Exception:
-        return []
+        pass
+
+    cid = correlation_id
+    if not cid:
+        try:
+            from observability.middleware import correlation_id_var
+            cid = correlation_id_var.get()
+        except Exception:
+            cid = None
+    if cid:
+        headers.append(("x-correlation-id", str(cid).encode("utf-8")))
+    return headers
 
 # ── Singleton async producer ───────────────────────────────────────────────────
 _producer = None
@@ -78,7 +88,8 @@ async def _get_producer():
 async def publish_transaction_async(
     transaction_payload: dict,
     key: Optional[str] = None,
-    topic: Optional[str] = None
+    topic: Optional[str] = None,
+    correlation_id: Optional[str] = None,
 ) -> bool:
     """
     Async version: publishes an event to Redpanda/Kafka.
@@ -102,7 +113,12 @@ async def publish_transaction_async(
     target_topic = topic or TRANSACTIONS_TOPIC
 
     try:
-        headers = _inject_trace_headers()
+        cid = correlation_id or (
+            transaction_payload.get("_correlation_id")
+            if isinstance(transaction_payload, dict)
+            else None
+        )
+        headers = _inject_trace_headers(correlation_id=cid)
         await producer.send_and_wait(
             topic=target_topic,
             key=partition_key,

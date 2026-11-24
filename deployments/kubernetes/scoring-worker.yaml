@@ -1,0 +1,70 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Dedicated Asynchronous AML Scoring Worker Deployment (V-01)
+# ════════════════════════════════════════════════════════════════════════════
+# Consumes buffered transactions from `aml.transactions.raw`, executes USD FX
+# normalization + Rules/ML/IForest/Dynamic Risk scoring, atomically persists
+# transactions/alerts/audit/outbox to PostgreSQL, and commits offsets manually
+# with DLQ (`aml.transactions.raw.dlq`) protection.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aml-scoring-worker
+  namespace: aml-system
+  labels:
+    app: aml-scoring-worker
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: aml-scoring-worker
+  template:
+    metadata:
+      labels:
+        app: aml-scoring-worker
+    spec:
+      serviceAccountName: aml-fastapi-sa
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: scoring-worker
+        image: ghcr.io/aml-sentinel/aml-fastapi-app:${IMAGE_TAG}
+        imagePullPolicy: Always
+        command: ["python", "-m", "workers.scoring_worker"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - secretRef:
+            name: aml-secrets
+        - configMapRef:
+            name: aml-config
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 128Mi

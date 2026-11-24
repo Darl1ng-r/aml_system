@@ -96,6 +96,7 @@ async def deliver_single_webhook(
     secret_plain: str,
     event_type: str,
     envelope: Dict[str, Any],
+    correlation_id: Optional[str] = None,
 ) -> tuple[bool, int | None, str | None]:
     """Validates SSRF safety, signs payload, sends HTTP POST, and records delivery row."""
     try:
@@ -117,6 +118,8 @@ async def deliver_single_webhook(
         "X-Sentinel-Timestamp": ts,
         "X-Sentinel-Signature-256": signature,
     }
+    if correlation_id:
+        headers["X-Correlation-ID"] = str(correlation_id)
 
     http_status = None
     last_error = None
@@ -170,13 +173,19 @@ async def dispatch_webhook_outbox_event(event: Dict[str, Any]) -> tuple[bool, st
     """
     Called by OutboxRelayEngine for `aggregate_type == 'WEBHOOK_DISPATCH'`.
     Fans out signed HTTP POSTs to every enabled tenant webhook subscribed to `event_type`.
+    Uses crash-safe `webhook_deliveries` deduplication (T-04) so partial-failure retries
+    never re-deliver to subscribers that already returned HTTP 2xx.
     """
     tenant_id = event.get("tenant_id") or (event.get("payload") or {}).get("tenant_id")
     event_type = event.get("event_type", "")
     envelope = event.get("payload") or {}
+    event_headers = event.get("headers") or {}
+    correlation_id = event_headers.get("correlation_id")
+    envelope_event_id = str(envelope.get("event_id") or "")
     if not tenant_id:
         return True, None
 
+    already_delivered_ids: set[str] = set()
     try:
         async with get_async_db_conn(tenant_id=str(tenant_id)) as conn:
             hooks = await conn.fetch(
@@ -188,6 +197,19 @@ async def dispatch_webhook_outbox_event(event: Dict[str, Any]) -> tuple[bool, st
                 """,
                 event_type,
             )
+            if hooks and envelope_event_id:
+                delivered_rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT webhook_id
+                    FROM webhook_deliveries
+                    WHERE tenant_id = $1::uuid
+                      AND status = 'DELIVERED'
+                      AND payload->>'event_id' = $2;
+                    """,
+                    str(tenant_id),
+                    envelope_event_id,
+                )
+                already_delivered_ids = {str(r["webhook_id"]) for r in (delivered_rows or [])}
     except Exception as db_err:
         return False, f"Failed to load tenant webhooks: {db_err}"
 
@@ -196,17 +218,26 @@ async def dispatch_webhook_outbox_event(event: Dict[str, Any]) -> tuple[bool, st
 
     errors: List[str] = []
     for hook in hooks:
+        hook_id_str = str(hook["id"])
+        if hook_id_str in already_delivered_ids:
+            logger.debug(
+                "Skipping already-DELIVERED webhook %s for event_id=%s (idempotent retry guard)",
+                hook_id_str,
+                envelope_event_id,
+            )
+            continue
         try:
             secret_plain = decrypt_pii(hook["signing_secret_enc"], tenant_id=str(tenant_id)) or ""
         except Exception:
             secret_plain = ""
         ok, _, err = await deliver_single_webhook(
-            webhook_id=str(hook["id"]),
+            webhook_id=hook_id_str,
             tenant_id=str(tenant_id),
             url=hook["url"],
             secret_plain=secret_plain,
             event_type=event_type,
             envelope=envelope,
+            correlation_id=correlation_id,
         )
         if not ok and err:
             errors.append(f"{hook['id']}: {err}")

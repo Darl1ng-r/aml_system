@@ -148,20 +148,58 @@ async def transmit_str_batch(
     _rate_limit=Depends(RateLimiter(limit=5, window=60))
 ):
     """
-    Electronically transmits the full compiled STR batch package to the regulatory gateway.
+    Electronically transmits the full compiled STR batch package to the regulatory gateway
+    using a 3-phase Saga (T-05):
+      1. Short DB tx atomically claims `status = 'TRANSMITTING'` (returns 409 Conflict if already claimed/filed).
+      2. External FinCEN gateway transmission executes OUTSIDE any PostgreSQL transaction.
+      3. Short DB tx commits final receipt status + cryptographic WORM audit_log (or marks FAILED on error).
     """
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
+        # Phase 1: Atomically claim batch in a short DB transaction (prevents double regulatory filing)
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            row = await conn.fetchrow(
-                "SELECT payload_xml FROM str_batches WHERE id = $1;",
-                batch_id
+            claimed = await conn.fetchrow(
+                """
+                UPDATE str_batches
+                SET status = 'TRANSMITTING'
+                WHERE id = $1 AND status IN ('GENERATED', 'READY_FOR_SUBMISSION', 'FAILED')
+                RETURNING payload_xml;
+                """,
+                batch_id,
             )
-            if not row:
-                raise HTTPException(status_code=404, detail="STR batch not found.")
+            if not claimed:
+                existing = await conn.fetchrow(
+                    "SELECT status FROM str_batches WHERE id = $1;",
+                    batch_id,
+                )
+                if not existing:
+                    raise HTTPException(status_code=404, detail="STR batch not found.")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"STR batch {batch_id} cannot be transmitted: current status is '{existing['status']}'.",
+                )
+            payload_xml = claimed["payload_xml"]
 
-            receipt = await fincen_client.submit_sar(row["payload_xml"], batch_id)
+        # Phase 2: External regulatory gateway call OUTSIDE PostgreSQL transaction/lock
+        try:
+            receipt = await fincen_client.submit_sar(payload_xml, batch_id)
+        except Exception as gw_err:
+            logger.exception("STR batch gateway transmission failed for %s", batch_id)
+            try:
+                async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                    await conn.execute(
+                        "UPDATE str_batches SET status = 'FAILED' WHERE id = $1;",
+                        batch_id,
+                    )
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Regulatory gateway transmission failed: {gw_err}",
+            )
 
+        # Phase 3: Commit final receipt status + cryptographic WORM audit_log
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             await conn.execute(
                 """
                 UPDATE str_batches
@@ -170,23 +208,39 @@ async def transmit_str_batch(
                 """,
                 receipt["status"], batch_id
             )
+            from services.audit import record_audit_event_tx
+            await record_audit_event_tx(
+                conn=conn,
+                action="STR_BATCH_TRANSMITTED",
+                actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
+                actor_username=current_user.get("username", "analyst"),
+                actor_role=current_user.get("role", "ANALYST"),
+                resource_type="STR_BATCH",
+                resource_id=batch_id,
+                tenant_id=str(tenant_id) if tenant_id else None,
+                details={
+                    "batch_id": batch_id,
+                    "status": receipt["status"],
+                    "fincen_tracking_id": receipt.get("fincen_tracking_id"),
+                },
+            )
 
-            # Broadcast real-time WebSocket update with strict tenant isolation (B3)
-            from routers.metrics import ws_manager
-            await ws_manager.broadcast({
-                "event": "STR_BATCH_TRANSMITTED",
-                "tenant_id": str(tenant_id),
-                "batch_id": batch_id,
-                "status": receipt["status"],
-                "fincen_tracking_id": receipt["fincen_tracking_id"]
-            }, target_tenant_id=str(tenant_id))
+        # Broadcast real-time WebSocket update with strict tenant isolation (B3)
+        from routers.metrics import ws_manager
+        await ws_manager.broadcast({
+            "event": "STR_BATCH_TRANSMITTED",
+            "tenant_id": str(tenant_id),
+            "batch_id": batch_id,
+            "status": receipt["status"],
+            "fincen_tracking_id": receipt["fincen_tracking_id"]
+        }, target_tenant_id=str(tenant_id))
 
-            return {
-                "batch_id": batch_id,
-                "status": receipt["status"],
-                "fincen_tracking_id": receipt["fincen_tracking_id"],
-                "message": "Full STR batch container successfully transmitted to regulatory gateway."
-            }
+        return {
+            "batch_id": batch_id,
+            "status": receipt["status"],
+            "fincen_tracking_id": receipt["fincen_tracking_id"],
+            "message": "Full STR batch container successfully transmitted to regulatory gateway."
+        }
     except HTTPException:
         raise
     except Exception as e:

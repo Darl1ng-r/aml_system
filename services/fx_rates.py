@@ -95,7 +95,7 @@ async def _fetch_live_rates_map(base_currency: str = "USD") -> Dict[str, float] 
     if not url:
         return None
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=2.0, follow_redirects=True) as client:
             resp = await client.get(url, params={"from": base_currency})
             if resp.status_code == 200:
                 data = resp.json()

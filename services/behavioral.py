@@ -30,7 +30,9 @@ def _build_default_baseline(account_id: str) -> dict:
         "top_countries": [],
         "top_merchants": [],
         "top_devices": [],
-        "top_channels": []
+        "top_channels": [],
+        "jurisdiction_risk_score": 0.1,
+        "kyc_risk_tier": "STANDARD",
     }
 
 
@@ -83,8 +85,10 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
     logger.info(f"Recalculating baseline for customer account: {account_id}")
     
     # 1. Fetch completed outgoing transactions for this account in the last 90 days (bounded to 10,000 to prevent OOM)
+    # Normalize amounts to base reporting currency (USD) so multi-currency baselines are consistent (V-06)
     query = """
-        SELECT amount, receiver_account_id, country, merchant, device, channel, timestamp
+        SELECT COALESCE(amount_base_usd, amount) AS amount,
+               receiver_account_id, country, merchant, device, channel, timestamp
         FROM transactions
         WHERE sender_account_id = $1::uuid
           AND status = 'COMPLETED'
@@ -185,8 +189,8 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                 baseline["top_merchants"],
                 baseline["top_devices"],
                 baseline["top_channels"],
-                baseline["jurisdiction_risk_score"],
-                baseline["kyc_risk_tier"]
+                float(baseline.get("jurisdiction_risk_score", 0.1)),
+                str(baseline.get("kyc_risk_tier", "STANDARD"))
             )
             
             return baseline

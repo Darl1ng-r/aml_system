@@ -87,15 +87,22 @@ async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
     receiver_id = tx_payload.get("receiver_id")
     receiver_acc = tx_payload.get("receiver_account")
     amount = float(tx_payload.get("amount", 0.0))
+    amount_base_usd = float(tx_payload.get("amount_base_usd", amount))
     status = tx_payload.get("status", "UNKNOWN")
     currency = tx_payload.get("currency", "USD")
     timestamp_str = tx_payload.get("timestamp", "")
     tenant_id = tx_payload.get("tenant_id")
 
-    # Parse timestamp → epoch int for Neo4j (stores as integer property)
+    # Parse timestamp strictly in UTC -> epoch int for Neo4j (prevents local container TZ drift, V-08)
     try:
-        ts = timestamp_str.rstrip("Z")
+        ts = str(timestamp_str).strip()
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
         dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
         epoch = int(dt.timestamp())
     except Exception:
         epoch = int(datetime.now(timezone.utc).timestamp())
@@ -117,13 +124,15 @@ async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
                     r.tenant_id      = coalesce(r.tenant_id, $tenant_id)
 
     MERGE (s)-[t:TRANSFERS_TO {transaction_id: $tx_id}]->(r)
-      ON CREATE SET t.amount    = $amount,
-                    t.currency  = $currency,
-                    t.status    = $status,
-                    t.tenant_id = $tenant_id,
-                    t.timestamp = $epoch
-      ON MATCH  SET t.status    = $status,
-                    t.tenant_id = coalesce(t.tenant_id, $tenant_id)
+      ON CREATE SET t.amount          = $amount,
+                    t.amount_base_usd = $amount_base_usd,
+                    t.currency        = $currency,
+                    t.status          = $status,
+                    t.tenant_id       = $tenant_id,
+                    t.timestamp       = $epoch
+      ON MATCH  SET t.status          = $status,
+                    t.amount_base_usd = coalesce(t.amount_base_usd, $amount_base_usd),
+                    t.tenant_id       = coalesce(t.tenant_id, $tenant_id)
     """
 
     try:
@@ -136,6 +145,7 @@ async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
                 receiver_acc=receiver_acc,
                 tx_id=tx_id,
                 amount=amount,
+                amount_base_usd=amount_base_usd,
                 currency=currency,
                 status=status,
                 tenant_id=str(tenant_id) if tenant_id else None,
@@ -166,8 +176,8 @@ async def sync_transaction_to_neo4j(tx_payload: dict, neo4j_driver) -> bool:
 
 
 # ── Dead Letter Queue ──────────────────────────────────────────────────────────
-async def send_to_dlq(producer, payload: dict, error: str):
-    """Publishes a failed message to the DLQ topic for manual replay."""
+async def send_to_dlq(producer, payload: dict, error: str) -> bool:
+    """Publishes a failed message to the DLQ topic for manual replay. Returns True only when broker confirmed."""
     dlq_payload = {
         "original_payload": payload,
         "error": str(error),
@@ -183,8 +193,10 @@ async def send_to_dlq(producer, payload: dict, error: str):
         logger.warning(
             f"[DLQ] Sent tx {payload.get('transaction_id')} to {DLQ_TOPIC}. Error: {error}"
         )
+        return True
     except Exception:
         logger.exception(f"[DLQ] Failed to write to DLQ. Original error: {error}")
+        return False
 
 
 async def _execute_sync_attempt(tx_payload: dict, neo4j_driver, tracer, trace_ctx, tx_id: str, attempt: int) -> bool:
@@ -228,7 +240,14 @@ async def _process_single_message(msg, tp, neo4j_driver, dlq_producer, consumer)
             f"[PERMANENT FAILURE] tx={tx_id} after "
             f"{MAX_RETRY_ATTEMPTS} attempts. Routing to DLQ."
         )
-        await send_to_dlq(dlq_producer, tx_payload, last_error or "Unknown failure")
+        dlq_ok = await send_to_dlq(dlq_producer, tx_payload, last_error or "Unknown failure")
+        if not dlq_ok:
+            # T-02: Never commit offset if BOTH Neo4j and DLQ failed — guarantee zero silent message loss!
+            logger.critical(
+                f"[ZERO-LOSS GUARD] Refusing to commit offset {msg.offset} on {tp} for tx={tx_id}: "
+                f"both Neo4j write and DLQ delivery failed."
+            )
+            return False
 
     await consumer.commit({tp: msg.offset + 1})
     return success

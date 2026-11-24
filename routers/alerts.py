@@ -313,7 +313,9 @@ async def _build_alert_graph_from_neo4j(neo4j_driver, sender: str, receiver: str
     OPTIONAL MATCH (a)-[t:TRANSFERS_TO]-(other:Account)
       WHERE ($tenant_id IS NULL OR other.tenant_id = $tenant_id OR t.tenant_id = $tenant_id)
     OPTIONAL MATCH (a)-[b:BELONGS_TO]->(c:Company)
+      WHERE ($tenant_id IS NULL OR c.tenant_id = $tenant_id)
     OPTIONAL MATCH (p:Person)-[u:OWNS_UBO]->(c)
+      WHERE ($tenant_id IS NULL OR p.tenant_id = $tenant_id)
     RETURN a, t, other, b, c, p, u LIMIT 50;
     """
     async with neo4j_driver.session() as session:

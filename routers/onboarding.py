@@ -1,4 +1,5 @@
 import logging
+from datetime import date as _date
 from fastapi import APIRouter, HTTPException, Depends, Response, status, Query
 from pydantic import BaseModel
 import uuid
@@ -84,14 +85,22 @@ async def onboard_individual(
             if not tenant:
                 raise HTTPException(status_code=400, detail="Invalid tenant_id")
 
+            # Parse optional ISO date_of_birth so it is preserved instead of dropped (V-08)
+            dob_val = None
+            if payload.date_of_birth:
+                try:
+                    dob_val = _date.fromisoformat(payload.date_of_birth)
+                except ValueError:
+                    raise HTTPException(status_code=422, detail="Invalid date_of_birth; expected YYYY-MM-DD.")
+
             # Create Account
             account_id = await conn.fetchval(
                 """
-                INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score, date_of_birth)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING id;
                 """,
-                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.name, risk_score
+                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.name, risk_score, dob_val
             )
             
             if response is not None:
@@ -169,29 +178,34 @@ async def _persist_corporate_account(
 async def _persist_neo4j_corporate_graph(
     neo4j_driver: Any,
     account_id: Any,
-    payload: CorporateOnboard
+    payload: CorporateOnboard,
+    tenant_id: str,
 ) -> None:
+    """Persists tenant-isolated Company, Account, and UBO Person graph nodes into Neo4j (V-04)."""
+    tid = str(tenant_id)
     async with neo4j_driver.session() as session:
         await session.run(
             """
-            MERGE (c:Company {registration_number: $reg_num})
+            MERGE (c:Company {registration_number: $reg_num, tenant_id: $tenant_id})
             ON CREATE SET c.name = $name, c.id = $id
             ON MATCH SET c.name = $name
             """,
             reg_num=payload.registration_number,
+            tenant_id=tid,
             name=payload.company_name,
             id=str(account_id)
         )
 
         await session.run(
             """
-            MERGE (a:Account {id: $id})
+            MERGE (a:Account {id: $id, tenant_id: $tenant_id})
             SET a.account_number = $acc_num
             WITH a
-            MATCH (c:Company {registration_number: $reg_num})
+            MATCH (c:Company {registration_number: $reg_num, tenant_id: $tenant_id})
             MERGE (a)-[:BELONGS_TO]->(c)
             """,
             id=str(account_id),
+            tenant_id=tid,
             acc_num=payload.account_number,
             reg_num=payload.registration_number
         )
@@ -199,13 +213,14 @@ async def _persist_neo4j_corporate_graph(
         for ubo in payload.ubos:
             await session.run(
                 """
-                MERGE (p:Person {tax_id: $tax_id})
+                MERGE (p:Person {tax_id: $tax_id, tenant_id: $tenant_id})
                 ON CREATE SET p.name = $name
                 WITH p
-                MATCH (c:Company {registration_number: $reg_num})
-                MERGE (p)-[:OWNS_UBO {percentage: $percentage}]->(c)
+                MATCH (c:Company {registration_number: $reg_num, tenant_id: $tenant_id})
+                MERGE (p)-[:OWNS_UBO {percentage: $percentage, tenant_id: $tenant_id}]->(c)
                 """,
                 tax_id=ubo.tax_id,
+                tenant_id=tid,
                 name=ubo.name,
                 reg_num=payload.registration_number,
                 percentage=ubo.ownership_percentage
@@ -229,9 +244,9 @@ async def onboard_corporate(
     # Step 1: Save to PostgreSQL (relational profile)
     account_id = await _persist_corporate_account(authorized_tenant_id, payload, corp_risk_score, response)
 
-    # Step 2: Save corporate structures & UBO tracing to Neo4j
+    # Step 2: Save tenant-scoped corporate structures & UBO tracing to Neo4j
     try:
-        await _persist_neo4j_corporate_graph(neo4j_driver, account_id, payload)
+        await _persist_neo4j_corporate_graph(neo4j_driver, account_id, payload, tenant_id=str(authorized_tenant_id))
         corp_status = "APPROVED" if (corp_risk_score < 0.8 and not corp_screening_failed) else "HELD_FOR_REVIEW"
         return {
             "account_id": str(account_id),
@@ -271,7 +286,7 @@ async def get_account_by_id(
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, account_number, swift_bic, owner_name, risk_score, risk_category, created_at
+                SELECT id, account_number, swift_bic, owner_name, risk_score, risk_category, date_of_birth, created_at
                 FROM accounts
                 WHERE id = $1 AND tenant_id = $2;
                 """,
@@ -280,11 +295,13 @@ async def get_account_by_id(
             if not row:
                 raise HTTPException(status_code=404, detail="Account not found")
 
+            dob_raw = row.get("date_of_birth") if hasattr(row, "get") else None
             return {
                 "account_id": str(row["id"]),
                 "account_number": row["account_number"],
                 "swift_bic": row["swift_bic"],
                 "owner_name": row["owner_name"],
+                "date_of_birth": dob_raw.isoformat() if hasattr(dob_raw, "isoformat") else dob_raw,
                 "risk_score": float(row["risk_score"]) if row["risk_score"] else 0.0,
                 "risk_tier": row["risk_category"] or "STANDARD",
                 "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"])

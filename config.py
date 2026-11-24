@@ -60,7 +60,7 @@ class Settings(BaseSettings):
 
     # P0-1: Multi-Currency FX Normalization
     base_currency: str = "USD"
-    fx_rates_url: str = "https://api.frankfurter.app/latest"
+    fx_rates_url: str = "https://api.frankfurter.dev/v1/latest"
 
     # P0-3: Pluggable Evidence Storage (local | s3) & ClamAV Scanning
     evidence_storage_backend: str = "local"
