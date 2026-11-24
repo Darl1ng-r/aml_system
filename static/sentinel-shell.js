@@ -36,150 +36,81 @@
     }
 
     function injectStyles() {
+        // Styles live natively in style.css for zero-flicker Frame 0 painting; only inject fallback if missing.
         if (document.getElementById('sentinel-shell-styles')) return;
+        const probe = document.querySelector('.sentinel-shell-btn');
+        if (probe && window.getComputedStyle(probe).display === 'inline-flex') return;
         const style = document.createElement('style');
         style.id = 'sentinel-shell-styles';
         style.textContent = `
             .sentinel-shell-btn {
                 display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-                min-height: 34px; min-width: 34px; padding: 0 10px; border-radius: 8px;
+                height: 32px; min-height: 32px; min-width: 32px; padding: 0 10px; border-radius: 9px;
                 border: 1px solid rgba(255,255,255,0.14);
                 background: rgba(255,255,255,0.06); color: #E7E9EF;
                 font-size: 12px; font-family: 'Inter', sans-serif; font-weight: 500;
                 cursor: pointer; transition: background 0.15s, border-color 0.15s;
             }
-            @media (pointer: coarse), (max-width: 768px) {
-                .sentinel-shell-btn { min-height: 44px; min-width: 44px; }
-            }
-            .sentinel-profile-popover {
-                position: fixed; top: 62px; right: 18px; width: min(280px, calc(100vw - 24px));
-                z-index: 9998; background: #FFFFFF; color: #141517;
-                border: 1px solid rgba(20,21,23,0.14); border-radius: 12px;
-                box-shadow: 0 18px 42px rgba(20,21,23,0.22);
-                display: none; flex-direction: column; overflow: hidden;
-            }
-            .sentinel-profile-popover.open { display: flex; }
-            .sentinel-profile-head {
-                padding: 12px 14px; background: #F5F4F0;
-                border-bottom: 1px solid rgba(20,21,23,0.09);
-            }
-            .sentinel-profile-name { font-size: 13px; font-weight: 700; color: #141517; }
-            .sentinel-profile-meta {
-                font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5C6068;
-                margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-            }
-            .sentinel-profile-role {
-                display: inline-flex; padding: 2px 7px; border-radius: 999px;
-                background: #141517; color: #FFFFFF; font-size: 10px; font-weight: 600;
-            }
-            .sentinel-profile-actions { padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-            .sentinel-profile-action {
-                display: flex; align-items: center; justify-content: space-between;
-                width: 100%; padding: 9px 10px; border: none; background: transparent;
-                border-radius: 8px; color: #141517; font-size: 12.5px; font-weight: 500;
-                text-decoration: none; cursor: pointer; text-align: left;
-            }
-            .sentinel-profile-action:hover { background: #F0EFEA; }
-            .sentinel-profile-action--danger { color: #A82E27; }
-            .sentinel-profile-action--danger:hover { background: #FDF2F1; }
-            .sentinel-mobile-core-nav { display: none; }
-            @media (max-width: 768px) { .sentinel-mobile-core-nav { display: block; } }
-            .sentinel-shell-btn:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.28); }
-            .sentinel-shell-kbd {
-                font-family: 'JetBrains Mono', monospace; font-size: 10px;
-                padding: 1px 5px; border-radius: 4px;
-                background: rgba(255,255,255,0.12); color: #CBD5E1;
-            }
-            .sentinel-notif-wrap { position: relative; display: inline-flex; align-items: center; }
-            .sentinel-notif-badge {
-                position: absolute; top: -4px; right: -4px; min-width: 16px; height: 16px;
-                padding: 0 4px; border-radius: 999px; background: #C13B33; color: #FFFFFF;
-                font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 700;
-                display: none; align-items: center; justify-content: center;
-                box-shadow: 0 0 0 2px #141517;
-            }
-            .sentinel-notif-badge.has-unread { display: inline-flex; }
-            .sentinel-notif-popover {
-                position: fixed; top: 62px; right: 18px; width: min(380px, calc(100vw - 24px));
-                max-height: 460px; overflow-y: auto; z-index: 9998;
-                background: #FFFFFF; color: #141517; border: 1px solid rgba(20,21,23,0.14);
-                border-radius: 12px; box-shadow: 0 18px 42px rgba(20,21,23,0.22);
-                display: none; flex-direction: column;
-            }
-            .sentinel-notif-popover.open { display: flex; }
-            .sentinel-notif-head {
-                display: flex; align-items: center; justify-content: space-between;
-                padding: 12px 14px; border-bottom: 1px solid rgba(20,21,23,0.09);
-                background: #F5F4F0; font-size: 12px; font-weight: 700;
-            }
-            .sentinel-notif-actions { display: flex; gap: 8px; }
-            .sentinel-notif-linkbtn {
-                border: none; background: transparent; color: #141517; font-size: 11px;
-                font-weight: 600; cursor: pointer; text-decoration: underline;
-            }
-            .sentinel-notif-item {
-                padding: 11px 14px; border-bottom: 1px solid rgba(20,21,23,0.07);
-                cursor: pointer; transition: background 0.12s; text-decoration: none; color: inherit; display: block;
-            }
-            .sentinel-notif-item:hover { background: #F8F7F4; }
-            .sentinel-notif-item.unread { border-left: 3px solid #F5A623; background: #FFFDF8; }
-            .sentinel-notif-title { font-size: 12.5px; font-weight: 600; margin-bottom: 3px; display: flex; justify-content: space-between; gap: 8px; }
-            .sentinel-notif-body { font-size: 11.5px; color: #4B4F5A; line-height: 1.4; }
-            .sentinel-notif-sev { font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-            .sentinel-notif-sev.CRITICAL { background: #FDF2F1; color: #C13B33; }
-            .sentinel-notif-sev.WARNING { background: #FEF8EC; color: #B87514; }
-            .sentinel-notif-sev.INFO { background: #EEF8F3; color: #1F7A4D; }
-
-            dialog.sentinel-cmdk-dialog {
-                margin: 10vh auto auto auto; padding: 0; border: 1px solid rgba(20,21,23,0.16);
-                border-radius: 14px; width: min(620px, calc(100vw - 24px));
-                background: #FFFFFF; color: #141517; box-shadow: 0 24px 64px rgba(20,21,23,0.34);
-                overflow: hidden;
-            }
-            dialog.sentinel-cmdk-dialog::backdrop { background: rgba(20,21,23,0.55); backdrop-filter: blur(3px); }
-            .sentinel-cmdk-inputwrap {
-                display: flex; align-items: center; gap: 10px; padding: 14px 16px;
-                border-bottom: 1px solid rgba(20,21,23,0.10); background: #FAFAF8;
-            }
-            .sentinel-cmdk-input {
-                flex: 1; border: none; outline: none; background: transparent;
-                font-size: 14.5px; color: #141517; font-family: 'Inter', sans-serif;
-            }
-            .sentinel-cmdk-list { max-height: 360px; overflow-y: auto; padding: 6px; }
-            .sentinel-cmdk-item {
-                display: flex; align-items: center; justify-content: space-between; gap: 12px;
-                padding: 9px 12px; border-radius: 8px; cursor: pointer; text-decoration: none; color: #141517;
-            }
-            .sentinel-cmdk-item:hover, .sentinel-cmdk-item.active { background: #F0EFEA; }
-            .sentinel-cmdk-meta { display: flex; flex-direction: column; min-width: 0; }
-            .sentinel-cmdk-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-            .sentinel-cmdk-sub { font-size: 11.5px; color: #5C6068; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-            .sentinel-cmdk-badge {
-                font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
-                padding: 2px 7px; border-radius: 999px; background: #141517; color: #FFFFFF; flex-shrink: 0;
-            }
-            .sentinel-cmdk-foot {
-                display: flex; justify-content: space-between; align-items: center;
-                padding: 8px 14px; font-size: 11px; color: #5C6068;
-                border-top: 1px solid rgba(20,21,23,0.08); background: #F5F4F0;
-            }
-
-            .sentinel-ws-banner {
-                position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
-                z-index: 9997; display: none; align-items: center; gap: 10px;
-                padding: 8px 14px; border-radius: 999px; font-size: 12px; font-weight: 600;
-                background: #141517; color: #F7F7F5; border: 1px solid rgba(245,166,35,0.5);
-                box-shadow: 0 10px 28px rgba(20,21,23,0.28);
-            }
-            .sentinel-ws-banner.visible { display: inline-flex; }
-            .sentinel-ws-dot { width: 8px; height: 8px; border-radius: 50%; background: #F5A623; }
-            .sentinel-ws-banner.offline .sentinel-ws-dot { background: #EF4444; }
-            .sentinel-ws-banner button {
-                border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.1);
-                color: #FFFFFF; border-radius: 999px; padding: 2px 10px; font-size: 11px; cursor: pointer;
-            }
         `;
         document.head.appendChild(style);
+    }
+
+    // ── 0. Instant Navigation Prefetch (Speculation Rules + pointerenter fallback) ──
+    function installInstantPrefetch() {
+        const WORKSPACE_URLS = [
+            '/dashboard/executive',
+            '/alerts/triage',
+            '/dashboard',
+            '/network',
+            '/customers',
+            '/sar/editor',
+            '/sar/queue',
+            '/compliance/ops',
+            '/admin/rules',
+            '/ml/governance',
+            '/settings/risk-appetite',
+            '/audit/logs',
+            '/admin/users',
+            '/admin/health',
+        ];
+        if (HTMLScriptElement.supports && HTMLScriptElement.supports('speculationrules')) {
+            if (!document.getElementById('sentinel-speculation-rules')) {
+                const sr = document.createElement('script');
+                sr.id = 'sentinel-speculation-rules';
+                sr.type = 'speculationrules';
+                sr.textContent = JSON.stringify({
+                    prefetch: [
+                        {
+                            where: {
+                                and: [
+                                    { href_matches: '/*' },
+                                    { not: { href_matches: '/api/*' } },
+                                    { not: { href_matches: '/login*' } },
+                                    { not: { href_matches: '/rfi/*' } },
+                                ],
+                            },
+                            eagerness: 'moderate',
+                        },
+                    ],
+                });
+                document.head.appendChild(sr);
+            }
+            return;
+        }
+        // Fallback link prefetch on hover/focus for Firefox & Safari
+        const prefetched = new Set([window.location.pathname]);
+        document.addEventListener('pointerenter', (e) => {
+            const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+            if (!a) return;
+            const href = a.getAttribute('href') || '';
+            if (!href.startsWith('/') || prefetched.has(href) || !WORKSPACE_URLS.includes(href)) return;
+            prefetched.add(href);
+            const link = document.createElement('link');
+            link.rel = 'prefetch';
+            link.as = 'document';
+            link.href = href;
+            document.head.appendChild(link);
+        }, true);
     }
 
     // ── 1. Command Palette (Cmd+K / Ctrl+K) ──────────────────────────────────
@@ -282,17 +213,23 @@
     let notifPopover = null;
     let notifPollHandle = null;
 
+    function applyNotifBadgeCount(unread) {
+        const count = Number(unread || 0);
+        const badge = document.getElementById('sentinel-notif-badge');
+        if (badge) {
+            badge.textContent = count > 99 ? '99+' : String(count);
+            badge.classList.toggle('has-unread', count > 0);
+        }
+    }
+
     async function refreshNotifications() {
         try {
             const resp = await fetch('/api/v1/notifications?limit=25', { credentials: 'include' });
             if (!resp.ok) return;
             const data = await resp.json();
-            const badge = document.getElementById('sentinel-notif-badge');
             const unread = Number(data.unread_count || 0);
-            if (badge) {
-                badge.textContent = unread > 99 ? '99+' : String(unread);
-                badge.classList.toggle('has-unread', unread > 0);
-            }
+            try { sessionStorage.setItem('sentinel_unread_notif_count', String(unread)); } catch (_) {}
+            applyNotifBadgeCount(unread);
             renderNotifPopover(data.items || []);
         } catch (_) { /* ignore when unauthenticated */ }
     }
@@ -331,29 +268,49 @@
             document.querySelector('.sentinel-topbar__right') ||
             document.querySelector('.header-nav .nav-right') ||
             document.querySelector('.header-nav');
-        if (!container || document.getElementById('sentinel-cmdk-trigger')) return;
+        if (!container) return;
 
-        // Cmd+K trigger button
-        const cmdBtn = document.createElement('button');
-        cmdBtn.type = 'button';
-        cmdBtn.id = 'sentinel-cmdk-trigger';
-        cmdBtn.className = 'sentinel-shell-btn';
-        cmdBtn.title = 'Global Search & Command Palette (Cmd+K / Ctrl+K)';
-        cmdBtn.innerHTML = '<span>Search</span><span class="sentinel-shell-kbd">⌘K</span>';
-        cmdBtn.addEventListener('click', openCommandPalette);
+        // Bind to pre-rendered Frame-0 buttons when present (zero layout jump!); create only on legacy fallback pages
+        let cmdBtn = document.getElementById('sentinel-cmdk-trigger');
+        let bellBtn = document.getElementById('sentinel-notif-bell');
+        let bellWrap = bellBtn ? bellBtn.closest('.sentinel-notif-wrap') : null;
 
-        // Notification Bell button
-        const bellWrap = document.createElement('div');
-        bellWrap.className = 'sentinel-notif-wrap';
-        bellWrap.innerHTML = `
-            <button type="button" id="sentinel-notif-bell" class="sentinel-shell-btn" aria-label="Notifications" title="SLA & Compliance Notifications">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            </button>
-            <span id="sentinel-notif-badge" class="sentinel-notif-badge">0</span>
-        `;
+        if (!cmdBtn) {
+            cmdBtn = document.createElement('button');
+            cmdBtn.type = 'button';
+            cmdBtn.id = 'sentinel-cmdk-trigger';
+            cmdBtn.className = 'sentinel-shell-btn';
+            cmdBtn.title = 'Global Search & Command Palette (Cmd+K / Ctrl+K)';
+            cmdBtn.innerHTML = '<span>Search</span><span class="sentinel-shell-kbd">⌘K</span>';
+            container.insertBefore(cmdBtn, container.firstChild);
+        }
+        if (cmdBtn.dataset.sentinelBound !== '1') {
+            cmdBtn.dataset.sentinelBound = '1';
+            cmdBtn.addEventListener('click', openCommandPalette);
+        }
 
-        container.insertBefore(bellWrap, container.firstChild);
-        container.insertBefore(cmdBtn, bellWrap);
+        if (!bellBtn) {
+            bellWrap = document.createElement('div');
+            bellWrap.className = 'sentinel-notif-wrap';
+            bellWrap.innerHTML = `
+                <button type="button" id="sentinel-notif-bell" class="sentinel-shell-btn" aria-label="Notifications" title="SLA & Compliance Notifications">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                </button>
+                <span id="sentinel-notif-badge" class="sentinel-notif-badge">0</span>
+            `;
+            container.insertBefore(bellWrap, cmdBtn.nextSibling);
+            bellBtn = document.getElementById('sentinel-notif-bell');
+        }
+        if (!bellWrap) bellWrap = bellBtn.parentElement;
+
+        // Hydrate unread count immediately from sessionStorage so badge never blinks on navigation
+        try {
+            const cachedUnread = sessionStorage.getItem('sentinel_unread_notif_count');
+            if (cachedUnread !== null) applyNotifBadgeCount(cachedUnread);
+        } catch (_) {}
+
+        if (bellBtn.dataset.sentinelBound === '1') return;
+        bellBtn.dataset.sentinelBound = '1';
 
         notifPopover = document.createElement('div');
         notifPopover.className = 'sentinel-notif-popover';
@@ -369,9 +326,11 @@
         `;
         document.body.appendChild(notifPopover);
 
-        const bellBtn = document.getElementById('sentinel-notif-bell');
         bellBtn.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (profilePopover) profilePopover.classList.remove('open');
+            const modMenu = document.getElementById('sentinel-modules-menu');
+            if (modMenu) { modMenu.classList.remove('show'); modMenu.style.display = 'none'; }
             notifPopover.classList.toggle('open');
             if (notifPopover.classList.contains('open')) refreshNotifications();
         });
@@ -565,6 +524,7 @@
 
     function bootstrap() {
         injectStyles();
+        installInstantPrefetch();
         mountTopbarControls();
         injectMobileCoreNav();
         mountProfilePopover();

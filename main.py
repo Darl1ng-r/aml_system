@@ -443,7 +443,21 @@ app.include_router(rfi.router)
 app.include_router(risk_appetite.router)
 
 # Mount static files directory for dashboard styling and frontend client logic
-app.mount("/static", StaticFiles(directory="static"), name="static")
+class VersionedStaticFiles(StaticFiles):
+    """Serves versioned static assets (?v=...) with immutable caching to eliminate 304 stalls during page navigation."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            qs = (scope.get("query_string") or b"").decode("latin-1")
+            if "v=" in qs:
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            else:
+                response.headers["Cache-Control"] = "public, max-age=300"
+        return response
+
+
+app.mount("/static", VersionedStaticFiles(directory="static"), name="static")
 
 # Initialize OpenTelemetry FastAPI instrumentation & Sentry PII-scrubbing at app setup time
 _init_observability(app)
