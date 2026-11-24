@@ -541,10 +541,86 @@ def read_root(request: Request):
 def read_landing():
     return FileResponse("static/landing.html")
 
-def _serve_authenticated_page(request: Request, static_file_path: str):
+SENTINEL_ASSET_VERSION = "20261124-u2"
+_TOPBAR_PARTIAL_PATH = "static/partials/topbar.html"
+_WORKSPACE_HTML_CACHE: dict[tuple, tuple[str, str]] = {}
+
+
+def _build_head_assets_snippet() -> str:
+    return (
+        f'<link rel="stylesheet" href="/static/style.css?v={SENTINEL_ASSET_VERSION}">\n'
+        f'  <script src="/static/api-client.js?v={SENTINEL_ASSET_VERSION}"></script>\n'
+        f'  <script src="/static/sentinel-shell.js?v={SENTINEL_ASSET_VERSION}" defer></script>'
+    )
+
+
+def _render_workspace_page(
+    static_file_path: str,
+    active_nav: Optional[str] = None,
+    header_class: str = "header-nav",
+) -> tuple[str, str]:
+    """
+    Server-side composition of ONE shared topbar partial (`static/partials/topbar.html`)
+    and unified head assets into each workspace page, cached by `(page_mtime, partial_mtime)`.
+    Returns `(rendered_html, strong_etag)`.
+    """
+    import hashlib
+
+    page_mtime = os.path.getmtime(static_file_path)
+    partial_mtime = os.path.getmtime(_TOPBAR_PARTIAL_PATH) if os.path.exists(_TOPBAR_PARTIAL_PATH) else 0.0
+    cache_key = (static_file_path, active_nav or "", header_class, SENTINEL_ASSET_VERSION, page_mtime, partial_mtime)
+
+    cached = _WORKSPACE_HTML_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    with open(static_file_path, "r", encoding="utf-8") as fh:
+        page_html = fh.read()
+
+    if "<!-- @SENTINEL_HEAD_ASSETS -->" in page_html:
+        page_html = page_html.replace("<!-- @SENTINEL_HEAD_ASSETS -->", _build_head_assets_snippet(), 1)
+
+    if "<!-- @SENTINEL_TOPBAR -->" in page_html and os.path.exists(_TOPBAR_PARTIAL_PATH):
+        with open(_TOPBAR_PARTIAL_PATH, "r", encoding="utf-8") as pfh:
+            topbar_html = pfh.read()
+
+        active_key = (active_nav or "").strip().lower()
+        replacements = {
+            "{{HEADER_CLASS}}": header_class,
+            "{{ACTIVE_OVERVIEW}}": " active" if active_key == "overview" else "",
+            "{{ARIA_OVERVIEW}}": ' aria-current="page"' if active_key == "overview" else "",
+            "{{ACTIVE_TRIAGE}}": " active" if active_key == "triage" else "",
+            "{{ARIA_TRIAGE}}": ' aria-current="page"' if active_key == "triage" else "",
+            "{{ACTIVE_INVESTIGATIONS}}": " active" if active_key == "investigations" else "",
+            "{{ARIA_INVESTIGATIONS}}": ' aria-current="page"' if active_key == "investigations" else "",
+            "{{ACTIVE_NETWORK}}": " active" if active_key == "network" else "",
+            "{{ARIA_NETWORK}}": ' aria-current="page"' if active_key == "network" else "",
+        }
+        for token, val in replacements.items():
+            topbar_html = topbar_html.replace(token, val)
+
+        page_html = page_html.replace("<!-- @SENTINEL_TOPBAR -->", topbar_html.strip(), 1)
+
+    etag = f'"{hashlib.sha256(page_html.encode("utf-8")).hexdigest()[:24]}"'
+
+    # Keep cache bounded if files are edited repeatedly during dev reloads
+    if len(_WORKSPACE_HTML_CACHE) > 64:
+        _WORKSPACE_HTML_CACHE.clear()
+    _WORKSPACE_HTML_CACHE[cache_key] = (page_html, etag)
+    return page_html, etag
+
+
+def _serve_authenticated_page(
+    request: Request,
+    static_file_path: str,
+    active_nav: Optional[str] = None,
+    header_class: str = "header-nav",
+):
     """
     Server-side cryptographic cookie authentication guard for all HTML workspace routes (S-9).
     Verifies JWT signature via decode_jwt_with_rotation() and enforces type == 'access'.
+    Composes the single shared topbar component and enforces strict HTML revalidation
+    (`Cache-Control: private, no-cache, must-revalidate`) so browsers never serve stale page HTML.
     """
     token = request.cookies.get("access_token")
     if not token:
@@ -558,13 +634,25 @@ def _serve_authenticated_page(request: Request, static_file_path: str):
     except Exception:
         return RedirectResponse(url=LOGIN_ROUTE, status_code=status.HTTP_303_SEE_OTHER)
 
-    return FileResponse(static_file_path)
+    rendered_html, etag = _render_workspace_page(
+        static_file_path,
+        active_nav=active_nav,
+        header_class=header_class,
+    )
+    headers = {
+        "Cache-Control": "private, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+        "ETag": etag,
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return HTMLResponse(content=rendered_html, headers=headers)
 
 
 @app.get("/dashboard")
 def read_dashboard(request: Request):
     """Server-side cookie authentication guard for compliance dashboard."""
-    return _serve_authenticated_page(request, "static/index.html")
+    return _serve_authenticated_page(request, "static/index.html", active_nav="investigations", header_class="topbar")
 
 @app.get(LOGIN_ROUTE, response_class=FileResponse)
 def read_login():
@@ -575,86 +663,86 @@ def read_external_rfi_portal(token: str):
     """Public white-label Customer/RM RFI upload portal (token-gated via /api/v1/rfi/public/{token})."""
     return FileResponse("static/rfi-portal.html")
 
-@app.get("/alerts/triage", response_class=FileResponse)
-@app.get("/triage", response_class=FileResponse)
+@app.get("/alerts/triage")
+@app.get("/triage")
 def read_triage(request: Request):
     """Server-side cookie authentication guard for Alert Triage Inbox."""
-    return _serve_authenticated_page(request, "static/triage.html")
+    return _serve_authenticated_page(request, "static/triage.html", active_nav="triage", header_class="triage-nav")
 
-@app.get("/admin/rules", response_class=FileResponse)
-@app.get("/rules-admin", response_class=FileResponse)
+@app.get("/admin/rules")
+@app.get("/rules-admin")
 def read_rules_admin(request: Request):
     """Server-side cookie authentication guard for Rule Builder & Tuner."""
-    return _serve_authenticated_page(request, "static/rules-admin.html")
+    return _serve_authenticated_page(request, "static/rules-admin.html", active_nav=None, header_class="rules-nav")
 
-@app.get("/admin/users", response_class=FileResponse)
-@app.get("/users-admin", response_class=FileResponse)
+@app.get("/admin/users")
+@app.get("/users-admin")
 def read_users_admin(request: Request):
     """Server-side cookie authentication guard for User & Permissions Governance."""
-    return _serve_authenticated_page(request, "static/users-admin.html")
+    return _serve_authenticated_page(request, "static/users-admin.html", active_nav=None, header_class="users-nav")
 
-@app.get("/sar/draft/{id}", response_class=FileResponse)
-@app.get("/sar/drafts/{id}", response_class=FileResponse)
-@app.get("/sar/editor", response_class=FileResponse)
+@app.get("/sar/draft/{id}")
+@app.get("/sar/drafts/{id}")
+@app.get("/sar/editor")
 def read_sar_editor(request: Request, id: str = None):
     """Server-side cookie authentication guard for SAR Draft Editor."""
-    return _serve_authenticated_page(request, "static/sar-editor.html")
+    return _serve_authenticated_page(request, "static/sar-editor.html", active_nav=None, header_class="header-nav")
 
-@app.get("/sar/queue", response_class=FileResponse)
-@app.get("/sar/filings", response_class=FileResponse)
+@app.get("/sar/queue")
+@app.get("/sar/filings")
 def read_sar_queue(request: Request):
     """Server-side cookie authentication guard for MLRO SAR Filing Queue."""
-    return _serve_authenticated_page(request, "static/sar-queue.html")
+    return _serve_authenticated_page(request, "static/sar-queue.html", active_nav=None, header_class="header-nav")
 
-@app.get("/customers/{id}", response_class=FileResponse)
-@app.get("/customers", response_class=FileResponse)
+@app.get("/customers/{id}")
+@app.get("/customers")
 def read_customer_360(request: Request, id: str = None):
     """Server-side cookie authentication guard for Customer 360 Dossier."""
-    return _serve_authenticated_page(request, "static/customer-360.html")
+    return _serve_authenticated_page(request, "static/customer-360.html", active_nav=None, header_class="header-nav")
 
-@app.get("/network/{account_id}", response_class=FileResponse)
-@app.get("/network", response_class=FileResponse)
+@app.get("/network/{account_id}")
+@app.get("/network")
 def read_network_graph(request: Request, account_id: str = None):
     """Server-side cookie authentication guard for Network Graph Visualizer."""
-    return _serve_authenticated_page(request, "static/network.html")
+    return _serve_authenticated_page(request, "static/network.html", active_nav="network", header_class="header-nav")
 
-@app.get("/dashboard/executive", response_class=FileResponse)
-@app.get("/executive", response_class=FileResponse)
+@app.get("/dashboard/executive")
+@app.get("/executive")
 def read_executive_dashboard(request: Request):
     """Server-side cookie authentication guard for Executive Compliance Dashboard."""
-    return _serve_authenticated_page(request, "static/executive-dashboard.html")
+    return _serve_authenticated_page(request, "static/executive-dashboard.html", active_nav="overview", header_class="header-nav")
 
-@app.get("/audit/logs", response_class=FileResponse)
-@app.get("/audit", response_class=FileResponse)
+@app.get("/audit/logs")
+@app.get("/audit")
 def read_audit_vault(request: Request):
     """Server-side cookie authentication guard for Audit Log Vault."""
-    return _serve_authenticated_page(request, "static/audit-vault.html")
+    return _serve_authenticated_page(request, "static/audit-vault.html", active_nav=None, header_class="header-nav")
 
-@app.get("/admin/health", response_class=FileResponse)
-@app.get("/health-admin", response_class=FileResponse)
+@app.get("/admin/health")
+@app.get("/health-admin")
 def read_system_health(request: Request):
     """Server-side cookie authentication guard for Admin System Health."""
-    return _serve_authenticated_page(request, "static/system-health.html")
+    return _serve_authenticated_page(request, "static/system-health.html", active_nav=None, header_class="header-nav")
 
-@app.get("/ml/governance", response_class=FileResponse)
-@app.get("/admin/ml-governance", response_class=FileResponse)
-@app.get("/audit/model-reports", response_class=FileResponse)
+@app.get("/ml/governance")
+@app.get("/admin/ml-governance")
+@app.get("/audit/model-reports")
 def read_ml_governance(request: Request):
     """Server-side cookie authentication guard for ML Governance & Model Validation."""
-    return _serve_authenticated_page(request, "static/ml-governance.html")
+    return _serve_authenticated_page(request, "static/ml-governance.html", active_nav=None, header_class="header-nav")
 
-@app.get("/settings/risk-appetite", response_class=FileResponse)
-@app.get("/risk-appetite", response_class=FileResponse)
+@app.get("/settings/risk-appetite")
+@app.get("/risk-appetite")
 def read_risk_appetite(request: Request):
     """Server-side cookie authentication guard for Institutional Risk Appetite Settings."""
-    return _serve_authenticated_page(request, "static/risk-appetite.html")
+    return _serve_authenticated_page(request, "static/risk-appetite.html", active_nav=None, header_class="header-nav")
 
 
-@app.get("/compliance/ops", response_class=FileResponse)
-@app.get("/ops", response_class=FileResponse)
+@app.get("/compliance/ops")
+@app.get("/ops")
 def read_compliance_ops(request: Request):
     """Server-side cookie authentication guard for Compliance Operations Hub."""
-    return _serve_authenticated_page(request, "static/compliance-ops.html")
+    return _serve_authenticated_page(request, "static/compliance-ops.html", active_nav=None, header_class="navbar")
 
 
 

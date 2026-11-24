@@ -224,7 +224,7 @@
         // Fallback auto-loader if a page did not include sentinel-shell.js directly in <head>
         if (!window.__SENTINEL_SHELL_INIT__ && !document.querySelector('script[src*="sentinel-shell.js"]')) {
             const s = document.createElement('script');
-            s.src = '/static/sentinel-shell.js?v=20261124-u1';
+            s.src = '/static/sentinel-shell.js?v=20261124-u2';
             s.defer = true;
             document.head.appendChild(s);
         }
