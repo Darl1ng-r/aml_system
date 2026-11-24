@@ -938,11 +938,13 @@ body:has(.shell) {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid var(--sidebar-line);
   color: var(--sidebar-text-bright);
-  padding: 6px 12px;
+  height: 32px;
+  padding: 0 11px;
   border-radius: 9px;
   font-size: 12px;
   font-family: var(--font-ui);
   font-weight: 500;
+  line-height: 1;
   display: inline-flex;
   align-items: center;
   gap: 6px;
