@@ -13,6 +13,7 @@ Multi-Layer Corporate UBO Ownership Tree (>25% Indirect Equity) & Cross-Entity M
 
 import logging
 from collections import defaultdict
+from decimal import Decimal
 from typing import Any, Dict, List, Set, Tuple
 
 logger = logging.getLogger("aml.ubo_resolver")
@@ -48,7 +49,7 @@ def resolve_ubo_ownership_tree(
     for edge in edges:
         child = str(edge.get("child_company_name") or "").strip()
         parent = str(edge.get("parent_entity_name") or "").strip()
-        pct = float(edge.get("ownership_pct") or 0.0)
+        pct = min(max(float(edge.get("ownership_pct") or 0.0), 0.0), 100.0)
         if not child or not parent or pct <= 0.0:
             continue
         canonical_name.setdefault(child.lower(), child)
@@ -64,7 +65,7 @@ def resolve_ubo_ownership_tree(
             "tax_id": edge.get("tax_id"),
         })
 
-    effective_stakes: Dict[str, float] = defaultdict(float)
+    effective_stakes: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     entity_types: Dict[str, str] = {target_norm.lower(): "COMPANY"}
     entity_jurisdictions: Dict[str, str] = {}
     ownership_paths: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -73,7 +74,7 @@ def resolve_ubo_ownership_tree(
     seen_edge_keys: Set[Tuple[str, str, float]] = set()
     cycles_detected = False
 
-    def _dfs(current_key: str, cumulative_factor: float, path_keys: List[str], depth: int) -> None:
+    def _dfs(current_key: str, cumulative_factor: Decimal, path_keys: List[str], depth: int) -> None:
         nonlocal cycles_detected
         if depth >= max_depth:
             return
@@ -99,27 +100,27 @@ def resolve_ubo_ownership_tree(
                 cycles_detected = True
                 continue
 
-            next_factor = cumulative_factor * (pct / 100.0)
+            next_factor = cumulative_factor * (Decimal(str(pct)) / Decimal("100"))
             next_path = path_keys + [pkey]
 
             # If this parent is a natural person OR a leaf holding company with no parents above it,
             # record its effective ownership contribution along this chain.
             is_leaf_owner = pe["parent_type"] == "PERSON" or not parents_by_child.get(pkey)
             if is_leaf_owner:
-                effective_pct = next_factor * 100.0
+                effective_pct = next_factor * Decimal("100")
                 effective_stakes[pkey] += effective_pct
                 ownership_paths[pkey].append({
                     "chain": [canonical_name.get(k, k) for k in reversed(next_path)],
-                    "effective_pct": round(effective_pct, 2),
+                    "effective_pct": round(float(effective_pct), 2),
                 })
             else:
                 _dfs(pkey, next_factor, next_path, depth + 1)
 
-    _dfs(target_norm.lower(), 1.0, [target_norm.lower()], 0)
+    _dfs(target_norm.lower(), Decimal("1"), [target_norm.lower()], 0)
 
     ubos: List[Dict[str, Any]] = []
     for entity_key, total_pct in sorted(effective_stakes.items(), key=lambda kv: kv[1], reverse=True):
-        rounded = round(total_pct, 2)
+        rounded = round(float(total_pct), 2)
         ubos.append({
             "entity_name": canonical_name.get(entity_key, entity_key),
             "entity_type": entity_types.get(entity_key, "PERSON"),
@@ -136,15 +137,19 @@ def resolve_ubo_ownership_tree(
             "label": canonical_name.get(k, k),
             "type": entity_types.get(k, "COMPANY"),
             "jurisdiction": entity_jurisdictions.get(k, "US"),
-            "effective_ownership_pct": round(effective_stakes.get(k, 0.0), 2) if k in effective_stakes else None,
+            "effective_ownership_pct": round(float(effective_stakes[k]), 2) if k in effective_stakes else None,
         }
         for k in sorted(visited_nodes)
     ]
+
+    total_attributed = sum(effective_stakes.values(), Decimal("0"))
+    unattributed_pct = round(max(0.0, float(Decimal("100") - total_attributed)), 2)
 
     return {
         "target_company": canonical_name.get(target_norm.lower(), target_norm),
         "threshold_pct": threshold_pct,
         "ubo_count_above_threshold": sum(1 for u in ubos if u["exceeds_threshold"]),
+        "unattributed_ownership_pct": unattributed_pct,
         "ultimate_beneficial_owners": ubos,
         "nodes": nodes,
         "edges": tree_edges,

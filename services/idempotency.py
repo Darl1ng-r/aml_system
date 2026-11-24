@@ -127,13 +127,25 @@ async def save_idempotency_result(
 store_idempotency_result = save_idempotency_result
 
 
+_LUA_DELETE_IF_IN_FLIGHT = """
+local current = redis.call('GET', KEYS[1])
+if not current then
+    return 0
+end
+if string.find(current, '"status": "IN_FLIGHT"', 1, true) or string.find(current, '"status":"IN_FLIGHT"', 1, true) then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
 async def clear_idempotency_key(
     key: str,
     tenant_id: Optional[str] = None
 ) -> None:
     """
-    Clears an in-flight idempotency key so failed requests can be safely retried
-    without being locked out for 24 hours.
+    Atomically clears an in-flight idempotency key so failed requests can be safely retried
+    without being locked out for 24 hours, while never deleting a COMPLETED cache entry.
     """
     if not key:
         return
@@ -145,10 +157,18 @@ async def clear_idempotency_key(
         if not r:
             return
 
+        if hasattr(r, "eval"):
+            try:
+                deleted = await r.eval(_LUA_DELETE_IF_IN_FLIGHT, 1, redis_key)
+                if deleted:
+                    logger.debug(f"Atomically cleared in-flight idempotency key: {key}")
+                return
+            except Exception:
+                pass
+
         val = await r.get(redis_key)
         if val:
             data = json.loads(val)
-            # Only remove if still IN_FLIGHT (preserve COMPLETED idempotency cache)
             if data.get("status") == "IN_FLIGHT":
                 await r.delete(redis_key)
                 logger.debug(f"Cleared in-flight idempotency key: {key}")

@@ -133,7 +133,7 @@ async def _persist_and_validate_db_lock(
                     "lock_token": str(existing_row["lock_token"]) if existing_row["lock_token"] else None
                 }
 
-        await conn.execute(
+        acquired_owner = await conn.fetchval(
             """
             INSERT INTO resource_locks (
                 resource_type, resource_id, locked_by, locked_by_name,
@@ -147,11 +147,35 @@ async def _persist_and_validate_db_lock(
                 expires_at = EXCLUDED.expires_at,
                 lock_token = EXCLUDED.lock_token,
                 released_at = NULL,
-                force_broken_by = NULL;
+                force_broken_by = NULL
+            WHERE resource_locks.expires_at <= NOW()
+               OR resource_locks.released_at IS NOT NULL
+               OR resource_locks.locked_by = EXCLUDED.locked_by
+            RETURNING locked_by;
             """,
             res_type, uuid.UUID(str(resource_id)), uuid.UUID(str(user_id)), username,
             uuid.UUID(str(tenant_id)), now, expires_at, uuid.UUID(lock_token)
         )
+        if acquired_owner is None:
+            # Atomic conditional UPSERT lost a concurrent race to another active holder
+            holder_row = await conn.fetchrow(
+                """
+                SELECT resource_type, resource_id, locked_by, locked_by_name,
+                       locked_at, expires_at, lock_token
+                FROM resource_locks
+                WHERE resource_type = $1 AND resource_id = $2;
+                """,
+                res_type, uuid.UUID(str(resource_id))
+            )
+            if holder_row and str(holder_row["locked_by"]) != str(user_id):
+                return False, {
+                    "resource_type": holder_row["resource_type"],
+                    "resource_id": str(holder_row["resource_id"]),
+                    "locked_by": str(holder_row["locked_by"]),
+                    "locked_by_name": holder_row["locked_by_name"],
+                    "expires_at": holder_row["expires_at"].isoformat() if holder_row["expires_at"] else None,
+                    "lock_token": str(holder_row["lock_token"]) if holder_row["lock_token"] else None
+                }
     return True, None
 
 

@@ -14,7 +14,9 @@ Resolution Chain:
 
 import json
 import logging
+import math
 import os
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, Tuple
 
 import httpx
@@ -101,8 +103,11 @@ async def _fetch_live_rates_map(base_currency: str = "USD") -> Dict[str, float] 
                 # Frankfurter returns 1 base = X target -> invert to 1 target = (1/X) base
                 converted = {base_currency: 1.0}
                 for code, val in raw_rates.items():
-                    if val and float(val) > 0:
-                        converted[code.upper()] = round(1.0 / float(val), 8)
+                    if val is None:
+                        continue
+                    fval = float(val)
+                    if math.isfinite(fval) and fval > 0.0:
+                        converted[code.upper()] = round(1.0 / fval, 8)
                 return converted
     except Exception as e:
         logger.debug(f"Live FX rate fetch skipped/failed ({e}); using fallback table.")
@@ -142,17 +147,26 @@ async def get_fx_rate(currency: str | None, base_currency: str = "USD") -> float
     return get_fallback_fx_rate(src, dst)
 
 
+def _quantize_currency(amount: float, rate: float) -> float:
+    if not (math.isfinite(float(amount)) and math.isfinite(float(rate))):
+        return 0.0
+    converted = (Decimal(str(amount)) * Decimal(str(rate))).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    return float(converted)
+
+
 async def convert_to_base_currency(
     amount: float,
     currency: str | None,
     base_currency: str = "USD",
 ) -> Tuple[float, float]:
     """
-    Converts `amount` in `currency` to `base_currency`.
+    Converts `amount` in `currency` to `base_currency` using fixed-point Decimal arithmetic.
     Returns: (converted_amount, fx_rate_applied)
     """
     rate = await get_fx_rate(currency, base_currency=base_currency)
-    return round(float(amount) * rate, 2), rate
+    return _quantize_currency(amount, rate), rate
 
 
 def convert_to_base_currency_sync(
@@ -162,4 +176,4 @@ def convert_to_base_currency_sync(
 ) -> Tuple[float, float]:
     """Synchronous conversion using fallback rates for pure sync helpers (e.g., Travel Rule)."""
     rate = get_fallback_fx_rate(currency or base_currency, base_currency=base_currency)
-    return round(float(amount) * rate, 2), rate
+    return _quantize_currency(amount, rate), rate

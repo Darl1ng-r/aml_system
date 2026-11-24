@@ -63,6 +63,9 @@ class IsolationTree:
             
         # Partition data below and above the split value
         left_mask = X[:, split_feature] < split_value
+        if not np.any(left_mask) or np.all(left_mask):
+            # Guard against uniform() sampling the inclusive feat_min endpoint
+            return Node(size=n_samples)
         x_left = X[left_mask]
         x_right = X[~left_mask]
         
@@ -97,6 +100,7 @@ class IsolationForestScratch:
         self.fitted = False
 
     def fit(self, X: np.ndarray):
+        X = np.nan_to_num(np.asarray(X, dtype=float), nan=0.0, posinf=1e12, neginf=0.0)
         n_samples = X.shape[0]
         if n_samples == 0:
             logger.warning("Attempted to fit empty dataset in Isolation Forest.")
@@ -134,7 +138,8 @@ class IsolationForestScratch:
         if abs(c_denom) < 1e-9:
             return 0.5
             
-        paths = [tree.path_length(x, tree.root, 0) for tree in self.trees]
+        x_safe = np.nan_to_num(np.asarray(x, dtype=float), nan=0.0, posinf=1e12, neginf=0.0)
+        paths = [tree.path_length(x_safe, tree.root, 0) for tree in self.trees]
         avg_path = np.mean(paths)
         
         score = 2.0 ** (- avg_path / c_denom)

@@ -37,7 +37,8 @@ def evaluate_rule_on_tx_row(
     if cfg.get("enabled") is False:
         return False, ""
 
-    amount = float(tx.get("amount_base_usd") or tx.get("amount") or 0.0)
+    raw_base = tx.get("amount_base_usd")
+    amount = float(raw_base if raw_base is not None else (tx.get("amount") if tx.get("amount") is not None else 0.0))
     country = str(tx.get("country") or "").upper().strip()
     channel = str(tx.get("channel") or "").upper().strip()
     rname = rule_name.upper().strip()
@@ -69,7 +70,7 @@ def evaluate_rule_on_tx_row(
         divisor = max(1.0, float(cfg.get("round_divisor", 1000.0)))
         if jb_min <= amount < jb_max:
             return True, f"just_below_threshold amount={amount:.2f} in [{jb_min:.0f}, {jb_max:.0f})"
-        if amount >= rnd_min and (amount % divisor == 0):
+        if amount >= rnd_min and (int(round(amount * 100)) % int(round(divisor * 100)) == 0):
             return True, f"round_number amount={amount:.2f} divisible by {divisor:.0f}"
         return False, ""
 
@@ -188,23 +189,32 @@ async def backtest_rule_config(
         ts = tx.get("timestamp") or datetime.now(timezone.utc)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
-        amt = float(tx.get("amount_base_usd") or tx.get("amount") or 0.0)
+        raw_base = tx.get("amount_base_usd")
+        amt = float(raw_base if raw_base is not None else (tx.get("amount") if tx.get("amount") is not None else 0.0))
 
         hist = sender_history[sender_key]
         hist.append((ts, amt))
 
         cutoff_24h = ts - timedelta(hours=24)
         cutoff_7d = ts - timedelta(days=7)
-        sum_24h = sum(a for t0, a in hist if t0 >= cutoff_24h)
-        min_sub = float(challenger_cfg.get("min_sub_amount", 2500.0))
-        sub_thresh = float(challenger_cfg.get("threshold", 10000.0))
-        sub_7d = [a for t0, a in hist if t0 >= cutoff_7d and min_sub <= a < sub_thresh]
+
+        # Compute independent Champion vs Challenger sub-threshold windows so Challenger
+        # thresholds never contaminate the Champion baseline metrics.
+        champ_thresh = float(champion_cfg.get("threshold", 10000.0))
+        chall_thresh = float(challenger_cfg.get("threshold", 10000.0))
+        champ_sum_24h = sum(a for t0, a in hist if t0 >= cutoff_24h and a < champ_thresh)
+        chall_sum_24h = sum(a for t0, a in hist if t0 >= cutoff_24h and a < chall_thresh)
+
+        champ_min_sub = float(champion_cfg.get("min_sub_amount", 2500.0))
+        chall_min_sub = float(challenger_cfg.get("min_sub_amount", 2500.0))
+        champ_sub_7d = [a for t0, a in hist if t0 >= cutoff_7d and champ_min_sub <= a < champ_thresh]
+        chall_sub_7d = [a for t0, a in hist if t0 >= cutoff_7d and chall_min_sub <= a < chall_thresh]
 
         champ_hit, _ = evaluate_rule_on_tx_row(
-            norm_rule, champion_cfg, tx, sum_24h, len(sub_7d), sum(sub_7d)
+            norm_rule, champion_cfg, tx, champ_sum_24h, len(champ_sub_7d), sum(champ_sub_7d)
         )
         chall_hit, chall_reason = evaluate_rule_on_tx_row(
-            norm_rule, challenger_cfg, tx, sum_24h, len(sub_7d), sum(sub_7d)
+            norm_rule, challenger_cfg, tx, chall_sum_24h, len(chall_sub_7d), sum(chall_sub_7d)
         )
 
         if champ_hit:
