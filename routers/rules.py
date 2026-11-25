@@ -5,7 +5,7 @@ Provides multi-tenant rule configuration management backed by PostgreSQL rule_co
 and rule_config_history tables, with Redis pub/sub invalidation and simulation test harness.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
 from observability.sanitizer import sanitize_text
 from typing import Optional, Dict, Any, List, Tuple
@@ -16,6 +16,7 @@ import logging
 import asyncio
 from datetime import datetime, timezone
 from services.auth import RoleChecker, enforce_tenant_data_scope
+from services.http_cache import build_conditional_json_response, build_version_etag, check_if_match
 from services.rate_limiter import RateLimiter
 from database.postgres import get_async_db_conn
 from database.redis_db import get_async_redis_client
@@ -38,6 +39,7 @@ class RulePatchPayload(BaseModel):
     mode: Optional[str] = Field(None, pattern=r"^(ACTIVE|SHADOW|DISABLED)$")
     config: Optional[Dict[str, Any]] = None
     shadow_config: Optional[Dict[str, Any]] = None
+    expected_version: Optional[int] = Field(None, ge=0, le=1_000_000)
     change_reason: Optional[str] = Field("Rule threshold adjustment via Rule Builder", max_length=500)
 
     @field_validator("change_reason", mode="before")
@@ -84,12 +86,14 @@ class LegacyRulesConfigPayload(BaseModel):
 
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_rules(
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """
     Lists all detection rules configured for the current tenant, including
-    active parameters, version number, and toggle status.
+    active parameters, version number, per-rule ETag, and toggle status.
+    Supports conditional `If-None-Match` -> `304 Not Modified`.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
     tenant_uuid = uuid.UUID(str(tenant_id))
@@ -107,7 +111,7 @@ async def list_rules(
                 tenant_uuid
             )
             if rows:
-                return [
+                payload = [
                     {
                         "id": str(r["id"]),
                         "rule_name": r["rule_name"],
@@ -120,30 +124,34 @@ async def list_rules(
                             else (json.loads(r["shadow_config"]) if ("shadow_config" in r and r["shadow_config"]) else None)
                         ),
                         "version": r["version"],
+                        "etag": build_version_etag("rule", r["version"]),
                         "updated_by_name": r["updated_by_name"] or "SYSTEM",
                         "updated_at": r["updated_at"].isoformat() if r["updated_at"] else "",
                         "description": r["description"] or ""
                     }
                     for r in rows
                 ]
+                return build_conditional_json_response(request, payload)
     except Exception as e:
         logger.warning(f"Failed to query rule_configs from DB: {e}. Falling back to default list.")
 
     # Fallback to local config file
     fallback = get_rules_config().get("rules", {})
-    return [
+    payload = [
         {
             "id": f"local-{name}",
             "rule_name": name,
             "enabled": conf.get("enabled", True),
             "config": {k: v for k, v in conf.items() if k != "enabled"},
             "version": 1,
+            "etag": build_version_etag("rule", 1),
             "updated_by_name": "LOCAL_CONFIG",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": "",
             "description": f"Standard {name} monitoring rule"
         }
         for name, conf in fallback.items()
     ]
+    return build_conditional_json_response(request, payload)
 
 
 def _parse_user_uuid(user_id: Any) -> Optional[uuid.UUID]:
@@ -190,11 +198,14 @@ async def _broadcast_rule_invalidation(rule_name: str) -> None:
 async def patch_rule(
     rule_name: str,
     payload: RulePatchPayload,
+    request: Request = None,
+    response: Response = None,
     current_user: dict = Depends(RoleChecker(["ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
     """
     Updates rule thresholds, parameters, and/or enabled state.
+    Enforces optimistic concurrency via `If-Match` header or `expected_version` (HTTP 412 on stale write).
     Increments version, logs historical audit record, and invalidates Redis cache.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
@@ -205,15 +216,33 @@ async def patch_rule(
 
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            # 1. Fetch existing rule
+            # 1. Fetch & lock existing rule row for atomic optimistic concurrency check
             current_row = await conn.fetchrow(
                 """
                 SELECT id, enabled, mode, config, shadow_config, version
                 FROM rule_configs
-                WHERE tenant_id = $1 AND rule_name = $2;
+                WHERE tenant_id = $1 AND rule_name = $2
+                FOR UPDATE;
                 """,
                 tenant_uuid, rule_name
             )
+
+            current_version = (
+                int(current_row["version"])
+                if (current_row and "version" in current_row and current_row["version"] is not None)
+                else 0
+            )
+            current_etag = build_version_etag("rule", current_version)
+            check_if_match(request, current_etag, resource_label=f"rule '{rule_name}'")
+            if payload.expected_version is not None and payload.expected_version != current_version:
+                raise HTTPException(
+                    status_code=status.HTTP_412_PRECONDITION_FAILED,
+                    detail=(
+                        f"Precondition Failed: rule '{rule_name}' is at version {current_version}, "
+                        f"not {payload.expected_version}. Reload the latest configuration and retry."
+                    ),
+                    headers={"ETag": current_etag},
+                )
 
             new_enabled, new_config, new_version = _compute_rule_updates(current_row, payload)
             existing_mode = (current_row["mode"] if current_row and "mode" in current_row else "ACTIVE") or "ACTIVE"
@@ -302,10 +331,15 @@ async def patch_rule(
             }
         )
 
+        new_etag = build_version_etag("rule", new_version)
+        if response is not None:
+            response.headers["ETag"] = new_etag
+
         return {
             "status": "UPDATED",
             "rule_name": rule_name,
             "version": new_version,
+            "etag": new_etag,
             "enabled": new_enabled,
             "mode": new_mode,
             "config": new_config,

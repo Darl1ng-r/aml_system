@@ -580,11 +580,14 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
       }
     }
 
+    let activeDraftEtag = null;
+
     async function loadDraft(draftId) {
       try {
         const res = await fetch(`/api/v1/fincen/sar/drafts/${draftId}`, { credentials: 'include' });
         if (!res.ok) throw new Error('Failed to load SAR draft');
         const data = await res.json();
+        activeDraftEtag = res.headers.get('ETag') || data.etag || null;
         
         document.getElementById('ctxDraftId').innerText = data.draft_id.slice(0, 8);
         activeDraftStatus = data.status || 'DRAFT';
@@ -707,13 +710,25 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
 
       try {
         if (activeDraftId && activeDraftId !== 'new') {
+          const patchHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' };
+          if (activeDraftEtag) patchHeaders['If-Match'] = activeDraftEtag;
           const res = await fetch(`/api/v1/fincen/sar/drafts/${activeDraftId}`, {
             method: 'PATCH',
-            headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+            headers: patchHeaders,
             credentials: 'include',
             body: JSON.stringify({ narrative, xml_payload: lastGeneratedXml })
           });
+          if (res.status === 412) {
+            const reload = await window.SentinelDialog.confirm(
+              'This SAR draft was modified by another compliance officer since you loaded it. Reload the latest version now?',
+              { title: 'Concurrent Edit Conflict (412)', confirmText: 'Reload Latest' }
+            );
+            if (reload) await loadDraft(activeDraftId);
+            return;
+          }
           if (!res.ok) throw new Error('Update failed');
+          const updated = await res.json().catch(() => ({}));
+          activeDraftEtag = res.headers.get('ETag') || updated.etag || activeDraftEtag;
         } else {
           const res = await fetch('/api/v1/fincen/sar/drafts', {
             method: 'POST',
@@ -724,6 +739,7 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
           if (!res.ok) throw new Error('Creation failed');
           const data = await res.json();
           activeDraftId = data.draft_id;
+          activeDraftEtag = res.headers.get('ETag') || data.etag || null;
           document.getElementById('ctxDraftId').innerText = activeDraftId.slice(0, 8);
         }
 
@@ -732,7 +748,7 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
         document.getElementById('autosaveStatus').style.color = 'var(--accent-emerald)';
         if (!isSilent) showToast('Draft saved successfully.');
       } catch (err) {
-        if (!isSilent) showToast('Save failed: ' + err.message);
+        if (!isSilent) showToast('Save failed: ' + (window.SentinelApi ? window.SentinelApi.formatError(err) : err.message));
       }
     }
 
@@ -744,18 +760,27 @@ Requested Enhanced Due Diligence (EDD) failed to substantiate documented legitim
       }
 
       try {
+        const submitHeaders = { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' };
+        if (activeDraftEtag) submitHeaders['If-Match'] = activeDraftEtag;
         const res = await fetch(`/api/v1/fincen/sar/drafts/${activeDraftId}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', 'X-CSRF-Protection': '1' },
+          headers: submitHeaders,
           credentials: 'include',
           body: JSON.stringify({ status: 'PENDING_MLRO_REVIEW' })
         });
+        if (res.status === 412) {
+          await window.SentinelDialog.alert('Draft was modified concurrently. Please reload before submitting.', { title: 'Concurrent Edit Conflict (412)' });
+          await loadDraft(activeDraftId);
+          return;
+        }
         if (!res.ok) throw new Error('Submission failed');
+        const updated = await res.json().catch(() => ({}));
+        activeDraftEtag = res.headers.get('ETag') || updated.etag || activeDraftEtag;
         document.getElementById('ctxStatus').innerText = 'PENDING_MLRO_REVIEW';
         showToast('SAR draft submitted to MLRO Filing Queue.');
         setTimeout(() => { window.location.href = '/sar/queue'; }, 1500);
       } catch (err) {
-        showToast('Submission failed: ' + err.message);
+        showToast('Submission failed: ' + (window.SentinelApi ? window.SentinelApi.formatError(err) : err.message));
       }
     }
 

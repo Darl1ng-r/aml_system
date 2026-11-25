@@ -228,7 +228,11 @@ async def test_p0_4_sar_draft_sets_30day_statutory_deadline():
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             res = await ac.post(
                 "/api/v1/fincen/sar/drafts",
-                headers={"Authorization": f"Bearer {_token('L2_INVESTIGATOR')}", "X-CSRF-Protection": "1"},
+                headers={
+                    "Authorization": f"Bearer {_token('L2_INVESTIGATOR')}",
+                    "X-CSRF-Protection": "1",
+                    "Idempotency-Key": str(uuid.uuid4()),
+                },
                 json={
                     "alert_id": str(alert_uuid),
                     "narrative": "Detailed structuring typology confirmed across multiple wire transfers.",

@@ -244,7 +244,11 @@ async def test_p1_3_global_search_and_bulk_triage_rbac():
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             res_claim = await ac.post(
                 "/api/v1/alerts/bulk-action",
-                headers={"Authorization": f"Bearer {l1_token}", "X-CSRF-Protection": "1"},
+                headers={
+                    "Authorization": f"Bearer {l1_token}",
+                    "X-CSRF-Protection": "1",
+                    "Idempotency-Key": str(uuid.uuid4()),
+                },
                 json={"alert_ids": [alert_1], "action": "CLAIM", "justification": "Claiming triage batch"},
             )
             assert res_claim.status_code == 200

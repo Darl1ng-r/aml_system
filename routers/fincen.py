@@ -22,8 +22,14 @@ from fastapi.responses import JSONResponse
 from database.postgres import get_async_db_conn
 from services.auth import PermissionChecker, RoleChecker, enforce_tenant_data_scope
 from services.fincen_efiling import fincen_client
+from services.http_cache import build_conditional_json_response, build_entity_etag, check_if_match
 from services.rate_limiter import RateLimiter
-from services.idempotency import check_idempotency, save_idempotency_result, clear_idempotency_key
+from services.idempotency import (
+    check_idempotency,
+    save_idempotency_result,
+    clear_idempotency_key,
+    run_idempotent_operation,
+)
 from observability.sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -527,11 +533,13 @@ async def get_fincen_status(
 @router.post("/sar/drafts", status_code=status.HTTP_201_CREATED)
 async def create_sar_draft(
     payload: SARDraftCreate,
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
     Creates a new SAR draft for an alert or case, awaiting MLRO 4-eyes review.
+    Strictly requires `Idempotency-Key` header on HTTP requests (400 if missing).
     """
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
@@ -540,51 +548,62 @@ async def create_sar_draft(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid alert_id or case_id format.")
 
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        user_uuid = None
-        if current_user.get("id"):
-            try:
-                user_uuid = uuid.UUID(str(current_user["id"]))
-            except ValueError:
-                user_uuid = None
+    async def _execute_create_draft():
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            user_uuid = None
+            if current_user.get("id"):
+                try:
+                    user_uuid = uuid.UUID(str(current_user["id"]))
+                except ValueError:
+                    user_uuid = None
 
-        from datetime import timedelta
-        now_utc = datetime.now(timezone.utc)
-        statutory_deadline = now_utc + timedelta(days=30)  # BSA 31 CFR § 1020.320 (30-day rule)
-        xsd_ok = False
-        if payload.xml_payload:
-            from services.sar_validator import validate_regulatory_xml
-            xsd_ok, _ = validate_regulatory_xml(payload.xml_payload)
+            from datetime import timedelta
+            now_utc = datetime.now(timezone.utc)
+            statutory_deadline = now_utc + timedelta(days=30)  # BSA 31 CFR § 1020.320 (30-day rule)
+            xsd_ok = False
+            if payload.xml_payload:
+                from services.sar_validator import validate_regulatory_xml
+                xsd_ok, _ = validate_regulatory_xml(payload.xml_payload)
 
-        draft_id = await conn.fetchval(
-            """
-            INSERT INTO sar_drafts (
-                tenant_id, alert_id, case_id, drafted_by, drafted_by_username,
-                status, narrative, xml_payload, detection_date, statutory_deadline_at, xsd_validated
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            RETURNING id;
-            """,
-            uuid.UUID(str(tenant_id)), alert_uuid, case_uuid,
-            user_uuid,
-            current_user.get("username", "analyst"),
-            payload.status,
-            payload.narrative, payload.xml_payload,
-            now_utc, statutory_deadline, xsd_ok
-        )
-
-        return {
-            "draft_id": str(draft_id),
-            "alert_id": payload.alert_id,
-            "status": payload.status,
-            "statutory_deadline_at": statutory_deadline.isoformat(),
-            "days_until_deadline": 30,
-            "xsd_validated": xsd_ok,
-            "message": (
-                "SAR draft submitted for MLRO review."
-                if payload.status == "PENDING_MLRO_REVIEW"
-                else "SAR draft saved."
+            draft_id = await conn.fetchval(
+                """
+                INSERT INTO sar_drafts (
+                    tenant_id, alert_id, case_id, drafted_by, drafted_by_username,
+                    status, narrative, xml_payload, detection_date, statutory_deadline_at, xsd_validated
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                RETURNING id;
+                """,
+                uuid.UUID(str(tenant_id)), alert_uuid, case_uuid,
+                user_uuid,
+                current_user.get("username", "analyst"),
+                payload.status,
+                payload.narrative, payload.xml_payload,
+                now_utc, statutory_deadline, xsd_ok
             )
-        }
+
+            return {
+                "draft_id": str(draft_id),
+                "alert_id": payload.alert_id,
+                "status": payload.status,
+                "statutory_deadline_at": statutory_deadline.isoformat(),
+                "days_until_deadline": 30,
+                "xsd_validated": xsd_ok,
+                "message": (
+                    "SAR draft submitted for MLRO review."
+                    if payload.status == "PENDING_MLRO_REVIEW"
+                    else "SAR draft saved."
+                )
+            }
+
+    return await run_idempotent_operation(
+        request=request,
+        tenant_id=str(tenant_id),
+        scope="fincen:sar_draft:create",
+        body=payload.model_dump(),
+        handler=_execute_create_draft,
+        success_status_code=status.HTTP_201_CREATED,
+        required=True,
+    )
 
 
 @router.get("/deadlines")
@@ -719,12 +738,13 @@ async def list_sar_drafts(
 async def review_sar_draft(
     id: str,
     payload: SARDraftReview,
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     """
-    MLRO Four-Eyes Review on a SAR draft. Enforces Segregation of Duties (SOD):
-    The reviewer cannot approve or reject a draft they authored themselves.
+    MLRO Four-Eyes Review on a SAR draft. Enforces Segregation of Duties (SOD)
+    and mandatory `Idempotency-Key` on HTTP requests (400 if missing).
     """
     try:
         draft_uuid = uuid.UUID(id)
@@ -732,65 +752,76 @@ async def review_sar_draft(
         raise HTTPException(status_code=400, detail=INVALID_DRAFT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        draft = await conn.fetchrow("SELECT * FROM sar_drafts WHERE id = $1;", draft_uuid)
-        if not draft:
-            raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
 
-        if draft["status"] != "PENDING_MLRO_REVIEW":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid state transition: SAR draft is already {draft['status']} and cannot be re-reviewed."
+    async def _execute_review():
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            draft = await conn.fetchrow("SELECT * FROM sar_drafts WHERE id = $1;", draft_uuid)
+            if not draft:
+                raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
+
+            if draft["status"] != "PENDING_MLRO_REVIEW":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid state transition: SAR draft is already {draft['status']} and cannot be re-reviewed."
+                )
+
+            caller_id = str(current_user.get("id", ""))
+            caller_role = current_user.get("role", "")
+            if draft["drafted_by"] and str(draft["drafted_by"]) == caller_id and caller_role != "SUPER_ADMIN":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Segregation of Duties Violation: Reviewer cannot approve a SAR draft they authored."
+                )
+
+            new_status = "APPROVED" if payload.action == "APPROVE" else "REJECTED"
+            user_uuid = None
+            if caller_id:
+                try:
+                    user_uuid = uuid.UUID(caller_id)
+                except ValueError:
+                    user_uuid = None
+
+            # Optimistic concurrency locking (RACE-03): update only if still PENDING_MLRO_REVIEW
+            updated_id = await conn.fetchval(
+                """
+                UPDATE sar_drafts
+                SET status = $1,
+                    reviewed_by = $2,
+                    reviewed_by_username = $3,
+                    rejection_reason = $4,
+                    reviewed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = $5 AND status = 'PENDING_MLRO_REVIEW'
+                RETURNING id;
+                """,
+                new_status,
+                user_uuid,
+                current_user.get("username", "mlro"),
+                payload.rejection_reason,
+                draft_uuid
             )
 
-        caller_id = str(current_user.get("id", ""))
-        caller_role = current_user.get("role", "")
-        if draft["drafted_by"] and str(draft["drafted_by"]) == caller_id and caller_role != "SUPER_ADMIN":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Segregation of Duties Violation: Reviewer cannot approve a SAR draft they authored."
-            )
+            if not updated_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Concurrent modification conflict: SAR draft was already reviewed or modified by another officer."
+                )
 
-        new_status = "APPROVED" if payload.action == "APPROVE" else "REJECTED"
-        user_uuid = None
-        if caller_id:
-            try:
-                user_uuid = uuid.UUID(caller_id)
-            except ValueError:
-                user_uuid = None
+            return {
+                "draft_id": str(draft_uuid),
+                "status": new_status,
+                "reviewed_by": current_user.get("username", "mlro"),
+                "message": f"SAR draft successfully {new_status.lower()}."
+            }
 
-        # Optimistic concurrency locking (RACE-03): update only if still PENDING_MLRO_REVIEW
-        updated_id = await conn.fetchval(
-            """
-            UPDATE sar_drafts
-            SET status = $1,
-                reviewed_by = $2,
-                reviewed_by_username = $3,
-                rejection_reason = $4,
-                reviewed_at = NOW(),
-                updated_at = NOW()
-            WHERE id = $5 AND status = 'PENDING_MLRO_REVIEW'
-            RETURNING id;
-            """,
-            new_status,
-            user_uuid,
-            current_user.get("username", "mlro"),
-            payload.rejection_reason,
-            draft_uuid
-        )
-
-        if not updated_id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Concurrent modification conflict: SAR draft was already reviewed or modified by another officer."
-            )
-
-        return {
-            "draft_id": str(draft_uuid),
-            "status": new_status,
-            "reviewed_by": current_user.get("username", "mlro"),
-            "message": f"SAR draft successfully {new_status.lower()}."
-        }
+    return await run_idempotent_operation(
+        request=request,
+        tenant_id=str(tenant_id),
+        scope=f"fincen:sar_draft:review:{draft_uuid}",
+        body=payload.model_dump(),
+        handler=_execute_review,
+        required=True,
+    )
 
 
 def _format_sar_draft_response(draft: Any) -> dict:
@@ -832,13 +863,23 @@ def _format_sar_draft_response(draft: Any) -> dict:
     }
 
 
+def _sar_draft_etag(draft: Any) -> str:
+    updated = (
+        draft["updated_at"]
+        if ("updated_at" in draft and draft["updated_at"])
+        else (draft["created_at"] if ("created_at" in draft and draft["created_at"]) else "")
+    )
+    return build_entity_etag("sar-draft", draft["id"], updated, draft["status"])
+
+
 @router.get("/sar/drafts/{id}")
 async def get_sar_draft(
     id: str,
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
-    """Retrieves full details of a specific SAR draft, including linked alert context."""
+    """Retrieves full details of a specific SAR draft with ETag / 304 conditional support."""
     try:
         draft_uuid = uuid.UUID(id)
     except ValueError:
@@ -861,17 +902,25 @@ async def get_sar_draft(
         if not draft:
             raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
 
-        return _format_sar_draft_response(draft)
+        etag = _sar_draft_etag(draft)
+        formatted = _format_sar_draft_response(draft)
+        formatted["etag"] = etag
+        return build_conditional_json_response(request, formatted, etag=etag)
 
 
 @router.patch("/sar/drafts/{id}")
 async def update_sar_draft(
     id: str,
     payload: SARDraftUpdate,
+    request: Request = None,
+    response: Response = None,
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
-    """Updates narrative or xml_payload of an open or rejected SAR draft (frozen once submitted for MLRO review)."""
+    """
+    Updates narrative or xml_payload of an open or rejected SAR draft.
+    Enforces optimistic concurrency via `If-Match` header (HTTP 412 on stale write).
+    """
     try:
         draft_uuid = uuid.UUID(id)
     except ValueError:
@@ -880,11 +929,14 @@ async def update_sar_draft(
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         draft = await conn.fetchrow(
-            "SELECT id, status FROM sar_drafts WHERE id = $1 AND tenant_id = $2;",
+            "SELECT id, status, created_at, updated_at FROM sar_drafts WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
             draft_uuid, uuid.UUID(str(tenant_id))
         )
         if not draft:
             raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
+
+        current_etag = _sar_draft_etag(draft)
+        check_if_match(request, current_etag, resource_label=f"SAR draft {draft_uuid}")
 
         if draft["status"] in ("PENDING_MLRO_REVIEW", "APPROVED", "FILED"):
             raise HTTPException(
@@ -896,21 +948,26 @@ async def update_sar_draft(
         new_xml = payload.xml_payload
         new_status = payload.status or draft["status"]
 
-        await conn.execute(
+        updated_ts = await conn.fetchval(
             """
             UPDATE sar_drafts
             SET narrative = COALESCE($1, narrative),
                 xml_payload = COALESCE($2, xml_payload),
                 status = $3,
                 updated_at = NOW()
-            WHERE id = $4 AND tenant_id = $5;
+            WHERE id = $4 AND tenant_id = $5
+            RETURNING updated_at;
             """,
             new_narrative, new_xml, new_status, draft_uuid, uuid.UUID(str(tenant_id))
         )
+        new_etag = build_entity_etag("sar-draft", draft_uuid, updated_ts or draft["created_at"], new_status)
+        if response is not None:
+            response.headers["ETag"] = new_etag
 
         return {
             "draft_id": str(draft_uuid),
             "status": new_status,
+            "etag": new_etag,
             "message": "SAR draft updated successfully."
         }
 

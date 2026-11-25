@@ -11,12 +11,13 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.audit import record_audit_event_async
+from services.http_cache import build_conditional_json_response
 from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class RiskAppetiteConfig(BaseModel):
 @router.get("")
 @router.get("/")
 async def get_risk_appetite_settings(
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
@@ -98,14 +100,14 @@ async def get_risk_appetite_settings(
             if len(_tenant_appetite_cache) >= 500:
                 _tenant_appetite_cache.clear()
             _tenant_appetite_cache[t_key] = result
-            return result
+            return build_conditional_json_response(request, result)
     except Exception as e:
         logger.warning(f"PostgreSQL risk_appetite read fallback to cache: {e}")
 
     if t_key in _tenant_appetite_cache:
-        return _tenant_appetite_cache[t_key]
+        return build_conditional_json_response(request, _tenant_appetite_cache[t_key])
 
-    return dict(_DEFAULT_APPETITE, tenant_id=t_key)
+    return build_conditional_json_response(request, dict(_DEFAULT_APPETITE, tenant_id=t_key))
 
 
 @router.put("")

@@ -432,13 +432,26 @@
       const hops = hopEl ? Number.parseInt(hopEl.value, 10) || 2 : 2;
 
       try {
-        let res = await fetch(`/api/v1/network/expand/${encodeURIComponent(entityId)}?hops=${hops}`, { credentials: 'include' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        let data = await res.json();
+        const expandUrl = `/api/v1/network/expand/${encodeURIComponent(entityId)}?hops=${hops}`;
+        let data = window.SentinelQuery
+          ? await window.SentinelQuery.fetchJson(['network', 'expand', entityId, hops], expandUrl, {
+              abortKey: 'network-expand',
+              staleTime: 20000,
+            })
+          : await fetch(expandUrl, { credentials: 'include' }).then((res) => {
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              return res.json();
+            });
         if ((!data.nodes || data.nodes.length === 0) && entityId === 'auto') {
-          res = await fetch(`/api/v1/network/expand/ACCT-0a2e9dcd?hops=${hops}`, { credentials: 'include' });
-          if (res.ok) {
-            data = await res.json();
+          const fallbackUrl = `/api/v1/network/expand/ACCT-0a2e9dcd?hops=${hops}`;
+          const fb = window.SentinelQuery
+            ? await window.SentinelQuery.fetchJson(['network', 'expand', 'ACCT-0a2e9dcd', hops], fallbackUrl, {
+                abortKey: 'network-expand',
+                staleTime: 20000,
+              }).catch(() => null)
+            : await fetch(fallbackUrl, { credentials: 'include' }).then((r) => (r.ok ? r.json() : null));
+          if (fb) {
+            data = fb;
             data.resolved_entity = 'ACCT-0a2e9dcd';
           }
         }
@@ -671,9 +684,14 @@
       if (!company) { showToast('Enter a company name first.'); return; }
       const esc = window.escapeHtml || ((v) => String(v ?? ''));
       try {
-        const res = await fetch(`/api/v1/network/ubo/tree/${encodeURIComponent(company)}`, { credentials: 'include' });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const uboUrl = `/api/v1/network/ubo/tree/${encodeURIComponent(company)}`;
+        const data = window.SentinelQuery
+          ? await window.SentinelQuery.fetchJson(['network', 'ubo', company], uboUrl, { abortKey: 'network-ubo', staleTime: 30000 })
+          : await fetch(uboUrl, { credentials: 'include' }).then(async (res) => {
+              const body = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+              return body;
+            });
         const ubos = data.ultimate_beneficial_owners || [];
         if (!ubos.length) {
           box.textContent = `No indirect ownership edges recorded for "${company}".`;
@@ -687,7 +705,8 @@
           </div>
         `).join('');
       } catch (err) {
-        box.textContent = err.message;
+        if (err && err.name === 'AbortError') return;
+        box.textContent = window.SentinelApi ? window.SentinelApi.formatError(err) : err.message;
       }
     }
 
@@ -697,9 +716,14 @@
       if (!acct) { showToast('Enter an account number first.'); return; }
       const esc = window.escapeHtml || ((v) => String(v ?? ''));
       try {
-        const res = await fetch(`/api/v1/network/mdm/links/${encodeURIComponent(acct)}`, { credentials: 'include' });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const mdmUrl = `/api/v1/network/mdm/links/${encodeURIComponent(acct)}`;
+        const data = window.SentinelQuery
+          ? await window.SentinelQuery.fetchJson(['network', 'mdm', acct], mdmUrl, { abortKey: 'network-mdm', staleTime: 30000 })
+          : await fetch(mdmUrl, { credentials: 'include' }).then(async (res) => {
+              const body = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+              return body;
+            });
         const links = data.links || [];
         if (!links.length) {
           box.textContent = `No hidden cross-entity MDM links found for ${acct}.`;
@@ -712,7 +736,8 @@
           </div>
         `).join('');
       } catch (err) {
-        box.textContent = err.message;
+        if (err && err.name === 'AbortError') return;
+        box.textContent = window.SentinelApi ? window.SentinelApi.formatError(err) : err.message;
       }
     }
 

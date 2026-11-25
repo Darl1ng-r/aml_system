@@ -98,7 +98,7 @@ async def test_claim_alert_already_claimed_by_other_officer_returns_409():
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
-            headers={"Authorization": f"Bearer {token_b}", "X-CSRF-Protection": "1"}
+            headers={"Authorization": f"Bearer {token_b}", "X-CSRF-Protection": "1", "Idempotency-Key": str(uuid.uuid4())}
         ) as client:
             resp = await client.post(f"/api/v1/alerts/{alert_id}/claim")
             assert resp.status_code == 409
@@ -131,7 +131,7 @@ async def test_claim_alert_concurrent_cas_collision_returns_409():
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
-            headers={"Authorization": f"Bearer {token}", "X-CSRF-Protection": "1"}
+            headers={"Authorization": f"Bearer {token}", "X-CSRF-Protection": "1", "Idempotency-Key": str(uuid.uuid4())}
         ) as client:
             resp = await client.post(f"/api/v1/alerts/{alert_id}/claim")
             assert resp.status_code == 409
@@ -165,7 +165,7 @@ async def test_claim_alert_successful_claim_and_idempotent_reclaim():
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
-            headers={"Authorization": f"Bearer {token}", "X-CSRF-Protection": "1"}
+            headers={"Authorization": f"Bearer {token}", "X-CSRF-Protection": "1", "Idempotency-Key": str(uuid.uuid4())}
         ) as client:
             resp = await client.post(f"/api/v1/alerts/{alert_id}/claim")
             assert resp.status_code == 200

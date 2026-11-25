@@ -1,35 +1,11 @@
 // Handle unhandled Promise rejections globally to prevent silent failures
 window.addEventListener('unhandledrejection', (event) => {
+    if (event.reason && event.reason.name === 'AbortError') return;
     console.error('Unhandled Promise Rejection:', event.reason);
 });
 
-// Ensure same-origin API calls include HttpOnly session cookies, Anti-CSRF, and timeout (guarded against double-patch — P2-05)
-if (!window.__AML_FETCH_PATCHED__) {
-    const _nativeFetch = window.fetch.bind(window);
-    window.fetch = function (url, options = {}) {
-        const urlStr = typeof url === 'string' ? url : (url?.url || '');
-        let sameOrigin = false;
-        try {
-            sameOrigin = new URL(urlStr, window.location.origin).origin === window.location.origin;
-        } catch (_) {
-            sameOrigin = false;
-        }
-        const merged = Object.assign({}, options || {});
-        if (!merged.signal && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-            merged.signal = AbortSignal.timeout(20000);
-        }
-        if (sameOrigin) {
-            merged.credentials = merged.credentials || 'include';
-            if (merged.headers instanceof Headers) {
-                if (!merged.headers.has('X-CSRF-Protection')) merged.headers.set('X-CSRF-Protection', '1');
-            } else {
-                merged.headers = Object.assign({ 'X-CSRF-Protection': '1' }, merged.headers || {});
-            }
-        }
-        return _nativeFetch(url, merged);
-    };
-    window.__AML_FETCH_PATCHED__ = true;
-}
+// Unified HTTP transport, CSRF, UUIDv4 Idempotency-Key, retry, and cross-tab 401 refresh
+// are provided centrally by static/api-client.js + static/sentinel-query.js (loaded in <head>).
 
 const BASE_URL = window.location.origin;
 let mockMode = false;
@@ -305,11 +281,10 @@ async function initAuth() {
     };
 
     try {
-        const res = await fetch(`${BASE_URL}/api/v1/auth/me`, {
-            headers: getAuthHeaders()
-        });
-        if (res.ok) {
-            const user = await res.json();
+        const user = window.SentinelQuery
+            ? await window.SentinelQuery.fetchJson(['auth', 'me'], `${BASE_URL}/api/v1/auth/me`, { staleTime: 60000 })
+            : await fetch(`${BASE_URL}/api/v1/auth/me`, { headers: getAuthHeaders() }).then((r) => (r.ok ? r.json() : null));
+        if (user) {
             localStorage.setItem('auth_session_active', 'true');
             localStorage.setItem('username', user.username);
             localStorage.setItem('role', user.role);
@@ -416,8 +391,12 @@ let _liveReloadDebounceTimer = null;
 function scheduleLiveRefresh() {
     if (_liveReloadDebounceTimer) clearTimeout(_liveReloadDebounceTimer);
     _liveReloadDebounceTimer = setTimeout(() => {
+        if (window.SentinelQuery) {
+            window.SentinelQuery.invalidateQueries(['alerts']);
+            window.SentinelQuery.invalidateQueries(['metrics']);
+        }
         void loadAlerts();
-        void loadDashboardAnalytics();
+        void loadDashboardAnalytics(true);
     }, 2500);
 }
 
@@ -584,13 +563,19 @@ function switchTab(tabId, btn) {
 }
 
 // ── Dynamic Dashboard Analytics & Chart.js ─────────────────────────────────────
-async function loadDashboardAnalytics() {
+async function loadDashboardAnalytics(force = false) {
     try {
-        const response = await fetch(`${BASE_URL}/api/v1/metrics/dashboard`, {
-            headers: getAuthHeaders()
-        });
-        if (!response.ok) throw new Error(`Dashboard metrics request failed with HTTP ${response.status}`);
-        const metrics = await response.json();
+        const metrics = window.SentinelQuery
+            ? await window.SentinelQuery.fetchJson(['metrics', 'dashboard'], `${BASE_URL}/api/v1/metrics/dashboard`, {
+                staleTime: 15000,
+                force: Boolean(force),
+                abortKey: 'dashboard-metrics',
+            })
+            : await fetch(`${BASE_URL}/api/v1/metrics/dashboard`, { headers: getAuthHeaders() }).then((r) => {
+                if (!r.ok) throw new Error(`Dashboard metrics request failed with HTTP ${r.status}`);
+                return r.json();
+            });
+        if (!metrics) return;
         if (mockMode) setMockMode(false);
 
         // 1. KPI Cards

@@ -1193,20 +1193,23 @@ async def issue_ws_ticket(
 
 @router.get("/me", summary="Get current authenticated user identity")
 async def get_me(
+    request: Request = None,
     current_user: dict = Depends(get_current_user),
     _rate_limit=Depends(RateLimiter(limit=120, window=60)),
 ):
     """
-    Returns the currently authenticated user session identity.
+    Returns the currently authenticated user session identity with ETag / 304 support.
     Resolves seamlessly via Authorization Bearer header or HttpOnly access_token cookie.
     """
-    return {
+    from services.http_cache import build_conditional_json_response
+    payload = {
         "id": current_user.get("id"),
         "username": current_user.get("username"),
         "role": current_user.get("role"),
         "email": current_user.get("email"),
         "tenant_id": current_user.get("tenant_id")
     }
+    return build_conditional_json_response(request, payload)
 
 
 @router.get("/check-username", summary="Debounced username availability check for registration (Disabled in production)")

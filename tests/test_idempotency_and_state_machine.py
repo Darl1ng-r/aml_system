@@ -166,7 +166,7 @@ async def test_case_close_already_closed_rejected():
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
-            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}"}
+            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())}
         ) as ac:
             resp = await ac.post(
                 f"/api/v1/cases/{case_id}/close",
@@ -211,7 +211,7 @@ async def test_alert_action_terminal_rejection():
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
-            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}"}
+            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())}
         ) as ac:
             resp = await ac.post(
                 f"/api/v1/alerts/{alert_id}/action",
@@ -243,7 +243,7 @@ async def test_alert_escalate_terminal_rejection():
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
-            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}"}
+            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())}
         ) as ac:
             resp = await ac.post(
                 f"/api/v1/alerts/{alert_id}/escalate",

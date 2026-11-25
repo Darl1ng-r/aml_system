@@ -154,15 +154,26 @@
             (m) => !q || m.title.toLowerCase().includes(q) || m.subtitle.toLowerCase().includes(q)
         );
         renderCmdkList(localMatches.slice(0, 8));
-        if (q.length < 2) return;
+        if (q.length < 2) {
+            if (window.SentinelQuery) window.SentinelQuery.cancelQueries('cmdk-search');
+            return;
+        }
 
         try {
-            const resp = await fetch(`/api/v1/search/global?q=${encodeURIComponent(q)}&limit=5`, { credentials: 'include' });
-            if (!resp.ok) return;
-            const data = await resp.json();
+            const url = `/api/v1/search/global?q=${encodeURIComponent(q)}&limit=5`;
+            const data = window.SentinelQuery
+                ? await window.SentinelQuery.fetchJson(['search', 'global', q], url, {
+                    abortKey: 'cmdk-search',
+                    staleTime: 15000,
+                })
+                : await fetch(url, { credentials: 'include' }).then((r) => (r.ok ? r.json() : null));
+            if (!data) return;
             const merged = [...(data.items || []), ...localMatches.slice(0, 4)];
             renderCmdkList(merged.slice(0, 14));
-        } catch (_) { /* keep static module results */ }
+        } catch (err) {
+            if (err && err.name === 'AbortError') return;
+            /* keep static module results */
+        }
     }
 
     function openCommandPalette() {
@@ -222,11 +233,15 @@
         }
     }
 
-    async function refreshNotifications() {
+    async function refreshNotifications(opts = {}) {
         try {
-            const resp = await fetch('/api/v1/notifications?limit=25', { credentials: 'include' });
-            if (!resp.ok) return;
-            const data = await resp.json();
+            const data = window.SentinelQuery
+                ? await window.SentinelQuery.fetchJson(['notifications', 'inbox'], '/api/v1/notifications?limit=25', {
+                    staleTime: 10000,
+                    force: Boolean(opts.force),
+                })
+                : await fetch('/api/v1/notifications?limit=25', { credentials: 'include' }).then((r) => (r.ok ? r.json() : null));
+            if (!data) return;
             const unread = Number(data.unread_count || 0);
             try { sessionStorage.setItem('sentinel_unread_notif_count', String(unread)); } catch (_) {}
             applyNotifBadgeCount(unread);
@@ -255,7 +270,36 @@
         body.querySelectorAll('.sentinel-notif-item').forEach((el) => {
             el.addEventListener('click', () => {
                 const nid = el.getAttribute('data-notif-id');
-                if (nid) {
+                if (!nid) return;
+                if (window.SentinelQuery) {
+                    window.SentinelQuery.mutate({
+                        optimisticKey: ['notifications', 'inbox'],
+                        optimisticUpdater: (prev) => {
+                            if (!prev || !Array.isArray(prev.items)) return prev;
+                            let decremented = false;
+                            const nextItems = prev.items.map((item) => {
+                                if (item.id === nid && !item.is_read) {
+                                    decremented = true;
+                                    return Object.assign({}, item, { is_read: true });
+                                }
+                                return item;
+                            });
+                            const nextUnread = Math.max(0, Number(prev.unread_count || 0) - (decremented ? 1 : 0));
+                            applyNotifBadgeCount(nextUnread);
+                            try { sessionStorage.setItem('sentinel_unread_notif_count', String(nextUnread)); } catch (_) {}
+                            return Object.assign({}, prev, { unread_count: nextUnread, items: nextItems });
+                        },
+                        mutationFn: () => window.SentinelApi.mutate(`/api/v1/notifications/${encodeURIComponent(nid)}/read`, { method: 'PATCH' }),
+                        onError: () => {
+                            const restored = window.SentinelQuery.getQueryData(['notifications', 'inbox']);
+                            if (restored) {
+                                applyNotifBadgeCount(restored.unread_count || 0);
+                                renderNotifPopover(restored.items || []);
+                            }
+                        },
+                        invalidateKeys: [['notifications']],
+                    }).catch(() => {});
+                } else {
                     fetch(`/api/v1/notifications/${encodeURIComponent(nid)}/read`, { method: 'PATCH', credentials: 'include' }).catch(() => {});
                 }
             });
@@ -340,15 +384,46 @@
             }
         });
         notifPopover.querySelector('#sentinel-notif-readall').addEventListener('click', async () => {
-            await fetch('/api/v1/notifications/read-all', { method: 'POST', credentials: 'include' }).catch(() => {});
-            refreshNotifications();
+            if (window.SentinelQuery && window.SentinelApi) {
+                try {
+                    await window.SentinelQuery.mutate({
+                        optimisticKey: ['notifications', 'inbox'],
+                        optimisticUpdater: (prev) => {
+                            const nextItems = prev && Array.isArray(prev.items)
+                                ? prev.items.map((it) => Object.assign({}, it, { is_read: true }))
+                                : [];
+                            applyNotifBadgeCount(0);
+                            try { sessionStorage.setItem('sentinel_unread_notif_count', '0'); } catch (_) {}
+                            renderNotifPopover(nextItems);
+                            return Object.assign({}, prev || {}, { unread_count: 0, items: nextItems });
+                        },
+                        mutationFn: () => window.SentinelApi.mutate('/api/v1/notifications/read-all', { method: 'POST' }),
+                        onError: () => {
+                            const restored = window.SentinelQuery.getQueryData(['notifications', 'inbox']);
+                            if (restored) {
+                                applyNotifBadgeCount(restored.unread_count || 0);
+                                renderNotifPopover(restored.items || []);
+                            }
+                        },
+                        invalidateKeys: [['notifications']],
+                    });
+                } catch (_) { /* rolled back */ }
+            } else {
+                await fetch('/api/v1/notifications/read-all', { method: 'POST', credentials: 'include' }).catch(() => {});
+            }
+            refreshNotifications({ force: true });
         });
         notifPopover.querySelector('#sentinel-notif-sweep').addEventListener('click', async () => {
             await fetch('/api/v1/notifications/check-sla', { method: 'POST', credentials: 'include' }).catch(() => {});
-            refreshNotifications();
+            refreshNotifications({ force: true });
         });
 
         refreshNotifications();
+        if (window.SentinelQuery) {
+            window.SentinelQuery.onInvalidate(['notifications'], () => {
+                if (!document.hidden) refreshNotifications();
+            });
+        }
         notifPollHandle = window.setInterval(() => {
             if (!document.hidden) refreshNotifications();
         }, 60000);
@@ -480,9 +555,10 @@
 
         async function loadProfileSession() {
             try {
-                const resp = await fetch('/api/v1/auth/me', { credentials: 'include' });
-                if (!resp.ok) return;
-                const me = await resp.json();
+                const me = window.SentinelQuery
+                    ? await window.SentinelQuery.fetchJson(['auth', 'me'], '/api/v1/auth/me', { staleTime: 60000 })
+                    : await fetch('/api/v1/auth/me', { credentials: 'include' }).then((r) => (r.ok ? r.json() : null));
+                if (!me) return;
                 const userEl = document.getElementById('sentinel-prof-user');
                 const roleEl = document.getElementById('sentinel-prof-role');
                 const tenantEl = document.getElementById('sentinel-prof-tenant');

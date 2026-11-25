@@ -19,9 +19,10 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import List, Any
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect, HTTPException
 from database.postgres import get_async_db_read_conn
 from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
+from services.http_cache import build_conditional_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,7 @@ from services.rate_limiter import RateLimiter, _check_local_rate_limit
 # ── Analytics API Endpoint ────────────────────────────────────────────────────
 @router.get("/api/v1/metrics/dashboard")
 async def get_dashboard_metrics(
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
@@ -279,7 +281,7 @@ async def get_dashboard_metrics(
             except Exception:
                 pass
 
-            return {
+            payload = {
                 "active_cases": active_cases or 0,
                 "critical_cases": critical_cases or 0,
                 "avg_resolution_hours": avg_res_hours,
@@ -291,6 +293,7 @@ async def get_dashboard_metrics(
                 "category_distribution": categories,
                 "analyst_leaderboard": analysts
             }
+            return build_conditional_json_response(request, payload)
     except Exception:
         logger.exception("Dashboard metrics query failed")
         raise HTTPException(status_code=500, detail="Failed to load dashboard analytics.")
@@ -460,13 +463,14 @@ async def _fetch_executive_analytics(conn: Any) -> tuple[list[dict], dict, list[
 
 @router.get("/api/v1/metrics/executive")
 async def get_executive_metrics(
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["ANALYST", "AUDITOR", "MLRO", "ADMIN", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     """
     Computes executive compliance KPIs, SLA breach trackers, SAR filing throughput,
     and institutional efficiency metrics for MLRO & Compliance Leadership.
-    Backed by a 30s tenant-scoped Redis cache to prevent heavy aggregate scan storms.
+    Backed by a 30s tenant-scoped Redis cache + ETag/304 conditional revalidation.
     """
     tenant_id = enforce_tenant_data_scope(current_user)
     cache_key = f"metrics:executive:{tenant_id}"
@@ -477,7 +481,7 @@ async def get_executive_metrics(
         if redis:
             cached = await redis.get(cache_key)
             if cached:
-                return json.loads(cached)
+                return build_conditional_json_response(request, json.loads(cached))
     except Exception:
         redis = None
 
@@ -502,7 +506,7 @@ async def get_executive_metrics(
                     await redis.set(cache_key, json.dumps(payload), ex=30)
                 except Exception:
                     pass
-            return payload
+            return build_conditional_json_response(request, payload)
     except Exception:
         logger.exception("Failed to calculate executive compliance metrics")
         raise HTTPException(status_code=500, detail="Failed to calculate executive compliance metrics.")

@@ -733,25 +733,44 @@
       `).join('');
     }
 
-    async function fetchAlerts() {
+    async function fetchAlerts(force = false) {
       try {
         if (!allAlerts.length) renderSkeletonTable();
-        const headers = { 'X-CSRF-Protection': '1' };
-        const res = await fetch('/api/v1/alerts?limit=100', { headers, credentials: 'include' });
-        if (!res.ok) throw new Error('Failed to load alerts');
-        const data = await res.json();
+        const data = window.SentinelQuery
+          ? await window.SentinelQuery.fetchJson(['alerts', 'triage'], '/api/v1/alerts?limit=100&fields=summary', {
+              abortKey: 'triage-list',
+              staleTime: 5000,
+              force: Boolean(force),
+            })
+          : await fetch('/api/v1/alerts?limit=100&fields=summary', {
+              headers: { 'X-CSRF-Protection': '1' },
+              credentials: 'include',
+            }).then((res) => {
+              if (!res.ok) throw new Error('Failed to load alerts');
+              return res.json();
+            });
         const rawAlerts = Array.isArray(data) ? data : (data.alerts || []);
         allAlerts = rawAlerts.map(a => ({
           ...a,
           id: a.id || a.alert_id,
           alert_id: a.alert_id || a.id
         }));
+        if (window.SentinelQuery) {
+          window.SentinelQuery.setQueryData(['alerts', 'triage'], allAlerts);
+        }
         updateKPIs();
         renderAlertsTable();
       } catch (err) {
+        if (err && err.name === 'AbortError') return;
         console.error('Fetch alerts error', err);
-        showToast('Error loading alerts: ' + err.message);
+        showToast('Error loading alerts: ' + (window.SentinelApi ? window.SentinelApi.formatError(err) : err.message));
       }
+    }
+
+    if (window.SentinelQuery) {
+      window.SentinelQuery.onInvalidate(['alerts'], () => {
+        if (!document.hidden) void fetchAlerts(true);
+      });
     }
 
     function updateKPIs() {
@@ -803,6 +822,7 @@
         return;
       }
 
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
       tbody.innerHTML = filtered.map(a => {
         const tx = a.transaction || {};
         const ownerName = a.owner_name || tx.sender_name || 'Account Holder';
@@ -812,7 +832,7 @@
           ? a.assignee
           : (a.assigned_officer_id ? 'Assigned' : null);
 
-        const sevClass = (a.threat_level || 'LOW').toLowerCase();
+        const sevClass = esc((a.threat_level || 'LOW').toLowerCase());
         const score = Math.round(Number(a.ai_risk_score || 0) * 100);
         let scoreClass = 'low';
         if (score > 80) {
@@ -824,22 +844,24 @@
         const dateStr = a.created_at ? new Date(a.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--';
 
         const isChecked = selectedAlertIds.has(a.id);
+        const safeId = esc(a.id);
+        const shortId = esc(String(a.id || '').substring(0, 8));
         return `
-          <tr class="${isSelected ? 'selected' : ''}" tabindex="0" onclick="selectAlert('${a.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectAlert('${a.id}');}">
-            <td><input type="checkbox" class="triage-row-cb" data-alert-id="${a.id}" aria-label="Select alert #${a.id.substring(0,8)}" ${isChecked ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleAlertSelection('${a.id}', this.checked)"></td>
-            <td style="font-family:var(--font-data); font-weight:600;">#${a.id.substring(0,8)}</td>
-            <td><span class="rule-tag">${a.rule_name || 'MONITORING_HIT'}</span></td>
+          <tr class="${isSelected ? 'selected' : ''}" tabindex="0" onclick="selectAlert('${safeId}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectAlert('${safeId}');}">
+            <td><input type="checkbox" class="triage-row-cb" data-alert-id="${safeId}" aria-label="Select alert #${shortId}" ${isChecked ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleAlertSelection('${safeId}', this.checked)"></td>
+            <td style="font-family:var(--font-data); font-weight:600;">#${shortId}</td>
+            <td><span class="rule-tag">${esc(a.rule_name || 'MONITORING_HIT')}</span></td>
             <td>
-              <div style="font-weight:600;">${ownerName}</div>
-              <div style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${subjectAcct}</div>
+              <div style="font-weight:600;">${esc(ownerName)}</div>
+              <div style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${esc(subjectAcct)}</div>
             </td>
             <td style="font-family:var(--font-data); font-weight:600;">$${Number(amountVal).toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
-            <td><span class="score-badge ${sevClass}">● ${a.threat_level || 'LOW'}</span></td>
+            <td><span class="score-badge ${sevClass}">● ${esc(a.threat_level || 'LOW')}</span></td>
             <td><span class="score-badge ${scoreClass}">${score}%</span></td>
-            <td><span style="font-size:11px; font-weight:600; text-transform:uppercase;">${a.status || 'OPEN'}</span></td>
-            <td><span style="font-size:12px; color:var(--ink-soft);">${assigneeLabel ? assigneeLabel : '<span style="color:#D97706;">Unclaimed</span>'}</span></td>
-            <td id="lock-col-${a.id}">--</td>
-            <td style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${dateStr}</td>
+            <td><span style="font-size:11px; font-weight:600; text-transform:uppercase;">${esc(a.status || 'OPEN')}</span></td>
+            <td><span style="font-size:12px; color:var(--ink-soft);">${assigneeLabel ? esc(assigneeLabel) : '<span style="color:#D97706;">Unclaimed</span>'}</span></td>
+            <td id="lock-col-${safeId}">--</td>
+            <td style="font-size:11px; color:var(--ink-soft); font-family:var(--font-data);">${esc(dateStr)}</td>
           </tr>
         `;
       }).join('');
@@ -896,18 +918,29 @@
         justification = reason.trim();
       }
       try {
-        const res = await fetch('/api/v1/alerts/bulk-action', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ alert_ids: ids, action, justification })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const data = window.SentinelQuery && window.SentinelApi
+          ? await window.SentinelQuery.mutate({
+              mutationFn: () => window.SentinelApi.mutate('/api/v1/alerts/bulk-action', {
+                method: 'POST',
+                body: { alert_ids: ids, action, justification }
+              }),
+              invalidateKeys: [['alerts'], ['metrics']],
+            })
+          : await fetch('/api/v1/alerts/bulk-action', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ alert_ids: ids, action, justification })
+            }).then(async (res) => {
+              const body = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+              return body;
+            });
         showToast(data.message || `Bulk action ${action} completed.`);
         clearBulkSelection();
-        await fetchAlerts();
+        await fetchAlerts(true);
       } catch (err) {
-        await window.SentinelDialog.alert(err.message || 'Bulk action failed.', { title: 'Bulk Triage Error' });
+        const msg = window.SentinelApi ? window.SentinelApi.formatError(err) : (err.message || 'Bulk action failed.');
+        await window.SentinelDialog.alert(msg, { title: 'Bulk Triage Error' });
       }
     }
 
@@ -1042,7 +1075,10 @@
       }, 200);
     }
 
+    let activeSelectSeq = 0;
+
     async function selectAlert(alertId) {
+      const seq = ++activeSelectSeq;
       // Release previous alert lock before switching
       if (selectedAlert && selectedAlert.id !== alertId && currentLockToken) {
         const prevId = selectedAlert.id;
@@ -1051,6 +1087,7 @@
       }
 
       selectedAlert = allAlerts.find(a => a.id === alertId);
+      if (!selectedAlert) return;
       renderAlertsTable();
 
       // Clear existing lock heartbeat
@@ -1059,29 +1096,64 @@
         lockHeartbeatInterval = null;
       }
 
-      // Try acquiring pessimistic lock lease on this alert
-      let lockState = null;
-      try {
-        const lockRes = await fetch(`/api/v1/locks/ALERT/${alertId}`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ttl_seconds: 300})
-        });
-        if (lockRes.status === 409) {
-          const errData = await lockRes.json();
-          lockState = { locked: true, other: true, info: errData.detail ? errData.detail.lock_info : null };
-        } else if (lockRes.ok) {
-          const data = await lockRes.json();
-          lockState = { locked: true, other: false, lock: data.lock };
-          currentLockToken = data.lock.lock_token;
-          // Start 60s heartbeat
-          lockHeartbeatInterval = setInterval(refreshLockHeartbeat, 60000);
-        }
-      } catch (e) {
-        console.warn('Lock lease acquisition error:', e);
+      // Render immediate summary snapshot while workbench bundle + lock hydrate in parallel
+      renderDrawer(selectedAlert, null, null);
+
+      const [lockResult, workbenchData] = await Promise.all([
+        (async () => {
+          try {
+            const lockRes = await fetch(`/api/v1/locks/ALERT/${encodeURIComponent(alertId)}`, {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ttl_seconds: 300})
+            });
+            if (lockRes.status === 409) {
+              const errData = await lockRes.json().catch(() => ({}));
+              return { locked: true, other: true, info: errData.detail ? errData.detail.lock_info : null };
+            }
+            if (lockRes.ok) {
+              const data = await lockRes.json();
+              return { locked: true, other: false, lock: data.lock };
+            }
+          } catch (e) {
+            console.warn('Lock lease acquisition error:', e);
+          }
+          return null;
+        })(),
+        (async () => {
+          if (!window.SentinelQuery) return null;
+          try {
+            return await window.SentinelQuery.fetchJson(
+              ['alerts', 'workbench', alertId],
+              `/api/v1/alerts/${encodeURIComponent(alertId)}/workbench`,
+              { abortKey: 'triage-drawer', staleTime: 10000 }
+            );
+          } catch (e) {
+            if (e && e.name === 'AbortError') return null;
+            return null;
+          }
+        })(),
+      ]);
+
+      // Discard stale completion if user already switched rows
+      if (seq !== activeSelectSeq || !selectedAlert || selectedAlert.id !== alertId) {
+        return;
       }
 
-      renderDrawer(selectedAlert, lockState);
+      if (lockResult && !lockResult.other && lockResult.lock) {
+        currentLockToken = lockResult.lock.lock_token;
+        lockHeartbeatInterval = setInterval(refreshLockHeartbeat, 60000);
+      }
+
+      if (workbenchData && workbenchData.alert) {
+        selectedAlert = Object.assign({}, selectedAlert, {
+          explainability: workbenchData.alert.explainability || selectedAlert.explainability,
+          escalations: workbenchData.escalations || [],
+          evidence_count: workbenchData.evidence_count || 0,
+        });
+      }
+
+      renderDrawer(selectedAlert, lockResult, workbenchData);
     }
 
     async function refreshLockHeartbeat() {
@@ -1097,10 +1169,11 @@
       }
     }
 
-    function renderDrawer(alert, lockState) {
+    function renderDrawer(alert, lockState, workbenchData) {
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
       const drawerEl = document.querySelector('.drawer');
       if (drawerEl) drawerEl.classList.add('open');
-      document.getElementById('drawer-alert-id').innerText = `ALERT #${alert.id.substring(0, 8)}`;
+      document.getElementById('drawer-alert-id').innerText = `ALERT #${String(alert.id || '').substring(0, 8)}`;
       document.getElementById('drawer-alert-crumb').innerText = `${alert.rule_name || 'Monitoring Hit'} · ${alert.status}`;
       const actionsPanel = document.getElementById('drawer-actions-panel');
       actionsPanel.style.display = 'flex';
@@ -1117,7 +1190,7 @@
         lockBannerHtml = `
           <div class="lock-banner locked-by-other">
             <i data-lucide="lock" style="width:16px; height:16px;"></i>
-            <span><strong>Currently being reviewed by ${lockedBy}</strong> — viewing in read-only mode.</span>
+            <span><strong>Currently being reviewed by ${esc(lockedBy)}</strong> — viewing in read-only mode.</span>
           </div>
         `;
       }
@@ -1128,6 +1201,16 @@
       const drawerReceiver = alert.counterparty_account_id || tx.receiver || 'N/A';
       const score = Math.round(Number(alert.ai_risk_score || 0) * 100);
       const explanation = alert.explainability_payload || alert.explainability || 'Triggered pattern matched regulatory compliance thresholds.';
+      const explanationText = typeof explanation === 'string' ? explanation : JSON.stringify(explanation, null, 2);
+      const escItems = (workbenchData && Array.isArray(workbenchData.escalations)) ? workbenchData.escalations : (alert.escalations || []);
+      const escHtml = escItems.length
+        ? escItems.map(e => `
+            <div style="padding:6px 0; border-bottom:1px solid #ECEBE7;">
+              <strong>Tier ${esc(e.from_tier)} → Tier ${esc(e.to_tier)}</strong> by ${esc(e.escalated_by_name)}<br>
+              <span style="font-size:11px;">${esc(e.escalation_reason)}</span>
+            </div>
+          `).join('')
+        : `Status: <strong>${esc(alert.status)}</strong>`;
 
       document.getElementById('drawer-content-area').innerHTML = `
         ${lockBannerHtml}
@@ -1144,33 +1227,31 @@
             </div>
             <div>
               <div class="info-label">Threat Level</div>
-              <div class="info-value" style="color:var(--risk-high);">${alert.threat_level || 'LOW'}</div>
+              <div class="info-value" style="color:var(--risk-high);">${esc(alert.threat_level || 'LOW')}</div>
             </div>
             <div>
               <div class="info-label">Account</div>
-              <div class="info-value">${drawerSender}</div>
+              <div class="info-value">${esc(drawerSender)}</div>
             </div>
             <div>
               <div class="info-label">Counterparty</div>
-              <div class="info-value">${drawerReceiver}</div>
+              <div class="info-value">${esc(drawerReceiver)}</div>
             </div>
           </div>
         </div>
 
         <div class="drawer-section">
           <div class="section-title">AI & Rule Explainability</div>
-          <div style="font-size:12px; line-height:1.5; color:var(--ink);">
-            ${typeof explanation === 'string' ? explanation : JSON.stringify(explanation, null, 2)}
-          </div>
+          <div style="font-size:12px; line-height:1.5; color:var(--ink); white-space:pre-wrap;">${esc(explanationText)}</div>
         </div>
 
         <div class="drawer-section">
           <div class="section-title">
             <span>Escalation History</span>
-            <button onclick="viewEscalationHistory('${alert.id}')" style="background:none; border:none; color:var(--brand); cursor:pointer; font-size:11px;">View Log</button>
+            <button onclick="viewEscalationHistory('${esc(alert.id)}')" style="background:none; border:none; color:var(--brand); cursor:pointer; font-size:11px;">Refresh Log</button>
           </div>
           <div id="drawer-escalation-list" style="font-size:12px; color:var(--ink-soft);">
-            Status: <strong>${alert.status}</strong>
+            ${escHtml}
           </div>
         </div>
       `;
@@ -1178,25 +1259,53 @@
       if (window.lucide) lucide.createIcons();
     }
 
+    function applyOptimisticAlertPatch(alertId, patchFields) {
+      const snapshot = allAlerts.map(a => Object.assign({}, a));
+      allAlerts = allAlerts.map(a => (a.id === alertId ? Object.assign({}, a, patchFields) : a));
+      if (selectedAlert && selectedAlert.id === alertId) {
+        selectedAlert = Object.assign({}, selectedAlert, patchFields);
+      }
+      updateKPIs();
+      renderAlertsTable();
+      return snapshot;
+    }
+
+    function restoreAlertSnapshot(snapshot, alertId) {
+      if (!snapshot) return;
+      allAlerts = snapshot;
+      if (selectedAlert && selectedAlert.id === alertId) {
+        selectedAlert = allAlerts.find(a => a.id === alertId) || selectedAlert;
+      }
+      updateKPIs();
+      renderAlertsTable();
+    }
+
     async function claimSelectedAlert() {
       if (!selectedAlert) return;
+      const targetId = selectedAlert.id;
+      const myName = localStorage.getItem('username') || 'Assigned';
+      let snapshot = null;
       try {
-        const res = await fetch(`/api/v1/alerts/${selectedAlert.id}/claim`, {method: 'POST'});
-        if (res.ok) {
-          window.SentinelDialog.toast('Alert claimed successfully! Status changed to IN_REVIEW.', 'success');
-          await fetchAlerts();
-        } else {
-          const err = await res.json();
-          await window.SentinelDialog.alert(`Could not claim: ${err.detail || 'Error'}`, { title: 'Claim Failed' });
-        }
+        await window.SentinelQuery.mutate({
+          onMutate: () => {
+            snapshot = applyOptimisticAlertPatch(targetId, { status: 'IN_REVIEW', assignee: myName });
+          },
+          mutationFn: () => window.SentinelApi.mutate(`/api/v1/alerts/${encodeURIComponent(targetId)}/claim`, { method: 'POST' }),
+          onError: () => restoreAlertSnapshot(snapshot, targetId),
+          invalidateKeys: [['alerts'], ['metrics']],
+        });
+        window.SentinelDialog.toast('Alert claimed successfully! Status changed to IN_REVIEW.', 'success');
+        await fetchAlerts(true);
       } catch (e) {
-        console.error('Network error claiming alert:', e);
-        await window.SentinelDialog.alert('Network error claiming alert: ' + (e.message || e), { title: 'Network Error' });
+        console.error('Error claiming alert:', e);
+        const msg = window.SentinelApi ? window.SentinelApi.formatError(e) : (e.message || e);
+        await window.SentinelDialog.alert(`Could not claim: ${msg}`, { title: 'Claim Failed' });
       }
     }
 
     async function dismissFalsePositive() {
       if (!selectedAlert) return;
+      const targetId = selectedAlert.id;
       const justification = await window.SentinelDialog.prompt(
         'Enter mandatory compliance justification for False Positive dismissal:',
         '',
@@ -1204,31 +1313,36 @@
       );
       if (!justification) return;
 
+      let snapshot = null;
       try {
-        const res = await fetch(`/api/v1/alerts/${selectedAlert.id}/action`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            action: 'CLOSE_FALSE_POSITIVE',
-            justification: justification,
-            sar_xml_generate: false
-          })
+        await window.SentinelQuery.mutate({
+          onMutate: () => {
+            snapshot = applyOptimisticAlertPatch(targetId, { status: 'CLOSED_FALSE_POSITIVE' });
+          },
+          mutationFn: () => window.SentinelApi.mutate(`/api/v1/alerts/${encodeURIComponent(targetId)}/action`, {
+            method: 'POST',
+            body: {
+              action: 'CLOSE_FALSE_POSITIVE',
+              justification: justification,
+              sar_xml_generate: false
+            }
+          }),
+          onError: () => restoreAlertSnapshot(snapshot, targetId),
+          invalidateKeys: [['alerts'], ['metrics']],
         });
-        if (res.ok) {
-          window.SentinelDialog.toast('Alert dismissed as False Positive.', 'success');
-          await fetchAlerts();
-          closeDrawer();
-        } else {
-          await window.SentinelDialog.alert('Error dismissing alert', { title: 'Dismissal Error' });
-        }
+        window.SentinelDialog.toast('Alert dismissed as False Positive.', 'success');
+        closeDrawer();
+        await fetchAlerts(true);
       } catch (e) {
         console.error('Failed to dismiss alert:', e);
-        await window.SentinelDialog.alert('Failed to dismiss alert: ' + (e.message || e), { title: 'Dismissal Error' });
+        const msg = window.SentinelApi ? window.SentinelApi.formatError(e) : (e.message || e);
+        await window.SentinelDialog.alert('Failed to dismiss alert: ' + msg, { title: 'Dismissal Error' });
       }
     }
 
     async function escalateToL2() {
       if (!selectedAlert) return;
+      const targetId = selectedAlert.id;
       const reason = await window.SentinelDialog.prompt(
         'Enter rationale for escalating to Tier 2 (L2_INVESTIGATOR):',
         '',
@@ -1236,41 +1350,53 @@
       );
       if (!reason) return;
 
+      let snapshot = null;
       try {
-        const res = await fetch(`/api/v1/alerts/${selectedAlert.id}/escalate`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({justification: reason})
+        await window.SentinelQuery.mutate({
+          onMutate: () => {
+            snapshot = applyOptimisticAlertPatch(targetId, { status: 'ESCALATED' });
+          },
+          mutationFn: () => window.SentinelApi.mutate(`/api/v1/alerts/${encodeURIComponent(targetId)}/escalate`, {
+            method: 'POST',
+            body: { justification: reason }
+          }),
+          onError: () => restoreAlertSnapshot(snapshot, targetId),
+          invalidateKeys: [['alerts'], ['metrics']],
         });
-        if (res.ok) {
-          window.SentinelDialog.toast('Alert escalated to Tier 2 with audit trail.', 'success');
-          await fetchAlerts();
-          selectAlert(selectedAlert.id);
-        } else {
-          await window.SentinelDialog.alert('Failed to escalate alert.', { title: 'Escalation Failed' });
-        }
+        window.SentinelDialog.toast('Alert escalated to Tier 2 with audit trail.', 'success');
+        await fetchAlerts(true);
+        selectAlert(targetId);
       } catch (e) {
         console.error('Escalation failed:', e);
-        await window.SentinelDialog.alert('Escalation failed: ' + (e.message || e), { title: 'Escalation Error' });
+        const msg = window.SentinelApi ? window.SentinelApi.formatError(e) : (e.message || e);
+        await window.SentinelDialog.alert('Failed to escalate alert: ' + msg, { title: 'Escalation Error' });
       }
     }
 
     async function viewEscalationHistory(alertId) {
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
       try {
-        const res = await fetch(`/api/v1/alerts/${alertId}/escalations`);
-        const data = await res.json();
+        const data = window.SentinelQuery
+          ? await window.SentinelQuery.fetchJson(
+              ['alerts', 'escalations', alertId],
+              `/api/v1/alerts/${encodeURIComponent(alertId)}/escalations`,
+              { abortKey: 'triage-escalations', force: true }
+            )
+          : await fetch(`/api/v1/alerts/${encodeURIComponent(alertId)}/escalations`).then(r => r.json());
         const listDiv = document.getElementById('drawer-escalation-list');
-        if (data.length === 0) {
+        if (!listDiv) return;
+        if (!Array.isArray(data) || data.length === 0) {
           listDiv.innerHTML = '<em>No prior escalations recorded for this alert.</em>';
         } else {
           listDiv.innerHTML = data.map(e => `
             <div style="padding:6px 0; border-bottom:1px solid #ECEBE7;">
-              <strong>Tier ${e.from_tier} → Tier ${e.to_tier}</strong> by ${e.escalated_by_name}<br>
-              <span style="font-size:11px;">${e.escalation_reason}</span>
+              <strong>Tier ${esc(e.from_tier)} → Tier ${esc(e.to_tier)}</strong> by ${esc(e.escalated_by_name)}<br>
+              <span style="font-size:11px;">${esc(e.escalation_reason)}</span>
             </div>
           `).join('');
         }
       } catch (e) {
+        if (e && e.name === 'AbortError') return;
         console.error('Failed to load escalations', e);
       }
     }
@@ -1347,9 +1473,15 @@
             seenWsEvents.add(dedupKey);
             if (seenWsEvents.size > 500) seenWsEvents.clear();
           }
-          if (msg.event === 'NEW_ALERT' || msg.event === 'ALERT_CREATED' || msg.event === 'ALERT_ESCALATED' || msg.event === 'ALERT_RESOLVED') {
+          if (msg.event === 'NEW_ALERT' || msg.event === 'ALERT_CREATED' || msg.event === 'ALERT_ESCALATED' || msg.event === 'ALERT_RESOLVED' || msg.event === 'ALERT_ASSIGNED') {
             clearTimeout(wsRefreshTimer);
-            wsRefreshTimer = setTimeout(() => fetchAlerts(), 350);
+            wsRefreshTimer = setTimeout(() => {
+              if (window.SentinelQuery) {
+                window.SentinelQuery.invalidateQueries(['alerts'], { broadcast: false });
+              } else {
+                fetchAlerts(true);
+              }
+            }, 350);
           }
         } catch (e) {
           console.debug('Ignoring non-JSON or invalid WebSocket payload:', e);

@@ -1028,6 +1028,7 @@ async def test_authz12_cases_and_auditor_rooms_reject_foreign_ids():
         with patch("routers.cases.get_async_db_conn", return_value=ctx):
             r_case = await ac.post(
                 "/api/v1/cases",
+                headers={"Idempotency-Key": str(uuid.uuid4())},
                 json={"title": "Foreign Alert Injection", "alert_ids": [str(uuid.uuid4())]},
             )
             assert r_case.status_code == 404

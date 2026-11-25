@@ -194,7 +194,7 @@ async def test_alert_claim_and_escalate_workflow(l1_analyst_token):
             # 1. Claim alert
             res_claim = await client.post(
                 f"/api/v1/alerts/{alert_id}/claim",
-                headers={"Authorization": f"Bearer {l1_analyst_token}"}
+                headers={"Authorization": f"Bearer {l1_analyst_token}", "Idempotency-Key": str(uuid.uuid4())}
             )
             assert res_claim.status_code == 200
             assert res_claim.json()["status"] == "CLAIMED"
@@ -203,7 +203,7 @@ async def test_alert_claim_and_escalate_workflow(l1_analyst_token):
             res_esc = await client.post(
                 f"/api/v1/alerts/{alert_id}/escalate",
                 json={"justification": "Smurfing pattern confirmed"},
-                headers={"Authorization": f"Bearer {l1_analyst_token}"}
+                headers={"Authorization": f"Bearer {l1_analyst_token}", "Idempotency-Key": str(uuid.uuid4())}
             )
             assert res_esc.status_code == 200
             assert res_esc.json()["status"] == "ESCALATED"

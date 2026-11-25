@@ -381,9 +381,20 @@ app.add_middleware(
         "X-Requested-With",
         "Idempotency-Key",
         "X-Idempotency-Key",
+        "If-Match",
+        "If-None-Match",
         "X-Client-Mode",
         "X-API-Key",
         "Accept",
+    ],
+    expose_headers=[
+        "ETag",
+        "Idempotency-Replayed",
+        "X-Correlation-ID",
+        "X-RateLimit-Limit",
+        "X-RateLimit-Remaining",
+        "X-RateLimit-Reset",
+        "Retry-After",
     ],
 )
 
@@ -591,7 +602,7 @@ def read_root(request: Request):
 def read_landing():
     return FileResponse("static/landing.html")
 
-SENTINEL_ASSET_VERSION = "20261124-u2"
+SENTINEL_ASSET_VERSION = "20261125-cp1"
 _TOPBAR_PARTIAL_PATH = "static/partials/topbar.html"
 _WORKSPACE_HTML_CACHE: dict[tuple, tuple[str, str]] = {}
 
@@ -600,6 +611,7 @@ def _build_head_assets_snippet() -> str:
     return (
         f'<link rel="stylesheet" href="/static/style.css?v={SENTINEL_ASSET_VERSION}">\n'
         f'  <script src="/static/api-client.js?v={SENTINEL_ASSET_VERSION}"></script>\n'
+        f'  <script src="/static/sentinel-query.js?v={SENTINEL_ASSET_VERSION}"></script>\n'
         f'  <script src="/static/sentinel-shell.js?v={SENTINEL_ASSET_VERSION}" defer></script>'
     )
 

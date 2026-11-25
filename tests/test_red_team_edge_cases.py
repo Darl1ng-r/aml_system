@@ -229,7 +229,11 @@ async def test_concurrent_sar_review_optimistic_concurrency():
     with patch("routers.fincen.get_async_db_conn", return_value=mock_ctx):
 
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}"}) as ac:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())},
+        ) as ac:
             resp = await ac.post(
                 f"/api/v1/fincen/sar/drafts/{draft_id}/review",
                 json={"action": "APPROVE"}
@@ -259,7 +263,11 @@ async def test_case_fsm_blocks_closing_already_closed_case():
     with patch("routers.cases.get_async_db_conn", return_value=mock_ctx):
 
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}"}) as ac:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())},
+        ) as ac:
             resp = await ac.post(
                 f"/api/v1/cases/{case_id}/close",
                 json={

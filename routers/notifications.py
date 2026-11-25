@@ -9,10 +9,11 @@ import logging
 import uuid
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 from services.auth import RoleChecker, enforce_tenant_data_scope
+from services.http_cache import build_conditional_json_response
 from services.notifications import run_sla_escalation_sweep
 from services.rate_limiter import RateLimiter
 
@@ -23,13 +24,14 @@ router = APIRouter(prefix="/api/v1/notifications", tags=["Notifications & SLA Es
 
 @router.get("")
 async def list_notifications(
+    request: Request = None,
     unread_only: bool = Query(default=False),
     limit: int = Query(default=30, ge=1, le=100),
     current_user: dict = Depends(
         RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR", "SUPER_ADMIN"])
     ),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
-) -> Dict[str, Any]:
+) -> Any:
     """Returns tenant-scoped in-app notifications visible to the current user or their role."""
     tenant_id = enforce_tenant_data_scope(current_user)
     user_role = str(current_user.get("role") or "L1_ANALYST").upper()
@@ -70,7 +72,7 @@ async def list_notifications(
             user_role,
         )
 
-    return {
+    payload = {
         "unread_count": int(unread_count or 0),
         "items": [
             {
@@ -88,6 +90,7 @@ async def list_notifications(
             for r in (rows or [])
         ],
     }
+    return build_conditional_json_response(request, payload)
 
 
 @router.patch("/{notification_id}/read")

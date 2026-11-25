@@ -10,11 +10,15 @@ Uses Redis atomic key reservation (`SET NX EX`) to:
 3. Detect and reject concurrent duplicate in-flight requests (HTTP 409 Conflict).
 """
 
+import hashlib
 import json
 import logging
 import asyncio
-from typing import Optional, Tuple, Any, Dict
+import re
+from typing import Optional, Tuple, Any, Dict, Callable, Awaitable
 from fastapi import Request, HTTPException, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from database.redis_db import get_async_redis_client
 
 logger = logging.getLogger(__name__)
@@ -176,6 +180,9 @@ async def clear_idempotency_key(
         logger.warning(f"Failed to clear idempotency key {key}: {e}")
 
 
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
+
+
 async def extract_idempotency_key(request: Optional[Request] = None, body_key: Optional[str] = None) -> Optional[str]:
     """Extracts idempotency key from headers (Idempotency-Key or X-Idempotency-Key) or body."""
     await asyncio.sleep(0)
@@ -187,3 +194,105 @@ async def extract_idempotency_key(request: Optional[Request] = None, body_key: O
     if body_key and body_key.strip():
         return body_key.strip()
     return None
+
+
+def _hash_idempotent_body(body: Any) -> str:
+    encoded = jsonable_encoder(body) if body is not None else {}
+    canonical = json.dumps(encoded, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+async def run_idempotent_operation(
+    *,
+    request: Optional[Request],
+    tenant_id: Optional[str],
+    scope: str,
+    body: Any,
+    handler: Callable[[], Awaitable[Any]],
+    success_status_code: int = status.HTTP_200_OK,
+    required: bool = True,
+    ttl_seconds: int = DEFAULT_IDEMPOTENCY_TTL_SECONDS,
+) -> Any:
+    """
+    Executes a state-mutating compliance operation under Redis-backed idempotency protection.
+      - When `request` is present and `required=True`, enforces a valid `Idempotency-Key` header
+        (HTTP 400 Bad Request if missing or malformed).
+      - Replays cached completed responses with `Idempotency-Replayed: true`.
+      - Returns HTTP 409 Conflict for concurrent duplicate in-flight keys and HTTP 422 on payload mismatch.
+      - Atomically clears in-flight locks on error so callers can safely retry.
+    """
+    if request is None:
+        return await handler()
+
+    raw_key = await extract_idempotency_key(request)
+    if not raw_key:
+        if required:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing required 'Idempotency-Key' header for regulatory mutation.",
+            )
+        return await handler()
+
+    if not _IDEMPOTENCY_KEY_RE.match(raw_key):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid 'Idempotency-Key' header format (expected 8-128 URL-safe characters or UUIDv4).",
+        )
+
+    tenant_str = str(tenant_id) if tenant_id else None
+    scoped_key = f"{scope}:{raw_key}"
+    request_hash = _hash_idempotent_body(body)
+
+    is_cached, cached = await check_idempotency(
+        scoped_key,
+        tenant_id=tenant_str,
+        request_hash=request_hash,
+        ttl_seconds=ttl_seconds,
+    )
+    if is_cached and cached is not None:
+        return JSONResponse(
+            content=cached.get("body"),
+            status_code=int(cached.get("status_code", success_status_code)),
+            headers={
+                "Idempotency-Key": raw_key,
+                "Idempotency-Replayed": "true",
+            },
+        )
+
+    try:
+        result = await handler()
+    except Exception:
+        await clear_idempotency_key(scoped_key, tenant_id=tenant_str)
+        raise
+
+    if isinstance(result, JSONResponse):
+        try:
+            parsed_body = json.loads(result.body.decode("utf-8"))
+        except Exception:
+            parsed_body = {}
+        final_status = result.status_code
+        await save_idempotency_result(
+            scoped_key,
+            final_status,
+            parsed_body,
+            tenant_id=tenant_str,
+            request_hash=request_hash,
+            ttl_seconds=ttl_seconds,
+        )
+        result.headers["Idempotency-Key"] = raw_key
+        return result
+
+    encoded_body = jsonable_encoder(result)
+    await save_idempotency_result(
+        scoped_key,
+        success_status_code,
+        encoded_body,
+        tenant_id=tenant_str,
+        request_hash=request_hash,
+        ttl_seconds=ttl_seconds,
+    )
+    return JSONResponse(
+        content=encoded_body,
+        status_code=success_status_code,
+        headers={"Idempotency-Key": raw_key},
+    )

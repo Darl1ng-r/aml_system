@@ -455,7 +455,8 @@ def test_p2_05_p2_06_p3_04_frontend_timeouts_and_local_lucide():
     landing_html = (ROOT / "static" / "landing.html").read_text(encoding="utf-8")
 
     assert "AbortSignal.timeout" in api_js
-    assert "if (!window.__AML_FETCH_PATCHED__)" in app_js
+    assert "if (!window.__AML_FETCH_PATCHED__)" in api_js
+    assert "window.fetch = function" not in app_js
     assert "Date.now() % 1000" not in app_js
     assert "ev.code === 1008" in app_js
     assert "triageWsReconnectTimer" in triage_html

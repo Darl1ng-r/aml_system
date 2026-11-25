@@ -352,17 +352,48 @@
       await fetchRules();
     });
 
-    async function fetchRules() {
+    async function fetchRules(force = false) {
       try {
-        const res = await fetch('/api/v1/rules');
-        if (!res.ok) throw new Error('Failed to load rules');
-        rulesData = await res.json();
+        rulesData = window.SentinelQuery
+          ? await window.SentinelQuery.fetchJson(['rules', 'list'], '/api/v1/rules', {
+              staleTime: 10000,
+              force: Boolean(force),
+              abortKey: 'rules-list',
+            })
+          : await fetch('/api/v1/rules').then((res) => {
+              if (!res.ok) throw new Error('Failed to load rules');
+              return res.json();
+            });
         renderRules();
       } catch (e) {
+        if (e && e.name === 'AbortError') return;
         console.error('Error fetching rules', e);
         const container = document.getElementById('rules-cards-container');
-        if (container) container.innerHTML = `<div style="padding:40px; color:var(--risk-high); grid-column:1/-1;">Failed to load rule configurations: ${e.message || 'Unauthorized'}</div>`;
+        const esc = window.escapeHtml || ((v) => String(v ?? ''));
+        if (container) container.innerHTML = `<div style="padding:40px; color:var(--risk-high); grid-column:1/-1;">Failed to load rule configurations: ${esc(window.SentinelApi ? window.SentinelApi.formatError(e) : (e.message || 'Unauthorized'))}</div>`;
       }
+    }
+
+    function getRuleIfMatchHeaders(ruleName) {
+      const rule = (rulesData || []).find(r => r.rule_name === ruleName);
+      const headers = { 'Content-Type': 'application/json' };
+      if (rule) {
+        const tag = rule.etag || (rule.version != null ? `"rule-v${rule.version}"` : null);
+        if (tag) headers['If-Match'] = tag;
+      }
+      return headers;
+    }
+
+    async function handleRuleWriteConflict(res, ruleName) {
+      if (res.status === 412) {
+        await window.SentinelDialog.alert(
+          `Rule "${ruleName}" was updated by another administrator since you opened this page. Reloading the latest version now.`,
+          { title: 'Concurrent Modification Conflict (412)' }
+        );
+        await fetchRules(true);
+        return true;
+      }
+      return false;
     }
 
     function renderRules() {
@@ -427,22 +458,24 @@
 
     async function toggleRuleState(ruleName, enabled) {
       try {
-        const res = await fetch(`/api/v1/rules/${ruleName}`, {
+        const res = await fetch(`/api/v1/rules/${encodeURIComponent(ruleName)}`, {
           method: 'PATCH',
-          headers: {'Content-Type': 'application/json'},
+          headers: getRuleIfMatchHeaders(ruleName),
           body: JSON.stringify({enabled: enabled, change_reason: `Toggled ${enabled ? 'ON' : 'OFF'} in Rule Builder`})
         });
+        if (await handleRuleWriteConflict(res, ruleName)) return;
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           await window.SentinelDialog.alert(`Failed to toggle rule state: ${err.detail || res.status}`, { title: 'Rule Update Failed' });
-          await fetchRules();
+          await fetchRules(true);
         } else {
-          await fetchRules();
+          if (window.SentinelQuery) window.SentinelQuery.invalidateQueries(['rules']);
+          await fetchRules(true);
         }
       } catch (e) {
         console.error('Network error updating rule:', e);
         await window.SentinelDialog.alert('Network error updating rule: ' + (e.message || e), { title: 'Network Error' });
-        await fetchRules();
+        await fetchRules(true);
       }
     }
 
@@ -470,16 +503,18 @@
       try {
         const res = await fetch(`/api/v1/rules/${encodeURIComponent(ruleName)}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getRuleIfMatchHeaders(ruleName),
           body: JSON.stringify({ mode, change_reason: `Switched rule mode to ${mode} via Rule Builder` })
         });
+        if (await handleRuleWriteConflict(res, ruleName)) return;
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           await window.SentinelDialog.alert(err.detail || `Failed to switch mode (HTTP ${res.status})`, { title: 'Mode Update Failed' });
         } else {
+          if (window.SentinelQuery) window.SentinelQuery.invalidateQueries(['rules']);
           window.SentinelDialog.toast(`Rule ${ruleName} set to ${mode} mode.`, 'success');
         }
-        await fetchRules();
+        await fetchRules(true);
       } catch (e) {
         await window.SentinelDialog.alert(e.message || 'Network error changing rule mode.', { title: 'Error' });
       }
@@ -525,16 +560,19 @@
       const newConfig = collectRuleConfigInputs(rule);
 
       try {
-        const res = await fetch(`/api/v1/rules/${ruleName}`, {
+        const res = await fetch(`/api/v1/rules/${encodeURIComponent(ruleName)}`, {
           method: 'PATCH',
-          headers: {'Content-Type': 'application/json'},
+          headers: getRuleIfMatchHeaders(ruleName),
           body: JSON.stringify({config: newConfig, change_reason: reason})
         });
+        if (await handleRuleWriteConflict(res, ruleName)) return;
         if (res.ok) {
+          if (window.SentinelQuery) window.SentinelQuery.invalidateQueries(['rules']);
           window.SentinelDialog.toast(`Rule ${ruleName} updated and published across all pods.`, 'success');
-          await fetchRules();
+          await fetchRules(true);
         } else {
-          await window.SentinelDialog.alert('Failed to save rule configuration.', { title: 'Save Failed' });
+          const err = await res.json().catch(() => ({}));
+          await window.SentinelDialog.alert(err.detail || 'Failed to save rule configuration.', { title: 'Save Failed' });
         }
       } catch (e) {
         console.error('Error saving rule:', e);

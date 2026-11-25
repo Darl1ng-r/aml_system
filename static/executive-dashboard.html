@@ -385,16 +385,25 @@
       setTimeout(() => { t.style.display = 'none'; }, 3000);
     }
 
-    async function loadExecutiveDashboard() {
+    async function loadExecutiveDashboard(force = false) {
       applyRoleBasedVisibility();
+      const esc = window.escapeHtml || ((v) => String(v ?? ''));
 
       try {
-        const res = await fetch('/api/v1/metrics/executive', { credentials: 'include' });
-        if (!res.ok) {
-          const errBody = await res.json().catch(() => ({}));
-          throw new Error(errBody.detail || `HTTP ${res.status}`);
-        }
-        const data = await res.json();
+        const data = window.SentinelQuery
+          ? await window.SentinelQuery.fetchJson(['metrics', 'executive'], '/api/v1/metrics/executive', {
+              staleTime: 15000,
+              force: Boolean(force),
+              abortKey: 'executive-metrics',
+            })
+          : await fetch('/api/v1/metrics/executive', { credentials: 'include' }).then(async (res) => {
+              if (!res.ok) {
+                const errBody = await res.json().catch(() => ({}));
+                throw new Error(errBody.detail || `HTTP ${res.status}`);
+              }
+              return res.json();
+            });
+        if (!data) return;
 
         // 1. KPI Cards
         const k = data.kpis || {};
@@ -410,13 +419,13 @@
         const maxVal = Math.max(...trend.data, 1);
         const trendEl = document.getElementById('trendChart');
         trendEl.innerHTML = trend.labels.map((lbl, i) => {
-          const val = trend.data[i] || 0;
+          const val = Number(trend.data[i] || 0);
           const heightPct = Math.round((val / maxVal) * 85) + 5;
           return `
             <div class="chart-col">
-              <div class="col-val">${val}</div>
+              <div class="col-val">${esc(val)}</div>
               <div class="bar" style="height:${heightPct}%;"></div>
-              <div class="col-lbl">${lbl}</div>
+              <div class="col-lbl">${esc(lbl)}</div>
             </div>
           `;
         }).join('');
@@ -427,8 +436,8 @@
         if (typologies.length) {
           typoEl.innerHTML = typologies.map(t => `
             <div class="typology-row">
-              <span style="color:var(--text-main);">${t.rule_name}</span>
-              <span class="mono" style="color:var(--accent-cyan); font-weight:600;">${t.count} hits</span>
+              <span style="color:var(--text-main);">${esc(t.rule_name)}</span>
+              <span class="mono" style="color:var(--accent-cyan); font-weight:600;">${esc(t.count)} hits</span>
             </div>
           `).join('');
         } else {
@@ -443,11 +452,11 @@
         if (breachItems.length) {
           slaTbody.innerHTML = breachItems.map(b => `
             <tr>
-              <td class="mono"><a href="/dashboard?alert_id=${encodeURIComponent(b.alert_id)}" style="color:var(--accent-blue); text-decoration:none;">${b.alert_id.slice(0,8)}</a></td>
-              <td>${b.rule_name}</td>
-              <td><span class="status-badge badge-red">${b.threat_level}</span></td>
-              <td class="mono" style="color:var(--accent-crimson);">${b.age_hours}h</td>
-              <td>${b.assignee}</td>
+              <td class="mono"><a href="/dashboard?alert_id=${encodeURIComponent(b.alert_id)}" style="color:var(--accent-blue); text-decoration:none;">${esc(String(b.alert_id || '').slice(0,8))}</a></td>
+              <td>${esc(b.rule_name)}</td>
+              <td><span class="status-badge badge-red">${esc(b.threat_level)}</span></td>
+              <td class="mono" style="color:var(--accent-crimson);">${esc(b.age_hours)}h</td>
+              <td>${esc(b.assignee)}</td>
             </tr>
           `).join('');
         } else {
@@ -460,10 +469,10 @@
         if (team.length) {
           teamTbody.innerHTML = team.map(m => `
             <tr>
-              <td style="font-weight:600; color:var(--text-main);">${m.username}</td>
-              <td class="mono">${m.active_cases}</td>
-              <td class="mono" style="color:var(--accent-emerald);">${m.resolved_cases}</td>
-              <td class="mono">${m.resolution_rate}</td>
+              <td style="font-weight:600; color:var(--text-main);">${esc(m.username)}</td>
+              <td class="mono">${esc(m.active_cases)}</td>
+              <td class="mono" style="color:var(--accent-emerald);">${esc(m.resolved_cases)}</td>
+              <td class="mono">${esc(m.resolution_rate)}</td>
             </tr>
           `).join('');
         } else {
@@ -471,7 +480,9 @@
         }
 
       } catch (err) {
-        showToast('Error loading metrics: ' + err.message);
+        if (err && err.name === 'AbortError') return;
+        const msg = window.SentinelApi ? window.SentinelApi.formatError(err) : err.message;
+        showToast('Error loading metrics: ' + msg);
         const errHtml = '<div style="color:var(--accent-crimson); padding:1rem 0;">Unable to load live metrics.</div>';
         const trendEl = document.getElementById('trendChart');
         const typoEl = document.getElementById('typologyList');

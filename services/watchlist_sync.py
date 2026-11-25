@@ -119,9 +119,15 @@ async def _fetch_feed_content(url: str, client=None) -> bytes | None:
     if httpx is None:
         return None
     from urllib.parse import urljoin
-    from services.http_client import get_http_client, is_httpx_patched, is_outbound_egress_allowed
+    from services.http_client import (
+        _ORIGINAL_ASYNC_CLIENT,
+        get_http_client,
+        is_httpx_patched,
+        is_outbound_egress_allowed,
+    )
 
-    if client is None and not is_httpx_patched("GET") and not is_outbound_egress_allowed("watchlist"):
+    is_mock_client = client is not None and not isinstance(client, _ORIGINAL_ASYNC_CLIENT)
+    if not is_mock_client and not is_httpx_patched("GET") and not is_outbound_egress_allowed("watchlist"):
         logger.debug("Watchlist live feed download skipped (OUTBOUND_EGRESS_ENABLED=false).")
         return None
 
