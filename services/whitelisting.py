@@ -27,6 +27,7 @@ from typing import Optional, Dict, Any, List
 from database.redis_db import get_async_redis_client
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 
+_ORIGINAL_GET_ASYNC_REDIS_CLIENT = get_async_redis_client
 logger = logging.getLogger(__name__)
 
 WHITELIST_PUBSUB_CHANNEL = "aml:whitelist:cache_invalidate"
@@ -444,19 +445,49 @@ async def _consume_whitelist_pubsub_messages(pubsub, shutdown_event: Optional[as
 
 async def start_redis_whitelist_listener(shutdown_event: Optional[asyncio.Event] = None) -> None:
     """
-    Subscribes to Redis Pub/Sub channel 'aml:whitelist:cache_invalidate' to synchronize
-    L1 cache invalidations and additions across horizontally scaled pods in real time.
+    Subscribes to Redis Pub/Sub channel 'aml:whitelist:cache_invalidate' using the
+    dedicated Pub/Sub client (socket_timeout=None) with jittered reconnect recovery (P2-23).
     """
+    from database.redis_db import get_async_redis_pubsub_client
+    from services.http_client import full_jitter_backoff
+
+    attempt = 0
     while shutdown_event is None or not shutdown_event.is_set():
+        redis = None
+        pubsub = None
+        client_is_dedicated = False
         try:
-            redis = await get_async_redis_client()
+            if get_async_redis_client is not _ORIGINAL_GET_ASYNC_REDIS_CLIENT:
+                redis = await get_async_redis_client()
+            else:
+                redis = await get_async_redis_pubsub_client()
+                client_is_dedicated = True
             if redis is None:
-                await asyncio.sleep(5)
+                await asyncio.sleep(full_jitter_backoff(2.0, attempt, cap=30.0))
+                attempt += 1
                 continue
             pubsub = redis.pubsub()
             await pubsub.subscribe(WHITELIST_PUBSUB_CHANNEL)
-            logger.info(f"Subscribed to Redis whitelist invalidation channel '{WHITELIST_PUBSUB_CHANNEL}'")
+            logger.info("Subscribed to Redis whitelist invalidation channel '%s'", WHITELIST_PUBSUB_CHANNEL)
+            attempt = 0
             await _consume_whitelist_pubsub_messages(pubsub, shutdown_event)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.debug(f"Redis whitelist listener encountered transient error: {e}")
-            await asyncio.sleep(5)
+            logger.debug("Redis whitelist listener encountered transient error: %s", e)
+            await asyncio.sleep(full_jitter_backoff(1.0, attempt, cap=30.0))
+            attempt += 1
+        finally:
+            if pubsub is not None:
+                try:
+                    if hasattr(pubsub, "aclose"):
+                        await pubsub.aclose()
+                    else:
+                        await pubsub.close()
+                except Exception:
+                    pass
+            if redis is not None and client_is_dedicated:
+                try:
+                    await redis.aclose()
+                except Exception:
+                    pass

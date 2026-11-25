@@ -14,7 +14,7 @@ import json
 import io
 import csv
 import asyncio
-from typing import List
+from typing import Annotated, List
 
 import logging
 logger = logging.getLogger(__name__)
@@ -58,11 +58,12 @@ def _build_alert_filter_clauses(
         param_idx += 1
 
     if search and search.strip():
-        term = f"%{search.strip()}%"
+        escaped = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        term = f"%{escaped}%"
         where_clauses.append(
-            f"(s.account_number ILIKE ${param_idx} OR s.owner_name ILIKE ${param_idx} "
-            f"OR r.account_number ILIKE ${param_idx} OR r.owner_name ILIKE ${param_idx} "
-            f"OR a.rule_name ILIKE ${param_idx})"
+            f"(s.account_number ILIKE ${param_idx} ESCAPE '\\' OR s.owner_name ILIKE ${param_idx} ESCAPE '\\' "
+            f"OR r.account_number ILIKE ${param_idx} ESCAPE '\\' OR r.owner_name ILIKE ${param_idx} ESCAPE '\\' "
+            f"OR a.rule_name ILIKE ${param_idx} ESCAPE '\\')"
         )
         params.append(term)
         param_idx += 1
@@ -112,11 +113,11 @@ def _serialize_alert_row(row) -> dict:
 @router.get("")
 async def list_alerts(
     response: Response,
-    page: int = Query(default=1, ge=1),
-    limit: int = Query(default=50, ge=1, le=100),
-    search: str | None = Query(default=None, max_length=200),
-    severity: str | None = None,
-    status_filter: str | None = None,
+    page: Annotated[int, Query(ge=1, le=1000)] = 1,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    search: Annotated[str | None, Query(max_length=200)] = None,
+    severity: Annotated[str | None, Query(max_length=32)] = None,
+    status_filter: Annotated[str | None, Query(max_length=64)] = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR", "MLRO"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60))
 ):
@@ -571,6 +572,11 @@ async def resolve_alert(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
+    try:
+        uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert ID format.")
+
     if payload.action not in ["CLOSE_SAR", "CLOSE_FALSE_POSITIVE"]:
         raise HTTPException(status_code=400, detail="Invalid action. Must be CLOSE_SAR or CLOSE_FALSE_POSITIVE")
 
@@ -602,6 +608,10 @@ async def get_alert_sar_narrative(
     Synthesizes and returns an industry-standard 5-part FinCEN SAR narrative text block
     for regulatory filing preparation (Parts I through V).
     """
+    try:
+        uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert ID format.")
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
         from services.sar_narrative import generate_sar_narrative
@@ -634,6 +644,11 @@ async def assign_alert(
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
     try:
+        alert_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert ID format.")
+
+    try:
         tenant_id = enforce_tenant_data_scope(current_user)
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             # Resolve user ID from username within caller's tenant
@@ -647,7 +662,7 @@ async def assign_alert(
             # Update assigned_officer_id
             updated = await conn.execute(
                 "UPDATE alerts SET assigned_officer_id = $1 WHERE id = $2 AND tenant_id = $3::uuid;",
-                officer["id"], uuid.UUID(id), str(tenant_id)
+                officer["id"], alert_uuid, str(tenant_id)
             )
             if updated == UPDATE_ZERO:
                 raise HTTPException(status_code=404, detail=ALERT_NOT_FOUND)

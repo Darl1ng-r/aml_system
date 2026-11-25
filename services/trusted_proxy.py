@@ -46,7 +46,7 @@ def get_effective_trusted_networks(trusted_networks=None):
         return [ipaddress.ip_network(cidr.strip()) for cidr in env_cfg.split(",") if cidr.strip()]
     try:
         from config import settings
-        if settings.is_production:
+        if getattr(settings, "is_hardened", settings.is_production):
             return LOOPBACK_TRUSTED_NETWORKS
     except Exception:
         pass
@@ -102,7 +102,10 @@ def get_trusted_client_ip(request: Request, trusted_networks=None) -> str:
     The first IP from the right that is outside the trusted proxy CIDRs is the authentic client IP.
     """
     nets = get_effective_trusted_networks(trusted_networks)
-    peer_ip = request.client.host if request.client else "127.0.0.1"
+    if not request.client or not getattr(request.client, "host", None):
+        # Never default missing client peer to trusted loopback 127.0.0.1
+        return "0.0.0.0"
+    peer_ip = request.client.host
 
     if not is_ip_trusted(peer_ip, nets):
         return peer_ip
@@ -112,6 +115,9 @@ def get_trusted_client_ip(request: Request, trusted_networks=None) -> str:
         client_ip = _extract_ip_from_forwarded(forwarded, nets)
         if client_ip:
             return client_ip
+        # X-Forwarded-For was present but every hop was inside trusted ranges;
+        # do NOT fall back to potentially client-spoofed X-Real-IP.
+        return peer_ip
 
     real_ip = request.headers.get("x-real-ip")
     if real_ip:

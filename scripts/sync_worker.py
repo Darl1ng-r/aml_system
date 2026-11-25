@@ -219,10 +219,14 @@ async def _sync_with_retries(tx_payload: dict, neo4j_driver, tracer, trace_ctx) 
             return True, None
         last_error = f"Neo4j write failed on attempt {attempt}"
         if attempt < MAX_RETRY_ATTEMPTS:
-            backoff = 0.5 * (2 ** (attempt - 1))  # 0.5s, 1s, 2s
+            from services.http_client import full_jitter_backoff
+            backoff = full_jitter_backoff(0.5, attempt - 1, cap=10.0)
             logger.warning(
-                f"[Retry {attempt}/{MAX_RETRY_ATTEMPTS}] "
-                f"tx={tx_id} — retrying in {backoff:.1f}s"
+                "[Retry %d/%d] tx=%s — retrying in %.2fs",
+                attempt,
+                MAX_RETRY_ATTEMPTS,
+                tx_id,
+                backoff,
             )
             await asyncio.sleep(backoff)
     return False, last_error
@@ -291,12 +295,16 @@ async def run_kafka_consumer(neo4j_driver, shutdown_event: asyncio.Event):
     - Exits cleanly when shutdown_event is set
     """
     from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+    from services.redpanda import build_kafka_security_kwargs
 
     logger.info(
-        f"Starting Redpanda consumer | topic={TRANSACTIONS_TOPIC} | "
-        f"group={CONSUMER_GROUP_ID} | brokers={KAFKA_BOOTSTRAP_SERVERS}"
+        "Starting Redpanda consumer | topic=%s | group=%s | brokers=%s",
+        TRANSACTIONS_TOPIC,
+        CONSUMER_GROUP_ID,
+        KAFKA_BOOTSTRAP_SERVERS,
     )
 
+    kafka_sec = build_kafka_security_kwargs()
     consumer = AIOKafkaConsumer(
         TRANSACTIONS_TOPIC,
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
@@ -309,17 +317,22 @@ async def run_kafka_consumer(neo4j_driver, shutdown_event: asyncio.Event):
         heartbeat_interval_ms=10_000,
         max_poll_interval_ms=300_000,   # allow slow Neo4j writes without rebalance
         fetch_max_bytes=10 * 1024 * 1024,
+        request_timeout_ms=10_000,
+        **kafka_sec,
     )
 
     dlq_producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+        acks="all",
+        request_timeout_ms=10_000,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         key_serializer=lambda k: k.encode("utf-8") if isinstance(k, str) else k,
+        **kafka_sec,
     )
 
     try:
-        await consumer.start()
-        await dlq_producer.start()
+        await asyncio.wait_for(consumer.start(), timeout=15.0)
+        await asyncio.wait_for(dlq_producer.start(), timeout=15.0)
         logger.info("Redpanda consumer started successfully.")
 
         processed = 0
@@ -371,30 +384,22 @@ async def run_postgres_poll_fallback(neo4j_driver, shutdown_event: asyncio.Event
     """
     logger.info("Starting PostgreSQL polling fallback worker (Redpanda unavailable).")
 
-    import asyncpg
-    from config import POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+    from database.postgres import get_db_pool
 
+    pool = await get_db_pool()
     # Add neo4j_synced column if it doesn't exist
     try:
-        conn = await asyncpg.connect(
-            host=POSTGRES_HOST, port=POSTGRES_PORT, database=POSTGRES_DB,
-            user=POSTGRES_USER, password=POSTGRES_PASSWORD,
-        )
-        await conn.execute(
-            "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS neo4j_synced BOOLEAN DEFAULT FALSE;"
-        )
-        await conn.close()
+        async with pool.acquire(timeout=5.0) as conn:
+            await conn.execute(
+                "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS neo4j_synced BOOLEAN DEFAULT FALSE;"
+            )
         logger.info("PostgreSQL migration: neo4j_synced column ready.")
     except Exception as e:
-        logger.warning(f"Could not apply neo4j_synced migration: {e}")
+        logger.warning("Could not apply neo4j_synced migration: %s", e)
 
     while not shutdown_event.is_set():
         try:
-            conn = await asyncpg.connect(
-                host=POSTGRES_HOST, port=POSTGRES_PORT, database=POSTGRES_DB,
-                user=POSTGRES_USER, password=POSTGRES_PASSWORD,
-            )
-            try:
+            async with pool.acquire(timeout=5.0) as conn:
                 rows = await conn.fetch(
                     """
                     SELECT t.id, t.tenant_id, t.sender_account_id, s.account_number AS sender_acc,
@@ -437,9 +442,6 @@ async def run_postgres_poll_fallback(neo4j_driver, shutdown_event: asyncio.Event
                     )
                     logger.info(f"[Postgres Fallback] Synced {len(synced_ids)} transactions to Neo4j.")
 
-            finally:
-                await conn.close()
-
         except Exception as e:
             logger.exception(f"PostgreSQL polling error: {e}")
 
@@ -462,11 +464,18 @@ async def main(shutdown_event: asyncio.Event | None = None):
     await asyncio.sleep(3)  # give databases time to be ready on startup
 
     # Connect to Neo4j
+    from services.vault_loader import VaultSecretsLoader
+    from services.redpanda import build_kafka_security_kwargs
+    from services.http_client import full_jitter_backoff
+
+    if os.getenv("VAULT_ADDR", "").strip() and not os.getenv("PYTEST_CURRENT_TEST"):
+        await VaultSecretsLoader.bootstrap()
+
     try:
         neo4j_driver = await get_async_neo4j_driver()
         logger.info("Neo4j connection established.")
     except Exception as e:
-        logger.exception(f"Cannot connect to Neo4j — worker cannot start: {e}")
+        logger.exception("Cannot connect to Neo4j — worker cannot start: %s", e)
         return
 
     # Probe Redpanda availability before committing to the consumer
@@ -476,33 +485,37 @@ async def main(shutdown_event: asyncio.Event | None = None):
         probe = AIOKafkaConsumer(
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             group_id="aml-probe",
+            request_timeout_ms=5_000,
+            **build_kafka_security_kwargs(),
         )
         await asyncio.wait_for(probe.start(), timeout=5.0)
         await probe.stop()
         use_kafka = True
         logger.info("Redpanda is reachable — using Kafka consumer.")
     except Exception as e:
-        logger.warning(
-            f"Redpanda unreachable ({e}). "
-            f"Falling back to PostgreSQL polling sync."
-        )
+        logger.warning("Redpanda unreachable (%s). Falling back to PostgreSQL polling sync.", e)
 
+    attempt = 0
     if use_kafka:
         while not shutdown_event.is_set():
             try:
                 await run_kafka_consumer(neo4j_driver, shutdown_event)
                 break
             except Exception as e:
-                logger.exception(f"Redpanda consumer crashed: {e}. Reconnecting in 5 seconds...")
-                await asyncio.sleep(5)
+                delay = full_jitter_backoff(2.0, attempt, cap=30.0)
+                attempt += 1
+                logger.exception("Redpanda consumer crashed: %s. Reconnecting in %.1fs...", e, delay)
+                await asyncio.sleep(delay)
     else:
         while not shutdown_event.is_set():
             try:
                 await run_postgres_poll_fallback(neo4j_driver, shutdown_event)
                 break
             except Exception as e:
-                logger.exception(f"PostgreSQL polling worker crashed: {e}. Reconnecting in 5 seconds...")
-                await asyncio.sleep(5)
+                delay = full_jitter_backoff(2.0, attempt, cap=30.0)
+                attempt += 1
+                logger.exception("PostgreSQL polling worker crashed: %s. Reconnecting in %.1fs...", e, delay)
+                await asyncio.sleep(delay)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: aml-system-dev
+resources:
+- ../../aml-config.yaml
+- ../../fastapi-app.yaml
+patches:
+- target:
+    kind: ConfigMap
+    name: aml-config
+  patch: |-
+    - op: replace
+      path: /data/ENVIRONMENT
+      value: "development"
+    - op: replace
+      path: /data/FINCEN_TRANSPORT
+      value: "sandbox"
+    - op: replace
+      path: /data/FINCEN_SANDBOX_MODE
+      value: "true"
+    - op: replace
+      path: /data/OUTBOUND_EGRESS_ENABLED
+      value: "false"

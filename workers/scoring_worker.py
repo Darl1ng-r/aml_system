@@ -606,7 +606,8 @@ async def process_raw_message(msg, tp, dlq_producer, consumer) -> bool:
                 f"[SCORING RETRY {attempt}/{MAX_RETRY_ATTEMPTS}] tx={tx_id} failed: {last_error}"
             )
             if attempt < MAX_RETRY_ATTEMPTS:
-                await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
+                from services.http_client import full_jitter_backoff
+                await asyncio.sleep(full_jitter_backoff(0.5, attempt - 1, cap=10.0))
 
     logger.error(f"[SCORING PERMANENT FAILURE] tx={tx_id} after {MAX_RETRY_ATTEMPTS} attempts; routing to DLQ.")
     dlq_ok = await send_raw_to_dlq(dlq_producer, payload, last_error)
@@ -622,10 +623,18 @@ async def process_raw_message(msg, tp, dlq_producer, consumer) -> bool:
 
 
 async def main():
+    import time as _time
     setup_json_logging(level=logging.INFO)
     logger.info("Starting AML Async Transaction Scoring Worker...")
+    from config import settings
+    from services.vault_loader import VaultSecretsLoader
+    from services.redpanda import build_kafka_security_kwargs
+    from services.http_client import close_http_client
+
+    await VaultSecretsLoader.bootstrap()
     await init_db_pool()
 
+    heartbeat_path = os.getenv("WORKER_HEARTBEAT_FILE", "/tmp/scoring_worker.hb")
     shutdown_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -636,6 +645,7 @@ async def main():
 
     consumer = None
     dlq_producer = None
+    kafka_sec = build_kafka_security_kwargs()
     try:
         from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
         consumer = AIOKafkaConsumer(
@@ -643,21 +653,30 @@ async def main():
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             group_id=CONSUMER_GROUP_ID,
             auto_offset_reset="earliest",
-            enable_auto_commit=False,  # Manual offset commit after verified PG commit or DLQ
+            enable_auto_commit=False,
             value_deserializer=lambda v: json.loads(v.decode("utf-8")),
             max_poll_interval_ms=300_000,
+            request_timeout_ms=10_000,
+            **kafka_sec,
         )
         dlq_producer = AIOKafkaProducer(
             bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
             acks="all",
+            request_timeout_ms=10_000,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
             key_serializer=lambda k: k.encode("utf-8") if isinstance(k, str) else k,
+            **kafka_sec,
         )
-        await consumer.start()
-        await dlq_producer.start()
-        logger.info(f"Connected to Kafka topic {RAW_TRANSACTIONS_TOPIC} at {KAFKA_BOOTSTRAP_SERVERS}")
+        await asyncio.wait_for(consumer.start(), timeout=15.0)
+        await asyncio.wait_for(dlq_producer.start(), timeout=15.0)
+        logger.info("Connected to Kafka topic %s at %s", RAW_TRANSACTIONS_TOPIC, KAFKA_BOOTSTRAP_SERVERS)
 
         while not shutdown_event.is_set():
+            try:
+                with open(heartbeat_path, "w", encoding="utf-8") as hb:
+                    hb.write(str(int(_time.time())))
+            except Exception:
+                pass
             try:
                 batch = await asyncio.wait_for(
                     consumer.getmany(timeout_ms=500, max_records=50),
@@ -669,7 +688,11 @@ async def main():
                 for msg in messages:
                     await process_raw_message(msg, tp, dlq_producer, consumer)
     except Exception as e:
-        logger.warning(f"Kafka consumer initialization failed (offline dev mode active): {e}")
+        # P1-16: Never silently exit 0 in production/staging when Kafka fails!
+        if getattr(settings, "is_hardened", settings.is_production):
+            logger.critical("CRITICAL: Kafka scoring worker failed in hardened environment: %s", e)
+            raise
+        logger.warning("Kafka consumer initialization failed (offline dev mode active): %s", e)
     finally:
         if consumer is not None:
             try:
@@ -681,7 +704,11 @@ async def main():
                 await dlq_producer.stop()
             except Exception:
                 pass
-        await close_db_pool()
+        for closer in (close_http_client, close_db_pool, VaultSecretsLoader.shutdown):
+            try:
+                await closer()
+            except Exception:
+                pass
         logger.info("AML Async Transaction Scoring Worker stopped cleanly.")
 
 

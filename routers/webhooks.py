@@ -35,7 +35,8 @@ class WebhookCreateRequest(BaseModel):
     name: str = Field(..., min_length=2, max_length=150)
     url: HttpUrl
     subscribed_events: List[str] = Field(
-        default_factory=lambda: ["ACCOUNT_FROZEN", "ACCOUNT_UNFROZEN", "TRANSACTION_HELD", "SAR_FILED"]
+        default_factory=lambda: ["ACCOUNT_FROZEN", "ACCOUNT_UNFROZEN", "TRANSACTION_HELD", "SAR_FILED"],
+        max_length=20,
     )
     enabled: bool = True
 

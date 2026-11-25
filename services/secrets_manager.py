@@ -43,11 +43,28 @@ def _read_secret_file(file_path: str) -> Optional[str]:
 
 import base64
 import hashlib
+from urllib.parse import quote_plus
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 
 _cached_rsa_private_pem: Optional[str] = None
 _cached_rsa_public_pem: Optional[str] = None
+_cached_rsa_source_digest: Optional[str] = None
+
+# Canonical mounted secret path (with legacy fallback for backward compatibility)
+CANONICAL_RSA_KEY_PATHS = (
+    "/var/run/secrets/jwt/private.pem",
+    "/var/run/secrets/jwt_rsa_private_key",
+    "/var/run/secrets/tls/jwt_private.pem",
+)
+
+
+def invalidate_rsa_key_cache() -> None:
+    """Clears cached RSA keypair so Vault hot-reload picks up rotated signing keys immediately."""
+    global _cached_rsa_private_pem, _cached_rsa_public_pem, _cached_rsa_source_digest
+    _cached_rsa_private_pem = None
+    _cached_rsa_public_pem = None
+    _cached_rsa_source_digest = None
 
 
 def _int_to_base64url(val: int) -> str:
@@ -55,77 +72,71 @@ def _int_to_base64url(val: int) -> str:
     return base64.urlsafe_b64encode(b).decode('ascii').rstrip('=')
 
 
+def _derive_public_pem(private_pem: str) -> str:
+    priv_key = serialization.load_pem_private_key(private_pem.encode(), password=None)
+    return priv_key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+
+
+def _resolve_configured_rsa_private_pem() -> Optional[str]:
+    """Reads configured RSA private key from Vault -> mounted file -> env var."""
+    vault_priv = _secret_store().get("jwt.rsa_private_key")
+    if vault_priv:
+        return vault_priv.strip()
+
+    for path in CANONICAL_RSA_KEY_PATHS:
+        file_priv = _read_secret_file(path)
+        if file_priv:
+            return file_priv
+
+    env_priv = os.getenv("JWT_PRIVATE_KEY_PEM", "").strip()
+    if env_priv:
+        return env_priv
+
+    return None
+
+
 def get_or_create_rsa_keypair() -> tuple[str, str]:
     """
     Retrieves or generates the active RSA-2048 keypair for RS256 asymmetric signing.
+    Supports hot-reload whenever Vault / mounted file / env updates the active PEM.
     Resolution priority:
-      1. HashiCorp Vault Transit / SecretStore ('jwt.rsa_private_key')
-      2. Mounted secret file (/var/run/secrets/jwt_rsa_private_key)
+      1. HashiCorp Vault SecretStore ('jwt.rsa_private_key')
+      2. Mounted secret file (/var/run/secrets/jwt/private.pem + legacy fallbacks)
       3. Environment variable (JWT_PRIVATE_KEY_PEM)
-      4. Auto-generated in-memory keypair for runtime/dev
+      4. Auto-generated in-memory keypair for local dev / test ONLY
     """
-    global _cached_rsa_private_pem, _cached_rsa_public_pem
-    if _cached_rsa_private_pem and _cached_rsa_public_pem:
-        return _cached_rsa_private_pem, _cached_rsa_public_pem
+    global _cached_rsa_private_pem, _cached_rsa_public_pem, _cached_rsa_source_digest
 
-    # 1. Check Vault SecretStore
-    vault_priv = _secret_store().get("jwt.rsa_private_key")
-    if vault_priv:
+    configured_priv = _resolve_configured_rsa_private_pem()
+    if configured_priv:
+        digest = hashlib.sha256(configured_priv.encode("utf-8")).hexdigest()
+        if _cached_rsa_private_pem and _cached_rsa_public_pem and _cached_rsa_source_digest == digest:
+            return _cached_rsa_private_pem, _cached_rsa_public_pem
         try:
-            priv_key = serialization.load_pem_private_key(vault_priv.encode(), password=None)
-            pub_key = priv_key.public_key()
-            pub_pem = pub_key.public_bytes(
-                serialization.Encoding.PEM,
-                serialization.PublicFormat.SubjectPublicKeyInfo
-            ).decode()
-            _cached_rsa_private_pem = vault_priv
+            pub_pem = _derive_public_pem(configured_priv)
+            _cached_rsa_private_pem = configured_priv
             _cached_rsa_public_pem = pub_pem
+            _cached_rsa_source_digest = digest
             return _cached_rsa_private_pem, _cached_rsa_public_pem
         except Exception as e:
-            logger.warning(f"Failed to parse Vault RSA private key: {e}")
+            logger.warning(f"Failed to parse configured RSA private key: {e}")
 
-    # 2. Check mounted secret file
-    file_priv = _read_secret_file("/var/run/secrets/jwt_rsa_private_key")
-    if file_priv:
-        try:
-            priv_key = serialization.load_pem_private_key(file_priv.encode(), password=None)
-            pub_key = priv_key.public_key()
-            pub_pem = pub_key.public_bytes(
-                serialization.Encoding.PEM,
-                serialization.PublicFormat.SubjectPublicKeyInfo
-            ).decode()
-            _cached_rsa_private_pem = file_priv
-            _cached_rsa_public_pem = pub_pem
-            return _cached_rsa_private_pem, _cached_rsa_public_pem
-        except Exception as e:
-            logger.warning(f"Failed to parse mounted RSA private key: {e}")
-
-    # 3. Check environment variable
-    env_priv = os.getenv("JWT_PRIVATE_KEY_PEM")
-    if env_priv:
-        try:
-            priv_key = serialization.load_pem_private_key(env_priv.encode(), password=None)
-            pub_key = priv_key.public_key()
-            pub_pem = pub_key.public_bytes(
-                serialization.Encoding.PEM,
-                serialization.PublicFormat.SubjectPublicKeyInfo
-            ).decode()
-            _cached_rsa_private_pem = env_priv
-            _cached_rsa_public_pem = pub_pem
-            return _cached_rsa_private_pem, _cached_rsa_public_pem
-        except Exception as e:
-            logger.warning(f"Failed to parse JWT_PRIVATE_KEY_PEM: {e}")
-
-    # 4. Check environment: ephemeral in-memory keys are strictly forbidden in production
+    # Check environment: ephemeral in-memory keys are strictly forbidden in production & staging
     env = os.getenv("ENVIRONMENT", getattr(settings, "environment", "development")).strip().lower()
-    if env in {"production", "prod"} or getattr(settings, "is_production", False):
+    if env in {"production", "prod", "staging"} or getattr(settings, "is_hardened", settings.is_production):
         raise RuntimeError(
             "CRITICAL SECURITY FAILURE: Ephemeral in-memory RSA key generation is strictly forbidden in production! "
             "Mount an RSA private key file at /var/run/secrets/jwt/private.pem, provide JWT_PRIVATE_KEY_PEM in the "
             "environment, or configure HashiCorp Vault. Ephemeral keys cause multi-pod token signature desynchronization."
         )
 
-    # 5. Generate persistent keypair in memory for local development / testing only
+    if _cached_rsa_private_pem and _cached_rsa_public_pem and _cached_rsa_source_digest == "ephemeral":
+        return _cached_rsa_private_pem, _cached_rsa_public_pem
+
+    # Generate persistent keypair in memory for local development / testing only
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pub = key.public_key()
     _cached_rsa_private_pem = key.private_bytes(
@@ -137,28 +148,62 @@ def get_or_create_rsa_keypair() -> tuple[str, str]:
         serialization.Encoding.PEM,
         serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode()
+    _cached_rsa_source_digest = "ephemeral"
     return _cached_rsa_private_pem, _cached_rsa_public_pem
 
 
-def get_jwks() -> dict:
-    """Returns RFC 7517 compliant JSON Web Key Set (JWKS) publishing public keys."""
-    _, pub_pem = get_or_create_rsa_keypair()
-    pub_key = serialization.load_pem_public_key(pub_pem.encode())
-    numbers = pub_key.public_numbers()
-    kid = "aml-rsa-" + hashlib.sha256(pub_pem.encode()).hexdigest()[:12]
+def _get_previous_rsa_public_pems() -> List[str]:
+    """Returns previous/grace-period RSA public PEM keys for zero-downtime rotation."""
+    pems: List[str] = []
+    sources = [
+        _secret_store().get("jwt.previous_public_keys", ""),
+        _secret_store().get("jwt.previous_public_key_pem", ""),
+        os.getenv("JWT_PREVIOUS_PUBLIC_KEY_PEM", ""),
+        _read_secret_file("/var/run/secrets/jwt/previous_public.pem") or "",
+    ]
+    for raw in sources:
+        if not raw:
+            continue
+        # Support multiple PEM blocks concatenated or separated by '||'
+        chunks = [c.strip() for c in raw.replace("||", "\n").split("-----END PUBLIC KEY-----") if c.strip()]
+        for chunk in chunks:
+            candidate = chunk + "\n-----END PUBLIC KEY-----"
+            if "-----BEGIN PUBLIC KEY-----" in candidate and candidate not in pems:
+                pems.append(candidate)
+    return pems
 
-    return {
-        "keys": [
-            {
-                "kty": "RSA",
-                "use": "sig",
-                "alg": "RS256",
-                "kid": kid,
-                "n": _int_to_base64url(numbers.n),
-                "e": _int_to_base64url(numbers.e)
-            }
-        ]
-    }
+
+def _rsa_pub_pem_to_jwk(pub_pem: str) -> Optional[dict]:
+    try:
+        pub_key = serialization.load_pem_public_key(pub_pem.encode())
+        numbers = pub_key.public_numbers()
+        kid = "aml-rsa-" + hashlib.sha256(pub_pem.encode()).hexdigest()[:12]
+        return {
+            "kty": "RSA",
+            "use": "sig",
+            "alg": "RS256",
+            "kid": kid,
+            "n": _int_to_base64url(numbers.n),
+            "e": _int_to_base64url(numbers.e),
+        }
+    except Exception as exc:
+        logger.warning("Skipping invalid RSA public PEM in JWKS: %s", exc)
+        return None
+
+
+def get_jwks() -> dict:
+    """Returns RFC 7517 compliant JSON Web Key Set (JWKS) including active + grace-period keys."""
+    _, pub_pem = get_or_create_rsa_keypair()
+    keys_out: List[dict] = []
+    seen_kids: set[str] = set()
+
+    for candidate in [pub_pem, *_get_previous_rsa_public_pems()]:
+        jwk = _rsa_pub_pem_to_jwk(candidate)
+        if jwk and jwk["kid"] not in seen_kids:
+            seen_kids.add(jwk["kid"])
+            keys_out.append(jwk)
+
+    return {"keys": keys_out}
 
 
 def get_jwt_signing_key() -> str:
@@ -210,13 +255,16 @@ def _append_keys(target_list: List[str], *sources: Any) -> None:
 
 def get_jwt_verification_keys() -> List[str]:
     """Returns ordered list of valid keys for verifying existing tokens.
-    Supports zero-downtime rotation across asymmetric RSA public keys and legacy HMAC keys."""
+    Supports zero-downtime rotation across active + grace-period RSA public keys and legacy HMAC keys."""
     keys: List[str] = []
 
-    # 1. Asymmetric RSA public key
+    # 1. Active + previous/grace-period asymmetric RSA public keys
     _, pub_pem = get_or_create_rsa_keypair()
     if pub_pem:
         keys.append(pub_pem)
+    for prev_pem in _get_previous_rsa_public_pems():
+        if prev_pem not in keys:
+            keys.append(prev_pem)
 
     # 2. Vault symmetric keys, environment symmetric keys, in-memory fallbacks, and settings key
     _append_keys(
@@ -329,6 +377,11 @@ def decode_jwt_with_rotation(
 
 def get_postgres_password() -> str:
     """Resolves PostgreSQL password. Resolution: Vault -> mounted file -> env -> settings."""
+    if settings.postgres_user == "aml_app":
+        vault_app_pw = _secret_store().get("postgres.aml_app_password")
+        if vault_app_pw:
+            return vault_app_pw
+
     vault_pw = _secret_store().get("postgres.password")
     if vault_pw:
         return vault_pw
@@ -340,15 +393,50 @@ def get_postgres_password() -> str:
     if settings.postgres_user == "aml_app" and (settings.aml_app_password or os.getenv("AML_APP_PASSWORD")):
         return settings.aml_app_password or os.getenv("AML_APP_PASSWORD", "")
 
-    return settings.postgres_password or os.getenv("POSTGRES_PASSWORD", "postgrespassword")
+    resolved = settings.postgres_password or os.getenv("POSTGRES_PASSWORD", "")
+    if resolved:
+        return resolved
+
+    if getattr(settings, "is_hardened", settings.is_production):
+        raise RuntimeError("CRITICAL: PostgreSQL password is missing in hardened environment.")
+    return "postgrespassword"
+
+
+def _build_postgres_dsn(user: str, password: str, host: str, port: str, db: str) -> str:
+    user_enc = quote_plus(str(user))
+    pass_enc = quote_plus(str(password))
+    ssl_suffix = "?sslmode=require" if getattr(settings, "enable_tls", False) else ""
+    return f"postgresql://{user_enc}:{pass_enc}@{host}:{port}/{db}{ssl_suffix}"
 
 
 def get_postgres_dsn() -> str:
-    """Dynamically builds PostgreSQL DSN using credentials from Vault or env."""
+    """Dynamically builds URL-encoded PostgreSQL primary DSN using credentials from Vault or env."""
     store = _secret_store()
     user = store.get("postgres.user") or settings.postgres_user
     host = store.get("postgres.host") or settings.postgres_host
     port = store.get("postgres.port") or str(settings.postgres_port)
-    db   = store.get("postgres.db")   or settings.postgres_db
+    db = store.get("postgres.db") or settings.postgres_db
     password = get_postgres_password()
-    return f"postgresql://{user}:{password}@{host}:{port}/{db}"
+    return _build_postgres_dsn(user, password, host, port, db)
+
+
+def get_postgres_replica_dsn() -> str:
+    """Dynamically builds URL-encoded PostgreSQL read-replica DSN using Vault or env credentials."""
+    store = _secret_store()
+    user = store.get("postgres.user") or settings.postgres_user
+    host = store.get("postgres.replica_host") or settings.postgres_replica_host
+    port = store.get("postgres.replica_port") or str(settings.postgres_replica_port)
+    db = store.get("postgres.db") or settings.postgres_db
+    password = get_postgres_password()
+    return _build_postgres_dsn(user, password, host, port, db)
+
+
+def get_redis_password() -> Optional[str]:
+    """Resolves Redis password dynamically from Vault -> mounted file -> env -> settings."""
+    vault_pw = _secret_store().get("redis.password")
+    if vault_pw:
+        return vault_pw
+    file_pw = _read_secret_file("/var/run/secrets/redis_password")
+    if file_pw:
+        return file_pw
+    return settings.redis_password or os.getenv("REDIS_PASSWORD") or None

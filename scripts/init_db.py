@@ -9,9 +9,20 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.neo4j_db import get_neo4j_driver
 from database.elasticsearch_db import get_elasticsearch_client
-from config import SANCTIONS_INDEX, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+from config import settings, SANCTIONS_INDEX, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+
+
+def _assert_dev_only() -> None:
+    env = os.getenv("ENVIRONMENT", settings.environment).strip().lower()
+    if getattr(settings, "is_hardened", settings.is_production) or env in {"production", "prod", "staging"}:
+        raise RuntimeError(
+            "CRITICAL (P1-14): scripts/init_db.py performs destructive DROP TABLE CASCADE and is forbidden "
+            "in production/staging environments."
+        )
+
 
 async def init_postgres():
+    _assert_dev_only()
     print("Initializing PostgreSQL tables...")
     create_tables_sql = """
     -- Clean Reset for Local Dev

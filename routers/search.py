@@ -32,7 +32,8 @@ async def global_search(
 ) -> Dict[str, Any]:
     """Searches Accounts, Cases, Alerts, and SAR Drafts in parallel under strict tenant RLS."""
     tenant_id = enforce_tenant_data_scope(current_user)
-    pattern = f"%{q.strip()}%"
+    escaped_q = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped_q}%"
 
     async def _search_accounts() -> List[Dict[str, Any]]:
         try:

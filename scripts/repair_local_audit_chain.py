@@ -11,6 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from config import settings
 from database.postgres import init_db_pool, get_async_db_conn
 from services.audit import GENESIS_AUDIT_HASH, compute_audit_record_hash
 
@@ -18,6 +19,12 @@ DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
 
 
 async def repair_chain(tenant_id: str = DEFAULT_TENANT) -> None:
+    env = os.getenv("ENVIRONMENT", settings.environment).strip().lower()
+    if getattr(settings, "is_hardened", settings.is_production) or env in {"production", "prod", "staging"}:
+        raise RuntimeError(
+            "CRITICAL (P1-14): scripts/repair_local_audit_chain.py disables WORM audit triggers and is strictly "
+            "forbidden in production/staging environments."
+        )
     await init_db_pool()
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         async with conn.transaction():

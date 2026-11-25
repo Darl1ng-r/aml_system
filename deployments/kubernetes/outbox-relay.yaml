@@ -1,8 +1,6 @@
 # ════════════════════════════════════════════════════════════════════════════
 # Dedicated Transactional Outbox Relay Worker Deployment
-# ════════════════════════════════════════════════════════════════════════════
-# Decouples PostgreSQL outbox polling + Kafka publishing from stateless
-# FastAPI pods. Uses SELECT FOR UPDATE SKIP LOCKED across replicas.
+# Hardened: tmpfs prom-multiproc, TLS cert mount, heartbeat probe, least-priv secrets
 # ════════════════════════════════════════════════════════════════════════════
 apiVersion: apps/v1
 kind: Deployment
@@ -48,8 +46,6 @@ spec:
             drop:
             - ALL
         envFrom:
-        - secretRef:
-            name: aml-secrets
         - configMapRef:
             name: aml-config
         env:
@@ -57,17 +53,47 @@ spec:
           value: "0.5"
         - name: OUTBOX_BATCH_SIZE
           value: "100"
+        - name: AML_APP_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: AML_APP_PASSWORD } }
+        - name: REDIS_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: REDIS_PASSWORD } }
+        - name: PII_ENCRYPTION_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: PII_ENCRYPTION_KEY } }
+        - name: KAFKA_SASL_USERNAME
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_USERNAME, optional: true } }
+        - name: KAFKA_SASL_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_PASSWORD, optional: true } }
+        livenessProbe:
+          exec:
+            command: ["sh", "-c", "test -f /tmp/outbox_relay.hb && [ $(($(date +%s) - $(cat /tmp/outbox_relay.hb))) -lt 60 ]"]
+          initialDelaySeconds: 20
+          periodSeconds: 15
+          failureThreshold: 3
         resources:
           requests:
             cpu: "100m"
             memory: "256Mi"
+            ephemeral-storage: "128Mi"
           limits:
             cpu: "500m"
             memory: "512Mi"
+            ephemeral-storage: "256Mi"
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        - name: prom-multiproc
+          mountPath: /tmp/prometheus_multiproc
+        - name: tls-certs
+          mountPath: /var/run/secrets/tls
+          readOnly: true
       volumes:
       - name: tmp
         emptyDir:
           sizeLimit: 64Mi
+      - name: prom-multiproc
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret

@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api/v1/network", tags=["Network Analysis"])
 
 @router.get("/analysis")
 async def get_network_analysis(
-    window_hours: int = 72,
+    window_hours: int = Query(default=72, ge=1, le=720),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR", "MLRO"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
@@ -295,6 +295,10 @@ async def create_ubo_ownership_edge(
     from database.postgres import get_async_db_conn
 
     tenant_id = enforce_tenant_data_scope(current_user)
+    safe_parent = _sanitize_text(payload.parent_entity_name)
+    safe_child = _sanitize_text(payload.child_company_name)
+    if not safe_parent or not safe_child:
+        raise HTTPException(status_code=422, detail="Entity names cannot be empty after sanitization.")
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
         edge_id = await conn.fetchval(
             """
@@ -306,9 +310,9 @@ async def create_ubo_ownership_edge(
             RETURNING id;
             """,
             str(tenant_id),
-            _sanitize_text(payload.parent_entity_name),
+            safe_parent,
             payload.parent_entity_type,
-            _sanitize_text(payload.child_company_name),
+            safe_child,
             payload.ownership_pct,
             payload.jurisdiction.upper().strip(),
             _sanitize_text(payload.tax_id) if payload.tax_id else None,
@@ -316,8 +320,8 @@ async def create_ubo_ownership_edge(
         )
     return {
         "edge_id": str(edge_id),
-        "parent_entity_name": payload.parent_entity_name,
-        "child_company_name": payload.child_company_name,
+        "parent_entity_name": safe_parent,
+        "child_company_name": safe_child,
         "ownership_pct": payload.ownership_pct,
     }
 

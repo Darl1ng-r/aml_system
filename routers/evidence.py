@@ -96,7 +96,14 @@ def _append_file_chunk(path: str, chunk: bytes, first: bool) -> None:
 router = APIRouter(prefix="/api/v1/cases/{case_id}/evidence", tags=["Case Evidence Locker"])
 
 EVIDENCE_STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "storage", "evidence"))
-os.makedirs(EVIDENCE_STORAGE_DIR, exist_ok=True)
+
+
+def _ensure_local_evidence_dir() -> str:
+    """P0-01: Lazily create local evidence directory only when backend=='local' (safe on readOnlyRootFilesystem)."""
+    from config import settings
+    if str(getattr(settings, "evidence_storage_backend", "local")).strip().lower() == "local":
+        os.makedirs(EVIDENCE_STORAGE_DIR, exist_ok=True)
+    return EVIDENCE_STORAGE_DIR
 
 
 class EvidenceMetadata(BaseModel):
@@ -232,8 +239,8 @@ async def list_case_evidence(
 async def upload_case_evidence(
     case_id: str,
     file: UploadFile = File(...),
-    description: Optional[str] = Form(None),
-    tags: Optional[str] = Form(""),
+    description: Optional[str] = Form(None, max_length=2000),
+    tags: Optional[str] = Form("", max_length=500),
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
@@ -297,11 +304,11 @@ async def upload_case_evidence(
         )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Evidence upload rejected by security malware scan ({scan_status})."
+            detail="Evidence upload rejected by security malware scan.",
         )
 
     sha256_digest = compute_sha256_hex(raw_bytes)
-    backend = get_evidence_storage_backend(EVIDENCE_STORAGE_DIR)
+    backend = get_evidence_storage_backend(_ensure_local_evidence_dir())
     object_key = f"{evidence_id}_{safe_filename}"
     try:
         stored_key = await backend.put_object(str(tenant_id), object_key, raw_bytes, safe_content_type)

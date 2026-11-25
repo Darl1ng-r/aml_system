@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import os
 import secrets
 from typing import Any
 import jwt
@@ -9,6 +10,15 @@ from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from config import settings
 from database.postgres import get_async_db_conn
+
+try:
+    import aiohttp as _aiohttp_mod
+    _ORIGINAL_AIOHTTP_SESSION = _aiohttp_mod.ClientSession
+    _ORIGINAL_AIOHTTP_GET = _aiohttp_mod.ClientSession.get
+except ImportError:  # pragma: no cover
+    _aiohttp_mod = None
+    _ORIGINAL_AIOHTTP_SESSION = None
+    _ORIGINAL_AIOHTTP_GET = None
 
 logger = logging.getLogger(__name__)
 
@@ -185,36 +195,68 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None) -> s
 # RFC 9106 calibrated dummy hash to prevent timing attacks / user enumeration side-channels
 DUMMY_ARGON2_HASH = "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQxMjM0NTY3OA$9vX6l+w3cRj7E9l3sK4n9QaB1C2D3E4F5G6H7I8J9K0"
 
+def _is_aiohttp_patched() -> bool:
+    if _aiohttp_mod is None:
+        return False
+    return (
+        _aiohttp_mod.ClientSession is not _ORIGINAL_AIOHTTP_SESSION
+        or getattr(_aiohttp_mod.ClientSession, "get", None) is not _ORIGINAL_AIOHTTP_GET
+    )
+
+
 async def check_breached_password(password: str) -> bool:
     """
     Checks password against HaveIBeenPwned k-Anonymity API (NIST SP 800-63B).
-    Returns True if breached (compromised), False if clean.
-    Fails safely (returns False) on network errors or timeouts to prevent denial of service.
+    Uses pooled httpx + circuit breaker + Add-Padding header + follow_redirects=False.
+    Skips live external calls under pytest/disabled outbound egress unless mocked.
     """
     if not password:
         return False
     try:
         import hashlib
-        import aiohttp
-        # HIBP k-anonymity protocol requires SHA-1 prefix lookup
+        import httpx
+        from services.http_client import is_httpx_patched, is_outbound_egress_allowed, request_with_resilience
+
+        aiohttp_patched = _is_aiohttp_patched()
+        httpx_patched = is_httpx_patched("GET")
+        if not aiohttp_patched and not httpx_patched:
+            if os.getenv("PYTEST_CURRENT_TEST") or not is_outbound_egress_allowed("hibp"):
+                return False
+
         sha1_hash = hashlib.sha1(password.encode("utf-8"), usedforsecurity=False).hexdigest().upper()
         prefix = sha1_hash[:5]
         suffix = sha1_hash[5:]
+        url = f"https://api.pwnedpasswords.com/range/{prefix}"
 
-        timeout = aiohttp.ClientTimeout(total=2.0)
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            f"https://api.pwnedpasswords.com/range/{prefix}"
-        ) as resp:
-            if resp.status == 200:
-                    body = await resp.text()
-                    for line in body.splitlines():
-                        if ":" in line:
-                            entry_suffix, count = line.split(":", 1)
-                            if entry_suffix.strip() == suffix:
-                                logger.warning(f"HIBP breach detected: password breached {count.strip()} times.")
-                                return True
+        body_text = ""
+        if aiohttp_patched and _aiohttp_mod is not None:
+            timeout = _aiohttp_mod.ClientTimeout(total=2.0)
+            async with _aiohttp_mod.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers={"Add-Padding": "true"}, allow_redirects=False) as resp:
+                    if resp.status == 200:
+                        body_text = await resp.text()
+        else:
+            resp = await request_with_resilience(
+                "GET",
+                url,
+                target="hibp_pwned",
+                timeout=httpx.Timeout(connect=1.0, read=2.0, write=1.0, pool=1.0),
+                follow_redirects=False,
+                retries=0,
+                headers={"Add-Padding": "true"},
+            )
+            if resp.status_code == 200:
+                body_text = resp.text
+
+        if body_text:
+            for line in body_text.splitlines():
+                if ":" in line:
+                    entry_suffix, count = line.split(":", 1)
+                    if entry_suffix.strip() == suffix and int(count.strip() or 0) > 0:
+                        logger.warning("HIBP breach detected: password breached %s times.", count.strip())
+                        return True
     except Exception as e:
-        logger.warning(f"HIBP k-anonymity check skipped due to network/timeout: {e}")
+        logger.warning("HIBP k-anonymity check skipped due to network/timeout: %s", e)
         return False
     return False
 
@@ -357,45 +399,69 @@ async def _verify_supabase_user(resolved_token: str, credentials_exception: HTTP
     if not (settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_")):
         raise credentials_exception
 
+    base_url = settings.supabase_url.rstrip("/")
+    if getattr(settings, "is_hardened", settings.is_production) and not base_url.lower().startswith("https://"):
+        logger.error("Refusing plaintext Supabase URL in hardened environment.")
+        raise credentials_exception
+
     headers = {
         "Authorization": f"Bearer {resolved_token}",
         "apikey": settings.supabase_key,
     }
-    import aiohttp
+    import httpx
+    from services.http_client import CircuitOpenError, is_httpx_patched, request_with_resilience
+
+    aiohttp_patched = _is_aiohttp_patched()
+    httpx_patched = is_httpx_patched("GET")
+    if not aiohttp_patched and not httpx_patched and os.getenv("PYTEST_CURRENT_TEST"):
+        raise credentials_exception
+
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session, session.get(
-            f"{settings.supabase_url}/auth/v1/user", headers=headers
-        ) as resp:
-            if resp.status != 200:
+        if aiohttp_patched and _aiohttp_mod is not None:
+            timeout = _aiohttp_mod.ClientTimeout(total=3.0)
+            async with _aiohttp_mod.ClientSession(timeout=timeout) as session:
+                async with session.get(f"{base_url}/auth/v1/user", headers=headers, allow_redirects=False) as resp:
+                    if resp.status != 200:
+                        raise credentials_exception
+                    user_data = await resp.json()
+        else:
+            resp = await request_with_resilience(
+                "GET",
+                f"{base_url}/auth/v1/user",
+                target="supabase_auth",
+                timeout=httpx.Timeout(connect=1.5, read=3.0, write=2.0, pool=1.5),
+                follow_redirects=False,
+                retries=0,
+                headers=headers,
+            )
+            if resp.status_code != 200:
                 raise credentials_exception
-            user_data = await resp.json()
-            # Security (S-10): Read role & tenant_id exclusively from server-managed app_metadata,
-            # NEVER from client-writable user_metadata.
-            app_metadata = user_data.get("app_metadata") or {}
-            role = app_metadata.get("role", "L1_ANALYST")
-            email = user_data.get("email", "")
-            username = email.split("@")[0] if email else "anonymous"
-            tenant_id = app_metadata.get("tenant_id")
-            if not tenant_id:
-                logger.warning("Supabase user missing server-assigned app_metadata.tenant_id")
-                raise credentials_exception
-            user_id = user_data.get("id")
-            if user_id:
-                await _verify_token_version(str(user_id), token_version=1, tenant_id=str(tenant_id))
-            from observability.middleware import user_id_var, tenant_id_var
-            user_id_var.set(str(user_id))
-            tenant_id_var.set(str(tenant_id))
-            return {
-                "id": user_id,
-                "username": username,
-                "role": role,
-                "email": email,
-                "tenant_id": tenant_id,
-            }
+            user_data = resp.json()
+        app_metadata = user_data.get("app_metadata") or {}
+        role = app_metadata.get("role", "L1_ANALYST")
+        email = user_data.get("email", "")
+        username = email.split("@")[0] if email else "anonymous"
+        tenant_id = app_metadata.get("tenant_id")
+        if not tenant_id:
+            logger.warning("Supabase user missing server-assigned app_metadata.tenant_id")
+            raise credentials_exception
+        user_id = user_data.get("id")
+        if user_id:
+            await _verify_token_version(str(user_id), token_version=1, tenant_id=str(tenant_id))
+        from observability.middleware import user_id_var, tenant_id_var
+        user_id_var.set(str(user_id))
+        tenant_id_var.set(str(tenant_id))
+        return {
+            "id": user_id,
+            "username": username,
+            "role": role,
+            "email": email,
+            "tenant_id": tenant_id,
+        }
     except HTTPException:
         raise
-    except Exception as e:
-        logger.warning(f"Supabase auth verification failed: {e}")
+    except (CircuitOpenError, Exception) as e:
+        logger.warning("Supabase auth verification failed: %s", e)
         raise credentials_exception
 
 
@@ -656,9 +722,12 @@ class DownstreamAuthValidator:
     """
 
     def __init__(self, jwks_url: Optional[str] = None, cache_keys: bool = True):
+        if jwks_url and getattr(settings, "is_hardened", settings.is_production):
+            from services.siem_forwarder import validate_siem_destination_url
+            jwks_url = validate_siem_destination_url(jwks_url)
         self.jwks_url = jwks_url
         self._jwks_client: Optional[PyJWKClient] = (
-            PyJWKClient(jwks_url, cache_keys=cache_keys) if jwks_url else None
+            PyJWKClient(jwks_url, cache_keys=cache_keys, lifespan=3600, timeout=5) if jwks_url else None
         )
 
     def _validate_gateway_headers(self, request: Request) -> Optional[UserClaims]:

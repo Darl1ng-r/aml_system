@@ -1,10 +1,6 @@
 # ════════════════════════════════════════════════════════════════════════════
 # Dedicated Asynchronous AML Scoring Worker Deployment (V-01)
-# ════════════════════════════════════════════════════════════════════════════
-# Consumes buffered transactions from `aml.transactions.raw`, executes USD FX
-# normalization + Rules/ML/IForest/Dynamic Risk scoring, atomically persists
-# transactions/alerts/audit/outbox to PostgreSQL, and commits offsets manually
-# with DLQ (`aml.transactions.raw.dlq`) protection.
+# Hardened: tmpfs prom-multiproc, TLS cert mount, heartbeat probe, least-priv secrets
 # ════════════════════════════════════════════════════════════════════════════
 apiVersion: apps/v1
 kind: Deployment
@@ -50,21 +46,48 @@ spec:
             drop:
             - ALL
         envFrom:
-        - secretRef:
-            name: aml-secrets
         - configMapRef:
             name: aml-config
+        env:
+        - name: AML_APP_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: AML_APP_PASSWORD } }
+        - name: REDIS_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: REDIS_PASSWORD } }
+        - name: KAFKA_SASL_USERNAME
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_USERNAME, optional: true } }
+        - name: KAFKA_SASL_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_PASSWORD, optional: true } }
+        livenessProbe:
+          exec:
+            command: ["sh", "-c", "test -f /tmp/scoring_worker.hb && [ $(($(date +%s) - $(cat /tmp/scoring_worker.hb))) -lt 60 ]"]
+          initialDelaySeconds: 25
+          periodSeconds: 15
+          failureThreshold: 3
         resources:
           requests:
             cpu: "250m"
             memory: "512Mi"
+            ephemeral-storage: "128Mi"
           limits:
             cpu: "1000m"
             memory: "1Gi"
+            ephemeral-storage: "256Mi"
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        - name: prom-multiproc
+          mountPath: /tmp/prometheus_multiproc
+        - name: tls-certs
+          mountPath: /var/run/secrets/tls
+          readOnly: true
       volumes:
       - name: tmp
         emptyDir:
           sizeLimit: 128Mi
+      - name: prom-multiproc
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret

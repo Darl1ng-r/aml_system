@@ -1307,15 +1307,30 @@
       renderAlertsTable();
     }
 
+    let triageWs = null;
+    let triageWsAttempts = 0;
+    let triageWsReconnectTimer = null;
+
     function setupWebSocket() {
+      if (triageWsReconnectTimer) {
+        clearTimeout(triageWsReconnectTimer);
+        triageWsReconnectTimer = null;
+      }
+      if (triageWs) {
+        triageWs.onclose = null;
+        try { triageWs.close(); } catch (_) {}
+      }
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${proto}//${window.location.host}/ws/live-stream`;
       const ws = new WebSocket(wsUrl);
+      triageWs = ws;
       let pingTimer = null;
       const seenWsEvents = new Set();
       let wsRefreshTimer = null;
 
       ws.onopen = () => {
+        triageWsAttempts = 0;
+        if (window.SentinelShell) window.SentinelShell.setConnectionState('connected');
         pingTimer = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send('ping');
         }, 30000);
@@ -1325,6 +1340,7 @@
         try {
           if (event.data === 'pong') return;
           const msg = JSON.parse(event.data);
+          if (msg.event === 'pong') return;
           const dedupKey = msg.event_id || (msg.event && (msg.alert_id || msg.id) ? `${msg.event}:${msg.alert_id || msg.id}` : null);
           if (dedupKey) {
             if (seenWsEvents.has(dedupKey)) return;
@@ -1340,9 +1356,23 @@
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         if (pingTimer) clearInterval(pingTimer);
         if (wsRefreshTimer) clearTimeout(wsRefreshTimer);
+        if (ev && (ev.code === 1008 || ev.code === 4401 || ev.code === 4403)) {
+          if (window.SentinelShell) window.SentinelShell.setConnectionState('offline', 'Live stream closed');
+          return;
+        }
+        const ceiling = Math.min(30000, 1000 * Math.pow(2, Math.min(triageWsAttempts, 5)));
+        const delay = Math.max(500, Math.round(Math.random() * ceiling));
+        triageWsAttempts++;
+        if (window.SentinelShell) {
+          window.SentinelShell.setConnectionState(
+            triageWsAttempts >= 3 ? 'offline' : 'reconnecting',
+            `Live stream disconnected — retrying in ${(delay / 1000).toFixed(0)}s`
+          );
+        }
+        triageWsReconnectTimer = setTimeout(setupWebSocket, delay);
       };
     }
 

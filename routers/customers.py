@@ -25,15 +25,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/customers", tags=["Customer 360"])
 
 
+def _escape_ilike(val: str) -> str:
+    return val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @router.get("")
 @router.get("/")
 async def list_customers(
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=25, ge=1, le=100),
-    search: Optional[str] = Query(None, description="Search by name, account number, or BIC"),
-    risk_tier: Optional[str] = Query(None, description="Filter by risk tier (LOW, MEDIUM, HIGH, CRITICAL)"),
-    status: Optional[str] = Query(None, description="Account status (ACTIVE, FROZEN, EDD_REQUIRED)"),
-    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"]))
+    search: Optional[str] = Query(None, max_length=200, description="Search by name, account number, or BIC"),
+    risk_tier: Optional[str] = Query(None, max_length=32, description="Filter by risk tier (LOW, MEDIUM, HIGH, CRITICAL)"),
+    status: Optional[str] = Query(None, max_length=32, description="Account status (ACTIVE, FROZEN, EDD_REQUIRED)"),
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Lists customer accounts with aggregated risk status and search."""
     tenant_id = enforce_tenant_data_scope(current_user)
@@ -44,8 +49,11 @@ async def list_customers(
     p_idx = 2
 
     if search:
-        conditions.append(f"(owner_name ILIKE ${p_idx} OR account_number ILIKE ${p_idx} OR swift_bic ILIKE ${p_idx})")
-        params.append(f"%{search}%")
+        safe_search = _escape_ilike(search)
+        conditions.append(
+            f"(owner_name ILIKE ${p_idx} ESCAPE '\\' OR account_number ILIKE ${p_idx} ESCAPE '\\' OR swift_bic ILIKE ${p_idx} ESCAPE '\\')"
+        )
+        params.append(f"%{safe_search}%")
         p_idx += 1
 
     if risk_tier:
@@ -129,6 +137,7 @@ async def trigger_pkyc_delta_rescreen(
 async def list_pkyc_rescreen_runs(
     limit: int = Query(default=20, ge=1, le=100),
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR", "SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Returns audit history of Perpetual KYC delta rescreening sweeps."""
     tenant_id = enforce_tenant_data_scope(current_user)

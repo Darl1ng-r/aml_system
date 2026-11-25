@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from config import settings
 from database.postgres import init_db_pool, get_async_db_conn
 
 DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001"
@@ -60,6 +61,12 @@ def derive_risk_category(risk_score: float) -> str:
 
 
 async def enrich() -> None:
+    env = os.getenv("ENVIRONMENT", settings.environment).strip().lower()
+    if getattr(settings, "is_hardened", settings.is_production) or env in {"production", "prod", "staging"}:
+        raise RuntimeError(
+            "CRITICAL (P1-14): scripts/enrich_local_demo_data.py overwrites account/alert fields and is strictly "
+            "forbidden in production/staging environments."
+        )
     await init_db_pool()
     async with get_async_db_conn(tenant_id=DEFAULT_TENANT) as conn:
         # 1. Diversify repetitive 'Foreign Senior Official' accounts

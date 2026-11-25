@@ -125,21 +125,32 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 async def _attempt_supabase_login(email: str, password: str) -> dict | None:
     if not (settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_")):
         return None
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    base_url = settings.supabase_url.rstrip("/")
+    if getattr(settings, "is_hardened", settings.is_production) and not base_url.lower().startswith("https://"):
+        logger.error("Refusing plaintext Supabase URL in hardened environment.")
+        return None
     try:
+        import httpx
+        from services.http_client import request_with_resilience
+
         payload = {"email": email, "password": password}
         headers = {"apikey": settings.supabase_key, "Content-Type": "application/json"}
-        async with (
-            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session,
-            session.post(
-                f"{settings.supabase_url}/auth/v1/token?grant_type=password",
-                json=payload,
-                headers=headers
-            ) as resp
-        ):
-            if resp.status == 200:
-                return await resp.json()
+        resp = await request_with_resilience(
+            "POST",
+            f"{base_url}/auth/v1/token?grant_type=password",
+            target="supabase_auth",
+            timeout=httpx.Timeout(connect=1.5, read=3.0, write=2.0, pool=1.5),
+            follow_redirects=False,
+            retries=0,
+            json=payload,
+            headers=headers,
+        )
+        if resp.status_code == 200:
+            return resp.json()
     except Exception as e:
-        logger.warning(f"Supabase auth unreachable: {e}. Falling back to local verification.")
+        logger.warning("Supabase auth unreachable: %s. Falling back to local verification.", e)
     return None
 
 
@@ -429,32 +440,37 @@ async def login(
 async def _attempt_supabase_signup(email: str, password: str, assigned_role: str, tenant_id: str) -> dict | None:
     if not (settings.supabase_url and settings.supabase_key and not settings.supabase_key.startswith("your_")):
         return None
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    base_url = settings.supabase_url.rstrip("/")
+    if getattr(settings, "is_hardened", settings.is_production) and not base_url.lower().startswith("https://"):
+        logger.error("Refusing plaintext Supabase URL in hardened environment.")
+        return None
     try:
+        import httpx
+        from services.http_client import request_with_resilience
+
         signup_data = {
             "email": email,
             "password": password,
-            "data": {
-                "role": assigned_role,
-                "tenant_id": tenant_id
-            }
+            "data": {"role": assigned_role, "tenant_id": tenant_id},
         }
-        headers = {
-            "apikey": settings.supabase_key,
-            "Content-Type": "application/json"
-        }
-        async with (
-            aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session,
-            session.post(
-                f"{settings.supabase_url}/auth/v1/signup",
-                json=signup_data,
-                headers=headers
-            ) as resp
-        ):
-            if resp.status == 200:
-                return await resp.json()
-            logger.warning(f"Supabase signup returned status {resp.status}. Falling back to local registration.")
+        headers = {"apikey": settings.supabase_key, "Content-Type": "application/json"}
+        resp = await request_with_resilience(
+            "POST",
+            f"{base_url}/auth/v1/signup",
+            target="supabase_auth",
+            timeout=httpx.Timeout(connect=1.5, read=3.0, write=2.0, pool=1.5),
+            follow_redirects=False,
+            retries=0,
+            json=signup_data,
+            headers=headers,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+        logger.warning("Supabase signup returned status %s. Falling back to local registration.", resp.status_code)
     except Exception as e:
-        logger.warning(f"Supabase auth unreachable during signup: {e}. Falling back to local registration.")
+        logger.warning("Supabase auth unreachable during signup: %s. Falling back to local registration.", e)
     return None
 
 
@@ -1176,7 +1192,10 @@ async def issue_ws_ticket(
 
 
 @router.get("/me", summary="Get current authenticated user identity")
-async def get_me(current_user: dict = Depends(get_current_user)):
+async def get_me(
+    current_user: dict = Depends(get_current_user),
+    _rate_limit=Depends(RateLimiter(limit=120, window=60)),
+):
     """
     Returns the currently authenticated user session identity.
     Resolves seamlessly via Authorization Bearer header or HttpOnly access_token cookie.

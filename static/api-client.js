@@ -36,37 +36,63 @@
         return { __rawSafeHtml: true, html: String(html || '') };
     };
 
-    // 1. Global same-origin fetch wrapper for HttpOnly cookie auth, CSRF, and single-flight 401 refresh
+    // 1. Global same-origin fetch wrapper for HttpOnly cookie auth, CSRF, timeout, and single-flight 401 refresh
     if (!window.__AML_FETCH_PATCHED__) {
         const originalFetch = window.fetch.bind(window);
+        const DEFAULT_FETCH_TIMEOUT_MS = 20000;
         let refreshPromise = null;
+
+        function withTimeoutSignal(existingSignal, timeoutMs) {
+            if (existingSignal) {
+                if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function' && typeof AbortSignal.timeout === 'function') {
+                    return { signal: AbortSignal.any([existingSignal, AbortSignal.timeout(timeoutMs)]), cleanup: () => {} };
+                }
+                return { signal: existingSignal, cleanup: () => {} };
+            }
+            if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+                return { signal: AbortSignal.timeout(timeoutMs), cleanup: () => {} };
+            }
+            const ctrl = new AbortController();
+            const tid = setTimeout(() => ctrl.abort(new DOMException('Request timed out', 'TimeoutError')), timeoutMs);
+            return { signal: ctrl.signal, cleanup: () => clearTimeout(tid) };
+        }
+
+        function isStrictlySameOrigin(urlStr) {
+            try {
+                return new URL(urlStr, window.location.origin).origin === window.location.origin;
+            } catch (_) {
+                return false;
+            }
+        }
 
         async function attemptSilentRefresh() {
             if (!refreshPromise) {
+                const { signal, cleanup } = withTimeoutSignal(null, 10000);
                 refreshPromise = originalFetch('/api/v1/auth/refresh', {
                     method: 'POST',
                     headers: {
                         'X-CSRF-Protection': '1',
                         'X-Client-Mode': 'browser'
                     },
-                    credentials: 'include'
+                    credentials: 'include',
+                    signal
                 })
                     .then((r) => r.ok)
                     .catch(() => false)
-                    .finally(() => { refreshPromise = null; });
+                    .finally(() => { cleanup(); refreshPromise = null; });
             }
             return refreshPromise;
         }
 
         window.fetch = async function (resource, options = {}) {
             const urlStr = typeof resource === 'string' ? resource : (resource?.url || '');
-            const isSameOrigin =
-                urlStr.startsWith('/') ||
-                urlStr.startsWith(window.location.origin) ||
-                (!urlStr.startsWith('http://') && !urlStr.startsWith('https://'));
+            const isSameOrigin = isStrictlySameOrigin(urlStr);
+            const timeoutMs = Number(options?.timeoutMs) > 0 ? Number(options.timeoutMs) : DEFAULT_FETCH_TIMEOUT_MS;
+            const { signal, cleanup } = withTimeoutSignal(options?.signal || null, timeoutMs);
 
             if (isSameOrigin) {
-                const mergedOptions = Object.assign({}, options);
+                const mergedOptions = Object.assign({}, options, { signal });
+                delete mergedOptions.timeoutMs;
                 if (!mergedOptions.credentials) {
                     mergedOptions.credentials = 'include';
                 }
@@ -80,18 +106,37 @@
                         mergedOptions.headers || {}
                     );
                 }
-                const response = await originalFetch(resource, mergedOptions);
-                const isAuthEndpoint = /\/api\/v1\/auth\/(login|refresh|logout|register|signup)/.test(urlStr);
-                if (response.status === 401 && !isAuthEndpoint && !mergedOptions.__retriedAfterRefresh) {
-                    const refreshed = await attemptSilentRefresh();
-                    if (refreshed) {
-                        const retryOpts = Object.assign({}, mergedOptions, { __retriedAfterRefresh: true });
-                        return originalFetch(resource, retryOpts);
+                try {
+                    const response = await originalFetch(resource, mergedOptions);
+                    const isAuthEndpoint = /\/api\/v1\/auth\/(login|refresh|logout|register|signup)/.test(urlStr);
+                    if (response.status === 401 && !isAuthEndpoint && !mergedOptions.__retriedAfterRefresh) {
+                        const refreshed = await attemptSilentRefresh();
+                        if (refreshed) {
+                            const retryTimeout = withTimeoutSignal(options?.signal || null, timeoutMs);
+                            try {
+                                const retryOpts = Object.assign({}, mergedOptions, {
+                                    __retriedAfterRefresh: true,
+                                    signal: retryTimeout.signal
+                                });
+                                return await originalFetch(resource, retryOpts);
+                            } finally {
+                                retryTimeout.cleanup();
+                            }
+                        }
                     }
+                    return response;
+                } finally {
+                    cleanup();
                 }
-                return response;
             }
-            return originalFetch(resource, options);
+
+            try {
+                const extOptions = Object.assign({}, options, { signal });
+                delete extOptions.timeoutMs;
+                return await originalFetch(resource, extOptions);
+            } finally {
+                cleanup();
+            }
         };
         window.__AML_FETCH_PATCHED__ = true;
     }

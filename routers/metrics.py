@@ -119,40 +119,50 @@ ws_manager = ConnectionManager()
 
 
 async def start_redis_ws_listener(ws_mgr: ConnectionManager, shutdown_event: asyncio.Event | None = None):
-    """Background listener consuming Redis Pub/Sub events published by other pods/workers."""
+    """Background listener consuming Redis Pub/Sub events with jittered reconnect recovery (P2-23)."""
     from database.redis_db import get_async_redis_pubsub_client
-    redis = None
-    try:
-        redis = await get_async_redis_pubsub_client()
-        if not redis:
-            return
-        pubsub = redis.pubsub()
-        await pubsub.subscribe("aml:events:broadcast")
-        logger.info("Subscribed to distributed Redis WebSocket channel 'aml:events:broadcast'")
+    from services.http_client import full_jitter_backoff
 
-        while shutdown_event is None or not shutdown_event.is_set():
-            try:
+    attempt = 0
+    while shutdown_event is None or not shutdown_event.is_set():
+        redis = None
+        pubsub = None
+        try:
+            redis = await get_async_redis_pubsub_client()
+            if not redis:
+                await asyncio.sleep(full_jitter_backoff(2.0, attempt, cap=30.0))
+                attempt += 1
+                continue
+            pubsub = redis.pubsub()
+            await pubsub.subscribe("aml:events:broadcast")
+            logger.info("Subscribed to distributed Redis WebSocket channel 'aml:events:broadcast'")
+            attempt = 0
+
+            while shutdown_event is None or not shutdown_event.is_set():
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if msg and msg.get("type") == "message":
                     data = json.loads(msg["data"])
-                    # Discard if this pod/worker instance was the original sender (UUID-safe across K8s pods)
                     if data.get("sender_instance_id") == _WS_INSTANCE_ID:
                         continue
                     await ws_mgr._send_local(data.get("message", {}), data.get("target_tenant_id"))
                 await asyncio.sleep(0.05)
-            except asyncio.CancelledError:
-                raise
-            except Exception as loop_err:
-                logger.debug(f"Redis WS listener error: {loop_err}")
-                await asyncio.sleep(1.0)
-    except Exception as e:
-        logger.warning(f"Failed to start Redis WebSocket listener (standalone fallback active): {e}")
-    finally:
-        if redis:
-            try:
-                await redis.aclose()
-            except Exception:
-                pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Redis WebSocket listener disconnected (%s); reconnecting with jittered backoff.", e)
+            await asyncio.sleep(full_jitter_backoff(1.0, attempt, cap=30.0))
+            attempt += 1
+        finally:
+            if pubsub is not None:
+                try:
+                    await pubsub.close()
+                except Exception:
+                    pass
+            if redis is not None:
+                try:
+                    await redis.aclose()
+                except Exception:
+                    pass
 
 
 def _determine_risk_tier(active: int) -> str:
@@ -163,10 +173,14 @@ def _determine_risk_tier(active: int) -> str:
     return "Normal"
 
 
+from services.rate_limiter import RateLimiter, _check_local_rate_limit
+
+
 # ── Analytics API Endpoint ────────────────────────────────────────────────────
 @router.get("/api/v1/metrics/dashboard")
 async def get_dashboard_metrics(
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"]))
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     """
     Computes dynamic, non-hardcoded dashboard metrics directly from PostgreSQL:
@@ -446,7 +460,8 @@ async def _fetch_executive_analytics(conn: Any) -> tuple[list[dict], dict, list[
 
 @router.get("/api/v1/metrics/executive")
 async def get_executive_metrics(
-    current_user: dict = Depends(RoleChecker(["ANALYST", "AUDITOR", "MLRO", "ADMIN", "SUPER_ADMIN"]))
+    current_user: dict = Depends(RoleChecker(["ANALYST", "AUDITOR", "MLRO", "ADMIN", "SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     """
     Computes executive compliance KPIs, SLA breach trackers, SAR filing throughput,
@@ -585,6 +600,14 @@ async def websocket_live_stream(websocket: WebSocket, ticket: str | None = None,
     Enforces Origin CSWSH verification, single-use WS ticket or HttpOnly cookie auth,
     access-token type & revocation checks, and per-user/per-IP connection limits.
     """
+    # P1-06: Enforce per-IP WebSocket connection attempt rate limit using TrustedProxy IP resolution
+    from services.trusted_proxy import get_trusted_client_ip
+    peer_ip = get_trusted_client_ip(websocket)
+    ws_allowed, _ = _check_local_rate_limit(f"ws_connect:{peer_ip}", limit=30, window=60)
+    if not ws_allowed:
+        await websocket.close(code=1008, reason="Too many WebSocket connection attempts")
+        return
+
     if not _is_ws_origin_allowed(websocket):
         await websocket.close(code=1008, reason="Origin not permitted")
         return
@@ -601,7 +624,6 @@ async def websocket_live_stream(websocket: WebSocket, ticket: str | None = None,
         return
 
     user_id, tenant_id, role = identity
-    peer_ip = websocket.client.host if websocket.client else "unknown"
 
     user_conns = sum(1 for info in ws_manager.active_connections.values() if info.get("user_id") == user_id)
     ip_conns = sum(1 for info in ws_manager.active_connections.values() if info.get("peer_ip") == peer_ip)

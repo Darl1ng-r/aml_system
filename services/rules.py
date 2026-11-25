@@ -861,23 +861,47 @@ class RulesEngine:
 
 
 async def start_redis_rules_listener(shutdown_event=None):
-    """Listens for distributed rules cache invalidation events across horizontal pods."""
-    from database.redis_db import get_async_redis_client
+    """Listens for distributed rules cache invalidation events using dedicated Pub/Sub client (P2-23)."""
+    from database.redis_db import get_async_redis_pubsub_client
+    from services.http_client import full_jitter_backoff
     import asyncio
+
+    attempt = 0
     while shutdown_event is None or not shutdown_event.is_set():
+        redis = None
+        pubsub = None
         try:
-            redis = await get_async_redis_client()
+            redis = await get_async_redis_pubsub_client()
             if redis is None:
-                await asyncio.sleep(5)
+                await asyncio.sleep(full_jitter_backoff(2.0, attempt, cap=30.0))
+                attempt += 1
                 continue
             pubsub = redis.pubsub()
             await pubsub.subscribe("aml:rules:cache_invalidate")
             logger.info("Subscribed to Redis channel 'aml:rules:cache_invalidate'")
+            attempt = 0
             while shutdown_event is None or not shutdown_event.is_set():
                 msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if msg and msg.get("type") == "message":
                     RulesEngine.reload_config()
                 await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            logger.debug(f"Redis rules invalidation listener error: {e}")
-            await asyncio.sleep(5)
+            logger.debug("Redis rules invalidation listener error: %s", e)
+            await asyncio.sleep(full_jitter_backoff(1.0, attempt, cap=30.0))
+            attempt += 1
+        finally:
+            if pubsub is not None:
+                try:
+                    if hasattr(pubsub, "aclose"):
+                        await pubsub.aclose()
+                    else:
+                        await pubsub.close()
+                except Exception:
+                    pass
+            if redis is not None:
+                try:
+                    await redis.aclose()
+                except Exception:
+                    pass

@@ -148,10 +148,15 @@ def disambiguate_adverse_hit(
     }
 
 
-async def _fetch_gdelt_articles(subject_name: str, max_articles: int = 8) -> List[Dict[str, Any]]:
-    """Queries live GDELT 2.0 Doc API (zero-key global OSINT news feed) with short timeout."""
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        return []
+async def _fetch_gdelt_articles(subject_name: str, max_articles: int = 8) -> tuple[List[Dict[str, Any]], bool]:
+    """
+    Queries live GDELT 2.0 Doc API via pooled httpx + circuit breaker.
+    Returns (articles, had_error) so transient outages are NEVER negative-cached for 6 hours.
+    """
+    from services.http_client import CircuitOpenError, is_outbound_egress_allowed, request_with_resilience
+
+    if os.getenv("PYTEST_CURRENT_TEST") or not is_outbound_egress_allowed("gdelt_osint"):
+        return [], True
 
     query_expr = f'"{subject_name}" (laundering OR fraud OR sanctions OR bribery OR indictment OR offshore)'
     params = {
@@ -162,15 +167,22 @@ async def _fetch_gdelt_articles(subject_name: str, max_articles: int = 8) -> Lis
         "sort": "DateDesc",
     }
     try:
-        async with httpx.AsyncClient(timeout=3.0, follow_redirects=False) as client:
-            resp = await client.get(settings.adverse_media_api_url, params=params)
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
-            return list(data.get("articles") or [])
-    except Exception as exc:
-        logger.debug(f"GDELT OSINT lookup skipped/offline: {exc}")
-        return []
+        resp = await request_with_resilience(
+            "GET",
+            settings.adverse_media_api_url,
+            target="gdelt_osint",
+            timeout=httpx.Timeout(connect=1.5, read=3.0, write=2.0, pool=1.5),
+            follow_redirects=False,
+            retries=1,
+            params=params,
+        )
+        if resp.status_code != 200:
+            return [], True
+        data = resp.json()
+        return list(data.get("articles") or []), False
+    except (CircuitOpenError, Exception) as exc:
+        logger.debug("GDELT OSINT lookup skipped/offline: %s", exc)
+        return [], True
 
 
 async def screen_live_adverse_media(
@@ -208,8 +220,15 @@ async def screen_live_adverse_media(
         except Exception:
             pass
 
-    articles = articles_override if articles_override is not None else await _fetch_gdelt_articles(clean_name, max_articles)
-    source_label = "GDELT_2_0_LIVE" if articles else "GDELT_2_0_LIVE_NO_HITS"
+    if articles_override is not None:
+        articles, fetch_had_error = articles_override, False
+    else:
+        articles, fetch_had_error = await _fetch_gdelt_articles(clean_name, max_articles)
+    source_label = (
+        "GDELT_2_0_UNAVAILABLE"
+        if fetch_had_error
+        else ("GDELT_2_0_LIVE" if articles else "GDELT_2_0_LIVE_NO_HITS")
+    )
 
     adverse_hits: List[Dict[str, Any]] = []
     suppressed_count = 0
@@ -250,7 +269,8 @@ async def screen_live_adverse_media(
         "adverse_hits": adverse_hits,
     }
 
-    if articles_override is None:
+    # Never negative-cache 6h when live GDELT call errored/timed out
+    if articles_override is None and not fetch_had_error:
         try:
             redis = await get_async_redis_client()
             if redis:

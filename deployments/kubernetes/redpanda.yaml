@@ -23,6 +23,12 @@ spec:
         app: aml-redpanda
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -80,8 +86,15 @@ spec:
           name: kafka-external
         - containerPort: 8082
           name: proxy
+        - containerPort: 9644
+          name: admin-metrics
         - containerPort: 33145
           name: rpc
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
         resources:
           requests:
             cpu: "500m"
@@ -138,12 +151,14 @@ spec:
     name: kafka-internal
   - port: 9093
     name: kafka-external
+  - port: 9644
+    name: admin-metrics
   - port: 33145
     name: rpc
   selector:
     app: aml-redpanda
 ---
-# ClusterIP service for client Kafka connections
+# ClusterIP service for client Kafka connections (exposes TLS+SASL port 9093)
 apiVersion: v1
 kind: Service
 metadata:
@@ -154,7 +169,10 @@ spec:
   ports:
   - port: 9092
     targetPort: 9092
-    name: kafka
+    name: kafka-internal
+  - port: 9093
+    targetPort: 9093
+    name: kafka-tls
   - port: 8082
     targetPort: 8082
     name: proxy

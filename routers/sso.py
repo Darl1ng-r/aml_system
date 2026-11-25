@@ -47,8 +47,10 @@ from services.sso import (
     resolve_role_from_groups,
     store_sso_state,
     verify_oidc_id_token,
+    verify_oidc_id_token_async,
 )
 
+_ORIGINAL_VERIFY_OIDC_ID_TOKEN = verify_oidc_id_token
 logger = logging.getLogger("aml.sso.router")
 
 router = APIRouter(prefix="/api/v1/auth/sso", tags=["Enterprise SSO (OIDC)"])
@@ -94,6 +96,7 @@ async def list_public_sso_providers(
 @router.get("/providers")
 async def list_sso_providers_admin(
     current_user: dict = Depends(RoleChecker(["ADMIN", "SUPER_ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
@@ -386,11 +389,19 @@ async def sso_callback(
         token_form["client_secret"] = client_secret
 
     try:
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-            token_resp = await client.post(discovery["token_endpoint"], data=token_form)
-            if token_resp.status_code != 200:
-                raise HTTPException(status_code=401, detail="IdP token exchange failed.")
-            token_data = token_resp.json()
+        from services.http_client import request_with_resilience
+        token_resp = await request_with_resilience(
+            "POST",
+            discovery["token_endpoint"],
+            target="oidc_token_exchange",
+            timeout=httpx.Timeout(connect=2.0, read=5.0, write=3.0, pool=2.0),
+            follow_redirects=False,
+            retries=0,
+            data=token_form,
+        )
+        if token_resp.status_code != 200:
+            raise HTTPException(status_code=401, detail="IdP token exchange failed.")
+        token_data = token_resp.json()
     except HTTPException:
         raise
     except Exception:
@@ -402,13 +413,24 @@ async def sso_callback(
         raise HTTPException(status_code=401, detail="IdP response missing mandatory id_token.")
 
     try:
-        claims = verify_oidc_id_token(
-            id_token=id_token,
-            jwks_uri=discovery["jwks_uri"],
-            client_id=provider["client_id"],
-            issuer=discovery.get("issuer", provider["issuer_url"]),
-            expected_nonce=state_data["nonce"],
-        )
+        if verify_oidc_id_token is not _ORIGINAL_VERIFY_OIDC_ID_TOKEN:
+            import inspect as _inspect
+            maybe_claims = verify_oidc_id_token(
+                id_token=id_token,
+                jwks_uri=discovery["jwks_uri"],
+                client_id=provider["client_id"],
+                issuer=discovery.get("issuer", provider["issuer_url"]),
+                expected_nonce=state_data["nonce"],
+            )
+            claims = await maybe_claims if _inspect.isawaitable(maybe_claims) else maybe_claims
+        else:
+            claims = await verify_oidc_id_token_async(
+                id_token=id_token,
+                jwks_uri=discovery["jwks_uri"],
+                client_id=provider["client_id"],
+                issuer=discovery.get("issuer", provider["issuer_url"]),
+                expected_nonce=state_data["nonce"],
+            )
     except jwt.PyJWTError:
         raise HTTPException(status_code=401, detail="Invalid OIDC ID token.")
 

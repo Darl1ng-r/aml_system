@@ -7,7 +7,6 @@ metadata:
     app.kubernetes.io/name: aml-migration
     app.kubernetes.io/part-of: aml-platform
   annotations:
-    # Runs as a pre-sync hook in GitOps (ArgoCD) or Helm pre-upgrade hook
     helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-weight: "1"
     helm.sh/hook-delete-policy: hook-succeeded
@@ -19,15 +18,30 @@ spec:
   template:
     metadata:
       labels:
+        # P0-04: Matches NetworkPolicy allow-db-migrations-egress & allow-apps-to-postgres
+        job: aml-db-migrations
         app: aml-migration
     spec:
       automountServiceAccountToken: false
       restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: alembic-migrator
-        image: aml-fastapi-app:${IMAGE_TAG}
-        imagePullPolicy: IfNotPresent
+        image: ghcr.io/aml-sentinel/aml-fastapi-app:${IMAGE_TAG}
+        imagePullPolicy: Always
         command: ["alembic", "upgrade", "head"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
         resources:
           requests:
             cpu: "100m"
@@ -38,23 +52,36 @@ spec:
             memory: "512Mi"
             ephemeral-storage: "256Mi"
         env:
+        - name: ENVIRONMENT
+          valueFrom: { configMapKeyRef: { name: aml-config, key: ENVIRONMENT } }
+        - name: ENABLE_TLS
+          valueFrom: { configMapKeyRef: { name: aml-config, key: ENABLE_TLS } }
+        - name: STRICT_MTLS
+          valueFrom: { configMapKeyRef: { name: aml-config, key: STRICT_MTLS } }
         - name: POSTGRES_USER
           value: "postgres"
+        # P0-04: Connect directly to primary PostgreSQL:5432 for DDL locks (bypassing PgBouncer)
         - name: POSTGRES_HOST
-          valueFrom:
-            configMapKeyRef:
-              name: aml-config
-              key: POSTGRES_HOST
+          value: "aml-postgres-primary"
         - name: POSTGRES_PORT
-          valueFrom:
-            configMapKeyRef:
-              name: aml-config
-              key: POSTGRES_PORT
+          value: "5432"
         - name: POSTGRES_DB
-          valueFrom:
-            configMapKeyRef:
-              name: aml-config
-              key: POSTGRES_DB
-        envFrom:
-        - secretRef:
-            name: aml-secrets
+          valueFrom: { configMapKeyRef: { name: aml-config, key: POSTGRES_DB } }
+        # P2-19: Least-privilege secrets (DB admin + aml_app password for role sync only)
+        - name: POSTGRES_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: POSTGRES_PASSWORD } }
+        - name: AML_APP_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: AML_APP_PASSWORD } }
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: tls-certs
+          mountPath: /var/run/secrets/tls
+          readOnly: true
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 64Mi
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret

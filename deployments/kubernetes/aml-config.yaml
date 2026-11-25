@@ -1,5 +1,6 @@
 # ════════════════════════════════════════════════════════════════════════════
-# Kubernetes ConfigMap for AML System Platform
+# Kubernetes ConfigMap for AML System Platform (Base / Production Defaults)
+# Override per environment via deployments/kubernetes/overlays/{dev,staging,prod}
 # ════════════════════════════════════════════════════════════════════════════
 apiVersion: v1
 kind: ConfigMap
@@ -11,16 +12,28 @@ metadata:
     app.kubernetes.io/part-of: aml-platform
 data:
   ENVIRONMENT: "production"
+  ALLOW_OFFLINE_DEV: "false"
   ALLOW_PUBLIC_SIGNUP: "false"
-  ALLOWED_ORIGINS: "https://aml.yourdomain.com"
+  ALLOWED_ORIGINS: "https://aml.example.com"
+  PUBLIC_BASE_URL: "https://aml.example.com"
+  ALLOWED_HOSTS: "aml.example.com,aml-fastapi-service,aml-fastapi-service.aml-system.svc.cluster.local,localhost,127.0.0.1"
+  # P1-05: Explicit ingress-nginx pod CIDR so TrustedProxyMiddleware resolves genuine client IPs
+  TRUSTED_PROXY_CIDRS: "10.244.0.0/16,127.0.0.1/32"
   ENABLE_TLS: "true"
   STRICT_MTLS: "true"
   WEB_CONCURRENCY: "2"
   RUN_EMBEDDED_WORKER: "false"
+  # P0-01 / P0-10: Production S3 evidence locker & explicit FinCEN transport
+  EVIDENCE_STORAGE_BACKEND: "s3"
+  EVIDENCE_S3_BUCKET: "aml-compliance-evidence-prod"
+  EVIDENCE_S3_REGION: "us-east-1"
+  EVIDENCE_WORM_ENABLED: "true"
+  FINCEN_TRANSPORT: "rest"
+  FINCEN_SANDBOX_MODE: "false"
   # Datastore Consolidation (PostgreSQL pg_trgm + recursive CTEs as primary)
   ENABLE_NEO4J: "false"
   ENABLE_ELASTICSEARCH: "false"
-  # Corrected Kubernetes Service DNS Names
+  # Kubernetes Service DNS Names (aligned with TLS ports)
   POSTGRES_HOST: "aml-pgbouncer-service"
   POSTGRES_PORT: "6432"
   PGBOUNCER_ENABLED: "true"
@@ -30,10 +43,13 @@ data:
   POSTGRES_USER: "aml_app"
   REDIS_HOST: "aml-redis-service"
   REDIS_PORT: "6379"
-  NEO4J_URI: "bolt://aml-neo4j-service:7687"
+  NEO4J_URI: "bolt+s://aml-neo4j-service:7687"
   NEO4J_USER: "neo4j"
   ELASTICSEARCH_HOST: "https://aml-elasticsearch-service:9200"
-  KAFKA_BOOTSTRAP_SERVERS: "aml-redpanda-service:9092"
+  # P0-03: Redpanda TLS + SASL_SSL listener port (9093)
+  KAFKA_BOOTSTRAP_SERVERS: "aml-redpanda-service:9093"
+  KAFKA_SASL_MECHANISM: "SCRAM-SHA-512"
   TRANSACTIONS_TOPIC: "aml.transactions.scored"
-  OTEL_EXPORTER_ENDPOINT: "http://otel-collector.monitoring.svc.cluster.local:4317"
+  OTEL_EXPORTER_ENDPOINT: "https://otel-collector.monitoring.svc.cluster.local:4317"
+  OTEL_TRACE_SAMPLE_RATE: "0.1"
   PROMETHEUS_MULTIPROC_DIR: "/tmp/prometheus_multiproc"

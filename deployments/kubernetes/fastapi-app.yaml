@@ -31,28 +31,19 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
         prometheus.io/path: "/metrics"
-        # HashiCorp Vault Agent Injector Configuration (single unified secret-volume-path)
+        # P0-03: Single Vault PKI issue call emitting unified bundle.pem (matching cert + key + CA)
         vault.hashicorp.com/agent-inject: "true"
         vault.hashicorp.com/role: "aml-api-role"
         vault.hashicorp.com/secret-volume-path: "/var/run/secrets/tls"
-        vault.hashicorp.com/agent-inject-secret-ca.crt: "pki/issue/aml-cluster-role"
-        vault.hashicorp.com/agent-inject-template-ca.crt: |
-          {{- with secret "pki/issue/aml-cluster-role" "common_name=aml-fastapi-app.aml-system.svc.cluster.local" -}}
-          {{ .Data.issuing_ca }}
-          {{- end -}}
-        vault.hashicorp.com/agent-inject-secret-tls.crt: "pki/issue/aml-cluster-role"
-        vault.hashicorp.com/agent-inject-template-tls.crt: |
+        vault.hashicorp.com/agent-inject-secret-bundle.pem: "pki/issue/aml-cluster-role"
+        vault.hashicorp.com/agent-inject-template-bundle.pem: |
           {{- with secret "pki/issue/aml-cluster-role" "common_name=aml-fastapi-app.aml-system.svc.cluster.local" -}}
           {{ .Data.certificate }}
-          {{- end -}}
-        vault.hashicorp.com/agent-inject-secret-tls.key: "pki/issue/aml-cluster-role"
-        vault.hashicorp.com/agent-inject-template-tls.key: |
-          {{- with secret "pki/issue/aml-cluster-role" "common_name=aml-fastapi-app.aml-system.svc.cluster.local" -}}
           {{ .Data.private_key }}
+          {{ .Data.issuing_ca }}
           {{- end -}}
     spec:
       serviceAccountName: aml-fastapi-sa
-      # Required for Vault Agent Injector Kubernetes Auth method
       automountServiceAccountToken: true
       terminationGracePeriodSeconds: 35
       securityContext:
@@ -73,7 +64,6 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
       - name: fastapi-app
-        # Immutable image tag placeholder (Replaced by CI/CD with ghcr.io/<repo>:sha-<commit>)
         image: ghcr.io/aml-sentinel/aml-fastapi-app:${IMAGE_TAG}
         imagePullPolicy: Always
         ports:
@@ -95,10 +85,42 @@ spec:
             memory: "2Gi"
             ephemeral-storage: "512Mi"
         envFrom:
-        - secretRef:
-            name: aml-secrets
         - configMapRef:
             name: aml-config
+        # P2-19: Least-privilege secret injection (excludes POSTGRES_PASSWORD superuser)
+        env:
+        - name: AML_APP_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: AML_APP_PASSWORD } }
+        - name: REDIS_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: REDIS_PASSWORD } }
+        - name: JWT_PRIVATE_KEY_PEM
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: JWT_PRIVATE_KEY_PEM } }
+        - name: JWT_PREVIOUS_PUBLIC_KEY_PEM
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: JWT_PREVIOUS_PUBLIC_KEY_PEM, optional: true } }
+        - name: JWT_ALGORITHM
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: JWT_ALGORITHM } }
+        - name: PII_ENCRYPTION_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: PII_ENCRYPTION_KEY } }
+        - name: METRICS_SECRET
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: METRICS_SECRET } }
+        - name: INTERNAL_GATEWAY_SECRET
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: INTERNAL_GATEWAY_SECRET } }
+        - name: TURNSTILE_SECRET_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: TURNSTILE_SECRET_KEY, optional: true } }
+        - name: KAFKA_SASL_USERNAME
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_USERNAME, optional: true } }
+        - name: KAFKA_SASL_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_PASSWORD, optional: true } }
+        - name: EVIDENCE_S3_ACCESS_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: EVIDENCE_S3_ACCESS_KEY, optional: true } }
+        - name: EVIDENCE_S3_SECRET_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: EVIDENCE_S3_SECRET_KEY, optional: true } }
+        - name: FINCEN_API_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: FINCEN_API_KEY, optional: true } }
+        - name: SUPABASE_URL
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: SUPABASE_URL, optional: true } }
+        - name: SUPABASE_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: SUPABASE_KEY, optional: true } }
         lifecycle:
           preStop:
             exec:
@@ -107,6 +129,7 @@ spec:
           httpGet:
             path: /health/live
             port: 8000
+          timeoutSeconds: 3
           periodSeconds: 2
           failureThreshold: 30
         readinessProbe:
@@ -114,6 +137,7 @@ spec:
             path: /health/ready
             port: 8000
           initialDelaySeconds: 5
+          timeoutSeconds: 3
           periodSeconds: 5
           failureThreshold: 3
         livenessProbe:
@@ -121,15 +145,23 @@ spec:
             path: /health/live
             port: 8000
           initialDelaySeconds: 10
+          timeoutSeconds: 3
           periodSeconds: 10
           failureThreshold: 3
         volumeMounts:
         - name: tmp-volume
           mountPath: /tmp
+        # P0-01: Dedicated tmpfs mount so /tmp emptyDir never shadows PROMETHEUS_MULTIPROC_DIR
+        - name: prom-multiproc
+          mountPath: /tmp/prometheus_multiproc
       volumes:
       - name: tmp-volume
         emptyDir:
           sizeLimit: 256Mi
+      - name: prom-multiproc
+        emptyDir:
+          medium: Memory
+          sizeLimit: 64Mi
 ---
 apiVersion: v1
 kind: Service

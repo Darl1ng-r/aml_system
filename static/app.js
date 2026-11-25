@@ -3,19 +3,33 @@ window.addEventListener('unhandledrejection', (event) => {
     console.error('Unhandled Promise Rejection:', event.reason);
 });
 
-// Ensure all API calls seamlessly include HttpOnly session cookies and Anti-CSRF protection
-const _nativeFetch = window.fetch;
-window.fetch = function (url, options = {}) {
-    options = options || {};
-    options.credentials = options.credentials || 'include';
-    options.headers = options.headers || {};
-    if (options.headers instanceof Headers) {
-        options.headers.set('X-CSRF-Protection', '1');
-    } else {
-        options.headers['X-CSRF-Protection'] = '1';
-    }
-    return _nativeFetch(url, options);
-};
+// Ensure same-origin API calls include HttpOnly session cookies, Anti-CSRF, and timeout (guarded against double-patch — P2-05)
+if (!window.__AML_FETCH_PATCHED__) {
+    const _nativeFetch = window.fetch.bind(window);
+    window.fetch = function (url, options = {}) {
+        const urlStr = typeof url === 'string' ? url : (url?.url || '');
+        let sameOrigin = false;
+        try {
+            sameOrigin = new URL(urlStr, window.location.origin).origin === window.location.origin;
+        } catch (_) {
+            sameOrigin = false;
+        }
+        const merged = Object.assign({}, options || {});
+        if (!merged.signal && typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+            merged.signal = AbortSignal.timeout(20000);
+        }
+        if (sameOrigin) {
+            merged.credentials = merged.credentials || 'include';
+            if (merged.headers instanceof Headers) {
+                if (!merged.headers.has('X-CSRF-Protection')) merged.headers.set('X-CSRF-Protection', '1');
+            } else {
+                merged.headers = Object.assign({ 'X-CSRF-Protection': '1' }, merged.headers || {});
+            }
+        }
+        return _nativeFetch(url, merged);
+    };
+    window.__AML_FETCH_PATCHED__ = true;
+}
 
 const BASE_URL = window.location.origin;
 let mockMode = false;
@@ -455,9 +469,16 @@ function handleWebSocketEvent(data) {
     }
 }
 
+let wsReconnectTimer = null;
+
 function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/live-stream`;
+
+    if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+    }
 
     try {
         if (liveWebSocket) {
@@ -472,7 +493,6 @@ function initWebSocket() {
             wsReconnectAttempts = 0;
             if (window.SentinelShell) window.SentinelShell.setConnectionState('connected');
             log('Established live WebSocket connection for event feeds.', 'success');
-            // 30-second periodic heartbeat ping to prevent proxy idle timeouts
             if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
             wsHeartbeatTimer = setInterval(() => {
                 if (liveWebSocket?.readyState === WebSocket.OPEN) {
@@ -484,9 +504,8 @@ function initWebSocket() {
         liveWebSocket.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                if (data.event === 'pong') return; // Heartbeat response
+                if (data.event === 'pong') return;
 
-                // Client-side message deduplication window
                 const eventFingerprint = data.event_id || `${data.event}:${data.transaction_id || data.alert_id || ''}:${data.timestamp || ''}`;
                 if (_seenWsEvents.has(eventFingerprint)) return;
                 _seenWsEvents.add(eventFingerprint);
@@ -497,16 +516,23 @@ function initWebSocket() {
 
                 handleWebSocketEvent(data);
             } catch (e) {
-                // Ignore raw non-JSON string payloads from third-party intermediaries
+                // Ignore raw non-JSON string payloads
             }
         };
 
-        liveWebSocket.onclose = () => {
+        liveWebSocket.onclose = (ev) => {
             if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
-            // Full Jitter Exponential Backoff (1s -> 2s -> 4s -> max 30s + jitter)
-            const baseDelay = Math.min(30000, 1000 * Math.pow(2, wsReconnectAttempts));
-            const jitter = (Date.now() % 1000);
-            const retryDelay = Math.round(baseDelay + jitter);
+            // P2-06: Stop reconnecting on auth/policy denial codes (1008, 4401, 4403)
+            if (ev && (ev.code === 1008 || ev.code === 4401 || ev.code === 4403)) {
+                if (window.SentinelShell) {
+                    window.SentinelShell.setConnectionState('offline', 'Live stream closed: authentication required');
+                }
+                log(`WebSocket closed due to policy/auth (${ev.code}); automatic reconnect halted.`, 'warn');
+                return;
+            }
+            // Full Jitter Exponential Backoff using Math.random() (fixes P2-04 & P2-06)
+            const ceiling = Math.min(30000, 1000 * Math.pow(2, Math.min(wsReconnectAttempts, 5)));
+            const retryDelay = Math.max(500, Math.round(Math.random() * ceiling));
             wsReconnectAttempts++;
             if (window.SentinelShell) {
                 window.SentinelShell.setConnectionState(
@@ -515,12 +541,12 @@ function initWebSocket() {
                 );
             }
             log(`WebSocket feed disconnected. Reconnecting in ${(retryDelay / 1000).toFixed(1)}s...`, 'warn');
-            setTimeout(initWebSocket, retryDelay);
+            wsReconnectTimer = setTimeout(initWebSocket, retryDelay);
         };
     } catch (e) {
         log(`WebSocket initialization error: ${e.message}`, 'warn');
         if (wsHeartbeatTimer) clearInterval(wsHeartbeatTimer);
-        setTimeout(initWebSocket, 5000);
+        wsReconnectTimer = setTimeout(initWebSocket, Math.round(2000 + Math.random() * 3000));
     }
 }
 

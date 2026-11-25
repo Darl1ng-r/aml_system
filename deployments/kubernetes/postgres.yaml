@@ -25,15 +25,21 @@ data:
     hot_standby = on
     max_connections = 200
     password_encryption = 'scram-sha-256'
+    ssl = on
+    ssl_cert_file = '/etc/postgresql/certs/tls.crt'
+    ssl_key_file = '/etc/postgresql/certs/tls.key'
+    ssl_ca_file = '/etc/postgresql/certs/ca.crt'
+    ssl_min_protocol_version = 'TLSv1.2'
     log_line_prefix = '%m [%p] %q%u@%d '
     log_min_duration_statement = 500
 
   pg_hba.conf: |
-    # TYPE  DATABASE  USER         ADDRESS    METHOD
-    local   all       all                     trust
-    host    all       all          0.0.0.0/0  scram-sha-256
-    host    replication replicator 0.0.0.0/0  scram-sha-256
-    host    replication postgres   0.0.0.0/0  scram-sha-256
+    # TYPE    DATABASE  USER         ADDRESS        METHOD
+    local     all       all                         scram-sha-256
+    hostssl   all       all          10.0.0.0/8     scram-sha-256
+    hostssl   all       all          172.16.0.0/12  scram-sha-256
+    hostssl   replication replicator 10.0.0.0/8     scram-sha-256
+    hostssl   replication postgres   10.0.0.0/8     scram-sha-256
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -52,6 +58,13 @@ spec:
         app: aml-postgres
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
       initContainers:
       # ── Replication bootstrap (runs only on ordinal > 0) ──────────────
       - name: replica-bootstrap
@@ -167,10 +180,17 @@ spec:
           mountPath: /var/lib/postgresql/data
         - name: postgres-config
           mountPath: /etc/postgresql
+        - name: tls-certs
+          mountPath: /etc/postgresql/certs
+          readOnly: true
       volumes:
       - name: postgres-config
         configMap:
           name: aml-postgres-config
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret
+          defaultMode: 0600
   volumeClaimTemplates:
   - metadata:
       name: postgres-data

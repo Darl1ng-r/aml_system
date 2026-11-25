@@ -73,7 +73,7 @@ async def generate_str_batch(
 @router.get("/list")
 async def list_str_batches(
     limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=100000),
     current_user: dict = Depends(RoleChecker(["ADMIN", "MLRO", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):

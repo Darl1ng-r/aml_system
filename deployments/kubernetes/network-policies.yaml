@@ -1,33 +1,22 @@
 ---
 # =====================================================================
-# AML System — Kubernetes Network Policies
-# =====================================================================
-# These policies implement a default-deny-all posture, then
-# explicitly allow only the connections required by each service.
-#
-# Topology allowed after applying all policies:
-#
-#   Internet → [Ingress] → FastAPI
-#   FastAPI  → PostgreSQL, Neo4j, Redis, Elasticsearch, Redpanda
-#   Nothing  → FastAPI (except Ingress)
-#   Nothing  → backing stores directly from outside the namespace
+# AML System — Hardened Kubernetes Network Policies (Default-Deny)
+# Fixes P0-04: covers aml-scoring-worker, aml-secret-rotator,
+# aml-db-migrations label parity, outbox-relay webhooks/Redis,
+# Redpanda TLS/9093 + Prometheus/9644, and RFC1918/metadata egress blocks.
 # =====================================================================
 
-# Policy 1: Default deny all ingress + egress for every pod in namespace.
-# All specific allow rules below add on top of this baseline.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: default-deny-all
   namespace: aml-system
 spec:
-  podSelector: {}      # matches ALL pods in the namespace
+  podSelector: {}
   policyTypes:
   - Ingress
   - Egress
-
 ---
-# Policy 2: Allow ingress controller & Prometheus scraper → FastAPI (port 8000)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -44,15 +33,19 @@ spec:
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/component: controller
     - namespaceSelector:
         matchLabels:
           kubernetes.io/metadata.name: monitoring
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
     ports:
     - protocol: TCP
       port: 8000
-
 ---
-# Policy 2b: Allow FastAPI, Outbox Relay & Sync Worker → PgBouncer (port 6432)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -67,38 +60,29 @@ spec:
   - Egress
   ingress:
   - from:
-    - podSelector:
-        matchLabels:
-          app: aml-fastapi-app
-    - podSelector:
-        matchLabels:
-          app: aml-outbox-relay
-    - podSelector:
-        matchLabels:
-          app: aml-sync-worker
+    - podSelector: { matchLabels: { app: aml-fastapi-app } }
+    - podSelector: { matchLabels: { app: aml-outbox-relay } }
+    - podSelector: { matchLabels: { app: aml-scoring-worker } }
+    - podSelector: { matchLabels: { app: aml-sync-worker } }
     ports:
     - protocol: TCP
       port: 6432
   egress:
-  - ports:
-    - protocol: UDP
-      port: 53
-    - protocol: TCP
-      port: 53
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-postgres
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
     ports:
-    - protocol: TCP
-      port: 5432
-
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to:
+    - podSelector: { matchLabels: { app: aml-postgres } }
+    ports:
+    - { protocol: TCP, port: 5432 }
 ---
-# Policy 3: Allow PgBouncer, FastAPI, Workers, Migrations & Postgres Replication → PostgreSQL (5432)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-fastapi-to-postgres
+  name: allow-apps-to-postgres
   namespace: aml-system
 spec:
   podSelector:
@@ -109,48 +93,31 @@ spec:
   - Egress
   ingress:
   - from:
-    - podSelector:
-        matchLabels:
-          app: aml-pgbouncer
-    - podSelector:
-        matchLabels:
-          app: aml-fastapi-app
-    - podSelector:
-        matchLabels:
-          app: aml-sync-worker
-    - podSelector:
-        matchLabels:
-          app: aml-outbox-relay
-    - podSelector:
-        matchLabels:
-          job: aml-db-migrations
-    - podSelector:
-        matchLabels:
-          app: aml-postgres
+    - podSelector: { matchLabels: { app: aml-pgbouncer } }
+    - podSelector: { matchLabels: { app: aml-fastapi-app } }
+    - podSelector: { matchLabels: { app: aml-scoring-worker } }
+    - podSelector: { matchLabels: { app: aml-sync-worker } }
+    - podSelector: { matchLabels: { app: aml-outbox-relay } }
+    - podSelector: { matchLabels: { job: aml-db-migrations } }
+    - podSelector: { matchLabels: { app: aml-postgres } }
     ports:
-    - protocol: TCP
-      port: 5432
+    - { protocol: TCP, port: 5432 }
   egress:
-  # DNS + Primary <-> Replica streaming WAL replication
-  - ports:
-    - protocol: UDP
-      port: 53
-    - protocol: TCP
-      port: 53
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-postgres
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
     ports:
-    - protocol: TCP
-      port: 5432
-
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to:
+    - podSelector: { matchLabels: { app: aml-postgres } }
+    ports:
+    - { protocol: TCP, port: 5432 }
 ---
-# Policy 4: Allow FastAPI & Sync Worker → Neo4j (Bolt 7687, HTTP 7474)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-fastapi-to-neo4j
+  name: allow-apps-to-neo4j
   namespace: aml-system
 spec:
   podSelector:
@@ -160,24 +127,16 @@ spec:
   - Ingress
   ingress:
   - from:
-    - podSelector:
-        matchLabels:
-          app: aml-fastapi-app
-    - podSelector:
-        matchLabels:
-          app: aml-sync-worker
+    - podSelector: { matchLabels: { app: aml-fastapi-app } }
+    - podSelector: { matchLabels: { app: aml-sync-worker } }
     ports:
-    - protocol: TCP
-      port: 7687
-    - protocol: TCP
-      port: 7474
-
+    - { protocol: TCP, port: 7687 }
+    - { protocol: TCP, port: 7474 }
 ---
-# Policy 5: Allow FastAPI & Sync Worker → Redis (port 6379)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-fastapi-to-redis
+  name: allow-apps-to-redis
   namespace: aml-system
 spec:
   podSelector:
@@ -187,22 +146,17 @@ spec:
   - Ingress
   ingress:
   - from:
-    - podSelector:
-        matchLabels:
-          app: aml-fastapi-app
-    - podSelector:
-        matchLabels:
-          app: aml-sync-worker
+    - podSelector: { matchLabels: { app: aml-fastapi-app } }
+    - podSelector: { matchLabels: { app: aml-scoring-worker } }
+    - podSelector: { matchLabels: { app: aml-outbox-relay } }
+    - podSelector: { matchLabels: { app: aml-sync-worker } }
     ports:
-    - protocol: TCP
-      port: 6379
-
+    - { protocol: TCP, port: 6379 }
 ---
-# Policy 6: Allow FastAPI → Elasticsearch (port 9200)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-fastapi-to-elasticsearch
+  name: allow-apps-to-elasticsearch
   namespace: aml-system
 spec:
   podSelector:
@@ -212,19 +166,14 @@ spec:
   - Ingress
   ingress:
   - from:
-    - podSelector:
-        matchLabels:
-          app: aml-fastapi-app
+    - podSelector: { matchLabels: { app: aml-fastapi-app } }
     ports:
-    - protocol: TCP
-      port: 9200
-
+    - { protocol: TCP, port: 9200 }
 ---
-# Policy 7: Allow FastAPI & Sync Worker → Redpanda Kafka API (port 9092)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-fastapi-to-redpanda
+  name: allow-apps-to-redpanda
   namespace: aml-system
 spec:
   podSelector:
@@ -232,21 +181,41 @@ spec:
       app: aml-redpanda
   policyTypes:
   - Ingress
+  - Egress
   ingress:
   - from:
-    - podSelector:
-        matchLabels:
-          app: aml-fastapi-app
-    - podSelector:
-        matchLabels:
-          app: aml-sync-worker
+    - podSelector: { matchLabels: { app: aml-fastapi-app } }
+    - podSelector: { matchLabels: { app: aml-outbox-relay } }
+    - podSelector: { matchLabels: { app: aml-scoring-worker } }
+    - podSelector: { matchLabels: { app: aml-sync-worker } }
     ports:
-    - protocol: TCP
-      port: 9092
-
+    - { protocol: TCP, port: 9092 }
+    - { protocol: TCP, port: 9093 }
+  - from:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+      podSelector: { matchLabels: { app.kubernetes.io/name: prometheus } }
+    ports:
+    - { protocol: TCP, port: 9644 }
+  - from:
+    - podSelector: { matchLabels: { app: aml-redpanda } }
+    ports:
+    - { protocol: TCP, port: 33145 }
+    - { protocol: TCP, port: 9092 }
+    - { protocol: TCP, port: 9093 }
+  egress:
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
+    ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to:
+    - podSelector: { matchLabels: { app: aml-redpanda } }
+    ports:
+    - { protocol: TCP, port: 33145 }
+    - { protocol: TCP, port: 9092 }
+    - { protocol: TCP, port: 9093 }
 ---
-# Policy 8: Allow FastAPI egress to all backing stores and DNS
-# Without this, outbound connections from FastAPI pods are blocked.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -259,75 +228,87 @@ spec:
   policyTypes:
   - Egress
   egress:
-  # DNS resolution (kube-dns)
-  - ports:
-    - protocol: UDP
-      port: 53
-    - protocol: TCP
-      port: 53
-  # PgBouncer
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-pgbouncer
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
     ports:
-    - protocol: TCP
-      port: 6432
-  # PostgreSQL (read replica / direct)
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to: [{ podSelector: { matchLabels: { app: aml-pgbouncer } } }]
+    ports: [{ protocol: TCP, port: 6432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-neo4j } } }]
+    ports: [{ protocol: TCP, port: 7687 }, { protocol: TCP, port: 7474 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-elasticsearch } } }]
+    ports: [{ protocol: TCP, port: 9200 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
+    ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-postgres
-    ports:
-    - protocol: TCP
-      port: 5432
-  # Neo4j
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
+    ports: [{ protocol: TCP, port: 8200 }]
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-neo4j
-    ports:
-    - protocol: TCP
-      port: 7687
-    - protocol: TCP
-      port: 7474
-  # Redis
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+    ports: [{ protocol: TCP, port: 4317 }]
+  # Public Internet HTTPS & FinCEN SFTP ONLY (strictly blocks RFC1918 & cloud metadata 169.254.169.254)
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-redis
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
     ports:
-    - protocol: TCP
-      port: 6379
-  # Elasticsearch
-  - to:
-    - podSelector:
-        matchLabels:
-          app: aml-elasticsearch
-    ports:
-    - protocol: TCP
-      port: 9200
-  # Redpanda
-  - to:
-    - podSelector:
-        matchLabels:
-          app: aml-redpanda
-    ports:
-    - protocol: TCP
-      port: 9092
-  # HashiCorp Vault (8200) & OpenTelemetry Collector (4317)
-  - ports:
-    - protocol: TCP
-      port: 8200
-    - protocol: TCP
-      port: 4317
-  # External HTTPS (Supabase / HIBP / Watchlists / SIEM)
-  - ports:
-    - protocol: TCP
-      port: 443
-
+    - { protocol: TCP, port: 443 }
+    - { protocol: TCP, port: 22 }
 ---
-# Policy 9: Allow Sync Worker egress to Redpanda, Postgres, Neo4j, Redis, and DNS
+# P0-04: Scoring Worker egress (previously completely blackholed under default-deny-all)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-scoring-worker-egress
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aml-scoring-worker
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
+    ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to: [{ podSelector: { matchLabels: { app: aml-pgbouncer } } }]
+    ports: [{ protocol: TCP, port: 6432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
+    ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
+    ports: [{ protocol: TCP, port: 8200 }]
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+    ports: [{ protocol: TCP, port: 4317 }]
+  # Public HTTPS for Frankfurter FX feed (blocks RFC1918 & metadata)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+    ports: [{ protocol: TCP, port: 443 }]
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -340,49 +321,26 @@ spec:
   policyTypes:
   - Egress
   egress:
-  # DNS resolution (kube-dns)
-  - ports:
-    - protocol: UDP
-      port: 53
-    - protocol: TCP
-      port: 53
-  # PostgreSQL
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-postgres
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
     ports:
-    - protocol: TCP
-      port: 5432
-  # Neo4j
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to: [{ podSelector: { matchLabels: { app: aml-pgbouncer } } }]
+    ports: [{ protocol: TCP, port: 6432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-neo4j } } }]
+    ports: [{ protocol: TCP, port: 7687 }, { protocol: TCP, port: 7474 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
+    ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-neo4j
-    ports:
-    - protocol: TCP
-      port: 7687
-    - protocol: TCP
-      port: 7474
-  # Redis (for WebSocket event broadcast)
-  - to:
-    - podSelector:
-        matchLabels:
-          app: aml-redis
-    ports:
-    - protocol: TCP
-      port: 6379
-  # Redpanda
-  - to:
-    - podSelector:
-        matchLabels:
-          app: aml-redpanda
-    ports:
-    - protocol: TCP
-      port: 9092
-
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
+    ports: [{ protocol: TCP, port: 8200 }]
 ---
-# Policy 10: Allow Outbox Relay Worker egress (Postgres, PgBouncer, Redpanda, Redis, OTel, Vault, DNS)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -395,47 +353,37 @@ spec:
   policyTypes:
   - Egress
   egress:
-  - ports:
-    - protocol: UDP
-      port: 53
-    - protocol: TCP
-      port: 53
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-postgres
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
     ports:
-    - protocol: TCP
-      port: 5432
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-pgbouncer } } }]
+    ports: [{ protocol: TCP, port: 6432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
+    ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-pgbouncer
-    ports:
-    - protocol: TCP
-      port: 6432
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
+    ports: [{ protocol: TCP, port: 8200 }]
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-redpanda
-    ports:
-    - protocol: TCP
-      port: 9092
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+    ports: [{ protocol: TCP, port: 4317 }]
+  # P0-04: Public HTTPS egress for Core-Banking Webhooks & SIEM forwarder (blocks RFC1918 & metadata)
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-redis
-    ports:
-    - protocol: TCP
-      port: 6379
-  - ports:
-    - protocol: TCP
-      port: 8200
-    - protocol: TCP
-      port: 4317
-
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+    ports: [{ protocol: TCP, port: 443 }]
 ---
-# Policy 11: Allow Alembic DB Migration Job egress to PostgreSQL (5432) & DNS
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -448,65 +396,43 @@ spec:
   policyTypes:
   - Egress
   egress:
-  - ports:
-    - protocol: UDP
-      port: 53
-    - protocol: TCP
-      port: 53
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-postgres
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
     ports:
-    - protocol: TCP
-      port: 5432
-
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
+    ports: [{ protocol: TCP, port: 8200 }]
 ---
-# Policy 12: Allow Elasticsearch inter-node transport (9300) & Redpanda Raft (33145) + Outbox Relay → Redpanda
+# P0-04: Secret rotation CronJob egress (DNS, Vault API 8200, Kubernetes API 443/6443)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-es-and-redpanda-cluster-mesh
+  name: allow-secret-rotator-egress
   namespace: aml-system
 spec:
   podSelector:
     matchLabels:
-      app: aml-redpanda
+      app: aml-secret-rotator
   policyTypes:
-  - Ingress
   - Egress
-  ingress:
-  - from:
-    - podSelector:
-        matchLabels:
-          app: aml-outbox-relay
-    ports:
-    - protocol: TCP
-      port: 9092
-  - from:
-    - podSelector:
-        matchLabels:
-          app: aml-redpanda
-    ports:
-    - protocol: TCP
-      port: 33145
-    - protocol: TCP
-      port: 9092
   egress:
-  - ports:
-    - protocol: UDP
-      port: 53
-    - protocol: TCP
-      port: 53
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-redpanda
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
     ports:
-    - protocol: TCP
-      port: 33145
-    - protocol: TCP
-      port: 9092
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
+    ports: [{ protocol: TCP, port: 8200 }]
+  - ports:
+    - { protocol: TCP, port: 443 }
+    - { protocol: TCP, port: 6443 }
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -521,23 +447,14 @@ spec:
   - Ingress
   - Egress
   ingress:
-  - from:
-    - podSelector:
-        matchLabels:
-          app: aml-elasticsearch
-    ports:
-    - protocol: TCP
-      port: 9300
+  - from: [{ podSelector: { matchLabels: { app: aml-elasticsearch } } }]
+    ports: [{ protocol: TCP, port: 9300 }]
   egress:
-  - ports:
-    - protocol: UDP
-      port: 53
-    - protocol: TCP
-      port: 53
   - to:
-    - podSelector:
-        matchLabels:
-          app: aml-elasticsearch
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
     ports:
-    - protocol: TCP
-      port: 9300
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to: [{ podSelector: { matchLabels: { app: aml-elasticsearch } } }]
+    ports: [{ protocol: TCP, port: 9300 }]

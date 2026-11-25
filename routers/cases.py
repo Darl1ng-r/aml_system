@@ -30,9 +30,14 @@ router = APIRouter(prefix="/api/v1/cases", tags=["Case Management"])
 class CaseCreateRequest(BaseModel):
     title: str = Field(..., min_length=3, max_length=200)
     priority: str = Field("MEDIUM", pattern=r"^(LOW|MEDIUM|HIGH|CRITICAL)$")
-    subject_account_id: Optional[str] = None
-    alert_ids: List[str] = Field(default_factory=list)
+    subject_account_id: Optional[str] = Field(None, max_length=64)
+    alert_ids: List[str] = Field(default_factory=list, max_length=100)
     narrative: Optional[str] = Field(None, max_length=5000)
+
+    @field_validator("alert_ids")
+    @classmethod
+    def validate_alert_ids_elements(cls, v: List[str]) -> List[str]:
+        return [str(x).strip()[:64] for x in v]
 
     @field_validator("title", "narrative", mode="before")
     @classmethod
@@ -44,7 +49,7 @@ class CaseUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=3, max_length=200)
     priority: Optional[str] = Field(None, pattern=r"^(LOW|MEDIUM|HIGH|CRITICAL)$")
     status: Optional[str] = Field(None, pattern=r"^(OPEN|INVESTIGATING|PENDING_EDD|PENDING_SAR)$")
-    assigned_to: Optional[str] = None
+    assigned_to: Optional[str] = Field(None, max_length=64)
     narrative: Optional[str] = Field(None, max_length=5000)
 
     @field_validator("title", "narrative", mode="before")
@@ -195,7 +200,7 @@ async def create_case(
 
 @router.get("")
 async def list_cases(
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=100),
     status_filter: Optional[str] = None,
     priority_filter: Optional[str] = None,

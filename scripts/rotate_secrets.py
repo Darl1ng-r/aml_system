@@ -1,52 +1,90 @@
 """
-Secret Rotation Utility CLI Script
-====================================
-Rotates JWT signing keys and updates mounted Kubernetes secret files / environment configuration.
+Secret Rotation Utility CLI Script (RS256 Asymmetric Keypair Rotation)
+======================================================================
+Generates a fresh 2048-bit RSA private keypair and writes it safely to a 0600
+output file (never echoing private key material or active secrets to stdout).
 
 Usage:
-  python scripts/rotate_secrets.py --generate-jwt-key
-  python scripts/rotate_secrets.py --set-jwt-keys "new_key_123,old_key_456"
+  python scripts/rotate_secrets.py --generate-rsa-key --out /tmp/jwt_private.pem
+  python scripts/rotate_secrets.py --list-kids
 """
 
-import sys
-import os
-import secrets
 import argparse
+import hashlib
+import os
+import stat
+import sys
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from services.secrets_manager import get_jwt_signing_key, get_jwt_verification_keys
+from services.secrets_manager import get_jwks
 
 
-def main():
-    parser = argparse.ArgumentParser(description="AML Platform Secret Rotation Tool")
-    parser.add_argument("--generate-jwt-key", action="store_true", help="Generate a new secure 256-bit JWT secret key")
-    parser.add_argument("--set-jwt-keys", type=str, help="Set comma-separated JWT secret keys (active_key,old_key1,...)")
+def generate_rsa_keypair_to_file(out_path: str) -> str:
+    """Generates an RSA-2048 private key and writes it with 0600 permissions; returns new kid."""
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    priv_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    pub_pem = key.public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    kid = "aml-rsa-" + hashlib.sha256(pub_pem).hexdigest()[:12]
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(out_path, flags, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(fd, "wb") as f:
+        f.write(priv_pem)
+
+    pub_path = f"{out_path}.pub"
+    fd_pub = os.open(pub_path, flags, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    with os.fdopen(fd_pub, "wb") as f:
+        f.write(pub_pem)
+
+    return kid
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="AML Platform RS256 Secret Rotation Tool")
+    parser.add_argument(
+        "--generate-rsa-key",
+        action="store_true",
+        help="Generate a new 2048-bit RSA keypair to --out (mode 0600) without printing key material",
+    )
+    parser.add_argument(
+        "--out",
+        type=str,
+        default="/tmp/jwt_private.pem",
+        help="Output path for generated RSA private key PEM",
+    )
+    parser.add_argument(
+        "--list-kids",
+        action="store_true",
+        help="List currently published JWKS key IDs (public metadata only)",
+    )
     args = parser.parse_args()
 
-    if getattr(args, "generate_jwt_key", False):
-        new_key = secrets.token_hex(32)
-        current_active = get_jwt_signing_key()
-        print("\n🔑 Generated New 256-bit JWT Secret Key:")
-        print(f"  NEW ACTIVE KEY: {new_key}")
-        print("\nTo perform zero-downtime key rotation:")
-        print(f"  Set Environment Variable: JWT_SECRET_KEYS=\"{new_key},{current_active}\"")
-        print("  Or write the new active key to: /var/run/secrets/jwt_secret\n")
+    if args.generate_rsa_key:
+        kid = generate_rsa_keypair_to_file(args.out)
+        print(f"Generated RS256 keypair (kid={kid}) at {args.out} (mode 0600) and {args.out}.pub.")
+        print("Zero-downtime Vault rotation procedure:")
+        print("  1. Save current public key into Vault secret/aml/jwt previous_public_keys.")
+        print(f"  2. Write {args.out} into Vault secret/aml/jwt rsa_private_key.")
+        print("  3. Wait for access+refresh TTL grace window, then clear previous_public_keys.")
+        print(f"  4. Securely delete local file {args.out}.")
         return
 
-    if args.set_jwt_keys:
-        keys = [k.strip() for k in args.set_jwt_keys.split(",") if k.strip()]
-        print(f"\nUpdated active JWT verification keys list to: {len(keys)} keys.")
-        print(f"  Primary Active Signing Key: {keys[0]}")
-        if len(keys) > 1:
-            print(f"  Fallback Verification Keys: {keys[1:]}")
-        return
-
-    print("Current Active Verification Keys:")
-    for idx, key in enumerate(get_jwt_verification_keys()):
-        role = "PRIMARY SIGNING KEY" if idx == 0 else "FALLBACK KEY"
-        masked = key[:6] + "..." + key[-4:] if len(key) > 10 else "***"
-        print(f"  [{idx + 1}] ({role}): {masked}")
+    jwks = get_jwks()
+    print(f"Published JWKS keys ({len(jwks.get('keys', []))}):")
+    for idx, jwk in enumerate(jwks.get("keys", [])):
+        role = "PRIMARY" if idx == 0 else "GRACE_PREVIOUS"
+        print(f"  [{idx + 1}] ({role}) alg={jwk.get('alg')} kid={jwk.get('kid')}")
 
 
 if __name__ == "__main__":

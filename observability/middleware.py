@@ -33,6 +33,14 @@ import re
 
 _UUID_REGEX = re.compile(r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _NUMERIC_ID_REGEX = re.compile(r"/\d+")
+_CORRELATION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
+
+
+def sanitize_correlation_id(raw: str | None) -> str:
+    """Validates inbound X-Correlation-ID against strict charset & length (fixes P3-03)."""
+    if raw and _CORRELATION_ID_RE.fullmatch(raw.strip()):
+        return raw.strip()
+    return str(uuid.uuid4())
 
 
 def normalize_metric_path(request: Request) -> str:
@@ -58,7 +66,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        cid = request.headers.get("x-correlation-id", str(uuid.uuid4()))
+        cid = sanitize_correlation_id(request.headers.get("x-correlation-id"))
 
         # Security: Never trust raw unauthenticated X-Tenant-ID headers in log context.
         # tenant_id_var & user_id_var are populated strictly after JWT/gateway verification.

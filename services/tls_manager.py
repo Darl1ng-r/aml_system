@@ -19,15 +19,35 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
+def get_tls_cert_paths() -> tuple[str, str, str]:
+    """
+    Resolves (ca_path, cert_path, key_path).
+    Supports both separate files (ca.crt/tls.crt/tls.key) and a unified Vault PKI
+    bundle (`/var/run/secrets/tls/bundle.pem`) emitted from a single `pki/issue` call
+    so cert and key are guaranteed to share the same keypair (P0-03).
+    """
+    bundle_path = "/var/run/secrets/tls/bundle.pem"
+    if (
+        not settings.tls_ca_cert
+        and not settings.tls_client_cert
+        and not settings.tls_client_key
+        and os.path.exists(bundle_path)
+    ):
+        return bundle_path, bundle_path, bundle_path
+
+    ca_path = settings.tls_ca_cert or "/var/run/secrets/tls/ca.crt"
+    cert_path = settings.tls_client_cert or "/var/run/secrets/tls/tls.crt"
+    key_path = settings.tls_client_key or "/var/run/secrets/tls/tls.key"
+    return ca_path, cert_path, key_path
+
+
 def validate_mtls_configuration(strict: bool = False) -> None:
     """
     Validates mTLS cert paths on application startup.
     If TLS is enabled, strict_mtls is enabled, strict parameter is True, or secret mount directory exists,
     missing certificates raise a RuntimeError to prevent unintended unencrypted plaintext fallback.
     """
-    ca_path = settings.tls_ca_cert or "/var/run/secrets/tls/ca.crt"
-    cert_path = settings.tls_client_cert or "/var/run/secrets/tls/tls.crt"
-    key_path = settings.tls_client_key or "/var/run/secrets/tls/tls.key"
+    ca_path, cert_path, key_path = get_tls_cert_paths()
 
     tls_secret_dir = os.path.dirname(ca_path)
     tls_required = settings.enable_tls or getattr(settings, 'strict_mtls', False) or strict or os.path.exists(tls_secret_dir)
@@ -88,9 +108,7 @@ def get_ssl_context(purpose: ssl.Purpose = ssl.Purpose.SERVER_AUTH) -> Optional[
     Returns None if TLS is disabled and no secret certificates are mounted.
     Raises RuntimeError if TLS is required/active but certificate loading fails.
     """
-    ca_path = settings.tls_ca_cert or "/var/run/secrets/tls/ca.crt"
-    cert_path = settings.tls_client_cert or "/var/run/secrets/tls/tls.crt"
-    key_path = settings.tls_client_key or "/var/run/secrets/tls/tls.key"
+    ca_path, cert_path, key_path = get_tls_cert_paths()
 
     tls_required, tls_active = _is_tls_requested(ca_path, cert_path)
     if not tls_active:

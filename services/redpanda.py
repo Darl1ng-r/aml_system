@@ -52,6 +52,41 @@ _producer = None
 _producer_lock = asyncio.Lock()
 
 
+def build_kafka_security_kwargs() -> dict:
+    """
+    Returns AIOKafka security/TLS/SASL kwargs matching cluster configuration (fixes P0-03).
+    Supports PLAINTEXT (local dev), SSL (TLS-only), and SASL_SSL (SCRAM-SHA-512 + TLS).
+    """
+    import os
+    from config import settings
+    from services.tls_manager import get_ssl_context
+
+    kwargs: dict = {}
+    ssl_ctx = get_ssl_context()
+    sasl_user = (getattr(settings, "kafka_sasl_username", "") or os.getenv("KAFKA_SASL_USERNAME", "")).strip()
+    sasl_pass = (getattr(settings, "kafka_sasl_password", "") or os.getenv("KAFKA_SASL_PASSWORD", "")).strip()
+    sasl_mech = (getattr(settings, "kafka_sasl_mechanism", "SCRAM-SHA-512") or "SCRAM-SHA-512").strip()
+
+    if ssl_ctx and sasl_user and sasl_pass:
+        kwargs.update(
+            security_protocol="SASL_SSL",
+            ssl_context=ssl_ctx,
+            sasl_mechanism=sasl_mech,
+            sasl_plain_username=sasl_user,
+            sasl_plain_password=sasl_pass,
+        )
+    elif ssl_ctx:
+        kwargs.update(security_protocol="SSL", ssl_context=ssl_ctx)
+    elif sasl_user and sasl_pass:
+        kwargs.update(
+            security_protocol="SASL_PLAINTEXT",
+            sasl_mechanism=sasl_mech,
+            sasl_plain_username=sasl_user,
+            sasl_plain_password=sasl_pass,
+        )
+    return kwargs
+
+
 async def _get_producer():
     """
     Returns a started AIOKafkaProducer singleton.
@@ -75,10 +110,11 @@ async def _get_producer():
                 retry_backoff_ms=500,
                 request_timeout_ms=10_000,
                 compression_type="gzip",     # built-in compression (no native libsnappy dependency)
+                **build_kafka_security_kwargs(),
             )
-            await p.start()
+            await asyncio.wait_for(p.start(), timeout=15.0)
             _producer = p
-            logger.info(f"AIOKafka producer connected to {KAFKA_BOOTSTRAP_SERVERS}")
+            logger.info("AIOKafka producer connected to %s", KAFKA_BOOTSTRAP_SERVERS)
         except Exception:
             logger.exception("Failed to start Kafka producer")
             _producer = None

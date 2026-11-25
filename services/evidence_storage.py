@@ -58,16 +58,17 @@ async def scan_bytes_for_malware(data: bytes) -> Tuple[bool, str]:
                 chunk = data[idx : idx + chunk_size]
                 writer.write(struct.pack("!I", len(chunk)) + chunk)
             writer.write(struct.pack("!I", 0))
-            await writer.drain()
+            # P2-03: Bound ClamAV drain so stalled daemon cannot hang upload coroutine indefinitely
+            await asyncio.wait_for(writer.drain(), timeout=5.0)
             raw_resp = await asyncio.wait_for(reader.read(1024), timeout=5.0)
             resp_text = raw_resp.decode("utf-8", errors="ignore").strip("\x00\r\n ")
             if resp_text.endswith("OK"):
                 return True, "CLEAN_CLAMAV"
             if "FOUND" in resp_text:
-                logger.critical(f"ClamAV rejected infected evidence upload: {resp_text}")
-                return False, f"INFECTED:{resp_text}"
-            logger.warning(f"Unexpected ClamAV response: {resp_text}")
-            return False, f"SCAN_ERROR:{resp_text}"
+                logger.critical("ClamAV rejected infected evidence upload: %s", resp_text)
+                return False, "INFECTED"
+            logger.warning("Unexpected ClamAV response: %s", resp_text)
+            return False, "SCAN_ERROR"
         finally:
             writer.close()
             try:
@@ -75,8 +76,8 @@ async def scan_bytes_for_malware(data: bytes) -> Tuple[bool, str]:
             except Exception:
                 pass
     except Exception as exc:
-        logger.error(f"ClamAV scan connection failed ({host}:{port}): {exc}")
-        if settings.is_production:
+        logger.error("ClamAV scan connection failed (%s:%s): %s", host, port, exc)
+        if getattr(settings, "is_hardened", settings.is_production):
             return False, "SCAN_UNAVAILABLE_FAIL_CLOSED"
         return True, "CLEAN_SCAN_SKIPPED_DEV"
 
@@ -164,6 +165,12 @@ class S3EvidenceBackend:
         self.bucket = bucket or getattr(settings, "evidence_s3_bucket", "")
         self.region = region or getattr(settings, "evidence_s3_region", "us-east-1")
         self.endpoint = (endpoint or getattr(settings, "evidence_s3_endpoint", "")).rstrip("/")
+        if (
+            self.endpoint
+            and getattr(settings, "is_hardened", settings.is_production)
+            and not self.endpoint.lower().startswith("https://")
+        ):
+            raise ValueError("CRITICAL: Plaintext HTTP S3 evidence endpoint is forbidden in hardened environments.")
         self.access_key = access_key or getattr(settings, "evidence_s3_access_key", "")
         self.secret_key = secret_key or getattr(settings, "evidence_s3_secret_key", "")
         self.kms_key_id = kms_key_id if kms_key_id is not None else getattr(settings, "evidence_kms_key_id", "")
@@ -239,10 +246,20 @@ class S3EvidenceBackend:
             extra["x-amz-object-lock-retain-until-date"] = retain_until
 
         url, headers = self._build_url_and_headers("PUT", s3_key, payload=data, extra_headers=extra)
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.put(url, content=data, headers=headers)
-            if resp.status_code not in (200, 201):
-                raise RuntimeError(f"S3 evidence PUT failed (HTTP {resp.status_code}): {resp.text[:200]}")
+        from services.http_client import request_with_resilience
+        resp = await request_with_resilience(
+            "PUT",
+            url,
+            target="s3_evidence",
+            timeout=httpx.Timeout(connect=3.0, read=15.0, write=15.0, pool=2.0),
+            follow_redirects=False,
+            retries=2,
+            content=data,
+            headers=headers,
+        )
+        if resp.status_code not in (200, 201):
+            logger.error("S3 evidence PUT failed (HTTP %s): %s", resp.status_code, resp.text[:200])
+            raise RuntimeError(f"S3 evidence PUT failed (HTTP {resp.status_code})")
         return f"s3://{self.bucket}/{s3_key}"
 
     async def get_object(self, tenant_id: str, storage_key: str) -> bytes:
@@ -250,13 +267,21 @@ class S3EvidenceBackend:
         if not s3_key.startswith(f"evidence/{tenant_id}/"):
             raise ValueError("S3 evidence key escapes tenant namespace.")
         url, headers = self._build_url_and_headers("GET", s3_key)
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 404:
-                raise FileNotFoundError(f"S3 evidence not found: {storage_key}")
-            if resp.status_code != 200:
-                raise RuntimeError(f"S3 evidence GET failed (HTTP {resp.status_code})")
-            return resp.content
+        from services.http_client import request_with_resilience
+        resp = await request_with_resilience(
+            "GET",
+            url,
+            target="s3_evidence",
+            timeout=httpx.Timeout(connect=3.0, read=15.0, write=5.0, pool=2.0),
+            follow_redirects=False,
+            retries=2,
+            headers=headers,
+        )
+        if resp.status_code == 404:
+            raise FileNotFoundError(f"S3 evidence not found: {storage_key}")
+        if resp.status_code != 200:
+            raise RuntimeError(f"S3 evidence GET failed (HTTP {resp.status_code})")
+        return resp.content
 
     async def delete_object(self, tenant_id: str, storage_key: str) -> None:
         if self.worm_enabled:
@@ -265,8 +290,18 @@ class S3EvidenceBackend:
         if not s3_key.startswith(f"evidence/{tenant_id}/"):
             raise ValueError("S3 evidence key escapes tenant namespace.")
         url, headers = self._build_url_and_headers("DELETE", s3_key)
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.delete(url, headers=headers)
+        from services.http_client import request_with_resilience
+        resp = await request_with_resilience(
+            "DELETE",
+            url,
+            target="s3_evidence",
+            timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=2.0),
+            follow_redirects=False,
+            retries=2,
+            headers=headers,
+        )
+        if resp.status_code not in (200, 202, 204, 404):
+            raise RuntimeError(f"S3 evidence DELETE failed (HTTP {resp.status_code})")
 
 
 DEFAULT_LOCAL_EVIDENCE_DIR = os.path.abspath(

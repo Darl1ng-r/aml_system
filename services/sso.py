@@ -130,8 +130,17 @@ async def consume_sso_state(state_token: str) -> Optional[Dict[str, Any]]:
     return local_payload
 
 
+import time as _time
+from jwt import PyJWKSet
+from services.http_client import request_with_resilience
+
+_JWKS_CACHE_TTL_SECONDS = 3600
+_jwks_doc_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+_jwk_clients_cache: Dict[str, PyJWKClient] = {}
+
+
 async def fetch_oidc_discovery(issuer_url: str) -> Dict[str, Any]:
-    """Fetches & caches an IdP's OpenID Connect Discovery metadata (HTTPS + anti-SSRF)."""
+    """Fetches & caches an IdP's OpenID Connect Discovery metadata (HTTPS + anti-SSRF + pooled HTTP)."""
     clean_issuer = validate_siem_destination_url(issuer_url).rstrip("/")
     discovery_url = f"{clean_issuer}/.well-known/openid-configuration"
     cache_key = f"sso:discovery:{hashlib.sha256(clean_issuer.encode('utf-8')).hexdigest()[:16]}"
@@ -146,11 +155,17 @@ async def fetch_oidc_discovery(issuer_url: str) -> Dict[str, Any]:
     except Exception:
         redis = None
 
-    async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-        resp = await client.get(discovery_url)
-        if resp.status_code != 200:
-            raise ValueError(f"OIDC discovery failed for '{discovery_url}' (HTTP {resp.status_code}).")
-        doc = resp.json()
+    resp = await request_with_resilience(
+        "GET",
+        discovery_url,
+        target="oidc_discovery",
+        timeout=httpx.Timeout(connect=2.0, read=5.0, write=3.0, pool=2.0),
+        follow_redirects=False,
+        retries=1,
+    )
+    if resp.status_code != 200:
+        raise ValueError(f"OIDC discovery failed for '{discovery_url}' (HTTP {resp.status_code}).")
+    doc = resp.json()
 
     for req_field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
         if not doc.get(req_field):
@@ -167,6 +182,101 @@ async def fetch_oidc_discovery(issuer_url: str) -> Dict[str, Any]:
     return doc
 
 
+async def _fetch_oidc_jwks_async(jwks_uri: str, force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    P1-12: Fetches OIDC JWKS asynchronously via pooled httpx with follow_redirects=False
+    (eliminating event-loop blocking urllib calls and redirect-based SSRF bypasses)
+    with in-memory + Redis caching.
+    """
+    safe_jwks_uri = validate_siem_destination_url(jwks_uri)
+    now = _time.monotonic()
+    if not force_refresh:
+        mem = _jwks_doc_cache.get(safe_jwks_uri)
+        if mem and (now - mem[0]) < _JWKS_CACHE_TTL_SECONDS:
+            return mem[1]
+
+    cache_key = f"sso:jwks:{hashlib.sha256(safe_jwks_uri.encode('utf-8')).hexdigest()[:16]}"
+    redis = None
+    if not force_refresh:
+        try:
+            redis = await get_async_redis_client()
+            if redis:
+                cached = await redis.get(cache_key)
+                if cached:
+                    doc = json.loads(cached)
+                    _jwks_doc_cache[safe_jwks_uri] = (now, doc)
+                    return doc
+        except Exception:
+            redis = None
+
+    resp = await request_with_resilience(
+        "GET",
+        safe_jwks_uri,
+        target="oidc_jwks",
+        timeout=httpx.Timeout(connect=2.0, read=5.0, write=3.0, pool=2.0),
+        follow_redirects=False,
+        retries=1,
+    )
+    if resp.status_code != 200:
+        raise jwt.InvalidTokenError(f"Failed to retrieve IdP JWKS (HTTP {resp.status_code}).")
+    doc = resp.json()
+    if not isinstance(doc, dict) or not isinstance(doc.get("keys"), list):
+        raise jwt.InvalidTokenError("Malformed IdP JWKS payload.")
+
+    _jwks_doc_cache[safe_jwks_uri] = (now, doc)
+    try:
+        if redis is None:
+            redis = await get_async_redis_client()
+        if redis:
+            await redis.set(cache_key, json.dumps(doc), ex=_JWKS_CACHE_TTL_SECONDS)
+    except Exception:
+        pass
+    return doc
+
+
+def _select_signing_key_from_jwks(jwks_doc: Dict[str, Any], id_token: str) -> Any:
+    header = jwt.get_unverified_header(id_token)
+    kid = header.get("kid")
+    jwk_set = PyJWKSet.from_dict(jwks_doc)
+    for jwk in jwk_set.keys:
+        if kid is None or jwk.key_id == kid:
+            return jwk.key
+    raise jwt.InvalidTokenError("No matching JWK found for OIDC ID token kid.")
+
+
+async def verify_oidc_id_token_async(
+    id_token: str,
+    jwks_uri: str,
+    client_id: str,
+    issuer: str,
+    expected_nonce: str,
+    signing_key_override: Any = None,
+) -> Dict[str, Any]:
+    """Non-blocking OIDC ID Token verifier with cached async JWKS fetch & key-rotation retry."""
+    if not expected_nonce:
+        raise jwt.InvalidTokenError("Missing expected OIDC nonce.")
+
+    if signing_key_override is not None:
+        key = signing_key_override
+    else:
+        jwks_doc = await _fetch_oidc_jwks_async(jwks_uri, force_refresh=False)
+        try:
+            key = _select_signing_key_from_jwks(jwks_doc, id_token)
+        except jwt.InvalidTokenError:
+            # One forced cache refresh on unknown kid to handle IdP key rotation seamlessly
+            jwks_doc = await _fetch_oidc_jwks_async(jwks_uri, force_refresh=True)
+            key = _select_signing_key_from_jwks(jwks_doc, id_token)
+
+    return verify_oidc_id_token(
+        id_token=id_token,
+        jwks_uri=jwks_uri,
+        client_id=client_id,
+        issuer=issuer,
+        expected_nonce=expected_nonce,
+        signing_key_override=key,
+    )
+
+
 def verify_oidc_id_token(
     id_token: str,
     jwks_uri: str,
@@ -178,6 +288,7 @@ def verify_oidc_id_token(
     """
     Cryptographically verifies an OIDC ID Token using the IdP's JWKS keys,
     validating signature, exp, aud, iss, and nonce claims.
+    Uses a cached PyJWKClient with explicit 5s timeout if called synchronously.
     """
     if not expected_nonce:
         raise jwt.InvalidTokenError("Missing expected OIDC nonce.")
@@ -186,7 +297,10 @@ def verify_oidc_id_token(
         key = signing_key_override
     else:
         safe_jwks_uri = validate_siem_destination_url(jwks_uri)
-        jwk_client = PyJWKClient(safe_jwks_uri, cache_keys=True)
+        jwk_client = _jwk_clients_cache.get(safe_jwks_uri)
+        if jwk_client is None:
+            jwk_client = PyJWKClient(safe_jwks_uri, cache_keys=True, lifespan=_JWKS_CACHE_TTL_SECONDS, timeout=5)
+            _jwk_clients_cache[safe_jwks_uri] = jwk_client
         key = jwk_client.get_signing_key_from_jwt(id_token).key
 
     claims = jwt.decode(

@@ -83,11 +83,13 @@ def _get_encryption_key(tenant_id: Optional[str] = None) -> bytes:
     if env_key:
         return _derive_aes_key(env_key, tenant_id=tenant_id)
 
-    # 4. Environment-aware guard: fail closed in production
-    is_prod = os.getenv("ENVIRONMENT", "").lower() in ("production", "prod")
-    if is_prod:
+    # 4. Environment-aware guard: fail closed in production & staging (P1-01)
+    is_hardened = os.getenv("ENVIRONMENT", "").strip().lower() in ("production", "prod", "staging") or getattr(
+        settings, "is_hardened", False
+    )
+    if is_hardened:
         raise RuntimeError(
-            "FATAL (NIST SP 800-57): PII_ENCRYPTION_KEY is required in production environment. "
+            "FATAL (NIST SP 800-57): PII_ENCRYPTION_KEY is required in production environment (and staging). "
             "Reusing JWT secrets or static defaults is prohibited."
         )
 

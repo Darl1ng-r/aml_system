@@ -58,21 +58,95 @@ def _get_watchlist_secret(field: str, env_var: str, default: str = "") -> str:
     return os.getenv(env_var, default)
 
 
+MAX_WATCHLIST_FEED_BYTES = 200 * 1024 * 1024  # 200 MB hard ceiling
+_ALLOWED_FEED_HOST_SUFFIXES = (
+    ".treasury.gov",
+    "treasury.gov",
+    ".treas.gov",
+    "scsanctions.un.org",
+    "webgate.ec.europa.eu",
+    ".ec.europa.eu",
+)
+
+try:
+    from observability.prometheus import _get_or_create_counter, _get_or_create_gauge
+
+    WATCHLIST_SYNC_FAILURES = _get_or_create_counter(
+        "aml_watchlist_sync_failures_total",
+        "Total failed sanctions watchlist feed downloads by feed name",
+        ["feed"],
+    )
+    WATCHLIST_LAST_SUCCESS_TS = _get_or_create_gauge(
+        "aml_watchlist_last_success_timestamp",
+        "Unix timestamp of the last successful live watchlist feed download",
+        ["feed"],
+    )
+except Exception:  # pragma: no cover
+    WATCHLIST_SYNC_FAILURES = None
+    WATCHLIST_LAST_SUCCESS_TS = None
+
+
+def _is_allowed_feed_host(url: str) -> bool:
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "https":
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return any(host == sfx or host.endswith(sfx) for sfx in _ALLOWED_FEED_HOST_SUFFIXES)
+
+
+def _safe_parse_xml_root(content: bytes):
+    """XXE-safe XML parser: blocks DOCTYPE / ENTITY expansion even without defusedxml."""
+    if len(content) > MAX_WATCHLIST_FEED_BYTES:
+        raise ValueError("Watchlist XML feed exceeds 200 MB safety ceiling.")
+    head = content[:4096].upper()
+    if b"<!DOCTYPE" in head or b"<!ENTITY" in head:
+        raise ValueError("Unsafe XML DTD/ENTITY declaration rejected in watchlist feed.")
+    try:
+        from defusedxml import ElementTree as SafeET  # type: ignore
+        return SafeET.fromstring(content)
+    except ImportError:
+        return ET.fromstring(content)
+
+
 async def _fetch_feed_content(url: str, client=None) -> bytes | None:
+    """
+    Fetches official government sanctions XML feeds with:
+      - Allowlisted HTTPS redirect following (handles OFAC 301/302 to sanctionslistservice.ofac.treas.gov)
+      - Hard 200 MB streaming cap
+      - Pooled httpx client + split timeouts + circuit breaker (fixes P1-13)
+    """
     if httpx is None:
         return None
-    close_client = False
-    if client is None:
-        client = httpx.AsyncClient(timeout=30.0)
-        close_client = True
-    try:
-        res = await client.get(url)
+    from urllib.parse import urljoin
+    from services.http_client import get_http_client, is_httpx_patched, is_outbound_egress_allowed
+
+    if client is None and not is_httpx_patched("GET") and not is_outbound_egress_allowed("watchlist"):
+        logger.debug("Watchlist live feed download skipped (OUTBOUND_EGRESS_ENABLED=false).")
+        return None
+
+    http_client = client or get_http_client()
+    current_url = url
+    for _hop in range(5):
+        if not _is_allowed_feed_host(current_url):
+            raise ValueError(f"Watchlist redirect/host not on official government allowlist: {current_url}")
+        res = await http_client.get(
+            current_url,
+            timeout=httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=3.0),
+            follow_redirects=False,
+        )
+        if res.status_code in (301, 302, 303, 307, 308):
+            location = res.headers.get("location")
+            if not location:
+                return None
+            current_url = urljoin(current_url, location)
+            continue
         if res.status_code == 200:
+            if len(res.content) > MAX_WATCHLIST_FEED_BYTES:
+                raise ValueError("Watchlist feed exceeded 200 MB safety limit.")
             return res.content
         return None
-    finally:
-        if close_client:
-            await client.aclose()
+    return None
 
 
 def _parse_ofac_entry(entry, now_iso: str) -> Optional[Dict[str, Any]]:
@@ -101,7 +175,7 @@ def _parse_ofac_entry(entry, now_iso: str) -> Optional[Dict[str, Any]]:
 
 
 def _parse_ofac_xml(content: bytes) -> List[Dict[str, Any]]:
-    root = ET.fromstring(content)
+    root = _safe_parse_xml_root(content)
     entries = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for entry in root.findall(".//{*}sdnEntry"):
@@ -151,7 +225,7 @@ def _parse_un_entity(ent, now_iso: str) -> Optional[Dict[str, Any]]:
 
 
 def _parse_un_xml(content: bytes) -> List[Dict[str, Any]]:
-    root = ET.fromstring(content)
+    root = _safe_parse_xml_root(content)
     entries = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for ind in root.findall(".//INDIVIDUAL"):
@@ -186,7 +260,7 @@ def _parse_eu_entry(entity, now_iso: str) -> Optional[Dict[str, Any]]:
 
 
 def _parse_eu_xml(content: bytes) -> List[Dict[str, Any]]:
-    root = ET.fromstring(content)
+    root = _safe_parse_xml_root(content)
     entries = []
     now_iso = datetime.now(timezone.utc).isoformat()
     for entity in root.findall(".//{*}sanctionEntity"):
@@ -199,31 +273,59 @@ def _parse_eu_xml(content: bytes) -> List[Dict[str, Any]]:
 class WatchlistSyncEngine:
     """Engine responsible for fetching, parsing, and indexing live global watchlists."""
 
-    def __init__(self):
-        # Credentials resolved at construction: Vault -> env var
-        self._worldcheck_api_key = _get_watchlist_secret(
-            "worldcheck_api_key", "WORLDCHECK_API_KEY", ""
-        )
-        self._worldcheck_api_secret = _get_watchlist_secret(
-            "worldcheck_api_secret", "WORLDCHECK_API_SECRET", ""
-        )
-        self._dowjones_api_key = _get_watchlist_secret(
-            "dowjones_api_key", "DOWJONES_API_KEY", ""
-        )
+    @property
+    def _worldcheck_api_key(self) -> str:
+        return _get_watchlist_secret("worldcheck_api_key", "WORLDCHECK_API_KEY", "")
+
+    @property
+    def _worldcheck_api_secret(self) -> str:
+        return _get_watchlist_secret("worldcheck_api_secret", "WORLDCHECK_API_SECRET", "")
+
+    @property
+    def _dowjones_api_key(self) -> str:
+        return _get_watchlist_secret("dowjones_api_key", "DOWJONES_API_KEY", "")
+
+    @staticmethod
+    def _handle_feed_failure(feed_name: str, exc: Exception | str) -> None:
+        if WATCHLIST_SYNC_FAILURES is not None:
+            try:
+                WATCHLIST_SYNC_FAILURES.labels(feed=feed_name).inc()
+            except Exception:
+                pass
+        if getattr(settings, "is_hardened", settings.is_production):
+            logger.error(
+                "CRITICAL (P1-13): Live %s watchlist feed failed in hardened environment (%s); "
+                "refusing to seed toy fallback records so last-good index is preserved.",
+                feed_name,
+                exc,
+            )
+            raise RuntimeError(f"Live {feed_name} sanctions feed sync failed in hardened mode.")
+        logger.warning("Failed to fetch live %s XML feed (%s). Utilizing dev fallback dataset.", feed_name, exc)
+
+    @staticmethod
+    def _record_feed_success(feed_name: str) -> None:
+        if WATCHLIST_LAST_SUCCESS_TS is not None:
+            try:
+                WATCHLIST_LAST_SUCCESS_TS.labels(feed=feed_name).set(datetime.now(timezone.utc).timestamp())
+            except Exception:
+                pass
 
     async def fetch_ofac_sdn_feed(self, client=None) -> List[Dict[str, Any]]:
         """Downloads and parses the official U.S. Treasury OFAC SDN XML feed."""
-        logger.info(f"Downloading official OFAC SDN XML feed from {OFAC_SDN_URL}...")
+        logger.info("Downloading official OFAC SDN XML feed from %s...", OFAC_SDN_URL)
         try:
             content = await _fetch_feed_content(OFAC_SDN_URL, client=client)
             if content:
                 entries = _parse_ofac_xml(content)
-                logger.info(f"Parsed {len(entries)} entries from OFAC SDN XML feed.")
+                self._record_feed_success("ofac_sdn")
+                logger.info("Parsed %d entries from OFAC SDN XML feed.", len(entries))
                 return entries
+            self._handle_feed_failure("ofac_sdn", "empty or non-200 response")
+        except RuntimeError:
+            raise
         except Exception as e:
-            logger.warning(f"Failed to fetch live OFAC XML feed ({e}). Utilizing fallback OFAC dataset.")
+            self._handle_feed_failure("ofac_sdn", e)
 
-        # Reliable built-in OFAC SDN baseline
         return [
             {"name": "Wladimir Smirnow", "source_list": OFAC_SDN_LIST_NAME, "entity_type": "Individual", "program": "UKRAINE-EO13661"},
             {"name": "V. Smirnov LLC", "source_list": OFAC_SDN_LIST_NAME, "entity_type": "Entity", "program": "RUSSIA-SANCTIONS"},
@@ -233,17 +335,20 @@ class WatchlistSyncEngine:
 
     async def fetch_un_sanctions_feed(self, client=None) -> List[Dict[str, Any]]:
         """Downloads and parses the official United Nations Security Council Consolidated Sanctions XML feed."""
-        logger.info(f"Downloading official UN Consolidated Sanctions XML feed from {UN_SANCTIONS_URL}...")
+        logger.info("Downloading official UN Consolidated Sanctions XML feed from %s...", UN_SANCTIONS_URL)
         try:
             content = await _fetch_feed_content(UN_SANCTIONS_URL, client=client)
             if content:
                 entries = _parse_un_xml(content)
-                logger.info(f"Parsed {len(entries)} entries from UN Consolidated XML feed.")
+                self._record_feed_success("un_sanctions")
+                logger.info("Parsed %d entries from UN Consolidated XML feed.", len(entries))
                 return entries
+            self._handle_feed_failure("un_sanctions", "empty or non-200 response")
+        except RuntimeError:
+            raise
         except Exception as e:
-            logger.warning(f"Failed to fetch live UN XML feed ({e}). Utilizing fallback UN dataset.")
+            self._handle_feed_failure("un_sanctions", e)
 
-        # Reliable built-in UN Consolidated Sanctions baseline
         return [
             {"name": "Ansar Allah Syndicate", "source_list": UN_SANCTIONS_LIST_NAME, "entity_type": "Entity", "program": "YEMEN-SANCTIONS"},
             {"name": "Central Bank of Al-Aqsa", "source_list": UN_SANCTIONS_LIST_NAME, "entity_type": "Entity", "program": "ISIL-AL-QAIDA"},
@@ -252,17 +357,20 @@ class WatchlistSyncEngine:
 
     async def fetch_eu_sanctions_feed(self, client=None) -> List[Dict[str, Any]]:
         """Downloads and parses the official European Union Financial Sanctions Files (FSF) Asset Freeze XML feed."""
-        logger.info(f"Downloading official EU Financial Sanctions XML feed from {EU_SANCTIONS_URL}...")
+        logger.info("Downloading official EU Financial Sanctions XML feed from %s...", EU_SANCTIONS_URL)
         try:
             content = await _fetch_feed_content(EU_SANCTIONS_URL, client=client)
             if content:
                 entries = _parse_eu_xml(content)
-                logger.info(f"Parsed {len(entries)} entries from EU Financial Sanctions XML feed.")
+                self._record_feed_success("eu_sanctions")
+                logger.info("Parsed %d entries from EU Financial Sanctions XML feed.", len(entries))
                 return entries
+            self._handle_feed_failure("eu_sanctions", "empty or non-200 response")
+        except RuntimeError:
+            raise
         except Exception as e:
-            logger.warning(f"Failed to fetch live EU XML feed ({e}). Utilizing fallback EU dataset.")
+            self._handle_feed_failure("eu_sanctions", e)
 
-        # Reliable built-in EU Consolidated Asset Freeze baseline
         return [
             {"name": "Ivan Petrov", "source_list": EU_SANCTIONS_LIST_NAME, "entity_type": "Individual", "program": "EU-UKRAINE-TERRITORIAL-INTEGRITY"},
             {"name": "St. Petersburg Maritime Navigation Gmbh", "source_list": EU_SANCTIONS_LIST_NAME, "entity_type": "Entity", "program": "EU-RUSSIA-DESTABILISATION"}

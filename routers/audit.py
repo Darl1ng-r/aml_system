@@ -104,7 +104,7 @@ def _serialize_audit_row(r: dict) -> dict:
 @router.get("/logs")
 async def list_audit_logs(
     response: Response,
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=200),
     actor: Optional[str] = Query(None, description="Username or Actor ID filter"),
     action: Optional[str] = Query(None, description="Action filter (e.g. UPDATE_RULE, ACCOUNT_FROZEN)"),
@@ -282,8 +282,9 @@ async def export_audit_logs(
     p_idx = 2
 
     if actor:
-        conditions.append(f"actor_username ILIKE ${p_idx}")
-        params.append(f"%{actor}%")
+        safe_actor = actor.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions.append(f"actor_username ILIKE ${p_idx} ESCAPE '\\'")
+        params.append(f"%{safe_actor}%")
         p_idx += 1
 
     if action:
@@ -340,14 +341,30 @@ async def export_audit_logs(
             }
         )
 
-    # CSV Format
+    # CSV Format (CWE-1236 formula injection neutralization)
+    def _csv_safe(val: object) -> str:
+        s = "" if val is None else str(val)
+        if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+            return f"'{s}"
+        return s
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["ID", "Timestamp", "Actor", "Role", "IP", "Action", "ResourceType", "ResourceID", "Details"])
     for r in rows:
         ts = r["created_at"].isoformat() if r["created_at"] else ""
         det = json.dumps(r["details"]) if r["details"] else ""
-        writer.writerow([str(r["id"]), ts, r["actor_username"] or r["actor_id"], r["actor_role"], r["actor_ip"], r["action"], r["resource_type"], r["resource_id"], det])
+        writer.writerow([
+            _csv_safe(str(r["id"])),
+            _csv_safe(ts),
+            _csv_safe(r["actor_username"] or r["actor_id"]),
+            _csv_safe(r["actor_role"]),
+            _csv_safe(r["actor_ip"]),
+            _csv_safe(r["action"]),
+            _csv_safe(r["resource_type"]),
+            _csv_safe(r["resource_id"]),
+            _csv_safe(det),
+        ])
 
     csv_data = output.getvalue()
     checksum = hashlib.sha256(csv_data.encode("utf-8")).hexdigest()

@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/v1/ctr", tags=["Currency Transaction Reports (CT
 
 @router.get("/filings")
 async def list_ctr_filings(
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=100),
     status_filter: Optional[str] = None,
     current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),

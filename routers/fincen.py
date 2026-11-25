@@ -49,10 +49,10 @@ class FinCENSubmissionRequest(BaseModel):
 
 
 class SARDraftCreate(BaseModel):
-    alert_id: str
+    alert_id: str = Field(..., min_length=1, max_length=64)
     narrative: str = Field(..., min_length=10, max_length=10000)
-    xml_payload: str | None = None
-    case_id: str | None = None
+    xml_payload: str | None = Field(None, max_length=100000)
+    case_id: str | None = Field(None, max_length=64)
     status: str = Field("DRAFT", pattern=r"^(DRAFT|PENDING_MLRO_REVIEW)$")
 
     @field_validator("narrative", mode="before")
@@ -73,7 +73,7 @@ class SARDraftReview(BaseModel):
 
 class SARDraftUpdate(BaseModel):
     narrative: str | None = Field(None, min_length=10, max_length=10000)
-    xml_payload: str | None = None
+    xml_payload: str | None = Field(None, max_length=100000)
     status: str | None = Field(None, pattern=r"^(DRAFT|PENDING_MLRO_REVIEW)$")
 
     @field_validator("narrative", mode="before")
@@ -83,13 +83,18 @@ class SARDraftUpdate(BaseModel):
 
 
 class SARPreviewRequest(BaseModel):
-    alert_id: str | None = None
+    alert_id: str | None = Field(None, max_length=64)
     narrative: str = Field(..., min_length=5, max_length=10000)
     format: str = Field("FINCEN", pattern=r"^(FINCEN|GOAML)$")
-    amount: float | None = None
-    currency: str | None = "USD"
-    sender_name: str | None = None
-    receiver_name: str | None = None
+    amount: float | None = Field(None, ge=0, le=1_000_000_000_000.0)
+    currency: str | None = Field("USD", max_length=8)
+    sender_name: str | None = Field(None, max_length=200)
+    receiver_name: str | None = Field(None, max_length=200)
+
+    @field_validator("narrative", "sender_name", "receiver_name", mode="before")
+    @classmethod
+    def sanitize_preview_fields(cls, v: str | None) -> str | None:
+        return sanitize_text(v) if isinstance(v, str) else v
 
 
 def _extract_row_field(row: Any, key: str) -> Any:
@@ -1016,16 +1021,28 @@ async def export_sar_draft_xml(
 
 
 class SARNarrativeGenerationRequest(BaseModel):
-    alert_id: Optional[str] = None
-    case_id: Optional[str] = None
-    subject_name: Optional[str] = None
-    account_number: Optional[str] = None
-    counterparty_name: Optional[str] = None
-    counterparty_account: Optional[str] = None
-    amount: Optional[float] = None
-    currency: Optional[str] = "USD"
-    typologies: Optional[List[str]] = []
-    tone: Optional[str] = "FORMAL_REGULATORY"
+    alert_id: Optional[str] = Field(None, max_length=64)
+    case_id: Optional[str] = Field(None, max_length=64)
+    subject_name: Optional[str] = Field(None, max_length=200)
+    account_number: Optional[str] = Field(None, max_length=64)
+    counterparty_name: Optional[str] = Field(None, max_length=200)
+    counterparty_account: Optional[str] = Field(None, max_length=64)
+    amount: Optional[float] = Field(None, ge=0, le=1_000_000_000_000.0)
+    currency: Optional[str] = Field("USD", max_length=8)
+    typologies: Optional[List[str]] = Field(default_factory=list, max_length=25)
+    tone: Optional[str] = Field("FORMAL_REGULATORY", max_length=64)
+
+    @field_validator("subject_name", "account_number", "counterparty_name", "counterparty_account", "tone", mode="before")
+    @classmethod
+    def sanitize_narrative_req_fields(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v) if isinstance(v, str) else v
+
+    @field_validator("typologies")
+    @classmethod
+    def sanitize_typologies(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is None:
+            return []
+        return [sanitize_text(str(item))[:80] for item in v if str(item).strip()]
 
 
 def _populate_row_context(ctx: dict, row: Any) -> None:
@@ -1142,8 +1159,8 @@ async def generate_sar_narrative(
 
 
 class SARCpilotRequest(BaseModel):
-    alert_id: str
-    case_id: str | None = None
+    alert_id: str = Field(..., min_length=1, max_length=64)
+    case_id: str | None = Field(None, max_length=64)
 
 
 @router.post("/sar/copilot")
@@ -1158,6 +1175,13 @@ async def generate_sar_copilot_endpoint(
     transactions, case notes, and SHA-256 evidence artifacts with inline citations,
     reversible PII tokenization, and numerical hallucination checks.
     """
+    try:
+        uuid.UUID(payload.alert_id)
+        if payload.case_id:
+            uuid.UUID(payload.case_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid alert_id or case_id UUID format.")
+
     from services.sar_narrative import generate_grounded_sar_copilot
 
     tenant_id = enforce_tenant_data_scope(current_user)

@@ -2,7 +2,8 @@ admin:
   access_log_path: /dev/null
   address:
     socket_address:
-      address: 0.0.0.0
+      # P1-08: Loopback-only admin interface (never expose unauthenticated admin on 0.0.0.0)
+      address: 127.0.0.1
       port_value: 9901
 
 static_resources:
@@ -19,11 +20,17 @@ static_resources:
           "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
           stat_prefix: ingress_http
           codec_type: AUTO
+          use_remote_address: true
+          xff_num_trusted_hops: 1
+          server_header_transformation: PASS_THROUGH
           route_config:
             name: aml_route_config
+            response_headers_to_remove:
+            - "server"
+            - "x-envoy-upstream-service-time"
             virtual_hosts:
             - name: aml_services
-              domains: ["*"]
+              domains: ["localhost:10000", "127.0.0.1:10000", "aml.example.com", "aml-envoy-gateway:10000"]
               routes:
               # 1. IAM & Authentication Microservice Routes
               - match:
@@ -31,6 +38,9 @@ static_resources:
                 route:
                   cluster: iam_service
                   timeout: 5s
+                  retry_policy:
+                    retry_on: "connect-failure,refused-stream,reset"
+                    num_retries: 2
                   request_headers_to_remove:
                   - "x-user-id"
                   - "x-tenant-id"
@@ -38,6 +48,7 @@ static_resources:
                   - "x-user-name"
                   - "x-mfa-verified"
                   - "x-internal-gateway-token"
+                  - "x-real-ip"
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
@@ -49,6 +60,9 @@ static_resources:
                 route:
                   cluster: iam_service
                   timeout: 2s
+                  retry_policy:
+                    retry_on: "connect-failure,5xx"
+                    num_retries: 2
                   request_headers_to_remove:
                   - "x-user-id"
                   - "x-tenant-id"
@@ -60,7 +74,7 @@ static_resources:
                   prefix: "/api/v1/transactions"
                 route:
                   cluster: aml_monolith
-                  timeout: 3s
+                  timeout: 5s
                   request_headers_to_remove:
                   - "x-user-id"
                   - "x-tenant-id"
@@ -68,6 +82,7 @@ static_resources:
                   - "x-user-name"
                   - "x-mfa-verified"
                   - "x-internal-gateway-token"
+                  - "x-real-ip"
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
@@ -79,7 +94,7 @@ static_resources:
                   prefix: "/api/v1/screening"
                 route:
                   cluster: aml_monolith
-                  timeout: 4s
+                  timeout: 6s
                   request_headers_to_remove:
                   - "x-user-id"
                   - "x-tenant-id"
@@ -87,18 +102,19 @@ static_resources:
                   - "x-user-name"
                   - "x-mfa-verified"
                   - "x-internal-gateway-token"
+                  - "x-real-ip"
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
                       value: "${INTERNAL_GATEWAY_SECRET}"
                     append: false
 
-              # 4. Case Management & Regulatory Reporting Routes
+              # 4. FinCEN / Regulatory Filing Routes (aligned with 25s upstream read timeout)
               - match:
-                  prefix: "/api/v1/cases"
+                  prefix: "/api/v1/fincen"
                 route:
                   cluster: aml_monolith
-                  timeout: 10s
+                  timeout: 30s
                   request_headers_to_remove:
                   - "x-user-id"
                   - "x-tenant-id"
@@ -106,14 +122,16 @@ static_resources:
                   - "x-user-name"
                   - "x-mfa-verified"
                   - "x-internal-gateway-token"
+                  - "x-real-ip"
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
                       value: "${INTERNAL_GATEWAY_SECRET}"
                     append: false
 
+              # 5. Case Management & Regulatory Reporting Routes
               - match:
-                  prefix: "/api/v1/reports"
+                  prefix: "/api/v1/cases"
                 route:
                   cluster: aml_monolith
                   timeout: 15s
@@ -124,13 +142,33 @@ static_resources:
                   - "x-user-name"
                   - "x-mfa-verified"
                   - "x-internal-gateway-token"
+                  - "x-real-ip"
                   request_headers_to_add:
                   - header:
                       key: "x-internal-gateway-token"
                       value: "${INTERNAL_GATEWAY_SECRET}"
                     append: false
 
-              # 5. Fallback Route to Core AML Application
+              - match:
+                  prefix: "/api/v1/reports"
+                route:
+                  cluster: aml_monolith
+                  timeout: 20s
+                  request_headers_to_remove:
+                  - "x-user-id"
+                  - "x-tenant-id"
+                  - "x-user-roles"
+                  - "x-user-name"
+                  - "x-mfa-verified"
+                  - "x-internal-gateway-token"
+                  - "x-real-ip"
+                  request_headers_to_add:
+                  - header:
+                      key: "x-internal-gateway-token"
+                      value: "${INTERNAL_GATEWAY_SECRET}"
+                    append: false
+
+              # 6. Fallback Route to Core AML Application
               - match:
                   prefix: "/"
                 route:
@@ -143,19 +181,47 @@ static_resources:
                   - "x-user-name"
                   - "x-mfa-verified"
                   - "x-internal-gateway-token"
+                  - "x-real-ip"
+                  request_headers_to_add:
+                  - header:
+                      key: "x-internal-gateway-token"
+                      value: "${INTERNAL_GATEWAY_SECRET}"
+                    append: false
 
           http_filters:
+          # P1-02 / P1-08: Hard request payload cap (26 MiB) at Envoy gateway boundary
+          - name: envoy.filters.http.buffer
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+              max_request_bytes: 27262976
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
   clusters:
-  # IAM Microservice Cluster
   - name: iam_service
     connect_timeout: 0.5s
     type: STRICT_DNS
     dns_lookup_family: V4_ONLY
     lb_policy: ROUND_ROBIN
+    circuit_breakers:
+      thresholds:
+      - max_connections: 256
+        max_pending_requests: 128
+        max_requests: 512
+        max_retries: 3
+    outlier_detection:
+      consecutive_5xx: 5
+      interval: 10s
+      base_ejection_time: 30s
+      max_ejection_percent: 50
+    health_checks:
+    - timeout: 2s
+      interval: 10s
+      unhealthy_threshold: 3
+      healthy_threshold: 2
+      http_health_check:
+        path: "/health/live"
     load_assignment:
       cluster_name: iam_service
       endpoints:
@@ -166,12 +232,29 @@ static_resources:
                 address: iam-service
                 port_value: 8001
 
-  # Core Application / Strangler Fig Fallback Cluster
   - name: aml_monolith
     connect_timeout: 0.5s
     type: STRICT_DNS
     dns_lookup_family: V4_ONLY
     lb_policy: ROUND_ROBIN
+    circuit_breakers:
+      thresholds:
+      - max_connections: 512
+        max_pending_requests: 256
+        max_requests: 1024
+        max_retries: 3
+    outlier_detection:
+      consecutive_5xx: 5
+      interval: 10s
+      base_ejection_time: 30s
+      max_ejection_percent: 50
+    health_checks:
+    - timeout: 2s
+      interval: 10s
+      unhealthy_threshold: 3
+      healthy_threshold: 2
+      http_health_check:
+        path: "/health/live"
     load_assignment:
       cluster_name: aml_monolith
       endpoints:

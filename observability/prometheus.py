@@ -29,29 +29,37 @@ DURATION_BUCKETS = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 _is_multiproc = "PROMETHEUS_MULTIPROC_DIR" in os.environ
 
 if _is_multiproc:
+    # P0-01: Ensure multiproc dir exists even when K8s mounts fresh emptyDir over /tmp
+    _multiproc_dir = os.environ["PROMETHEUS_MULTIPROC_DIR"]
+    os.makedirs(_multiproc_dir, exist_ok=True)
     registry = CollectorRegistry()
     multiprocess.MultiProcessCollector(registry)
 else:
     registry = REGISTRY
 
 
-def _get_or_create_counter(name: str, documentation: str, labelnames: list[str]):
+def _get_or_create_counter(name: str, documentation: str, labelnames: list[str] | None = None):
     try:
-        return Counter(name, documentation, labelnames)
+        return Counter(name, documentation, labelnames or [])
     except ValueError:
         return REGISTRY._names_to_collectors.get(name)
 
 
-def _get_or_create_histogram(name: str, documentation: str, labelnames: list[str], buckets):
+def _get_or_create_histogram(
+    name: str,
+    documentation: str,
+    labelnames: list[str] | None = None,
+    buckets=DURATION_BUCKETS,
+):
     try:
-        return Histogram(name, documentation, labelnames, buckets=buckets)
+        return Histogram(name, documentation, labelnames or [], buckets=buckets)
     except ValueError:
         return REGISTRY._names_to_collectors.get(name)
 
 
-def _get_or_create_gauge(name: str, documentation: str):
+def _get_or_create_gauge(name: str, documentation: str, labelnames: list[str] | None = None):
     try:
-        return Gauge(name, documentation)
+        return Gauge(name, documentation, labelnames or [])
     except ValueError:
         return REGISTRY._names_to_collectors.get(name)
 

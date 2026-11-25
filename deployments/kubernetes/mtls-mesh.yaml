@@ -1,23 +1,50 @@
 # ════════════════════════════════════════════════════════════════════════════
-# Service Mesh Mutual TLS (mTLS) & Certificate Management
-# ════════════════════════════════════════════════════════════════════════════
-# Provides a STRICT namespace-wide mTLS policy for Istio / Linkerd service mesh,
-# ensuring all inter-service communications (FastAPI ↔ PostgreSQL, Neo4j,
-# Redis, Elasticsearch, Redpanda) are encrypted in-transit using mTLS certificates.
+# Internal CA Hierarchy & Service TLS Certificates (Fixes P0-03)
+# ============================================================================
+# Uses a real 2-tier cert-manager CA chain (self-signed bootstrap -> internal CA
+# -> leaf certificate with exact Kubernetes *-service & FQDN SANs).
+# NOTE: Deploy EITHER Istio mesh mTLS OR application-level TLS (ENABLE_TLS=true),
+# not both simultaneously unless Istio PERMISSIVE mode is chosen during cutover.
 # ════════════════════════════════════════════════════════════════════════════
 
-# 1. Istio Namespace-Wide Strict mTLS PeerAuthentication Policy
-apiVersion: security.istio.io/v1beta1
-kind: PeerAuthentication
+# 1. Bootstrap Self-Signed ClusterIssuer (cluster-scoped — no metadata.namespace)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
 metadata:
-  name: aml-default-strict-mtls
+  name: aml-selfsigned-bootstrap
+spec:
+  selfSigned: {}
+---
+# 2. Internal Root CA Certificate (isCA: true)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: aml-internal-ca
   namespace: aml-system
 spec:
-  mtls:
-    mode: STRICT # Enforces TLS with client certificate verification for all internal pod connections
-
+  isCA: true
+  commonName: aml-internal-ca.aml-system.svc.cluster.local
+  secretName: aml-internal-ca-secret
+  duration: 43800h # 5 years
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: aml-selfsigned-bootstrap
+    kind: ClusterIssuer
 ---
-# 2. Cert-Manager Internal Service Certificate Issuer
+# 3. Namespace CA Issuer backed by aml-internal-ca-secret
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: aml-internal-ca-issuer
+  namespace: aml-system
+spec:
+  ca:
+    secretName: aml-internal-ca-secret
+---
+# 4. Internal Service Leaf Certificate covering ALL real Kubernetes service DNS names
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -26,32 +53,34 @@ metadata:
 spec:
   secretName: aml-internal-services-tls-secret
   duration: 2160h # 90 days
-  renewBefore: 360h # 15 days before expiration
+  renewBefore: 360h
   subject:
     organizations:
     - AML Compliance Services
-  commonName: aml-fastapi-app.aml-system.svc.cluster.local
+  commonName: aml-fastapi-service.aml-system.svc.cluster.local
   dnsNames:
   - aml-fastapi-app
-  - aml-fastapi-app.aml-system.svc.cluster.local
+  - aml-fastapi-service
+  - aml-fastapi-service.aml-system.svc.cluster.local
+  - aml-pgbouncer-service
+  - aml-pgbouncer-service.aml-system.svc.cluster.local
   - aml-postgres
   - aml-postgres-primary
-  - aml-neo4j
-  - aml-redis
-  - aml-elasticsearch
-  - aml-redpanda
+  - aml-postgres-primary.aml-system.svc.cluster.local
+  - aml-postgres-replica
+  - aml-postgres-replica.aml-system.svc.cluster.local
+  - aml-postgres-service
+  - aml-postgres-service.aml-system.svc.cluster.local
+  - aml-redis-service
+  - aml-redis-service.aml-system.svc.cluster.local
+  - aml-neo4j-service
+  - aml-neo4j-service.aml-system.svc.cluster.local
+  - aml-elasticsearch-service
+  - aml-elasticsearch-service.aml-system.svc.cluster.local
+  - aml-redpanda-service
+  - aml-redpanda-service.aml-system.svc.cluster.local
+  - aml-redpanda-headless
+  - "*.aml-redpanda-headless.aml-system.svc.cluster.local"
   issuerRef:
-    name: internal-ca
-    kind: ClusterIssuer
-
----
-# 3. Cert-Manager Internal CA ClusterIssuer (Self-Signed Bootstrap CA)
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: internal-ca
-  namespace: aml-system
-spec:
-  selfSigned: {}
-
-
+    name: aml-internal-ca-issuer
+    kind: Issuer

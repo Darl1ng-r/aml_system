@@ -1,8 +1,9 @@
 # ════════════════════════════════════════════════════════════════════════════
 # Redis StatefulSet (Auth Revocations, Distributed Locks & Hot Cache)
-# ════════════════════════════════════════════════════════════════════════════
-# Converted from Deployment+RWO PVC to StatefulSet to prevent rolling-update
-# Multi-Attach volume deadlocks. Enforces --requirepass and noeviction policy.
+# Hardened (P0-03, P2-19, P2-24):
+#   - Enforces mTLS (--tls-port 6379 --port 0 --tls-auth-clients yes)
+#   - Loads requirepass from 0600 tmpfs config file (never CLI argv)
+#   - Enforces readOnlyRootFilesystem: true
 # ════════════════════════════════════════════════════════════════════════════
 apiVersion: apps/v1
 kind: StatefulSet
@@ -34,40 +35,62 @@ spec:
         image: redis:7-alpine
         env:
         - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: aml-secrets
-              key: REDIS_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: REDIS_PASSWORD } }
         - name: REDISCLI_AUTH
-          valueFrom:
-            secretKeyRef:
-              name: aml-secrets
-              key: REDIS_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: REDIS_PASSWORD } }
         command:
         - sh
+        - -eu
         - -c
-        - >
-          exec redis-server
-          --appendonly yes
-          --maxmemory 384mb
-          --maxmemory-policy noeviction
-          --requirepass "$REDIS_PASSWORD"
+        - |
+          umask 077
+          printf 'requirepass %s\n' "$REDIS_PASSWORD" > /tmp/redis-auth.conf
+          exec redis-server \
+            --include /tmp/redis-auth.conf \
+            --port 0 \
+            --tls-port 6379 \
+            --tls-cert-file /etc/redis/certs/tls.crt \
+            --tls-key-file /etc/redis/certs/tls.key \
+            --tls-ca-cert-file /etc/redis/certs/ca.crt \
+            --tls-auth-clients yes \
+            --appendonly yes \
+            --maxmemory 384mb \
+            --maxmemory-policy noeviction
         ports:
         - containerPort: 6379
           name: redisport
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop:
             - ALL
         livenessProbe:
           exec:
-            command: ["redis-cli", "ping"]
+            command:
+            - redis-cli
+            - --tls
+            - --cacert
+            - /etc/redis/certs/ca.crt
+            - --cert
+            - /etc/redis/certs/tls.crt
+            - --key
+            - /etc/redis/certs/tls.key
+            - ping
           initialDelaySeconds: 15
           periodSeconds: 10
         readinessProbe:
           exec:
-            command: ["redis-cli", "ping"]
+            command:
+            - redis-cli
+            - --tls
+            - --cacert
+            - /etc/redis/certs/ca.crt
+            - --cert
+            - /etc/redis/certs/tls.crt
+            - --key
+            - /etc/redis/certs/tls.key
+            - ping
           initialDelaySeconds: 5
           periodSeconds: 5
         resources:
@@ -82,6 +105,19 @@ spec:
         volumeMounts:
         - name: redis-data
           mountPath: /data
+        - name: tmp
+          mountPath: /tmp
+        - name: tls-certs
+          mountPath: /etc/redis/certs
+          readOnly: true
+      volumes:
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret
   volumeClaimTemplates:
   - metadata:
       name: redis-data

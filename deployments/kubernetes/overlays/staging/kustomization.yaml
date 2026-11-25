@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: aml-system-staging
+resources:
+- ../../aml-config.yaml
+- ../../aml-secrets.yaml
+- ../../fastapi-app.yaml
+- ../../outbox-relay.yaml
+- ../../scoring-worker.yaml
+- ../../network-policies.yaml
+patches:
+- target:
+    kind: ConfigMap
+    name: aml-config
+  patch: |-
+    - op: replace
+      path: /data/ENVIRONMENT
+      value: "staging"
+    - op: replace
+      path: /data/ALLOWED_ORIGINS
+      value: "https://aml-staging.example.com"
+    - op: replace
+      path: /data/PUBLIC_BASE_URL
+      value: "https://aml-staging.example.com"
+    - op: replace
+      path: /data/FINCEN_TRANSPORT
+      value: "sandbox"
+    - op: replace
+      path: /data/FINCEN_SANDBOX_MODE
+      value: "true"
+    - op: replace
+      path: /data/OUTBOUND_EGRESS_ENABLED
+      value: "false"

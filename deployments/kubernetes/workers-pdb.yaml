@@ -1,0 +1,46 @@
+# ════════════════════════════════════════════════════════════════════════════
+# PodDisruptionBudgets for Background Workers, PgBouncer & Redpanda (P2-24)
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aml-outbox-relay-pdb
+  namespace: aml-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: aml-outbox-relay
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aml-scoring-worker-pdb
+  namespace: aml-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: aml-scoring-worker
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aml-pgbouncer-pdb
+  namespace: aml-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: aml-pgbouncer
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aml-redpanda-pdb
+  namespace: aml-system
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: aml-redpanda

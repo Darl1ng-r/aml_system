@@ -1,3 +1,4 @@
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -59,8 +60,22 @@ class Settings(BaseSettings):
     enable_neo4j: bool = False
     enable_elasticsearch: bool = False
 
-    # Embedded background worker toggle (set False in multi-pod K8s where dedicated worker runs)
+    # Embedded background worker toggle (overridden to False in K8s/Compose multi-pod configs)
     run_embedded_worker: bool = True
+
+    # Cloudflare Turnstile bot mitigation secret key (required in hardened envs when Turnstile enabled)
+    turnstile_secret_key: str = ""
+
+    # Central outbound egress kill-switch for non-production isolation
+    outbound_egress_enabled: bool = True
+
+    # Explicit Host header allowlist for TrustedHostMiddleware in hardened environments
+    allowed_hosts: str = ""
+
+    # Kafka / Redpanda SASL credentials (for SASL_SSL in production)
+    kafka_sasl_username: str = ""
+    kafka_sasl_password: str = ""
+    kafka_sasl_mechanism: str = "SCRAM-SHA-512"
 
     # P0-1: Multi-Currency FX Normalization
     base_currency: str = "USD"
@@ -81,20 +96,23 @@ class Settings(BaseSettings):
 
     # P0-4: FinCEN / FIU Transport (sandbox | sftp | rest)
     fincen_transport: str = "sandbox"
+    fincen_sandbox_mode: bool = True
     fincen_sftp_host: str = ""
     fincen_sftp_port: int = 22
     fincen_sftp_username: str = ""
     fincen_sftp_remote_dir: str = "/incoming/bsa"
+    fincen_known_hosts_path: str = "/etc/aml/fincen_known_hosts"
 
     # Comma-separated list of allowed frontend origins.
     # ⚠️  Do NOT include the API server itself (localhost:8000).
     # Override via ALLOWED_ORIGINS in .env for production.
-    # Example: ALLOWED_ORIGINS=https://aml.yourdomain.com
+    # Example: ALLOWED_ORIGINS=https://aml.example.com
     allowed_origins: str = "http://localhost:3000"
 
     # OpenTelemetry / Distributed Tracing
     otel_service_name: str = "aml-platform"
     otel_exporter_endpoint: str = "http://localhost:4317"
+    otel_trace_sample_rate: float = 0.1
 
     # Sentry APM & Real-Time Error Tracking
     sentry_dsn: str | None = None
@@ -141,38 +159,74 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
+    @staticmethod
+    def _is_placeholder_secret(value: str) -> bool:
+        v = (value or "").strip()
+        if not v:
+            return False
+        upper = v.upper()
+        return (
+            upper.startswith("REPLACE_WITH_")
+            or upper.startswith("CHANGE_ME_")
+            or v.lower().startswith("your_")
+            or v == "1x0000000000000000000000000000000AA"
+        )
+
     def _check_insecure_passwords(self) -> None:
         insecure_defaults = {
             "postgrespassword",
             "passwordpassword",
+            "redispassword",
             "changeme_in_production",
             "change_me_in_production_jwt_secret_key_256bit",
             "aml_app_secure_pass_2026",
+            "1x0000000000000000000000000000000AA",
         }
         passwords = [
             ("postgres_password", self.postgres_password),
             ("neo4j_password", self.neo4j_password),
             ("elastic_password", self.elastic_password),
             ("aml_app_password", self.aml_app_password),
+            ("redis_password", self.redis_password),
+            ("turnstile_secret_key", self.turnstile_secret_key),
         ]
         for name, pw in passwords:
-            if pw in insecure_defaults:
+            if pw in insecure_defaults or self._is_placeholder_secret(pw):
                 raise ValueError(f"CRITICAL: Default {name} is forbidden in production environment!")
 
-        if self.internal_gateway_secret in {"aml-internal-gateway-secret-dev-only", ""}:
+        if not self.postgres_password.strip() and not self.aml_app_password.strip():
+            raise ValueError(
+                "CRITICAL: Either POSTGRES_PASSWORD or AML_APP_PASSWORD must be non-empty in hardened environments!"
+            )
+
+        if self.internal_gateway_secret in {"aml-internal-gateway-secret-dev-only", ""} or self._is_placeholder_secret(
+            self.internal_gateway_secret
+        ):
             raise ValueError("CRITICAL: Default internal_gateway_secret is forbidden in production environment!")
+
+        if self.vault_dev_token.strip():
+            raise ValueError("CRITICAL: VAULT_DEV_TOKEN is strictly forbidden in hardened environments!")
 
     @property
     def is_production(self) -> bool:
         """Canonical production check recognizing both 'production' and 'prod' (HARD-03)."""
         return str(self.environment).strip().lower() in {"production", "prod"}
 
+    @property
+    def is_hardened(self) -> bool:
+        """True for production, prod, AND staging so staging enforces identical security parity (P1-01)."""
+        return str(self.environment).strip().lower() in {"production", "prod", "staging"}
+
     def _check_production_origins_and_metrics(self) -> None:
-        # PRR Enforcement: In production, metrics_secret must be set and high-entropy
-        if not self.metrics_secret or len(self.metrics_secret.strip()) < 16:
+        # PRR Enforcement: In hardened envs, metrics_secret must be set, high-entropy, and non-placeholder
+        if (
+            not self.metrics_secret
+            or len(self.metrics_secret.strip()) < 16
+            or self._is_placeholder_secret(self.metrics_secret)
+        ):
             raise ValueError("CRITICAL: METRICS_SECRET must be configured with >= 16 characters in production environment!")
 
-        # PRR Enforcement: In production, allowed_origins must be explicit HTTPS domains (no wildcard, localhost, or plain HTTP)
+        # PRR Enforcement: In hardened envs, allowed_origins must be explicit HTTPS domains (no wildcard, localhost, or plain HTTP)
         origins = [o.strip().lower() for o in self.allowed_origins.split(",") if o.strip()]
         if not origins:
             raise ValueError("CRITICAL: ALLOWED_ORIGINS must define at least one explicit HTTPS origin in production!")
@@ -189,13 +243,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_settings(self):
-        if not self.is_production:
+        if not self.is_hardened:
             return self
 
         self._check_insecure_passwords()
         self._check_production_origins_and_metrics()
 
-        # Fail-Closed: Production must NEVER run in offline development mode or allow public signup
+        # Fail-Closed: Production & staging must NEVER run in offline development mode or allow public signup
         self.allow_offline_dev = False
         self.allow_public_signup = False
         return self
@@ -216,8 +270,11 @@ POSTGRES_PASSWORD = (
     if settings.postgres_user == "aml_app" and settings.aml_app_password
     else settings.postgres_password
 )
-POSTGRES_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-POSTGRES_REPLICA_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_REPLICA_HOST}:{POSTGRES_REPLICA_PORT}/{POSTGRES_DB}"
+_PG_USER_ENC = quote_plus(POSTGRES_USER)
+_PG_PASS_ENC = quote_plus(POSTGRES_PASSWORD)
+_PG_SSL_SUFFIX = "?sslmode=require" if settings.enable_tls else ""
+POSTGRES_URL = f"postgresql://{_PG_USER_ENC}:{_PG_PASS_ENC}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}{_PG_SSL_SUFFIX}"
+POSTGRES_REPLICA_URL = f"postgresql://{_PG_USER_ENC}:{_PG_PASS_ENC}@{POSTGRES_REPLICA_HOST}:{POSTGRES_REPLICA_PORT}/{POSTGRES_DB}{_PG_SSL_SUFFIX}"
 
 # Neo4j Config
 NEO4J_URI = settings.neo4j_uri

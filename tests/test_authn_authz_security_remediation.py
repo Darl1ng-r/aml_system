@@ -592,8 +592,9 @@ async def test_authn05_websocket_blocks_cswsh_refresh_token_and_prod_query_jwt()
     ws_prod = AsyncMock(spec=WebSocket)
     ws_prod.headers = {"host": "app.sentinel.example"}
     ws_prod.cookies = {}
+    prod_tok = _tok("ANALYST")
     with patch.object(settings, "environment", "prod"):
-        await websocket_live_stream(websocket=ws_prod, token=_tok("ANALYST"))
+        await websocket_live_stream(websocket=ws_prod, token=prod_tok)
     assert ws_prod.close.call_args.kwargs["code"] == 1008
 
 

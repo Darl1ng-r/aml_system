@@ -86,21 +86,55 @@ def get_fallback_fx_rate(currency: str, base_currency: str = "USD") -> float:
     return 1.0
 
 
+import asyncio as _asyncio
+import time as _time
+
+_fx_locks: Dict[str, _asyncio.Lock] = {}
+_fx_local_cache: Dict[str, tuple[float, Optional[Dict[str, float]]]] = {}
+_FX_NEGATIVE_COOLDOWN_SECONDS = 60.0
+
+
+def _get_fx_lock(base_currency: str) -> _asyncio.Lock:
+    lock = _fx_locks.get(base_currency)
+    if lock is None:
+        lock = _asyncio.Lock()
+        _fx_locks[base_currency] = lock
+    return lock
+
+
 async def _fetch_live_rates_map(base_currency: str = "USD") -> Dict[str, float] | None:
-    """Fetches latest FX table from configured ECB/Frankfurter endpoint."""
-    # Never make live external HTTP calls during automated pytest runs
-    if os.getenv("PYTEST_CURRENT_TEST"):
+    """Fetches latest FX table via pooled httpx + circuit breaker + single-flight stampede protection."""
+    from services.http_client import CircuitOpenError, is_outbound_egress_allowed, request_with_resilience
+
+    if os.getenv("PYTEST_CURRENT_TEST") or not is_outbound_egress_allowed("frankfurter_fx"):
         return None
     url = getattr(settings, "fx_rates_url", "")
     if not url:
         return None
-    try:
-        async with httpx.AsyncClient(timeout=2.0, follow_redirects=True) as client:
-            resp = await client.get(url, params={"from": base_currency})
+
+    now = _time.monotonic()
+    cached_entry = _fx_local_cache.get(base_currency)
+    if cached_entry and (now - cached_entry[0]) < _FX_NEGATIVE_COOLDOWN_SECONDS:
+        return cached_entry[1]
+
+    async with _get_fx_lock(base_currency):
+        now = _time.monotonic()
+        cached_entry = _fx_local_cache.get(base_currency)
+        if cached_entry and (now - cached_entry[0]) < _FX_NEGATIVE_COOLDOWN_SECONDS:
+            return cached_entry[1]
+        try:
+            resp = await request_with_resilience(
+                "GET",
+                url,
+                target="frankfurter_fx",
+                timeout=httpx.Timeout(connect=1.0, read=2.0, write=1.5, pool=1.0),
+                follow_redirects=False,
+                retries=1,
+                params={"from": base_currency},
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 raw_rates = data.get("rates") or {}
-                # Frankfurter returns 1 base = X target -> invert to 1 target = (1/X) base
                 converted = {base_currency: 1.0}
                 for code, val in raw_rates.items():
                     if val is None:
@@ -108,10 +142,14 @@ async def _fetch_live_rates_map(base_currency: str = "USD") -> Dict[str, float] 
                     fval = float(val)
                     if math.isfinite(fval) and fval > 0.0:
                         converted[code.upper()] = round(1.0 / fval, 8)
+                _fx_local_cache[base_currency] = (_time.monotonic(), converted)
                 return converted
-    except Exception as e:
-        logger.debug(f"Live FX rate fetch skipped/failed ({e}); using fallback table.")
-    return None
+        except (CircuitOpenError, Exception) as e:
+            logger.debug("Live FX rate fetch skipped/failed (%s); using fallback table.", e)
+
+        # Short 60s negative cooldown prevents hot-path stampede during Frankfurter/Redis outages
+        _fx_local_cache[base_currency] = (_time.monotonic(), None)
+        return None
 
 
 async def get_fx_rate(currency: str | None, base_currency: str = "USD") -> float:

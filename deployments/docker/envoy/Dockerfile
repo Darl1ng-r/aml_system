@@ -1,4 +1,6 @@
-FROM envoyproxy/envoy:v1.28-latest
-COPY envoy.yaml /etc/envoy/envoy.yaml
+FROM envoyproxy/envoy:v1.28.7
+COPY envoy.yaml /etc/envoy/envoy.yaml.tmpl
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/entrypoint.sh
 USER envoy
-CMD ["/usr/local/bin/envoy", "-c", "/etc/envoy/envoy.yaml", "--service-cluster", "aml-gateway", "--service-node", "gateway-0"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

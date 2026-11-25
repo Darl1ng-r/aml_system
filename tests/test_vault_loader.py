@@ -184,11 +184,8 @@ async def test_bootstrap_uses_dev_token_when_set(monkeypatch):
     from services import vault_loader
     vault_loader.VaultSecretsLoader._client = None
 
-    # Build URLs for all 8 secret paths (including aml/encryption for PII key)
-    all_paths = [
-        "aml/postgres", "aml/neo4j", "aml/elasticsearch",
-        "aml/jwt", "aml/encryption", "aml/fincen", "aml/watchlists", "aml/supabase"
-    ]
+    # Build URLs for all canonical Vault secret paths
+    all_paths = list(vault_loader.VAULT_SECRET_PATHS)
 
     with respx.mock:
         # No AppRole call — should not be called
@@ -239,10 +236,7 @@ async def test_bootstrap_populates_secret_store(monkeypatch):
     vault_loader.SecretStore._store.clear()
     vault_loader.SecretStore._loaded = False
 
-    all_paths = [
-        "aml/postgres", "aml/neo4j", "aml/elasticsearch",
-        "aml/jwt", "aml/encryption", "aml/fincen", "aml/watchlists", "aml/supabase"
-    ]
+    all_paths = list(vault_loader.VAULT_SECRET_PATHS)
     renew_url = f"{VAULT_ADDR}/v1/auth/token/renew-self"
 
     with respx.mock:

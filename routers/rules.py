@@ -6,7 +6,8 @@ and rule_config_history tables, with Redis pub/sub invalidation and simulation t
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from observability.sanitizer import sanitize_text
 from typing import Optional, Dict, Any, List, Tuple
 import json
 import os
@@ -39,6 +40,11 @@ class RulePatchPayload(BaseModel):
     shadow_config: Optional[Dict[str, Any]] = None
     change_reason: Optional[str] = Field("Rule threshold adjustment via Rule Builder", max_length=500)
 
+    @field_validator("change_reason", mode="before")
+    @classmethod
+    def sanitize_change_reason(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v) if v else v
+
 
 class RuleBacktestPayload(BaseModel):
     candidate_config: Dict[str, Any] = Field(default_factory=dict)
@@ -47,13 +53,33 @@ class RuleBacktestPayload(BaseModel):
 
 
 class RuleTestPayload(BaseModel):
-    sender_id: str = "ACC-SENDER-TEST"
-    receiver_id: str = "ACC-RCVR-TEST"
-    amount: float = Field(..., gt=0)
-    sender_name: Optional[str] = "John Doe"
-    sender_bic: Optional[str] = "DEUTDEDD"
-    receiver_name: Optional[str] = "Jane Smith"
-    receiver_bic: Optional[str] = "CHASUS33"
+    sender_id: str = Field("ACC-SENDER-TEST", min_length=1, max_length=100)
+    receiver_id: str = Field("ACC-RCVR-TEST", min_length=1, max_length=100)
+    amount: float = Field(..., gt=0, le=1_000_000_000_000.0)
+    sender_name: Optional[str] = Field("John Doe", max_length=200)
+    sender_bic: Optional[str] = Field("DEUTDEDD", max_length=20)
+    receiver_name: Optional[str] = Field("Jane Smith", max_length=200)
+    receiver_bic: Optional[str] = Field("CHASUS33", max_length=20)
+
+    @field_validator("sender_id", "receiver_id", "sender_name", "sender_bic", "receiver_name", "receiver_bic", mode="before")
+    @classmethod
+    def sanitize_rule_test_strings(cls, v: Optional[str]) -> Optional[str]:
+        return sanitize_text(v) if isinstance(v, str) else v
+
+
+class LegacyRulesConfigPayload(BaseModel):
+    """Strict bounded schema replacing raw untyped `dict` on PUT /api/v1/rules/config (P2-10)."""
+    rules: Dict[str, Dict[str, Any]] = Field(..., min_length=1)
+
+    @field_validator("rules")
+    @classmethod
+    def validate_rules_bounds(cls, v: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        if len(v) > 100:
+            raise ValueError("rules map cannot exceed 100 entries.")
+        serialized = json.dumps(v)
+        if len(serialized) > 256 * 1024:
+            raise ValueError("Serialized rules payload exceeds 256 KB limit.")
+        return v
 
 
 @router.get("", response_model=List[Dict[str, Any]])
@@ -441,13 +467,12 @@ async def get_legacy_rules_config(
 
 @router.put("/config")
 async def update_legacy_rules_config(
-    payload: dict,
+    payload_model: LegacyRulesConfigPayload,
     current_user: dict = Depends(RoleChecker(["SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60)),
 ):
     """Global rules defaults update (SUPER_ADMIN only) writing to DB, local file, and Redis."""
-    if "rules" not in payload:
-        raise HTTPException(status_code=400, detail="Invalid format: 'rules' required")
+    payload = payload_model.model_dump()
     try:
         # 1. Persist to PostgreSQL if available
         try:

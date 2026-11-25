@@ -20,6 +20,13 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Destructive / dev-only scripts must never ship in production container images (P1-14)
+scripts/init_db.py
+scripts/repair_local_audit_chain.py
+scripts/enrich_local_demo_data.py
+scripts/vault_bootstrap.sh
+scripts/rotate_secrets.py
+
 # Git, CI, docs & test artifacts
 .git/
 .github/

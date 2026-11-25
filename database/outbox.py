@@ -160,9 +160,11 @@ async def mark_outbox_event_failed(
     base_backoff_seconds: float = 5.0,
 ) -> None:
     """
-    Records an outbox publishing failure with retry counting, exponential backoff
-    (`next_retry_at` in headers: 5s, 10s, 20s, 40s, 80s...), and DLQ routing.
+    Records an outbox publishing failure with retry counting, full-jitter exponential
+    backoff (`next_retry_at` in headers; fixes P2-04), and DLQ routing.
     """
+    import random
+    jitter_factor = random.uniform(0.25, 1.0)
     query = """
         UPDATE transactional_outbox
         SET retry_count = retry_count + 1,
@@ -174,14 +176,21 @@ async def mark_outbox_event_failed(
                     COALESCE(headers, '{}'::jsonb),
                     '{next_retry_at}',
                     to_jsonb(
-                        (NOW() + make_interval(secs => ($4::double precision * POWER(2, LEAST(retry_count, 8)))))::text
+                        (NOW() + make_interval(secs => ($4::double precision * POWER(2, LEAST(retry_count, 8)) * $5::double precision)))::text
                     )
                 )
             END
         WHERE id = $1::uuid
         RETURNING retry_count, status;
     """
-    row = await conn.fetchrow(query, event_id, error_msg, max_retries, float(base_backoff_seconds))
+    row = await conn.fetchrow(
+        query,
+        event_id,
+        error_msg,
+        max_retries,
+        float(base_backoff_seconds),
+        float(jitter_factor),
+    )
     if row and row["status"] == "FAILED":
         logger.critical(
             f"[OUTBOX-DLQ] Outbox event {event_id} marked as FAILED after {row['retry_count']} retries. "
@@ -249,7 +258,7 @@ class OutboxRelayEngine:
             return False
 
     async def _fetch_pending_batch(self, pool: Any) -> list[dict]:
-        async with pool.acquire() as conn, conn.transaction():
+        async with pool.acquire(timeout=5.0) as conn, conn.transaction():
             return await fetch_pending_outbox_events(
                 conn, limit=self.batch_size, lease_id=self.worker_id
             )
@@ -318,7 +327,7 @@ class OutboxRelayEngine:
         published_ids: list[str],
         failed_records: list[tuple[str, str]],
     ) -> None:
-        async with pool.acquire() as conn, conn.transaction():
+        async with pool.acquire(timeout=5.0) as conn, conn.transaction():
             if published_ids:
                 await conn.execute(
                     """
@@ -332,10 +341,26 @@ class OutboxRelayEngine:
                 await mark_outbox_event_failed(conn, eid, err)
 
     async def _dispatch_events_batch(self, pool: Any, events: list[dict]) -> int:
+        """
+        P1-16: Bounded concurrent dispatch (Semaphore(10)) with 15s per-event timeout
+        so a 100-event batch completes in <= 150s (strictly below the 300s lease expiry),
+        preventing Head-of-Line blocking and sibling-pod duplicate delivery.
+        """
+        sem = asyncio.Semaphore(10)
+
+        async def _guarded_dispatch(ev: dict) -> tuple[str, bool, str | None]:
+            eid = ev["id"]
+            async with sem:
+                try:
+                    return await asyncio.wait_for(self._publish_single_event(ev), timeout=15.0)
+                except asyncio.TimeoutError:
+                    logger.warning("Outbox event %s dispatch timed out after 15s", eid)
+                    return eid, False, "Event dispatch timed out after 15s"
+
+        results = await asyncio.gather(*(_guarded_dispatch(ev) for ev in events))
         published_ids: list[str] = []
         failed_records: list[tuple[str, str]] = []
-        for event in events:
-            eid, ok, err = await self._publish_single_event(event)
+        for eid, ok, err in results:
             if ok:
                 published_ids.append(eid)
             else:
@@ -349,7 +374,7 @@ class OutboxRelayEngine:
         if loop_time - self._last_prune_time >= self.prune_interval:
             self._last_prune_time = loop_time
             try:
-                async with pool.acquire() as conn:
+                async with pool.acquire(timeout=5.0) as conn:
                     await prune_published_outbox_events(
                         conn, retention_hours=self.retention_hours
                     )

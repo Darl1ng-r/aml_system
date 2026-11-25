@@ -29,4 +29,4 @@ Disallow: /network
 Disallow: /network/*
 
 # Canonical Sitemap
-Sitemap: https://aml.yourdomain.com/sitemap.xml
+Sitemap: /sitemap.xml

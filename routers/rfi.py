@@ -127,7 +127,16 @@ async def create_case_rfi(
         details={"rfi_id": str(rfi_id), "recipient_role": payload.recipient_role, "expires_at": expires_at.isoformat()},
     )
 
-    base_url = str(request.base_url).rstrip("/")
+    # P2-09: Pin portal_url to canonical PUBLIC_BASE_URL (prevents Host-header poisoning)
+    from config import settings
+    configured_base = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+    if configured_base:
+        base_url = configured_base
+    elif getattr(settings, "is_hardened", settings.is_production):
+        first_origin = next((o.strip().rstrip("/") for o in settings.allowed_origins.split(",") if o.strip()), "")
+        base_url = first_origin or str(request.base_url).rstrip("/")
+    else:
+        base_url = str(request.base_url).rstrip("/")
     return {
         "rfi_id": str(rfi_id),
         "case_id": case_id,
@@ -309,9 +318,16 @@ async def submit_public_rfi_response(
                 if ext in FORBIDDEN_EXTENSIONS or mime not in ALLOWED_EVIDENCE_MIMES:
                     raise HTTPException(status_code=400, detail="Unsupported document type. Upload PDF, PNG, JPEG, TXT, or CSV.")
 
-                raw_bytes = await file.read(MAX_EVIDENCE_BYTES + 1)
-                if len(raw_bytes) > MAX_EVIDENCE_BYTES:
-                    raise HTTPException(status_code=413, detail="Uploaded document exceeds the 25 MB limit.")
+                # P1-03: Stream-read in bounded 64 KiB chunks instead of buffering an unbounded single read
+                buf = bytearray()
+                while True:
+                    chunk = await file.read(65536)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    if len(buf) > MAX_EVIDENCE_BYTES:
+                        raise HTTPException(status_code=413, detail="Uploaded document exceeds the 25 MB limit.")
+                raw_bytes = bytes(buf)
 
                 is_clean, scan_detail = await scan_bytes_for_malware(raw_bytes)
                 if not is_clean:
@@ -325,7 +341,11 @@ async def submit_public_rfi_response(
                         tenant_id=tenant_id,
                         details={"file_name": safe_name, "scanner": scan_detail},
                     )
-                    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"File rejected by security scanner: {scan_detail}")
+                    # P2-18: Do not leak raw ClamAV socket/daemon messages to unauthenticated clients
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="Uploaded document did not pass automated security screening.",
+                    )
 
                 uploaded_sha256 = hashlib.sha256(raw_bytes).hexdigest()
                 uploaded_filename = safe_name

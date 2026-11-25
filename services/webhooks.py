@@ -35,6 +35,7 @@ SUPPORTED_WEBHOOK_EVENTS = {
     "SAR_FILED",
     "CTR_FILED",
     "KYC_RISK_UPGRADED",
+    "SLA_ESCALATION",
 }
 
 
@@ -121,18 +122,37 @@ async def deliver_single_webhook(
     if correlation_id:
         headers["X-Correlation-ID"] = str(correlation_id)
 
+    from services.http_client import CircuitOpenError, is_outbound_egress_allowed, request_with_resilience
+
+    if not is_outbound_egress_allowed("webhooks"):
+        logger.info("Webhook outbound egress suppressed in non-production mode (webhook=%s).", webhook_id)
+        await _record_delivery(tenant_id, webhook_id, event_type, envelope, "SUPPRESSED_NON_PROD", None, None)
+        return True, None, None
+
     http_status = None
     last_error = None
     ok = False
     try:
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-            resp = await client.post(safe_url, content=raw_body, headers=headers)
-            http_status = resp.status_code
-            ok = 200 <= resp.status_code < 300
-            if not ok:
-                last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
+        resp = await request_with_resilience(
+            "POST",
+            safe_url,
+            target=f"webhook:{webhook_id}",
+            timeout=httpx.Timeout(connect=2.0, read=5.0, write=5.0, pool=2.0),
+            follow_redirects=False,
+            retries=0,
+            content=raw_body,
+            headers=headers,
+        )
+        http_status = resp.status_code
+        ok = 200 <= resp.status_code < 300
+        if not ok:
+            logger.warning("Webhook %s returned HTTP %s: %s", webhook_id, resp.status_code, resp.text[:300])
+            last_error = f"Upstream webhook returned HTTP {resp.status_code}"
+    except CircuitOpenError:
+        last_error = "Webhook endpoint circuit breaker open"
     except Exception as exc:
-        last_error = f"{type(exc).__name__}: {exc}"
+        logger.warning("Webhook %s delivery transport error: %s", webhook_id, exc)
+        last_error = "Webhook delivery transport error"
 
     status_label = "DELIVERED" if ok else "FAILED"
     await _record_delivery(tenant_id, webhook_id, event_type, envelope, status_label, http_status, last_error)

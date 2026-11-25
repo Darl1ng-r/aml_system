@@ -60,7 +60,8 @@ class CorporateOnboard(BaseModel):
 async def onboard_individual(
     payload: IndividualOnboard,
     response: Response = None,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
     # Enforce Data-Level RBAC tenant scoping
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
@@ -233,7 +234,8 @@ async def onboard_corporate(
     payload: CorporateOnboard,
     response: Response = None,
     neo4j_driver=Depends(get_async_neo4j_driver),
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"]))
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
     # Enforce Data-Level RBAC tenant scoping
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
@@ -316,7 +318,7 @@ async def get_account_by_id(
 @router.get("/accounts")
 async def list_accounts(
     response: Response,
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=100),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60))

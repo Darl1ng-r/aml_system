@@ -6,6 +6,8 @@ Create Date: 2026-09-09 20:00:00.000000
 
 """
 from typing import Sequence
+import os
+import secrets
 from alembic import op
 import sqlalchemy as sa
 
@@ -14,6 +16,19 @@ revision: str = '011'
 down_revision: str | None = '010'
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
+
+
+def _resolve_aml_app_password() -> str:
+    pw = os.getenv("AML_APP_PASSWORD", "").strip()
+    if pw:
+        return pw
+    env = os.getenv("ENVIRONMENT", "development").strip().lower()
+    if env in {"production", "prod", "staging"}:
+        raise RuntimeError(
+            "CRITICAL (P0-06): AML_APP_PASSWORD environment variable must be set when running migration 011 "
+            "in hardened environments (hardcoded passwords are forbidden)."
+        )
+    return secrets.token_urlsafe(24)
 
 
 def upgrade() -> None:
@@ -26,13 +41,14 @@ def upgrade() -> None:
         if 'token_version' not in columns:
             op.add_column('users', sa.Column('token_version', sa.Integer(), nullable=False, server_default='1'))
 
-    # 2. Provision unprivileged aml_app role with NOSUPERUSER NOBYPASSRLS
+    # 2. Provision unprivileged aml_app role with NOSUPERUSER NOBYPASSRLS using env-supplied password
+    role_pw = _resolve_aml_app_password().replace("'", "''")
     op.execute(
-        """
+        f"""
         DO $$
         BEGIN
             IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'aml_app') THEN
-                CREATE ROLE aml_app WITH LOGIN PASSWORD 'aml_app_secure_pass_2026' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+                CREATE ROLE aml_app WITH LOGIN PASSWORD '{role_pw}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
             ELSIF current_user != 'aml_app' THEN
                 ALTER ROLE aml_app WITH NOSUPERUSER NOBYPASSRLS;
             END IF;

@@ -1051,7 +1051,7 @@ async def _fetch_tx_page(
 @router.get("")
 async def list_transactions(
     response: Response,
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=100),
     cursor_timestamp: datetime | None = Query(default=None),
     cursor_id: uuid.UUID | None = Query(default=None),

@@ -142,7 +142,10 @@ async def startup_db_clients(app_instance: FastAPI):
     # 0c & 0d. Observability
     _init_observability(app_instance)
 
-    allow_offline = getattr(settings, "allow_offline_dev", False) or os.getenv("ALLOW_OFFLINE_DEV", "false").lower() == "true"
+    # P0-08: Single source of truth — never let raw os.getenv("ALLOW_OFFLINE_DEV") override settings.allow_offline_dev
+    allow_offline = bool(getattr(settings, "allow_offline_dev", False)) and not getattr(
+        settings, "is_hardened", settings.is_production
+    )
 
     # 1. PostgreSQL & Migrations
     await _init_postgres_and_migrations(allow_offline)
@@ -160,23 +163,25 @@ async def warm_soft_dependencies(allow_offline: bool):
     from database.elasticsearch_db import get_elasticsearch_client, get_async_elasticsearch_client
     from scripts.sync_worker import main as run_sync_worker
 
-    # 3. Initialize Neo4j
-    try:
-        get_neo4j_driver()
-        await get_async_neo4j_driver()
-        logger.info("Neo4j database connection established.")
-    except Exception as e:
-        logger.warning(f"Neo4j async warmup warning: {e}")
+    # 3. Initialize Neo4j only when explicitly enabled (P2-22)
+    if getattr(settings, "enable_neo4j", False):
+        try:
+            get_neo4j_driver()
+            await get_async_neo4j_driver()
+            logger.info("Neo4j database connection established.")
+        except Exception as e:
+            logger.warning(f"Neo4j async warmup warning: {e}")
 
-    # 4. Initialize Elasticsearch
-    try:
-        get_elasticsearch_client()
-        es_async = await get_async_elasticsearch_client()
-        from services.watchlist_sync import watchlist_sync_engine
-        await watchlist_sync_engine.ensure_indices_and_seed(es_async)
-        logger.info("Elasticsearch sanctions and PEP indices verified and seeded.")
-    except Exception as e:
-        logger.warning(f"Elasticsearch async warmup warning: {e}")
+    # 4. Initialize Elasticsearch only when explicitly enabled (P2-22)
+    if getattr(settings, "enable_elasticsearch", False):
+        try:
+            get_elasticsearch_client()
+            es_async = await get_async_elasticsearch_client()
+            from services.watchlist_sync import watchlist_sync_engine
+            await watchlist_sync_engine.ensure_indices_and_seed(es_async)
+            logger.info("Elasticsearch sanctions and PEP indices verified and seeded.")
+        except Exception as e:
+            logger.warning(f"Elasticsearch async warmup warning: {e}")
 
     # 5. Pre-warm Isolation Forest model
     try:
@@ -186,13 +191,13 @@ async def warm_soft_dependencies(allow_offline: bool):
     except Exception as e:
         logger.warning(f"Isolation Forest pre-warm warning: {e}")
 
-    # 6. Start Neo4j Graph Sync Worker (Optional in-process runner)
-    if os.getenv("RUN_EMBEDDED_WORKER", "false").lower() == "true":
+    # 6. Start Neo4j Graph Sync Worker only when embedded worker & Neo4j are enabled (P2-21)
+    if bool(getattr(settings, "run_embedded_worker", False)) and getattr(settings, "enable_neo4j", False):
         logger.info("Starting embedded background Neo4j graph synchronization worker...")
         create_background_task(run_sync_worker(shutdown_event=_worker_shutdown_event))
 
     # 7. Start Periodic Background Watchlist Sync Task
-    if not allow_offline:
+    if not allow_offline and getattr(settings, "enable_elasticsearch", False):
         from services.watchlist_sync import schedule_periodic_watchlist_sync
         logger.info("Starting background periodic watchlist sync task...")
         create_background_task(schedule_periodic_watchlist_sync(interval_seconds=86400, shutdown_event=_worker_shutdown_event))
@@ -231,38 +236,37 @@ async def shutdown_db_clients():
         logger.warning(f"Failed to close Kafka producer: {e}")
 
     logger.info("Closing database connections...")
-    # Close Postgres pools
     from database.postgres import close_db_pool
     from database.neo4j_db import close_neo4j_driver, close_async_neo4j_driver
-    from database.elasticsearch_db import get_async_elasticsearch_client
-    from database.redis_db import get_async_redis_client
+    from database.elasticsearch_db import close_elasticsearch_clients
+    from database.redis_db import close_redis_client
+    from services.http_client import close_http_client
+
+    try:
+        await close_http_client()
+    except Exception as e:
+        logger.warning(f"Failed to close shared HTTP client: {e}")
+
     try:
         await close_db_pool()
     except Exception as e:
         logger.warning(f"Failed to close asyncpg pool: {e}")
 
-    # Close Neo4j drivers
     try:
         close_neo4j_driver()
         await close_async_neo4j_driver()
     except Exception as e:
         logger.warning(f"Failed to close Neo4j drivers: {e}")
 
-    # Close Elasticsearch async client
     try:
-        es_async = await get_async_elasticsearch_client()
-        await es_async.close()
-        logger.info("Async Elasticsearch client closed.")
+        await close_elasticsearch_clients()
     except Exception as e:
-        logger.warning(f"Failed to close Async Elasticsearch client: {e}")
+        logger.warning(f"Failed to close Elasticsearch clients: {e}")
 
-    # Close Redis async client
     try:
-        redis_async = await get_async_redis_client()
-        await redis_async.close()
-        logger.info("Async Redis client closed.")
+        await close_redis_client()
     except Exception as e:
-        logger.warning(f"Failed to close Async Redis client: {e}")
+        logger.warning(f"Failed to close Redis clients: {e}")
 
     # Cancel background Vault lease renewal task if running
     try:
@@ -290,10 +294,8 @@ async def lifespan(app_instance: FastAPI):
     global _outbox_relay_task
     await startup_db_clients(app_instance)
 
-    # Only run embedded OutboxRelayEngine in single-node/dev mode (RUN_EMBEDDED_WORKER=true).
-    # In multi-pod Kubernetes deployments, RUN_EMBEDDED_WORKER=false and the dedicated
-    # `aml-outbox-relay` Deployment owns transactional outbox polling.
-    run_embedded = os.getenv("RUN_EMBEDDED_WORKER", str(settings.run_embedded_worker)).lower() == "true"
+    # P2-21: Consistent single source of truth via settings.run_embedded_worker
+    run_embedded = bool(getattr(settings, "run_embedded_worker", False))
     if run_embedded:
         from database.outbox import OutboxRelayEngine
         _outbox_shutdown_event.clear()
@@ -341,27 +343,31 @@ async def lifespan(app_instance: FastAPI):
     await shutdown_db_clients()
 
 
-is_prod = settings.is_production
+is_hardened_env = getattr(settings, "is_hardened", settings.is_production)
 
 app = FastAPI(
     title="AML Compliance & Transaction Monitoring API",
     description="Synchronous transaction scoring and asynchronous graph auditing platform.",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url=None if is_prod else "/docs",
-    redoc_url=None if is_prod else "/redoc",
-    openapi_url=None if is_prod else "/openapi.json"
+    docs_url=None if is_hardened_env else "/docs",
+    redoc_url=None if is_hardened_env else "/redoc",
+    openapi_url=None if is_hardened_env else "/openapi.json"
 )
 
 # ── Middleware (Starlette LIFO: registered bottom-up, outermost runs FIRST) ─
-# 6. Innermost: Response GZip compression for API JSON and static assets
+# 8. Innermost: Response GZip compression for API JSON and static assets
 from starlette.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# 5. Anti-CSRF protection middleware
+# 7. Anti-CSRF protection middleware (includes Login-CSRF Origin check)
 app.add_middleware(CSRFProtectionMiddleware)
 
-# 4. CORS for frontend dashboard console (strict method & header allowlists)
+# 6. Pure-ASGI global request body size limit + pre-spool RFI token validation (P1-02, P1-03)
+from services.body_limit import RequestBodySizeLimitMiddleware
+app.add_middleware(RequestBodySizeLimitMiddleware)
+
+# 5. CORS for frontend dashboard console (strict method & header allowlists)
 allowed_origins_list = [origin.strip() for origin in settings.allowed_origins.split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -376,16 +382,25 @@ app.add_middleware(
         "Idempotency-Key",
         "X-Idempotency-Key",
         "X-Client-Mode",
+        "X-API-Key",
         "Accept",
     ],
 )
 
-# 3. Browser security hardening headers (CSP, X-Frame-Options, X-Content-Type-Options)
+# 4. Browser security hardening headers (CSP, X-Frame-Options, nosniff, Cache-Control: no-store)
 from services.security_headers import SecurityHeadersMiddleware
 app.add_middleware(SecurityHeadersMiddleware)
 
-# 2. Correlation-ID & request telemetry middleware
+# 3. Correlation-ID & request telemetry middleware
 app.add_middleware(CorrelationIdMiddleware)
+
+# 2. Trusted Host enforcement in hardened environments when ALLOWED_HOSTS is configured (P2-09)
+_allowed_hosts_raw = getattr(settings, "allowed_hosts", "").strip()
+if is_hardened_env and _allowed_hosts_raw:
+    from starlette.middleware.trustedhost import TrustedHostMiddleware
+    _hosts = [h.strip() for h in _allowed_hosts_raw.split(",") if h.strip()]
+    if _hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=_hosts)
 
 # 1. Outermost (runs FIRST on every request): Trusted proxy IP resolution
 app.add_middleware(TrustedProxyMiddleware)
@@ -394,16 +409,21 @@ app.add_middleware(TrustedProxyMiddleware)
 app.include_router(health.router)  # /health, /health/live, /health/ready — must be before static mount
 
 
+from fastapi import Depends
+from services.rate_limiter import RateLimiter
+
+
 @app.get("/metrics", tags=["Observability"], summary="Prometheus Metrics Scrape Endpoint")
 def prometheus_metrics(
     authorization: Optional[str] = Header(None),
-    x_metrics_token: Optional[str] = Header(None)
+    x_metrics_token: Optional[str] = Header(None),
+    _rate_limit=Depends(RateLimiter(limit=120, window=60, ip_only=True)),
 ):
     """Exposes internal compliance, SLO, and performance metrics in Prometheus exposition format."""
     metrics_secret = getattr(settings, "metrics_secret", "") or os.getenv("METRICS_SECRET", "")
-    is_prod_env = settings.is_production
-    # PRR: Fail-closed in production or whenever METRICS_SECRET is configured
-    if is_prod_env or metrics_secret:
+    is_hardened_now = getattr(settings, "is_hardened", settings.is_production)
+    # PRR: Fail-closed in production & staging or whenever METRICS_SECRET is configured
+    if is_hardened_now or metrics_secret:
         token = None
         if authorization and authorization.startswith("Bearer "):
             token = authorization[7:].strip()
@@ -486,17 +506,31 @@ from observability.middleware import correlation_id_var
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """P1-04: Strip raw `input` payloads from Pydantic v2 errors to prevent secret echoing."""
     errors = exc.errors()
     messages = []
+    sanitized_errors = []
     for err in errors:
-        loc = ".".join(str(l) for l in err.get("loc", []) if l != "body")
+        loc_raw = err.get("loc", [])
+        loc = ".".join(str(l) for l in loc_raw if l != "body")
         msg = err.get("msg", "Invalid value")
         messages.append(f"{loc}: {msg}" if loc else msg)
+        sanitized_errors.append(
+            {
+                "loc": list(loc_raw) if isinstance(loc_raw, (list, tuple)) else [str(loc_raw)],
+                "msg": str(msg),
+                "type": str(err.get("type", "value_error")),
+            }
+        )
     friendly_msg = "; ".join(messages) if messages else "Invalid request data."
-    safe_errors = jsonable_encoder(errors, custom_encoder={Exception: str})
+    correlation_id = correlation_id_var.get("")
     return JSONResponse(
         status_code=422,
-        content={"detail": friendly_msg, "errors": safe_errors}
+        content={
+            "detail": friendly_msg,
+            "errors": jsonable_encoder(sanitized_errors),
+            "correlation_id": correlation_id,
+        },
     )
 
 @app.exception_handler(StarletteHTTPException)
@@ -504,9 +538,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     accept = request.headers.get("accept", "")
     if exc.status_code == 404 and MIME_TEXT_HTML in accept and os.path.exists("static/404.html"):
         return FileResponse("static/404.html", status_code=404)
+    correlation_id = correlation_id_var.get("")
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail},
+        content={"detail": exc.detail, "correlation_id": correlation_id},
         headers=getattr(exc, "headers", None),
     )
 

@@ -44,7 +44,7 @@ class ErasureRequest(BaseModel):
 @router.get("/dsar/export/{account_number}")
 async def export_data_subject_dossier(
     account_number: str,
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=200, ge=1, le=500),
     current_user: dict = Depends(RoleChecker(["AUDITOR", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60)),
@@ -239,7 +239,7 @@ async def release_legal_hold(
 
     tenant_id = enforce_tenant_data_scope(current_user)
     async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        await conn.execute(
+        result = await conn.execute(
             """
             UPDATE legal_holds
             SET is_active = false, released_at = NOW()
@@ -248,6 +248,8 @@ async def release_legal_hold(
             hold_uuid,
             uuid.UUID(str(tenant_id)),
         )
+        if result == "UPDATE 0":
+            raise HTTPException(status_code=404, detail="Legal hold not found.")
         return {"hold_id": id, "status": "RELEASED", "message": "Legal hold released."}
 
 

@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger("aml.siem")
+_ORIGINAL_HTTPX_ASYNC_CLIENT = httpx.AsyncClient
 
 _BLOCKED_HOST_SUFFIXES = (
     ".local",
@@ -85,8 +86,9 @@ def validate_siem_destination_url(raw_url: str) -> str:
             ip_str = info[4][0]
             ip_obj = ipaddress.ip_address(ip_str)
             if _is_forbidden_ip(ip_obj):
+                logger.warning("SSRF blocked: host '%s' resolved to restricted IP '%s'.", hostname, ip_str)
                 raise ValueError(
-                    f"SSRF blocked: destination host '{hostname}' resolved to restricted IP '{ip_str}'."
+                    f"SSRF blocked: destination host '{hostname}' resolved to a restricted network address."
                 )
     except ValueError:
         raise
@@ -173,26 +175,46 @@ class SiemForwarderService:
         tok = token or ""
         test_payload = self.format_event("SIEM_HEARTBEAT_PROBE", {"status": "TEST_PROBE", "msg": "AML Sentinel Probe"})
 
+        from config import settings
+        from services.http_client import CircuitOpenError, request_with_resilience
+
         try:
-            # Attempt HTTP call with short timeout and redirects disabled to prevent SSRF bypasses
             headers = {"Content-Type": "application/json"}
             if tok:
                 headers["Authorization"] = f"Splunk {tok}" if str(fmt).upper() == "SPLUNK_HEC" else f"Bearer {tok}"
-            async with httpx.AsyncClient(timeout=2.0, follow_redirects=False) as client:
-                res = await client.post(url, json=test_payload, headers=headers)
+            res = await request_with_resilience(
+                "POST",
+                url,
+                target="siem_probe",
+                timeout=httpx.Timeout(connect=1.5, read=2.0, write=2.0, pool=1.5),
+                follow_redirects=False,
+                retries=0,
+                json=test_payload,
+                headers=headers,
+            )
+            return {
+                "status": "SUCCESS" if 200 <= res.status_code < 300 else "FAILED",
+                "status_code": res.status_code,
+                "target_url": url,
+                "message": (
+                    "SIEM endpoint responded successfully."
+                    if 200 <= res.status_code < 300
+                    else f"SIEM endpoint returned HTTP {res.status_code}."
+                ),
+            }
+        except (CircuitOpenError, Exception) as e:
+            logger.warning("[SIEM] Probe connection failed for %s: %s", url, e)
+            if getattr(settings, "is_hardened", settings.is_production):
                 return {
-                    "status": "SUCCESS",
-                    "status_code": res.status_code,
+                    "status": "FAILED",
                     "target_url": url,
-                    "message": "SIEM endpoint responded successfully."
+                    "message": "SIEM endpoint unreachable or timed out.",
                 }
-        except Exception as e:
-            logger.info(f"[SIEM] Probe dispatch simulated (local environment): {e}")
             return {
                 "status": "PROBE_DISPATCHED",
                 "target_url": url,
-                "message": f"Synthetic heartbeat generated (external host unreachable in test environment: {type(e).__name__}).",
-                "sample_payload": test_payload
+                "message": "Synthetic heartbeat generated (external host unreachable in development environment).",
+                "sample_payload": test_payload,
             }
 
     @staticmethod
@@ -398,13 +420,39 @@ async def dispatch_siem_outbox_event(event: Dict[str, Any]) -> tuple[bool, str |
     if correlation_id:
         headers["X-Correlation-ID"] = str(correlation_id)
 
+    from services.http_client import CircuitOpenError, is_outbound_egress_allowed, request_with_resilience
+
+    client_patched = httpx.AsyncClient is not _ORIGINAL_HTTPX_ASYNC_CLIENT
+    if not client_patched and not is_outbound_egress_allowed("siem"):
+        logger.info("SIEM outbound egress suppressed in non-production environment (tenant=%s).", tenant_id)
+        return True, None
+
     try:
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-            resp = await client.post(safe_url, json=envelope, headers=headers)
-            if not (200 <= resp.status_code < 300):
-                return False, f"SIEM HTTP {resp.status_code}: {resp.text[:300]}"
+        if client_patched:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=2.0, read=5.0, write=5.0, pool=2.0),
+                follow_redirects=False,
+            ) as mock_client:
+                resp = await mock_client.post(safe_url, json=envelope, headers=headers)
+        else:
+            resp = await request_with_resilience(
+                "POST",
+                safe_url,
+                target=f"siem:{tenant_id}",
+                timeout=httpx.Timeout(connect=2.0, read=5.0, write=5.0, pool=2.0),
+                follow_redirects=False,
+                retries=0,
+                json=envelope,
+                headers=headers,
+            )
+        if not (200 <= resp.status_code < 300):
+            logger.warning("SIEM HTTP %s for tenant %s: %s", resp.status_code, tenant_id, resp.text[:300])
+            return False, f"SIEM endpoint returned HTTP {resp.status_code}"
+    except CircuitOpenError:
+        return False, "SIEM circuit breaker open"
     except Exception as exc:
-        return False, f"SIEM transport error ({type(exc).__name__}): {exc}"
+        logger.warning("SIEM transport error for tenant %s: %s", tenant_id, exc)
+        return False, "SIEM transport error"
 
     try:
         from database.postgres import get_async_db_conn

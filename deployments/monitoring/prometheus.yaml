@@ -52,9 +52,10 @@ scrape_configs:
     metrics_path: "/public_metrics"
     static_configs:
       - targets:
-          - "aml-redpanda-0.aml-redpanda-service.aml-system.svc.cluster.local:9644"
-          - "aml-redpanda-1.aml-redpanda-service.aml-system.svc.cluster.local:9644"
-          - "aml-redpanda-2.aml-redpanda-service.aml-system.svc.cluster.local:9644"
+          # P2-24: Correct headless service name matching deployments/kubernetes/redpanda.yaml
+          - "aml-redpanda-0.aml-redpanda-headless.aml-system.svc.cluster.local:9644"
+          - "aml-redpanda-1.aml-redpanda-headless.aml-system.svc.cluster.local:9644"
+          - "aml-redpanda-2.aml-redpanda-headless.aml-system.svc.cluster.local:9644"
         labels:
           tier: "messaging"
           service: "redpanda"

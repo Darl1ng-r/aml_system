@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 from services.auth import RoleChecker, enforce_tenant_data_scope
@@ -43,14 +43,27 @@ _tenant_appetite_cache = {}
 
 class RiskAppetiteConfig(BaseModel):
     jurisdiction_risk_multiplier: float = Field(default=1.5, ge=1.0, le=5.0)
-    high_risk_jurisdictions: List[str] = Field(default=["RU", "IR", "KP", "SY", "MM", "YE", "VE"])
+    high_risk_jurisdictions: List[str] = Field(
+        default=["RU", "IR", "KP", "SY", "MM", "YE", "VE"],
+        max_length=100,
+    )
     pep_sanctions_auto_escalate: bool = True
-    cash_structuring_threshold: float = Field(default=10000.0, ge=1000.0)
-    crypto_travel_rule_threshold: float = Field(default=1000.0, ge=100.0)
+    cash_structuring_threshold: float = Field(default=10000.0, ge=1000.0, le=10_000_000.0)
+    crypto_travel_rule_threshold: float = Field(default=1000.0, ge=100.0, le=10_000_000.0)
     max_velocity_deviation_zscore: float = Field(default=3.0, ge=1.0, le=10.0)
     sar_filing_sla_hours: int = Field(default=72, ge=12, le=720)
     edd_mandatory_score_threshold: float = Field(default=0.85, ge=0.5, le=0.99)
     round_trip_window_hours: int = Field(default=72, ge=1, le=720)
+
+    @field_validator("high_risk_jurisdictions")
+    @classmethod
+    def sanitize_jurisdictions(cls, v: List[str]) -> List[str]:
+        cleaned = []
+        for code in v:
+            c = str(code).strip().upper()[:8]
+            if c and c.isalnum():
+                cleaned.append(c)
+        return cleaned
 
 
 @router.get("")

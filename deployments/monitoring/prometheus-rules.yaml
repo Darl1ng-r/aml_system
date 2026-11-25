@@ -69,3 +69,47 @@ spec:
       annotations:
         summary: "Spike in unauthorized cross-tenant data access attempts"
         description: "Detected {{ $value }} RBAC cross-tenant boundary violations in the past minute."
+
+    - alert: AMLOutboundCircuitBreakerOpen
+      expr: |
+        aml_outbound_circuit_breaker_state == 2
+      for: 1m
+      labels:
+        severity: warning
+        tier: resilience
+      annotations:
+        summary: "Outbound circuit breaker OPEN for {{ $labels.target }}"
+        description: "Circuit breaker tripped open for outbound dependency {{ $labels.target }}."
+
+    - alert: AMLWatchlistSyncFailure
+      expr: |
+        increase(aml_watchlist_sync_failures_total[1h]) > 0
+      for: 0m
+      labels:
+        severity: critical
+        tier: compliance
+      annotations:
+        summary: "Sanctions watchlist live feed sync failed ({{ $labels.feed }})"
+        description: "Live sanctions watchlist download failed for {{ $labels.feed }}; last-good index preserved."
+
+    - alert: AMLOutboxBackpressure
+      expr: |
+        outbox_pending_events > 500
+      for: 2m
+      labels:
+        severity: warning
+        tier: worker
+      annotations:
+        summary: "Transactional outbox pending backlog exceeds 500 events"
+        description: "Outbox pending events count is {{ $value }}."
+
+    - alert: AMLVaultRenewalFailure
+      expr: |
+        increase(aml_vault_renewal_failures_total[1h]) > 0
+      for: 0m
+      labels:
+        severity: critical
+        tier: security
+      annotations:
+        summary: "HashiCorp Vault secret lease renewal failed"
+        description: "One or more Vault lease renewals failed in the last hour."

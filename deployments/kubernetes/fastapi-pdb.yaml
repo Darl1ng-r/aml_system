@@ -1,3 +1,6 @@
+# ════════════════════════════════════════════════════════════════════════════
+# PodDisruptionBudget for Core FastAPI Deployment (see workers-pdb.yaml for workers/infra)
+# ════════════════════════════════════════════════════════════════════════════
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
