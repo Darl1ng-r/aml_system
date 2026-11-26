@@ -70,6 +70,11 @@ class DomainStateTransitionError(DomainError):
                     f"Deterministic state guard violation: {entity_type} is already terminal "
                     f"('{current_state}') and cannot be transitioned."
                 )
+        elif current_state == target_state:
+            msg = (
+                f"Illegal {entity_type} state transition: {entity_type} is already {current_state} "
+                f"and cannot transition to '{target_state}'. Permitted next states: {self.allowed_states}."
+            )
         else:
             msg = (
                 f"Illegal {entity_type} state transition from '{current_state}' to '{target_state}'. "
