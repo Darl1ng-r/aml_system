@@ -1,22 +1,31 @@
 """
 Account Governance & Enhanced Due Diligence (EDD) Router
 =========================================================
-Implements CIP verification gates, immediate account freezing under sanctions/court orders,
-and Enhanced Due Diligence (EDD) workflows (GAP-2, GAP-3, GAP-7).
+Thin HTTP controller for CIP verification gates, immediate account freezing
+under sanctions/court orders, and Enhanced Due Diligence (EDD) workflows.
+All PostgreSQL SQL, `FOR UPDATE` locks, transactional audit writes, and
+webhook outbox enqueues live in `repositories/account_repo.py`.
 """
 
 import logging
 import uuid
-from typing import Optional, List
-from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
-from services.auth import PermissionChecker, RoleChecker, enforce_tenant_data_scope
-from services.rate_limiter import RateLimiter
-from services.audit import record_audit_event_tx
 from observability.sanitizer import sanitize_text
+from repositories.account_repo import (
+    create_edd_request_atomic,
+    decide_edd_request_atomic,
+    freeze_account_atomic,
+    list_edd_requests_repo,
+    unfreeze_account_atomic,
+    verify_account_cip_atomic,
+)
+from services.auth import PermissionChecker, RoleChecker, enforce_tenant_data_scope
+from services.idempotency import run_idempotent_operation
+from services.rate_limiter import RateLimiter
 
 
 def _mask_document_number(doc_num: str) -> str:
@@ -24,6 +33,7 @@ def _mask_document_number(doc_num: str) -> str:
     if len(clean) <= 4:
         return "****"
     return f"***{clean[-4:]}"
+
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +97,7 @@ async def verify_account_cip(
     payload: CIPVerifyRequest,
     request: Request = None,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     try:
         acc_uuid = uuid.UUID(id)
@@ -97,68 +107,15 @@ async def verify_account_cip(
     tenant_id = enforce_tenant_data_scope(current_user)
 
     async def _execute_cip():
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            acc = await conn.fetchrow(
-                "SELECT id, status FROM accounts WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
-                acc_uuid, uuid.UUID(str(tenant_id))
-            )
-            if not acc:
-                raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
+        return await verify_account_cip_atomic(
+            acc_uuid=acc_uuid,
+            tenant_id=str(tenant_id),
+            document_type=payload.document_type,
+            masked_doc=_mask_document_number(payload.document_number),
+            current_user=current_user,
+            conn_factory=get_async_db_conn,
+        )
 
-            if str(acc["status"] or "").upper() != "CIP_PENDING":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Account is in '{acc['status']}' state; CIP verification is only permitted for CIP_PENDING accounts."
-                )
-
-            updated_id = await conn.fetchval(
-                """
-                UPDATE accounts
-                SET status = 'ACTIVE'
-                WHERE id = $1 AND tenant_id = $2 AND status = 'CIP_PENDING'
-                RETURNING id;
-                """,
-                acc_uuid, uuid.UUID(str(tenant_id))
-            )
-            if not updated_id:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Account state changed concurrently; CIP verification aborted."
-                )
-
-            masked_doc = _mask_document_number(payload.document_number)
-
-            # Synchronous in-transaction audit persistence (AUDIT-01)
-            try:
-                await record_audit_event_tx(
-                    conn=conn,
-                    action="ACCOUNT_CIP_VERIFIED",
-                    actor_id=str(current_user.get("id", "system")),
-                    actor_role=current_user.get("role", "ANALYST"),
-                    resource_type="ACCOUNT",
-                    resource_id=id,
-                    tenant_id=str(tenant_id),
-                    actor_username=current_user.get("username"),
-                    before_state={"status": acc["status"]},
-                    after_state={"status": "ACTIVE"},
-                    details={"document_type": payload.document_type, "document_number_masked": masked_doc}
-                )
-            except Exception as audit_err:
-                logger.warning(f"Audit log writing failed in verify_account_cip: {audit_err}")
-
-            logger.info(
-                f"CIP verified for account {id} by '{current_user.get('username')}' "
-                f"using {payload.document_type} ({masked_doc})"
-            )
-
-            return {
-                "account_id": id,
-                "status": "ACTIVE",
-                "cip_verified": True,
-                "message": "Customer Identification Program (CIP) verification completed. Account is now ACTIVE."
-            }
-
-    from services.idempotency import run_idempotent_operation
     return await run_idempotent_operation(
         request=request,
         tenant_id=str(tenant_id),
@@ -178,7 +135,7 @@ async def freeze_account(
     payload: AccountFreezeRequest,
     request: Request = None,
     current_user: dict = Depends(PermissionChecker("accounts:freeze")),
-    _rate_limit=Depends(RateLimiter(limit=20, window=60))
+    _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
     try:
         acc_uuid = uuid.UUID(id)
@@ -188,75 +145,15 @@ async def freeze_account(
     tenant_id = enforce_tenant_data_scope(current_user)
 
     async def _execute_freeze():
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            acc = await conn.fetchrow(
-                "SELECT id, status, account_number FROM accounts WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
-                acc_uuid, uuid.UUID(str(tenant_id))
-            )
-            if not acc:
-                raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
+        return await freeze_account_atomic(
+            acc_uuid=acc_uuid,
+            tenant_id=str(tenant_id),
+            reason=payload.reason,
+            freezing_order_ref=payload.freezing_order_ref,
+            current_user=current_user,
+            conn_factory=get_async_db_conn,
+        )
 
-            await conn.execute(
-                """
-                UPDATE accounts
-                SET status = 'FROZEN',
-                    frozen_reason = $1,
-                    freezing_order_ref = $2,
-                    frozen_at = NOW()
-                WHERE id = $3;
-                """,
-                payload.reason, payload.freezing_order_ref, acc_uuid
-            )
-
-            # Synchronous in-transaction audit persistence (AUDIT-01)
-            try:
-                await record_audit_event_tx(
-                    conn=conn,
-                    action="ACCOUNT_FROZEN",
-                    actor_id=str(current_user.get("id", "system")),
-                    actor_role=current_user.get("role", "MLRO"),
-                    resource_type="ACCOUNT",
-                    resource_id=id,
-                    tenant_id=str(tenant_id),
-                    actor_username=current_user.get("username"),
-                    before_state={"status": acc["status"]},
-                    after_state={"status": "FROZEN", "reason": payload.reason, "ref": payload.freezing_order_ref},
-                    details={"account_number": acc["account_number"]}
-                )
-            except Exception as audit_err:
-                logger.warning(f"Audit log writing failed in freeze_account: {audit_err}")
-
-            logger.warning(
-                f"REGULATORY ACTION: Account {id} ({acc['account_number']}) FROZEN by {current_user.get('username')}. "
-                f"Reason: {payload.reason} | Ref: {payload.freezing_order_ref}"
-            )
-
-            # P0-2: Atomically enqueue signed outbound core-banking webhook via transactional outbox
-            from services.webhooks import enqueue_webhook_event_tx
-            await enqueue_webhook_event_tx(
-                conn=conn,
-                tenant_id=str(tenant_id),
-                event_type="ACCOUNT_FROZEN",
-                aggregate_id=id,
-                payload={
-                    "account_id": id,
-                    "account_number": acc["account_number"],
-                    "status": "FROZEN",
-                    "reason": payload.reason,
-                    "freezing_order_ref": payload.freezing_order_ref,
-                    "actor": current_user.get("username"),
-                },
-            )
-
-            return {
-                "account_id": id,
-                "status": "FROZEN",
-                "frozen_reason": payload.reason,
-                "freezing_order_ref": payload.freezing_order_ref,
-                "message": "Account has been immediately frozen under regulatory mandate. All transactions blocked."
-            }
-
-    from services.idempotency import run_idempotent_operation
     return await run_idempotent_operation(
         request=request,
         tenant_id=str(tenant_id),
@@ -273,7 +170,7 @@ async def unfreeze_account(
     id: str,
     request: Request = None,
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=10, window=60))
+    _rate_limit=Depends(RateLimiter(limit=10, window=60)),
 ):
     try:
         acc_uuid = uuid.UUID(id)
@@ -283,65 +180,13 @@ async def unfreeze_account(
     tenant_id = enforce_tenant_data_scope(current_user)
 
     async def _execute_unfreeze():
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            acc = await conn.fetchrow(
-                "SELECT id, status FROM accounts WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
-                acc_uuid, uuid.UUID(str(tenant_id))
-            )
-            if not acc:
-                raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
+        return await unfreeze_account_atomic(
+            acc_uuid=acc_uuid,
+            tenant_id=str(tenant_id),
+            current_user=current_user,
+            conn_factory=get_async_db_conn,
+        )
 
-            await conn.execute(
-                """
-                UPDATE accounts
-                SET status = 'ACTIVE',
-                    frozen_reason = NULL,
-                    freezing_order_ref = NULL,
-                    frozen_at = NULL
-                WHERE id = $1;
-                """,
-                acc_uuid
-            )
-
-            # Synchronous in-transaction audit persistence (AUDIT-01)
-            try:
-                await record_audit_event_tx(
-                    conn=conn,
-                    action="ACCOUNT_UNFROZEN",
-                    actor_id=str(current_user.get("id", "system")),
-                    actor_role=current_user.get("role", "MLRO"),
-                    resource_type="ACCOUNT",
-                    resource_id=id,
-                    tenant_id=str(tenant_id),
-                    actor_username=current_user.get("username"),
-                    before_state={"status": acc["status"]},
-                    after_state={"status": "ACTIVE"},
-                    details={"account_id": id}
-                )
-            except Exception as audit_err:
-                logger.warning(f"Audit log writing failed in unfreeze_account: {audit_err}")
-
-            # P0-2: Atomically enqueue ACCOUNT_UNFROZEN core-banking webhook
-            from services.webhooks import enqueue_webhook_event_tx
-            await enqueue_webhook_event_tx(
-                conn=conn,
-                tenant_id=str(tenant_id),
-                event_type="ACCOUNT_UNFROZEN",
-                aggregate_id=id,
-                payload={
-                    "account_id": id,
-                    "status": "ACTIVE",
-                    "actor": current_user.get("username"),
-                },
-            )
-
-            return {
-                "account_id": id,
-                "status": "ACTIVE",
-                "message": "Account unfreezing completed. Account restored to ACTIVE status."
-            }
-
-    from services.idempotency import run_idempotent_operation
     return await run_idempotent_operation(
         request=request,
         tenant_id=str(tenant_id),
@@ -359,7 +204,7 @@ async def unfreeze_account(
 async def create_edd_request(
     payload: EDDCreateRequest,
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     try:
         acc_uuid = uuid.UUID(payload.account_id)
@@ -368,87 +213,30 @@ async def create_edd_request(
         raise HTTPException(status_code=400, detail="Invalid account_id or case_id format.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        acc = await conn.fetchrow(
-            "SELECT id, status FROM accounts WHERE id = $1 AND tenant_id = $2;",
-            acc_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not acc:
-            raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
-
-        if str(acc.get("status") or "").upper() in ("FROZEN", "CLOSED"):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot transition {acc['status']} account to EDD_REQUIRED."
-            )
-
-        user_uuid = uuid.UUID(str(current_user["id"])) if current_user.get("id") else None
-
-        edd_id = await conn.fetchval(
-            """
-            INSERT INTO edd_requests (
-                tenant_id, case_id, account_id, trigger_reason,
-                source_of_wealth, source_of_funds, status,
-                requested_by, requested_by_username
-            ) VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', $7, $8)
-            RETURNING id;
-            """,
-            uuid.UUID(str(tenant_id)), case_uuid, acc_uuid,
-            payload.trigger_reason, payload.source_of_wealth, payload.source_of_funds,
-            user_uuid, current_user.get("username", "analyst")
-        )
-
-        # Mark account as EDD_REQUIRED without ever overriding FROZEN/CLOSED status
-        await conn.execute(
-            """
-            UPDATE accounts
-            SET status = 'EDD_REQUIRED'
-            WHERE id = $1 AND tenant_id = $2 AND status NOT IN ('FROZEN', 'CLOSED');
-            """,
-            acc_uuid, uuid.UUID(str(tenant_id))
-        )
-
-        return {
-            "edd_id": str(edd_id),
-            "account_id": payload.account_id,
-            "status": "PENDING",
-            "trigger_reason": payload.trigger_reason,
-            "message": "Enhanced Due Diligence (EDD) workflow initiated."
-        }
+    return await create_edd_request_atomic(
+        tenant_id=str(tenant_id),
+        acc_uuid=acc_uuid,
+        case_uuid=case_uuid,
+        trigger_reason=payload.trigger_reason,
+        source_of_wealth=payload.source_of_wealth,
+        source_of_funds=payload.source_of_funds,
+        current_user=current_user,
+        conn_factory=get_async_db_conn,
+    )
 
 
 @edd_router.get("/requests")
 async def list_edd_requests(
     status_filter: Optional[str] = None,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        if status_filter:
-            rows = await conn.fetch(
-                "SELECT * FROM edd_requests WHERE tenant_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 100;",
-                uuid.UUID(str(tenant_id)), status_filter.upper()
-            )
-        else:
-            rows = await conn.fetch(
-                "SELECT * FROM edd_requests WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 100;",
-                uuid.UUID(str(tenant_id))
-            )
-
-        return [
-            {
-                "edd_id": str(r["id"]),
-                "account_id": str(r["account_id"]),
-                "case_id": str(r["case_id"]) if r["case_id"] else None,
-                "trigger_reason": r["trigger_reason"],
-                "status": r["status"],
-                "requested_by_username": r["requested_by_username"],
-                "mlro_decision": r["mlro_decision"],
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None
-            }
-            for r in rows
-        ]
+    return await list_edd_requests_repo(
+        tenant_id=str(tenant_id),
+        status_filter=status_filter,
+        read_conn_factory=get_async_db_read_conn,
+    )
 
 
 @edd_router.post("/requests/{id}/decision")
@@ -456,7 +244,7 @@ async def decide_edd_request(
     id: str,
     payload: EDDDecisionRequest,
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=20, window=60))
+    _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
     try:
         edd_uuid = uuid.UUID(id)
@@ -464,42 +252,11 @@ async def decide_edd_request(
         raise HTTPException(status_code=400, detail="Invalid EDD request ID format.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        edd_row = await conn.fetchrow(
-            "SELECT * FROM edd_requests WHERE id = $1 AND tenant_id = $2;",
-            edd_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not edd_row:
-            raise HTTPException(status_code=404, detail="EDD request not found.")
-
-        if payload.decision == "APPROVED":
-            new_account_status = "ACTIVE"
-        elif payload.decision == "EXIT_RELATIONSHIP":
-            new_account_status = "CLOSED"
-        else:
-            new_account_status = "HELD_FOR_REVIEW"
-        reviewer_uuid = uuid.UUID(str(current_user["id"])) if current_user.get("id") else None
-
-        await conn.execute(
-            """
-            UPDATE edd_requests
-            SET status = 'RESOLVED',
-                mlro_decision = $1,
-                mlro_notes = $2,
-                reviewed_by = $3,
-                reviewed_by_username = $4,
-                resolved_at = NOW()
-            WHERE id = $5;
-            """,
-            payload.decision, payload.notes, reviewer_uuid, current_user.get("username", "mlro"), edd_uuid
-        )
-
-        await conn.execute("UPDATE accounts SET status = $1 WHERE id = $2;", new_account_status, edd_row["account_id"])
-
-        return {
-            "edd_id": id,
-            "status": "RESOLVED",
-            "decision": payload.decision,
-            "account_status": new_account_status,
-            "message": f"EDD determination recorded: '{payload.decision}'. Account status updated to '{new_account_status}'."
-        }
+    return await decide_edd_request_atomic(
+        edd_uuid=edd_uuid,
+        tenant_id=str(tenant_id),
+        decision=payload.decision,
+        notes=payload.notes,
+        current_user=current_user,
+        conn_factory=get_async_db_conn,
+    )

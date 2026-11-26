@@ -10,7 +10,7 @@ import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from database.postgres import get_async_db_conn
 from repositories.compliance_config_repo import (
@@ -46,8 +46,9 @@ async def generate_str_batch(
         try:
             result = await str_batch_engine.generate_batch(str(tenant_id))
             if result.get("batch_id"):
+                loc = f"/api/v1/str/batch/batches/{result['batch_id']}"
                 if response is not None:
-                    response.headers["Location"] = f"/api/v1/str/batch/batches/{result['batch_id']}"
+                    response.headers["Location"] = loc
                 from routers.metrics import ws_manager
 
                 await ws_manager.broadcast(
@@ -60,6 +61,11 @@ async def generate_str_batch(
                         "generated_by": current_user["username"],
                     },
                     target_tenant_id=str(tenant_id),
+                )
+                return JSONResponse(
+                    content=result,
+                    status_code=status.HTTP_201_CREATED,
+                    headers={"Location": loc},
                 )
             return result
         except HTTPException:

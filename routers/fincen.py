@@ -1,42 +1,56 @@
 """
 FinCEN Regulatory E-Filing Router
 ==================================
-Provides HTTP API endpoints for electronic FinCEN SAR transmission:
-
-  - POST /api/v1/fincen/sar/submit:
-      Submits SAR XML electronically to the FinCEN BSA E-Filing System.
-      Stores FinCEN Tracking ID, ACK confirmation, and submission timestamps in PostgreSQL.
-
-  - GET /api/v1/fincen/sar/status/{id}:
-      Queries filing status and receipt for a target alert.
+Thin HTTP controller for electronic FinCEN SAR transmission, Four-Eyes SAR
+draft workflows, statutory 30/90-day deadline tracking, and SAR narrative/XML
+generation. All PostgreSQL SQL lives in `repositories/fincen_repo.py`.
 """
 
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from typing import Any, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
+
 from database.postgres import get_async_db_conn
+from observability.sanitizer import sanitize_text
+from repositories.fincen_repo import (
+    SAR_DRAFT_NOT_FOUND,
+    create_sar_draft_atomic,
+    extract_row_field as _extract_row_field,
+    fetch_alert_fincen_status_repo,
+    fetch_alert_for_narrative_context_repo,
+    fetch_alert_for_sar_preview_repo,
+    fetch_draft_xml_fallback_repo,
+    fetch_sar_draft_detail_repo,
+    fetch_sar_statutory_deadlines_repo,
+    list_sar_drafts_repo,
+    mark_alert_filing_failed_repo,
+    persist_fincen_receipt_atomic,
+    preflight_and_lock_alert_for_filing_atomic,
+    review_sar_draft_atomic,
+    sar_draft_etag as _sar_draft_etag,
+    update_sar_draft_atomic,
+)
 from services.auth import PermissionChecker, RoleChecker, enforce_tenant_data_scope
 from services.fincen_efiling import fincen_client
-from services.http_cache import build_conditional_json_response, build_entity_etag, check_if_match
-from services.rate_limiter import RateLimiter
+from services.http_cache import build_conditional_json_response
 from services.idempotency import (
     check_idempotency,
-    save_idempotency_result,
     clear_idempotency_key,
     run_idempotent_operation,
+    save_idempotency_result,
 )
-from observability.sanitizer import sanitize_text
+from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
 INVALID_DRAFT_ID = "Invalid draft ID."
-SAR_DRAFT_NOT_FOUND = "SAR draft not found."
 
 router = APIRouter(prefix="/api/v1/fincen", tags=["FinCEN E-Filing"])
 
@@ -50,7 +64,6 @@ class FinCENSubmissionRequest(BaseModel):
     @classmethod
     def sanitize_xml(cls, v: str | None) -> str | None:
         if isinstance(v, str):
-            import re
             return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufeff]", "", v).strip()
         return v
 
@@ -104,6 +117,7 @@ class SARPreviewRequest(BaseModel):
         if v is None:
             return None
         from domain.money import InvalidMoneyError, parse_decimal_amount
+
         try:
             return parse_decimal_amount(v, allow_zero=True)
         except InvalidMoneyError as exc:
@@ -115,150 +129,33 @@ class SARPreviewRequest(BaseModel):
         return sanitize_text(v) if isinstance(v, str) else v
 
 
-def _extract_row_field(row: Any, key: str) -> Any:
-    if hasattr(row, "get"):
-        return row.get(key)
-    if isinstance(row, dict) and key in row:
-        return row[key]
-    try:
-        return row[key]
-    except Exception:
-        return None
-
-
-async def _check_preflight_alert(conn: Any, alert_uuid: uuid.UUID, idemp_key: str, tenant_id: Any) -> bool:
-    existing = await conn.fetchrow(
-        """
-        SELECT id, fincen_tracking_id, fincen_filing_status, fincen_submitted_at
-        FROM alerts
-        WHERE id = $1;
-        """,
-        alert_uuid
-    )
-    if not existing:
-        return False
-    row_id = _extract_row_field(existing, "id")
-    row_alert_id = _extract_row_field(existing, "alert_id")
-    is_mismatched = (
-        bool(row_id and str(row_id) != str(alert_uuid)) and
-        bool(row_alert_id and str(row_alert_id) != str(alert_uuid))
-    )
-    if is_mismatched:
-        return True
-
-    tracking_id = _extract_row_field(existing, "fincen_tracking_id")
-    if isinstance(tracking_id, str) and tracking_id:
-        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
-        submitted_at = _extract_row_field(existing, "fincen_submitted_at") or ""
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"SAR already electronically filed under Tracking ID {tracking_id} at {submitted_at}."
-        )
-    return False
-
-
-async def _validate_maker_checker(
-    conn: Any,
-    payload: FinCENSubmissionRequest,
-    alert_uuid: uuid.UUID,
-    current_user: dict,
-    is_mismatched_mock: bool,
-    tenant_id: Any = None,
-) -> Any:
-    if payload.draft_id:
-        try:
-            d_uuid = uuid.UUID(str(payload.draft_id))
-            draft = await conn.fetchrow(
-                """
-                SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username, xml_payload
-                FROM sar_drafts
-                WHERE id = $1 AND ($2::text IS NULL OR tenant_id = $2::uuid);
-                """,
-                d_uuid, str(tenant_id) if tenant_id else None,
-            )
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid draft_id format.")
-        if not draft:
-            raise HTTPException(status_code=404, detail="Referenced SAR draft does not exist.")
-    else:
-        draft = await conn.fetchrow(
-            """
-            SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username, xml_payload
-            FROM sar_drafts
-            WHERE alert_id = $1 AND status = 'APPROVED'
-              AND ($2::text IS NULL OR tenant_id = $2::uuid)
-            ORDER BY created_at DESC LIMIT 1;
-            """,
-            alert_uuid, str(tenant_id) if tenant_id else None,
-        )
-
-    if is_mismatched_mock:
-        return draft
-
-    if not draft:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Four-Eyes Principle Violation: Electronic filing requires a validated SAR draft with status 'APPROVED' and verified MLRO review signature."
-        )
-    draft_alert_id = _extract_row_field(draft, "alert_id")
-    if draft_alert_id and str(draft_alert_id) != str(alert_uuid):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Four-Eyes Principle Violation: Referenced SAR draft does not belong to target alert_id."
-        )
-    if _extract_row_field(draft, "status") != "APPROVED":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Four-Eyes Principle Violation: SAR draft is {_extract_row_field(draft, 'status')}; must be APPROVED by an MLRO before filing."
-        )
-    if not _extract_row_field(draft, "reviewed_by"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Segregation of Duties Violation: SAR draft lacks verified MLRO review signature."
-        )
-    caller_role = current_user.get("role", "")
-    drafted_by = _extract_row_field(draft, "drafted_by")
-    reviewed_by = _extract_row_field(draft, "reviewed_by")
-    is_same_author = bool(drafted_by and str(drafted_by) == str(reviewed_by))
-    if is_same_author and caller_role != "SUPER_ADMIN":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Segregation of Duties Violation: Filer cannot be both the author and the sole approver of the SAR draft."
-        )
-
-    approved_xml = _extract_row_field(draft, "xml_payload")
-    if isinstance(approved_xml, str) and approved_xml.strip() and payload.sar_xml:
-        norm_approved = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufeff]", "", approved_xml).strip()
-        if payload.sar_xml.strip() != norm_approved:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Integrity Violation: Submitted SAR XML does not match the MLRO-approved draft payload."
-            )
-    return draft
-
-
 async def _execute_fincen_gateway_submission(
     payload: FinCENSubmissionRequest,
     alert_uuid: uuid.UUID,
     tenant_id: Any,
-    idemp_key: str
+    idemp_key: str,
 ) -> dict:
     try:
         return await fincen_client.submit_sar(payload.sar_xml, payload.alert_id)
     except ValueError as ve:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
+        await mark_alert_filing_failed_repo(
+            alert_uuid=alert_uuid, tenant_id=tenant_id, conn_factory=get_async_db_conn
+        )
         await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(ve))
     except Exception:
         logger.exception("FinCEN SAR submission failed")
         try:
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                await conn.execute("UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;", alert_uuid)
+            await mark_alert_filing_failed_repo(
+                alert_uuid=alert_uuid, tenant_id=tenant_id, conn_factory=get_async_db_conn
+            )
         except Exception:
             pass
         await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="FinCEN regulatory gateway submission failed.")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="FinCEN regulatory gateway submission failed.",
+        )
 
 
 async def _persist_fincen_receipt(
@@ -269,101 +166,39 @@ async def _persist_fincen_receipt(
     current_user: dict,
     tenant_id: Any,
     idemp_key: str,
-    response: Response | None
+    response: Response | None,
 ) -> dict:
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        await conn.execute(
-            """
-            UPDATE alerts
-            SET fincen_tracking_id = $1,
-                fincen_filing_status = $2,
-                fincen_submitted_at = NOW()
-            WHERE id = $3;
-            """,
-            receipt["fincen_tracking_id"], receipt["status"], alert_uuid
-        )
-        if draft_to_validate and draft_to_validate.get("id"):
-            try:
-                # T-01: Run optional sar_drafts update inside a PostgreSQL SAVEPOINT so a caught error
-                # never poisons the outer transaction (enqueue_webhook_event_tx & record_audit_event_tx).
-                async def _mark_draft_filed():
-                    await conn.execute(
-                        """
-                        UPDATE sar_drafts
-                        SET status = 'FILED',
-                            fincen_tracking_id = $2,
-                            xsd_validated = TRUE,
-                            continuing_activity_due_at = NOW() + INTERVAL '90 days',
-                            updated_at = NOW()
-                        WHERE id = $1;
-                        """,
-                        draft_to_validate["id"],
-                        receipt.get("fincen_tracking_id"),
-                    )
-
-                import inspect
-                tx_factory = getattr(conn, "transaction", None)
-                if callable(tx_factory) and not inspect.iscoroutinefunction(tx_factory):
-                    sp = tx_factory()
-                    if hasattr(sp, "__aenter__"):
-                        async with sp:
-                            await _mark_draft_filed()
-                    else:
-                        await _mark_draft_filed()
-                else:
-                    await _mark_draft_filed()
-            except Exception as ex_draft:
-                logger.warning("Could not update sar_drafts filing receipt for draft %s: %s", draft_to_validate.get("id"), ex_draft)
-
-        # P0-2: Enqueue signed SAR_FILED outbound webhook inside the filing transaction
-        from services.webhooks import enqueue_webhook_event_tx
-        await enqueue_webhook_event_tx(
-            conn=conn,
-            tenant_id=str(tenant_id),
-            event_type="SAR_FILED",
-            aggregate_id=payload.alert_id,
-            payload={
-                "alert_id": payload.alert_id,
-                "fincen_tracking_id": receipt["fincen_tracking_id"],
-                "status": receipt["status"],
-                "submitted_by": current_user["username"],
-            },
-        )
-
-        # T-06: Record cryptographic WORM audit_log inside the FinCEN SAR filing transaction
-        from services.audit import record_audit_event_tx
-        await record_audit_event_tx(
-            conn=conn,
-            action="FINCEN_SAR_FILED",
-            actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
-            actor_username=current_user.get("username", "mlro"),
-            actor_role=current_user.get("role", "MLRO"),
-            resource_type="SAR",
-            resource_id=str(payload.alert_id),
-            tenant_id=str(tenant_id) if tenant_id else None,
-            details={
-                "alert_id": payload.alert_id,
-                "fincen_tracking_id": receipt["fincen_tracking_id"],
-                "status": receipt["status"],
-                "ack_code": receipt.get("fincen_ack_code"),
-                "sandbox": receipt.get("sandbox", True),
-            },
-        )
+    await persist_fincen_receipt_atomic(
+        receipt=receipt,
+        alert_id=payload.alert_id,
+        alert_uuid=alert_uuid,
+        draft_to_validate=draft_to_validate,
+        current_user=current_user,
+        tenant_id=tenant_id,
+        conn_factory=get_async_db_conn,
+    )
 
     logger.info(
-        f"AUDIT LOG: FinCEN SAR electronically filed by '{current_user['username']}' "
-        f"for Alert {payload.alert_id} | Tracking ID: {receipt['fincen_tracking_id']} | Status: {receipt['status']}"
+        "AUDIT LOG: FinCEN SAR electronically filed by '%s' for Alert %s | Tracking ID: %s | Status: %s",
+        current_user["username"],
+        payload.alert_id,
+        receipt["fincen_tracking_id"],
+        receipt["status"],
     )
 
     from routers.metrics import ws_manager
-    await ws_manager.broadcast({
-        "event": "FINCEN_SAR_FILED",
-        "tenant_id": str(tenant_id),
-        "alert_id": payload.alert_id,
-        "fincen_tracking_id": receipt["fincen_tracking_id"],
-        "status": receipt["status"],
-        "submitted_by": current_user["username"]
-    }, target_tenant_id=str(tenant_id))
+
+    await ws_manager.broadcast(
+        {
+            "event": "FINCEN_SAR_FILED",
+            "tenant_id": str(tenant_id),
+            "alert_id": payload.alert_id,
+            "fincen_tracking_id": receipt["fincen_tracking_id"],
+            "status": receipt["status"],
+            "submitted_by": current_user["username"],
+        },
+        target_tenant_id=str(tenant_id),
+    )
 
     if response is not None:
         response.headers["Location"] = f"/api/v1/fincen/sars/{payload.alert_id}"
@@ -375,7 +210,7 @@ async def _persist_fincen_receipt(
         "ack_code": receipt.get("fincen_ack_code"),
         "confirmation_message": receipt.get("fincen_confirmation_message"),
         "submitted_at": receipt.get("submitted_at"),
-        "sandbox": receipt.get("sandbox", True)
+        "sandbox": receipt.get("sandbox", True),
     }
 
     await save_idempotency_result(
@@ -383,7 +218,7 @@ async def _persist_fincen_receipt(
         status_code=status.HTTP_201_CREATED,
         body=res_body,
         tenant_id=str(tenant_id) if tenant_id else None,
-        ttl_seconds=86400
+        ttl_seconds=86400,
     )
     return res_body
 
@@ -395,12 +230,9 @@ async def submit_sar_to_fincen(
     payload: FinCENSubmissionRequest,
     response: Response = None,
     current_user: dict = Depends(PermissionChecker("sar:submit")),
-    _rate_limit=Depends(RateLimiter(limit=10, window=60))
+    _rate_limit=Depends(RateLimiter(limit=10, window=60)),
 ):
-    """
-    Submits a Suspicious Activity Report XML electronically to the U.S. FinCEN BSA E-Filing Gateway.
-    Enforces idempotency, pre-flight duplicate submission guards, fail-closed Four-Eyes SoD, and atomic filing status tracking.
-    """
+    """Submits a Suspicious Activity Report XML electronically to FinCEN BSA E-Filing."""
     try:
         alert_uuid = uuid.UUID(payload.alert_id)
     except ValueError:
@@ -408,17 +240,15 @@ async def submit_sar_to_fincen(
 
     tenant_id = enforce_tenant_data_scope(current_user)
 
-    # 1. Extract Idempotency Key (header or fallback to alert-scoped key)
     idemp_key = None
     if request is not None and hasattr(request, "headers"):
         idemp_key = request.headers.get("Idempotency-Key") or request.headers.get("X-Idempotency-Key")
     if not idemp_key:
         idemp_key = f"sar_filing_{payload.alert_id}"
 
-    # 2. Check Redis idempotency cache
     is_cached, cached_val = await check_idempotency(
         idemp_key,
-        tenant_id=str(tenant_id) if tenant_id else None
+        tenant_id=str(tenant_id) if tenant_id else None,
     )
     if is_cached and cached_val:
         headers = {"Idempotency-Key": idemp_key, "X-Cache-Lookup": "HIT"}
@@ -428,27 +258,20 @@ async def submit_sar_to_fincen(
         return JSONResponse(
             status_code=cached_val.get("status_code", status.HTTP_201_CREATED),
             content=cached_val.get("body", {}),
-            headers=headers
+            headers=headers,
         )
 
-    # 3. PostgreSQL Pre-flight check & Maker-Checker validation (strictly fail-closed!)
     draft_to_validate = None
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            is_mismatched_mock = await _check_preflight_alert(conn, alert_uuid, idemp_key, tenant_id)
-            draft_to_validate = await _validate_maker_checker(
-                conn, payload, alert_uuid, current_user, is_mismatched_mock, tenant_id=tenant_id
-            )
-
-            # Set state to FILING_PENDING to prevent concurrent double-filing
-            await conn.execute(
-                """
-                UPDATE alerts
-                SET fincen_filing_status = 'FILING_PENDING'
-                WHERE id = $1;
-                """,
-                alert_uuid
-            )
+        draft_to_validate = await preflight_and_lock_alert_for_filing_atomic(
+            payload=payload,
+            alert_uuid=alert_uuid,
+            current_user=current_user,
+            tenant_id=tenant_id,
+            idemp_key=idemp_key,
+            clear_idemp_fn=clear_idempotency_key,
+            conn_factory=get_async_db_conn,
+        )
     except HTTPException:
         raise
     except Exception as db_err:
@@ -456,40 +279,33 @@ async def submit_sar_to_fincen(
         await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Pre-flight compliance verification unavailable; SAR filing rejected (fail-closed)."
+            detail="Pre-flight compliance verification unavailable; SAR filing rejected (fail-closed).",
         )
 
-    # 3b. Resolve XML payload from approved SAR draft when not passed inline
     if not payload.sar_xml or len(payload.sar_xml) < 10:
         resolved_xml = None
         if draft_to_validate and hasattr(draft_to_validate, "get"):
             resolved_xml = draft_to_validate.get("xml_payload")
         if not resolved_xml and payload.draft_id:
             try:
-                async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                    d_row = await conn.fetchrow(
-                        "SELECT xml_payload, narrative FROM sar_drafts WHERE id = $1 AND tenant_id = $2::uuid;",
-                        uuid.UUID(payload.draft_id),
-                        str(tenant_id),
-                    )
-                    if d_row:
-                        resolved_xml = d_row.get("xml_payload") or (
-                            f"<SuspiciousActivityReport><Header><ReportID>{payload.alert_id}</ReportID></Header>"
-                            f"<ActivitySummary><Description>{sanitize_text(d_row.get('narrative') or 'Approved SAR filing')}</Description></ActivitySummary>"
-                            f"</SuspiciousActivityReport>"
-                        )
+                resolved_xml = await fetch_draft_xml_fallback_repo(
+                    draft_id=payload.draft_id,
+                    alert_id=payload.alert_id,
+                    tenant_id=tenant_id,
+                    conn_factory=get_async_db_conn,
+                )
             except Exception:
                 pass
         if not resolved_xml:
             raise HTTPException(status_code=400, detail="SAR XML payload is required for FinCEN filing.")
         payload.sar_xml = resolved_xml
 
-    # 4. Electronic submission to FinCEN gateway
     receipt = await _execute_fincen_gateway_submission(payload, alert_uuid, tenant_id, idemp_key)
 
-    # 5. Success: Persist confirmed tracking information & audit
     try:
-        return await _persist_fincen_receipt(receipt, payload, alert_uuid, draft_to_validate, current_user, tenant_id, idemp_key, response)
+        return await _persist_fincen_receipt(
+            receipt, payload, alert_uuid, draft_to_validate, current_user, tenant_id, idemp_key, response
+        )
     except HTTPException:
         raise
     except Exception:
@@ -503,11 +319,9 @@ async def submit_sar_to_fincen(
 async def get_fincen_status(
     id: str,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Retrieves electronic FinCEN filing status and tracking information for an alert case.
-    """
+    """Retrieves electronic FinCEN filing status and tracking information for an alert case."""
     try:
         alert_uuid = uuid.UUID(id)
     except ValueError:
@@ -516,25 +330,21 @@ async def get_fincen_status(
     tenant_id = enforce_tenant_data_scope(current_user)
 
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT id, status, fincen_tracking_id, fincen_filing_status, fincen_submitted_at
-                FROM alerts
-                WHERE id = $1;
-                """,
-                alert_uuid
-            )
-            if not row:
-                raise HTTPException(status_code=404, detail="Alert not found.")
+        row = await fetch_alert_fincen_status_repo(
+            alert_uuid=alert_uuid,
+            tenant_id=tenant_id,
+            conn_factory=get_async_db_conn,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Alert not found.")
 
-            return {
-                "alert_id": str(row["id"]),
-                "alert_status": row["status"],
-                "fincen_tracking_id": row["fincen_tracking_id"] or "NOT_FILED",
-                "fincen_filing_status": row["fincen_filing_status"] or "UNSUBMITTED",
-                "fincen_submitted_at": row["fincen_submitted_at"].isoformat() if row["fincen_submitted_at"] else None
-            }
+        return {
+            "alert_id": str(row["id"]),
+            "alert_status": row["status"],
+            "fincen_tracking_id": row["fincen_tracking_id"] or "NOT_FILED",
+            "fincen_filing_status": row["fincen_filing_status"] or "UNSUBMITTED",
+            "fincen_submitted_at": row["fincen_submitted_at"].isoformat() if row["fincen_submitted_at"] else None,
+        }
     except HTTPException:
         raise
     except Exception:
@@ -547,12 +357,9 @@ async def create_sar_draft(
     payload: SARDraftCreate,
     request: Request = None,
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Creates a new SAR draft for an alert or case, awaiting MLRO 4-eyes review.
-    Strictly requires `Idempotency-Key` header on HTTP requests (400 if missing).
-    """
+    """Creates a new SAR draft awaiting MLRO 4-eyes review (mandatory Idempotency-Key)."""
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
         alert_uuid = uuid.UUID(payload.alert_id)
@@ -561,51 +368,49 @@ async def create_sar_draft(
         raise HTTPException(status_code=400, detail="Invalid alert_id or case_id format.")
 
     async def _execute_create_draft():
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            user_uuid = None
-            if current_user.get("id"):
-                try:
-                    user_uuid = uuid.UUID(str(current_user["id"]))
-                except ValueError:
-                    user_uuid = None
+        user_uuid = None
+        if current_user.get("id"):
+            try:
+                user_uuid = uuid.UUID(str(current_user["id"]))
+            except ValueError:
+                user_uuid = None
 
-            from datetime import timedelta
-            now_utc = datetime.now(timezone.utc)
-            statutory_deadline = now_utc + timedelta(days=30)  # BSA 31 CFR § 1020.320 (30-day rule)
-            xsd_ok = False
-            if payload.xml_payload:
-                from services.sar_validator import validate_regulatory_xml
-                xsd_ok, _ = validate_regulatory_xml(payload.xml_payload)
+        now_utc = datetime.now(timezone.utc)
+        statutory_deadline = now_utc + timedelta(days=30)
+        xsd_ok = False
+        if payload.xml_payload:
+            from services.sar_validator import validate_sar_xml_async
 
-            draft_id = await conn.fetchval(
-                """
-                INSERT INTO sar_drafts (
-                    tenant_id, alert_id, case_id, drafted_by, drafted_by_username,
-                    status, narrative, xml_payload, detection_date, statutory_deadline_at, xsd_validated
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                RETURNING id;
-                """,
-                uuid.UUID(str(tenant_id)), alert_uuid, case_uuid,
-                user_uuid,
-                current_user.get("username", "analyst"),
-                payload.status,
-                payload.narrative, payload.xml_payload,
-                now_utc, statutory_deadline, xsd_ok
-            )
+            xsd_ok, _ = await validate_sar_xml_async(payload.xml_payload)
 
-            return {
-                "draft_id": str(draft_id),
-                "alert_id": payload.alert_id,
-                "status": payload.status,
-                "statutory_deadline_at": statutory_deadline.isoformat(),
-                "days_until_deadline": 30,
-                "xsd_validated": xsd_ok,
-                "message": (
-                    "SAR draft submitted for MLRO review."
-                    if payload.status == "PENDING_MLRO_REVIEW"
-                    else "SAR draft saved."
-                )
-            }
+        draft_id = await create_sar_draft_atomic(
+            tenant_id=str(tenant_id),
+            alert_uuid=alert_uuid,
+            case_uuid=case_uuid,
+            user_uuid=user_uuid,
+            username=current_user.get("username", "analyst"),
+            draft_status=payload.status,
+            narrative=payload.narrative,
+            xml_payload=payload.xml_payload,
+            now_utc=now_utc,
+            statutory_deadline=statutory_deadline,
+            xsd_ok=xsd_ok,
+            conn_factory=get_async_db_conn,
+        )
+
+        return {
+            "draft_id": str(draft_id),
+            "alert_id": payload.alert_id,
+            "status": payload.status,
+            "statutory_deadline_at": statutory_deadline.isoformat(),
+            "days_until_deadline": 30,
+            "xsd_validated": xsd_ok,
+            "message": (
+                "SAR draft submitted for MLRO review."
+                if payload.status == "PENDING_MLRO_REVIEW"
+                else "SAR draft saved."
+            ),
+        }
 
     return await run_idempotent_operation(
         request=request,
@@ -623,33 +428,13 @@ async def get_sar_statutory_deadlines(
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
-    """
-    Returns BSA 31 CFR § 1020.320 statutory 30-day filing deadlines (approaching/overdue)
-    and 90-day Continuing Activity SAR review trackers.
-    """
+    """Returns BSA 31 CFR § 1020.320 statutory 30-day filing deadlines and 90-day reviews."""
     tenant_id = enforce_tenant_data_scope(current_user)
     now_utc = datetime.now(timezone.utc)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        pending_rows = await conn.fetch(
-            """
-            SELECT id, alert_id, status, drafted_by_username, detection_date, statutory_deadline_at, fiu_format
-            FROM sar_drafts
-            WHERE tenant_id = $1 AND status NOT IN ('FILED', 'REJECTED')
-            ORDER BY statutory_deadline_at ASC NULLS LAST
-            LIMIT 100;
-            """,
-            uuid.UUID(str(tenant_id)),
-        )
-        continuing_rows = await conn.fetch(
-            """
-            SELECT id, alert_id, fincen_tracking_id, continuing_activity_due_at
-            FROM sar_drafts
-            WHERE tenant_id = $1 AND status = 'FILED' AND continuing_activity_due_at IS NOT NULL
-            ORDER BY continuing_activity_due_at ASC
-            LIMIT 100;
-            """,
-            uuid.UUID(str(tenant_id)),
-        )
+    pending_rows, continuing_rows = await fetch_sar_statutory_deadlines_repo(
+        tenant_id=str(tenant_id),
+        conn_factory=get_async_db_conn,
+    )
 
     pending_deadlines = []
     overdue_count = 0
@@ -659,28 +444,32 @@ async def get_sar_statutory_deadlines(
         is_overdue = days_left is not None and days_left < 0
         if is_overdue:
             overdue_count += 1
-        pending_deadlines.append({
-            "draft_id": str(r["id"]),
-            "alert_id": str(r["alert_id"]) if r["alert_id"] else None,
-            "status": r["status"],
-            "drafted_by_username": r["drafted_by_username"],
-            "statutory_deadline_at": dl.isoformat() if dl else None,
-            "days_until_deadline": days_left,
-            "is_overdue": is_overdue,
-            "fiu_format": r.get("fiu_format", "FINCEN_BSABATCH") if hasattr(r, "get") else "FINCEN_BSABATCH",
-        })
+        pending_deadlines.append(
+            {
+                "draft_id": str(r["id"]),
+                "alert_id": str(r["alert_id"]) if r["alert_id"] else None,
+                "status": r["status"],
+                "drafted_by_username": r["drafted_by_username"],
+                "statutory_deadline_at": dl.isoformat() if dl else None,
+                "days_until_deadline": days_left,
+                "is_overdue": is_overdue,
+                "fiu_format": r.get("fiu_format", "FINCEN_BSABATCH") if hasattr(r, "get") else "FINCEN_BSABATCH",
+            }
+        )
 
     continuing_reviews = []
     for r in continuing_rows:
         due = r["continuing_activity_due_at"]
         days_left = int((due - now_utc).total_seconds() // 86400) if due else None
-        continuing_reviews.append({
-            "draft_id": str(r["id"]),
-            "alert_id": str(r["alert_id"]) if r["alert_id"] else None,
-            "fincen_tracking_id": r["fincen_tracking_id"],
-            "continuing_activity_due_at": due.isoformat() if due else None,
-            "days_until_review": days_left,
-        })
+        continuing_reviews.append(
+            {
+                "draft_id": str(r["id"]),
+                "alert_id": str(r["alert_id"]) if r["alert_id"] else None,
+                "fincen_tracking_id": r["fincen_tracking_id"],
+                "continuing_activity_due_at": due.isoformat() if due else None,
+                "days_until_review": days_left,
+            }
+        )
 
     return {
         "overdue_count": overdue_count,
@@ -693,39 +482,22 @@ async def get_sar_statutory_deadlines(
 async def list_sar_drafts(
     current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),
     status_filter: str | None = None,
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        if status_filter:
-            rows = await conn.fetch(
-                """
-                SELECT s.*, a.fincen_tracking_id, a.fincen_filing_status
-                FROM sar_drafts s
-                LEFT JOIN alerts a ON s.alert_id = a.id
-                WHERE s.tenant_id = $1 AND s.status = $2
-                ORDER BY s.created_at DESC LIMIT 100;
-                """,
-                uuid.UUID(str(tenant_id)), status_filter.upper()
-            )
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT s.*, a.fincen_tracking_id, a.fincen_filing_status
-                FROM sar_drafts s
-                LEFT JOIN alerts a ON s.alert_id = a.id
-                WHERE s.tenant_id = $1
-                ORDER BY s.created_at DESC LIMIT 100;
-                """,
-                uuid.UUID(str(tenant_id))
-            )
-        now_utc = datetime.now(timezone.utc)
-        results = []
-        for r in rows:
-            dl = r["statutory_deadline_at"] if "statutory_deadline_at" in r else None
-            days_left = int((dl - now_utc).total_seconds() // 86400) if dl else None
-            cont_due = r["continuing_activity_due_at"] if "continuing_activity_due_at" in r else None
-            results.append({
+    rows = await list_sar_drafts_repo(
+        tenant_id=str(tenant_id),
+        status_filter=status_filter,
+        conn_factory=get_async_db_conn,
+    )
+    now_utc = datetime.now(timezone.utc)
+    results = []
+    for r in rows:
+        dl = r["statutory_deadline_at"] if "statutory_deadline_at" in r else None
+        days_left = int((dl - now_utc).total_seconds() // 86400) if dl else None
+        cont_due = r["continuing_activity_due_at"] if "continuing_activity_due_at" in r else None
+        results.append(
+            {
                 "draft_id": str(r["id"]),
                 "alert_id": str(r["alert_id"]) if r["alert_id"] else None,
                 "case_id": str(r["case_id"]) if r["case_id"] else None,
@@ -741,9 +513,10 @@ async def list_sar_drafts(
                 "is_overdue": bool(days_left is not None and days_left < 0 and r["status"] != "FILED"),
                 "continuing_activity_due_at": cont_due.isoformat() if cont_due else None,
                 "xsd_validated": bool(r["xsd_validated"]) if "xsd_validated" in r else False,
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None
-            })
-        return results
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+        )
+    return results
 
 
 @router.post("/sar/drafts/{id}/review")
@@ -752,12 +525,9 @@ async def review_sar_draft(
     payload: SARDraftReview,
     request: Request = None,
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    MLRO Four-Eyes Review on a SAR draft. Enforces Segregation of Duties (SOD)
-    and mandatory `Idempotency-Key` on HTTP requests (400 if missing).
-    """
+    """MLRO Four-Eyes Review on a SAR draft (enforces SoD & mandatory Idempotency-Key)."""
     try:
         draft_uuid = uuid.UUID(id)
     except ValueError:
@@ -766,61 +536,14 @@ async def review_sar_draft(
     tenant_id = enforce_tenant_data_scope(current_user)
 
     async def _execute_review():
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            draft = await conn.fetchrow("SELECT * FROM sar_drafts WHERE id = $1;", draft_uuid)
-            if not draft:
-                raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
-
-            new_status = "APPROVED" if payload.action == "APPROVE" else "REJECTED"
-            from services.state_machine import validate_sar_draft_transition
-            validate_sar_draft_transition(str(draft["status"]), new_status, allow_noop=False)
-
-            caller_id = str(current_user.get("id", ""))
-            caller_role = current_user.get("role", "")
-            if draft["drafted_by"] and str(draft["drafted_by"]) == caller_id and caller_role != "SUPER_ADMIN":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Segregation of Duties Violation: Reviewer cannot approve a SAR draft they authored."
-                )
-            user_uuid = None
-            if caller_id:
-                try:
-                    user_uuid = uuid.UUID(caller_id)
-                except ValueError:
-                    user_uuid = None
-
-            # Optimistic concurrency locking (RACE-03): update only if still PENDING_MLRO_REVIEW
-            updated_id = await conn.fetchval(
-                """
-                UPDATE sar_drafts
-                SET status = $1,
-                    reviewed_by = $2,
-                    reviewed_by_username = $3,
-                    rejection_reason = $4,
-                    reviewed_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = $5 AND status = 'PENDING_MLRO_REVIEW'
-                RETURNING id;
-                """,
-                new_status,
-                user_uuid,
-                current_user.get("username", "mlro"),
-                payload.rejection_reason,
-                draft_uuid
-            )
-
-            if not updated_id:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Concurrent modification conflict: SAR draft was already reviewed or modified by another officer."
-                )
-
-            return {
-                "draft_id": str(draft_uuid),
-                "status": new_status,
-                "reviewed_by": current_user.get("username", "mlro"),
-                "message": f"SAR draft successfully {new_status.lower()}."
-            }
+        return await review_sar_draft_atomic(
+            draft_uuid=draft_uuid,
+            tenant_id=str(tenant_id),
+            action=payload.action,
+            rejection_reason=payload.rejection_reason,
+            current_user=current_user,
+            conn_factory=get_async_db_conn,
+        )
 
     return await run_idempotent_operation(
         request=request,
@@ -835,12 +558,21 @@ async def review_sar_draft(
 def _format_sar_draft_response(draft: Any) -> dict:
     created = draft["created_at"]
     updated = draft.get("updated_at")
-    dl = draft.get("statutory_deadline_at") if hasattr(draft, "get") else (draft["statutory_deadline_at"] if "statutory_deadline_at" in draft else None)
-    cont_due = draft.get("continuing_activity_due_at") if hasattr(draft, "get") else (draft["continuing_activity_due_at"] if "continuing_activity_due_at" in draft else None)
+    dl = (
+        draft.get("statutory_deadline_at")
+        if hasattr(draft, "get")
+        else (draft["statutory_deadline_at"] if "statutory_deadline_at" in draft else None)
+    )
+    cont_due = (
+        draft.get("continuing_activity_due_at")
+        if hasattr(draft, "get")
+        else (draft["continuing_activity_due_at"] if "continuing_activity_due_at" in draft else None)
+    )
     now_utc = datetime.now(timezone.utc)
     if dl is not None and dl.tzinfo is None:
         dl = dl.replace(tzinfo=timezone.utc)
     days_left = int((dl - now_utc).total_seconds() // 86400) if dl else None
+    amt_raw = draft.get("amount")
     return {
         "draft_id": str(draft["id"]),
         "alert_id": str(draft["alert_id"]) if draft["alert_id"] else None,
@@ -856,28 +588,22 @@ def _format_sar_draft_response(draft: Any) -> dict:
         "days_until_deadline": days_left,
         "is_overdue": bool(days_left is not None and days_left < 0 and draft["status"] != "FILED"),
         "continuing_activity_due_at": cont_due.isoformat() if cont_due else None,
-        "xsd_validated": bool(draft.get("xsd_validated")) if hasattr(draft, "get") else bool(draft["xsd_validated"] if "xsd_validated" in draft else False),
+        "xsd_validated": bool(draft.get("xsd_validated"))
+        if hasattr(draft, "get")
+        else bool(draft["xsd_validated"] if "xsd_validated" in draft else False),
         "created_at": created.isoformat() if created else None,
         "updated_at": updated.isoformat() if updated else None,
         "alert_details": {
             "rule_name": draft.get("rule_name") or "SUSPICIOUS_ACTIVITY",
             "threat_level": draft.get("threat_level") or "HIGH",
             "risk_score": float(draft.get("ai_risk_score") or 0.85),
-            "amount": float(draft.get("amount") or 0.0),
+            "amount": float(amt_raw or 0.0),
+            "amount_str": str(amt_raw if amt_raw is not None else "0.0000"),
             "currency": draft.get("currency") or "USD",
             "sender_account": draft.get("sender_account_id") or "",
-            "receiver_account": draft.get("receiver_account_id") or ""
-        }
+            "receiver_account": draft.get("receiver_account_id") or "",
+        },
     }
-
-
-def _sar_draft_etag(draft: Any) -> str:
-    updated = (
-        draft["updated_at"]
-        if ("updated_at" in draft and draft["updated_at"])
-        else (draft["created_at"] if ("created_at" in draft and draft["created_at"]) else "")
-    )
-    return build_entity_etag("sar-draft", draft["id"], updated, draft["status"])
 
 
 @router.get("/sar/drafts/{id}")
@@ -885,7 +611,7 @@ async def get_sar_draft(
     id: str,
     request: Request = None,
     current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Retrieves full details of a specific SAR draft with ETag / 304 conditional support."""
     try:
@@ -894,26 +620,18 @@ async def get_sar_draft(
         raise HTTPException(status_code=400, detail=INVALID_DRAFT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        draft = await conn.fetchrow(
-            """
-            SELECT d.*, 
-                   a.rule_name, a.threat_level, a.ai_risk_score,
-                   t.amount, t.currency, t.sender_account_id, t.receiver_account_id
-            FROM sar_drafts d
-            LEFT JOIN alerts a ON d.alert_id = a.id
-            LEFT JOIN transactions t ON a.transaction_id = t.id
-            WHERE d.id = $1 AND d.tenant_id = $2;
-            """,
-            draft_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not draft:
-            raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
+    draft = await fetch_sar_draft_detail_repo(
+        draft_uuid=draft_uuid,
+        tenant_id=str(tenant_id),
+        conn_factory=get_async_db_conn,
+    )
+    if not draft:
+        raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
 
-        etag = _sar_draft_etag(draft)
-        formatted = _format_sar_draft_response(draft)
-        formatted["etag"] = etag
-        return build_conditional_json_response(request, formatted, etag=etag)
+    etag = _sar_draft_etag(draft)
+    formatted = _format_sar_draft_response(draft)
+    formatted["etag"] = etag
+    return build_conditional_json_response(request, formatted, etag=etag)
 
 
 @router.patch("/sar/drafts/{id}")
@@ -923,74 +641,38 @@ async def update_sar_draft(
     request: Request = None,
     response: Response = None,
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Updates narrative or xml_payload of an open or rejected SAR draft.
-    Enforces optimistic concurrency via `If-Match` header (HTTP 412 on stale write).
-    """
+    """Updates narrative or xml_payload of an open or rejected SAR draft with If-Match check."""
     try:
         draft_uuid = uuid.UUID(id)
     except ValueError:
         raise HTTPException(status_code=400, detail=INVALID_DRAFT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        draft = await conn.fetchrow(
-            "SELECT id, status, created_at, updated_at FROM sar_drafts WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
-            draft_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not draft:
-            raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
-
-        current_etag = _sar_draft_etag(draft)
-        check_if_match(request, current_etag, resource_label=f"SAR draft {draft_uuid}")
-
-        if draft["status"] in ("PENDING_MLRO_REVIEW", "APPROVED", "FILED"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot edit SAR draft in '{draft['status']}' state."
-            )
-
-        new_narrative = payload.narrative
-        new_xml = payload.xml_payload
-        new_status = payload.status or draft["status"]
-        from services.state_machine import validate_sar_draft_transition
-        validate_sar_draft_transition(str(draft["status"]), str(new_status))
-
-        updated_ts = await conn.fetchval(
-            """
-            UPDATE sar_drafts
-            SET narrative = COALESCE($1, narrative),
-                xml_payload = COALESCE($2, xml_payload),
-                status = $3,
-                updated_at = NOW()
-            WHERE id = $4 AND tenant_id = $5
-            RETURNING updated_at;
-            """,
-            new_narrative, new_xml, new_status, draft_uuid, uuid.UUID(str(tenant_id))
-        )
-        new_etag = build_entity_etag("sar-draft", draft_uuid, updated_ts or draft["created_at"], new_status)
-        if response is not None:
-            response.headers["ETag"] = new_etag
-
-        return {
-            "draft_id": str(draft_uuid),
-            "status": new_status,
-            "etag": new_etag,
-            "message": "SAR draft updated successfully."
-        }
+    result = await update_sar_draft_atomic(
+        draft_uuid=draft_uuid,
+        tenant_id=str(tenant_id),
+        narrative=payload.narrative,
+        xml_payload=payload.xml_payload,
+        requested_status=payload.status,
+        request=request,
+        conn_factory=get_async_db_conn,
+    )
+    if response is not None:
+        response.headers["ETag"] = result["etag"]
+    return result
 
 
 @router.post("/sar/preview")
 async def preview_sar_xml(
     payload: SARPreviewRequest,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     """Generates a live preview XML payload in either FinCEN BSA or UNODC EU goAML format."""
-    from services.goaml import generate_goaml_xml
     from routers.alerts import generate_sar_xml
+    from services.goaml import generate_goaml_xml
 
     tenant_id = enforce_tenant_data_scope(current_user)
     alert_tuple = None
@@ -998,34 +680,27 @@ async def preview_sar_xml(
     if payload.alert_id:
         try:
             alert_uuid = uuid.UUID(payload.alert_id)
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                row = await conn.fetchrow(
-                    """
-                    SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score,
-                           COALESCE(t.amount, 10000.0) as amount,
-                           COALESCE(t.currency, 'USD') as currency,
-                           COALESCE(t.timestamp, NOW()) as timestamp,
-                           COALESCE(t.sender_account_id, 'ACC-ORIGINATOR') as s_acc,
-                           COALESCE(s_acc.owner_name, 'Sender Entity') as s_owner,
-                           COALESCE(t.receiver_account_id, 'ACC-BENEFICIARY') as r_acc,
-                           COALESCE(r_acc.owner_name, 'Receiver Entity') as r_owner
-                    FROM alerts a
-                    LEFT JOIN transactions t ON a.transaction_id = t.id
-                    LEFT JOIN accounts s_acc ON t.sender_account_id = s_acc.account_number
-                    LEFT JOIN accounts r_acc ON t.receiver_account_id = r_acc.account_number
-                    WHERE a.id = $1;
-                    """,
-                    alert_uuid
+            row = await fetch_alert_for_sar_preview_repo(
+                alert_uuid=alert_uuid,
+                tenant_id=str(tenant_id),
+                conn_factory=get_async_db_conn,
+            )
+            if row:
+                alert_tuple = (
+                    row["id"],
+                    row["rule_name"],
+                    row["threat_level"],
+                    float(row["ai_risk_score"] or 0.8),
+                    row["amount"],
+                    row["currency"],
+                    row["timestamp"],
+                    row["s_acc"],
+                    row["s_owner"],
+                    row["r_acc"],
+                    row["r_owner"],
                 )
-                if row:
-                    alert_tuple = (
-                        row["id"], row["rule_name"], row["threat_level"],
-                        float(row["ai_risk_score"] or 0.8), float(row["amount"]),
-                        row["currency"], row["timestamp"], row["s_acc"],
-                        row["s_owner"], row["r_acc"], row["r_owner"]
-                    )
         except Exception as e:
-            logger.debug(f"Alert lookup for XML preview fallback to payload values: {e}")
+            logger.debug("Alert lookup for XML preview fallback to payload values: %s", e)
 
     if not alert_tuple:
         alert_tuple = (
@@ -1033,13 +708,13 @@ async def preview_sar_xml(
             "SUSPICIOUS_ACTIVITY",
             "HIGH",
             0.85,
-            payload.amount or 15000.0,
+            payload.amount if payload.amount is not None else Decimal("15000.00"),
             payload.currency or "USD",
             datetime.now(timezone.utc),
             "ORIG-ACCOUNT-001",
             payload.sender_name or "Subject Organization Inc.",
             "DEST-ACCOUNT-002",
-            payload.receiver_name or "Counterparty LLC"
+            payload.receiver_name or "Counterparty LLC",
         )
 
     if payload.format.upper() == "GOAML":
@@ -1049,7 +724,7 @@ async def preview_sar_xml(
 
     return {
         "format": payload.format.upper(),
-        "xml": xml_output
+        "xml": xml_output,
     }
 
 
@@ -1058,7 +733,7 @@ async def export_sar_draft_xml(
     id: str,
     format: str = "FINCEN",
     current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     """Downloads the generated XML representation for a draft in FinCEN or EU goAML schema."""
     fmt_upper = str(format or "FINCEN").upper().strip()
@@ -1072,10 +747,10 @@ async def export_sar_draft_xml(
         alert_id=draft_data.get("alert_id"),
         narrative=draft_data.get("narrative") or "Suspicious activity detected.",
         format=fmt_upper,
-        amount=alert_info.get("amount"),
+        amount=alert_info.get("amount_str") or alert_info.get("amount"),
         currency=alert_info.get("currency"),
         sender_name=alert_info.get("sender_account"),
-        receiver_name=alert_info.get("receiver_account")
+        receiver_name=alert_info.get("receiver_account"),
     )
 
     preview_res = await preview_sar_xml(payload=prev_req, current_user=current_user)
@@ -1083,7 +758,7 @@ async def export_sar_draft_xml(
     return Response(
         content=preview_res["xml"],
         media_type="application/xml",
-        headers={"Content-Disposition": f'attachment; filename="sar_{safe_id}_{fmt_upper.lower()}.xml"'}
+        headers={"Content-Disposition": f'attachment; filename="sar_{safe_id}_{fmt_upper.lower()}.xml"'},
     )
 
 
@@ -1094,10 +769,22 @@ class SARNarrativeGenerationRequest(BaseModel):
     account_number: Optional[str] = Field(None, max_length=64)
     counterparty_name: Optional[str] = Field(None, max_length=200)
     counterparty_account: Optional[str] = Field(None, max_length=64)
-    amount: Optional[float] = Field(None, ge=0, le=1_000_000_000_000.0)
+    amount: Optional[Decimal] = Field(None, ge=Decimal("0"), le=Decimal("1000000000000"))
     currency: Optional[str] = Field("USD", max_length=8)
     typologies: Optional[List[str]] = Field(default_factory=list, max_length=25)
     tone: Optional[str] = Field("FORMAL_REGULATORY", max_length=64)
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def validate_narrative_amount(cls, v: Any) -> Decimal | None:
+        if v is None:
+            return None
+        from domain.money import InvalidMoneyError, parse_decimal_amount
+
+        try:
+            return parse_decimal_amount(v, allow_zero=True)
+        except InvalidMoneyError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("subject_name", "account_number", "counterparty_name", "counterparty_account", "tone", mode="before")
     @classmethod
@@ -1124,7 +811,7 @@ def _populate_row_context(ctx: dict, row: Any) -> None:
             ctx[dst] = val
 
     if row["amount"]:
-        ctx["amount"] = float(row["amount"])
+        ctx["amount"] = Decimal(str(row["amount"]))
     if row["currency"]:
         ctx["currency"] = row["currency"]
     if row["ai_risk_score"]:
@@ -1136,49 +823,43 @@ def _populate_row_context(ctx: dict, row: Any) -> None:
         ctx["typologies"].insert(0, rule)
 
 
-async def _fetch_narrative_context(tenant_id: Any, alert_id: str | None, payload: SARNarrativeGenerationRequest) -> dict:
+async def _fetch_narrative_context(
+    tenant_id: Any, alert_id: str | None, payload: SARNarrativeGenerationRequest
+) -> dict:
     ctx = {
         "subject": payload.subject_name or "Subject Entity",
         "acc_num": payload.account_number or "ACC-ORIGINATOR",
         "counterparty": payload.counterparty_name or "Counterparty Commercial Ltd.",
         "cp_acc": payload.counterparty_account or "ACC-BENEFICIARY",
-        "amount": payload.amount or 45000.0,
+        "amount": payload.amount if payload.amount is not None else Decimal("45000.00"),
         "currency": payload.currency or "USD",
         "typologies": list(payload.typologies) if payload.typologies else ["SUSPICIOUS_VELOCITY"],
         "risk_score": 0.88,
-        "tx_timestamp": datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC")
+        "tx_timestamp": datetime.now(timezone.utc).strftime("%B %d, %Y at %H:%M UTC"),
     }
     if not alert_id:
         return ctx
     try:
         alert_uuid = uuid.UUID(alert_id)
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT a.rule_name, a.threat_level, a.ai_risk_score,
-                       t.amount, t.currency, t.timestamp,
-                       t.sender_account_id, s_acc.owner_name as s_owner,
-                       t.receiver_account_id, r_acc.owner_name as r_owner
-                FROM alerts a
-                LEFT JOIN transactions t ON a.transaction_id = t.id
-                LEFT JOIN accounts s_acc ON t.sender_account_id = s_acc.account_number
-                LEFT JOIN accounts r_acc ON t.receiver_account_id = r_acc.account_number
-                WHERE a.id = $1;
-                """,
-                alert_uuid
-            )
-            if row:
-                _populate_row_context(ctx, row)
+        row = await fetch_alert_for_narrative_context_repo(
+            alert_uuid=alert_uuid,
+            tenant_id=str(tenant_id),
+            conn_factory=get_async_db_conn,
+        )
+        if row:
+            _populate_row_context(ctx, row)
     except Exception as e:
-        logger.debug(f"DB lookup fallback in generate_sar_narrative: {e}")
+        logger.debug("DB lookup fallback in generate_sar_narrative: %s", e)
     return ctx
 
 
 def _format_regulatory_narrative(ctx: dict) -> str:
-    typo_bullets = "\n".join([
-        f"  - {t.replace('_', ' ').title()} with AI anomaly factor of {ctx['risk_score']:.2f}"
-        for t in ctx["typologies"]
-    ])
+    typo_bullets = "\n".join(
+        [
+            f"  - {t.replace('_', ' ').title()} with AI anomaly factor of {ctx['risk_score']:.2f}"
+            for t in ctx["typologies"]
+        ]
+    )
     return (
         f"PART I: SUBJECT IDENTIFICATION & ACCOUNT PROFILE\n"
         f"This Suspicious Activity Report (SAR) is submitted concerning {ctx['subject']} (Account No: {ctx['acc_num']}). "
@@ -1204,13 +885,9 @@ def _format_regulatory_narrative(ctx: dict) -> str:
 async def generate_sar_narrative(
     payload: SARNarrativeGenerationRequest,
     current_user: dict = Depends(RoleChecker(["ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    AI/NLP assisted SAR Narrative Generator (FinCEN Guidance FIN-2003-2 compliant).
-    Synthesizes a structured 5-part regulatory narrative from case evidence,
-    counterparty topologies, and rule anomaly attributions.
-    """
+    """AI/NLP assisted SAR Narrative Generator (FinCEN Guidance FIN-2003-2 compliant)."""
     tenant_id = enforce_tenant_data_scope(current_user)
     ctx = await _fetch_narrative_context(tenant_id, payload.alert_id, payload)
     narrative_text = _format_regulatory_narrative(ctx)
@@ -1221,7 +898,7 @@ async def generate_sar_narrative(
         "character_count": len(narrative_text),
         "sections": ["PART I", "PART II", "PART III", "PART IV", "PART V"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "model_version": "AML-Sentinel-NarrativeGen-v3.1"
+        "model_version": "AML-Sentinel-NarrativeGen-v3.1",
     }
 
 
@@ -1236,12 +913,7 @@ async def generate_sar_copilot_endpoint(
     current_user: dict = Depends(RoleChecker(["ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
-    """
-    P2-2 Grounded SAR Narrative Co-Pilot:
-    Synthesizes a 5-part FinCEN narrative grounded strictly in verified PostgreSQL
-    transactions, case notes, and SHA-256 evidence artifacts with inline citations,
-    reversible PII tokenization, and numerical hallucination checks.
-    """
+    """P2-2 Grounded SAR Narrative Co-Pilot."""
     try:
         uuid.UUID(payload.alert_id)
         if payload.case_id:
@@ -1258,4 +930,3 @@ async def generate_sar_copilot_endpoint(
         case_id=payload.case_id,
         analyst_username=current_user.get("username"),
     )
-

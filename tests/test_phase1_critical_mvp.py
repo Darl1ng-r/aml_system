@@ -256,7 +256,7 @@ async def test_rule_builder_and_simulation(admin_token, l1_analyst_token):
             res_patch = await client.patch(
                 "/api/v1/rules/LARGE_TRANSACTION",
                 json={"enabled": True, "config": {"threshold": 15000.0}, "change_reason": "Tuned to reduce false positives"},
-                headers={"Authorization": f"Bearer {admin_token}"}
+                headers={"Authorization": f"Bearer {admin_token}", "Idempotency-Key": str(uuid.uuid4())}
             )
             assert res_patch.status_code == 200
             assert res_patch.json()["status"] == "UPDATED"

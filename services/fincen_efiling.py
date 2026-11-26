@@ -217,8 +217,8 @@ class FinCENEfilingClient:
 
     async def submit_sar(self, sar_xml: str, alert_id: str, fiu_format: str | None = None) -> Dict[str, Any]:
         """Submits a Suspicious Activity Report electronically to FinCEN / FIU."""
-        from services.sar_validator import validate_regulatory_xml
-        is_valid, val_errors = validate_regulatory_xml(sar_xml, fiu_format=fiu_format)
+        from services.sar_validator import validate_sar_xml_async
+        is_valid, val_errors = await validate_sar_xml_async(sar_xml, fiu_format=fiu_format)
         if not is_valid:
             raise ValueError(f"Invalid FinCEN SAR XML schema structure: {'; '.join(val_errors)}")
 

@@ -118,7 +118,7 @@ async def test_p0_2_webhook_create_blocks_ssrf_and_freeze_enqueues_outbox():
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             res_freeze = await ac.post(
                 f"/api/v1/accounts/{acc_id}/freeze",
-                headers={"Authorization": f"Bearer {_token('MLRO')}", "X-CSRF-Protection": "1"},
+                headers={"Authorization": f"Bearer {_token('MLRO')}", "X-CSRF-Protection": "1", "Idempotency-Key": str(uuid.uuid4())},
                 json={"reason": "Court order freeze mandate", "freezing_order_ref": "ORD-2026-9"},
             )
             assert res_freeze.status_code == 200

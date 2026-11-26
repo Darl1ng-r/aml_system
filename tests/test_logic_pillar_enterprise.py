@@ -471,3 +471,103 @@ async def test_migration_036_schema_precision_rls_provenance_and_unique_indexes(
         assert "uq_transactions_tenant_idempotency_key" in idx_names
         assert "uq_alerts_tenant_tx_rule" in idx_names
         assert "uq_ctr_filings_tenant_tx" in idx_names
+
+
+# ── 7. Readiness Fail-Fast, Automatic Audit Trace Binding & Migration 037 ─────
+
+@pytest.mark.anyio
+async def test_health_ready_fails_fast_503_on_event_loop_saturation():
+    transport = httpx.ASGITransport(app=app)
+    with patch("observability.event_loop_monitor.is_event_loop_saturated", return_value=True):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get("/health/ready")
+            assert resp.status_code == 503
+            assert resp.json()["status"] == "not_ready"
+
+
+@pytest.mark.anyio
+async def test_audit_record_and_error_responses_propagate_correlation_and_trace_id():
+    from observability.middleware import correlation_id_var
+    from services.audit import record_audit_event_tx
+
+    fake_cid = "cid-audit-trace-check-01"
+    fake_tid = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    tok = correlation_id_var.set(fake_cid)
+    try:
+        mock_conn = AsyncMock()
+        mock_conn.fetchval = AsyncMock(return_value=None)
+        mock_conn.execute = AsyncMock()
+
+        with patch("observability.middleware.get_current_trace_id", return_value=fake_tid):
+            await record_audit_event_tx(
+                conn=mock_conn,
+                action="TEST_TRACE_AUDIT",
+                actor_id="actor-1",
+                actor_role="MLRO",
+                resource_type="TRANSACTION",
+                resource_id="tx-123",
+                tenant_id="00000000-0000-0000-0000-000000000001",
+                details={"custom": "ok"},
+            )
+
+        insert_calls = [c for c in mock_conn.execute.call_args_list if "INSERT INTO audit_log" in c[0][0]]
+        assert len(insert_calls) == 1
+        persisted_details = json.loads(insert_calls[0][0][13])
+        assert persisted_details["correlation_id"] == fake_cid
+        assert persisted_details["trace_id"] == fake_tid
+        assert persisted_details["custom"] == "ok"
+
+        # Error responses include both correlation_id and trace_id
+        transport = httpx.ASGITransport(app=app)
+        with patch("main.get_current_trace_id", return_value=fake_tid):
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://test",
+                headers={"X-Correlation-ID": fake_cid},
+            ) as ac:
+                err_resp = await ac.get("/api/v1/transactions/not-a-uuid")
+                assert err_resp.status_code in (401, 400)
+                err_json = err_resp.json()
+                assert err_json["correlation_id"] == fake_cid
+                assert err_json["trace_id"] == fake_tid
+                assert err_resp.headers.get("x-trace-id") == fake_tid
+    finally:
+        correlation_id_var.reset(tok)
+
+
+@pytest.mark.anyio
+async def test_migration_037_str_batches_precision_and_mandatory_idempotency():
+    tenant_id = "00000000-0000-0000-0000-000000000001"
+    async with get_async_db_conn(tenant_id=tenant_id) as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT numeric_precision, numeric_scale
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'str_batches'
+              AND column_name = 'total_amount';
+            """
+        )
+        assert (row["numeric_precision"], row["numeric_scale"]) == (19, 4)
+
+    # Mandatory Idempotency-Key returns 400 across accounts, risk-appetite, rules, rfi, str_batch
+    mlro_token = _make_token("MLRO", tenant_id)
+    admin_token = _make_token("ADMIN", tenant_id)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {mlro_token}"},
+    ) as ac:
+        r1 = await ac.post(f"/api/v1/accounts/{uuid.uuid4()}/freeze", json={"reason": "Court order mandate"})
+        r2 = await ac.put("/api/v1/settings/risk-appetite", json={"cash_structuring_threshold": "10000.00"})
+        r3 = await ac.patch(
+            "/api/v1/rules/LARGE_TRANSACTION",
+            json={"enabled": True},
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        r4 = await ac.post("/api/v1/str/batch/batches")
+        r5 = await ac.post(f"/api/v1/rfi/{uuid.uuid4()}/cancel")
+        for r in (r1, r2, r3, r4, r5):
+            assert r.status_code == 400, f"Expected 400 missing Idempotency-Key, got {r.status_code}: {r.text}"
+            assert "Idempotency-Key" in r.json()["detail"]

@@ -169,4 +169,4 @@ async def validate_sar_xml_async(
     """Non-blocking wrapper offloading XML/XSD parsing onto the bounded analytics compute pool."""
     from services.compute_executor import run_analytics_compute
 
-    return await run_analytics_compute(validate_sar_xml, xml_payload, fiu_format, timeout=5.0)
+    return await run_analytics_compute(validate_regulatory_xml, xml_payload, fiu_format, timeout=5.0)

@@ -1,31 +1,40 @@
 """
 Enterprise Case Management System Router
 ========================================
-Implements complete case lifecycle investigation, evidence gathering,
-alert aggregation, and disposition tracking (GAP-1).
+Thin HTTP controller for case lifecycle investigation, alert correlation,
+notes, optimistic concurrency, and disposition tracking.
+All PostgreSQL SQL lives in `repositories/case_repo.py`.
 """
 
 import logging
 import uuid
-from typing import List, Optional, Any
-from datetime import datetime, timezone
+from typing import Any, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
+from observability.sanitizer import sanitize_text
+from repositories.case_repo import (
+    CASE_NOT_FOUND,
+    _case_row_etag,
+    add_case_note_atomic,
+    close_case_atomic,
+    correlate_alerts_into_cases_repo,
+    create_case_atomic,
+    get_case_detail_repo,
+    list_cases_repo,
+    update_case_atomic,
+)
 from services.auth import RoleChecker, enforce_tenant_data_scope
-from services.http_cache import build_conditional_json_response, build_entity_etag, check_if_match
+from services.http_cache import build_conditional_json_response
 from services.idempotency import run_idempotent_operation
 from services.rate_limiter import RateLimiter
-from services.state_machine import validate_case_transition
-from observability.sanitizer import sanitize_text
 
 logger = logging.getLogger(__name__)
 
 INVALID_CASE_ID = "Invalid case ID format."
-CASE_NOT_FOUND = "Case not found."
-SELECT_CASE_BY_ID_AND_TENANT = "SELECT * FROM cases WHERE id = $1 AND tenant_id = $2;"
 
 router = APIRouter(prefix="/api/v1/cases", tags=["Case Management"])
 
@@ -91,13 +100,7 @@ async def correlate_alerts_into_cases(
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Entity-Centric Case Auto-Correlation (P1-1):
-    Merges related alerts sharing the same subject account within `window_days`
-    into unified entity cases instead of spawning duplicate per-alert cases.
-    """
-    from services.case_correlation import batch_correlate_alerts
-
+    """Entity-Centric Case Auto-Correlation (P1-1)."""
     for aid in payload.alert_ids:
         try:
             uuid.UUID(aid)
@@ -105,15 +108,14 @@ async def correlate_alerts_into_cases(
             raise HTTPException(status_code=400, detail=f"Invalid alert UUID: {aid}")
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        return await batch_correlate_alerts(
-            conn=conn,
-            tenant_id=tenant_id,
-            alert_ids=payload.alert_ids,
-            actor_id=current_user.get("id"),
-            actor_username=current_user.get("username", "analyst"),
-            window_days=payload.window_days,
-        )
+    return await correlate_alerts_into_cases_repo(
+        tenant_id=str(tenant_id),
+        alert_ids=payload.alert_ids,
+        actor_id=current_user.get("id"),
+        actor_username=current_user.get("username", "analyst"),
+        window_days=payload.window_days,
+        conn_factory=get_async_db_conn,
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -122,14 +124,11 @@ async def create_case(
     request: Request = None,
     response: Response = None,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     tenant_id = enforce_tenant_data_scope(current_user)
-    tenant_uuid = uuid.UUID(str(tenant_id))
 
     async def _execute_create():
-        case_number = f"CASE-{datetime.now(timezone.utc).year}-{uuid.uuid4().hex[:6].upper()}"
-
         subject_acc_uuid = None
         if payload.subject_account_id:
             try:
@@ -144,70 +143,34 @@ async def create_case(
             except ValueError:
                 user_uuid = None
 
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            # Validate alert_ids belong to the caller's tenant BEFORE linking into case_alerts
-            validated_alert_uuids: list[uuid.UUID] = []
-            if payload.alert_ids:
-                parsed_uuids: list[uuid.UUID] = []
-                for alert_str in payload.alert_ids:
-                    try:
-                        parsed_uuids.append(uuid.UUID(alert_str))
-                    except ValueError:
-                        raise HTTPException(status_code=400, detail=f"Invalid alert UUID format: {alert_str}")
-                owned_rows = await conn.fetch(
-                    "SELECT id FROM alerts WHERE id = ANY($1::uuid[]) AND tenant_id = $2;",
-                    parsed_uuids, tenant_uuid
-                )
-                owned_ids = {r["id"] for r in (owned_rows or [])}
-                missing = [str(u) for u in parsed_uuids if u not in owned_ids]
-                if missing:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="One or more alert_ids do not exist in your tenant."
-                    )
-                validated_alert_uuids = parsed_uuids
+        parsed_uuids: list[uuid.UUID] = []
+        for alert_str in payload.alert_ids:
+            try:
+                parsed_uuids.append(uuid.UUID(alert_str))
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid alert UUID format: {alert_str}")
 
-            case_id = await conn.fetchval(
-                """
-                INSERT INTO cases (
-                    tenant_id, case_number, title, priority, assigned_to, assigned_username,
-                    subject_account_id, narrative, status
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN')
-                RETURNING id;
-                """,
-                tenant_uuid, case_number, payload.title, payload.priority,
-                user_uuid, current_user.get("username", "investigator"),
-                subject_acc_uuid, payload.narrative
-            )
-
-            # Link validated tenant-owned alert IDs
-            for alert_uuid in validated_alert_uuids:
-                await conn.execute(
-                    """
-                    INSERT INTO case_alerts (case_id, alert_id)
-                    VALUES ($1, $2)
-                    ON CONFLICT DO NOTHING;
-                    """,
-                    case_id, alert_uuid
-                )
-
-            body = {
-                "case_id": str(case_id),
-                "case_number": case_number,
-                "title": payload.title,
-                "status": "OPEN",
-                "priority": payload.priority,
-                "alert_count": len(validated_alert_uuids)
-            }
-            if request is None:
-                if response:
-                    response.headers["Location"] = f"/api/v1/cases/{case_id}"
-                return body
-            return JSONResponse(
-                content=body,
-                status_code=status.HTTP_201_CREATED,
-                headers={"Location": f"/api/v1/cases/{case_id}"},
-            )
+        body = await create_case_atomic(
+            tenant_id=str(tenant_id),
+            title=payload.title,
+            priority=payload.priority,
+            subject_acc_uuid=subject_acc_uuid,
+            parsed_alert_uuids=parsed_uuids,
+            narrative=payload.narrative,
+            user_uuid=user_uuid,
+            username=current_user.get("username", "investigator"),
+            conn_factory=get_async_db_conn,
+        )
+        case_id = body["case_id"]
+        if request is None:
+            if response:
+                response.headers["Location"] = f"/api/v1/cases/{case_id}"
+            return body
+        return JSONResponse(
+            content=body,
+            status_code=status.HTTP_201_CREATED,
+            headers={"Location": f"/api/v1/cases/{case_id}"},
+        )
 
     return await run_idempotent_operation(
         request=request,
@@ -227,64 +190,18 @@ async def list_cases(
     status_filter: Optional[str] = None,
     priority_filter: Optional[str] = None,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     tenant_id = enforce_tenant_data_scope(current_user)
-    tenant_uuid = uuid.UUID(str(tenant_id))
     offset = (page - 1) * limit
-
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        where_clauses = ["tenant_id = $1"]
-        params = [tenant_uuid]
-        p_idx = 2
-
-        if status_filter and status_filter.upper() != "ALL":
-            where_clauses.append(f"status = ${p_idx}")
-            params.append(status_filter.upper())
-            p_idx += 1
-
-        if priority_filter and priority_filter.upper() != "ALL":
-            where_clauses.append(f"priority = ${p_idx}")
-            params.append(priority_filter.upper())
-            p_idx += 1
-
-        where_sql = " AND ".join(where_clauses)
-        params_page = params + [limit, offset]
-
-        rows = await conn.fetch(
-            f"""
-            SELECT c.*, 
-                   (SELECT COUNT(*) FROM case_alerts ca WHERE ca.case_id = c.id) AS alert_count
-            FROM cases c
-            WHERE {where_sql}
-            ORDER BY c.created_at DESC
-            LIMIT ${p_idx} OFFSET ${p_idx + 1};
-            """,
-            *params_page
-        )
-
-        return [
-            {
-                "case_id": str(r["id"]),
-                "case_number": r["case_number"],
-                "title": r["title"],
-                "status": r["status"],
-                "priority": r["priority"],
-                "assigned_username": r["assigned_username"],
-                "alert_count": int(r["alert_count"] or 0),
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None
-            }
-            for r in rows
-        ]
-
-
-def _case_row_etag(case_row: Any) -> str:
-    updated_val = (
-        case_row["updated_at"]
-        if ("updated_at" in case_row and case_row["updated_at"])
-        else (case_row["created_at"] if ("created_at" in case_row and case_row["created_at"]) else "")
+    return await list_cases_repo(
+        tenant_id=str(tenant_id),
+        limit=limit,
+        offset=offset,
+        status_filter=status_filter,
+        priority_filter=priority_filter,
+        read_conn_factory=get_async_db_read_conn,
     )
-    return build_entity_etag("case", case_row["id"], updated_val, case_row["status"])
 
 
 @router.get("/{id}")
@@ -292,7 +209,7 @@ async def get_case_detail(
     id: str,
     request: Request = None,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     try:
         case_uuid = uuid.UUID(id)
@@ -300,65 +217,12 @@ async def get_case_detail(
         raise HTTPException(status_code=400, detail=INVALID_CASE_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        case_row = await conn.fetchrow(
-            SELECT_CASE_BY_ID_AND_TENANT,
-            case_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not case_row:
-            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
-
-        # Fetch linked alerts
-        alert_rows = await conn.fetch(
-            """
-            SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score, a.status, a.created_at
-            FROM case_alerts ca
-            JOIN alerts a ON ca.alert_id = a.id
-            WHERE ca.case_id = $1;
-            """,
-            case_uuid
-        )
-
-        # Fetch timeline notes
-        note_rows = await conn.fetch(
-            "SELECT id, author_username, note, created_at FROM case_notes WHERE case_id = $1 ORDER BY created_at ASC;",
-            case_uuid
-        )
-
-        etag = _case_row_etag(case_row)
-        payload = {
-            "case_id": str(case_row["id"]),
-            "case_number": case_row["case_number"],
-            "title": case_row["title"],
-            "status": case_row["status"],
-            "priority": case_row["priority"],
-            "assigned_username": case_row["assigned_username"],
-            "subject_account_id": str(case_row["subject_account_id"]) if case_row["subject_account_id"] else None,
-            "narrative": case_row["narrative"],
-            "closure_reason": case_row["closure_reason"],
-            "etag": etag,
-            "created_at": case_row["created_at"].isoformat() if case_row["created_at"] else None,
-            "alerts": [
-                {
-                    "alert_id": str(a["id"]),
-                    "rule_name": a["rule_name"],
-                    "threat_level": a["threat_level"],
-                    "ai_risk_score": float(a["ai_risk_score"] or 0.0),
-                    "status": a["status"]
-                }
-                for a in alert_rows
-            ],
-            "notes": [
-                {
-                    "id": str(n["id"]),
-                    "author": n["author_username"],
-                    "note": n["note"],
-                    "created_at": n["created_at"].isoformat() if n["created_at"] else None
-                }
-                for n in note_rows
-            ]
-        }
-        return build_conditional_json_response(request, payload, etag=etag)
+    payload, etag = await get_case_detail_repo(
+        case_uuid=case_uuid,
+        tenant_id=str(tenant_id),
+        read_conn_factory=get_async_db_read_conn,
+    )
+    return build_conditional_json_response(request, payload, etag=etag)
 
 
 @router.post("/{id}/notes")
@@ -366,7 +230,7 @@ async def add_case_note(
     id: str,
     payload: CaseNoteRequest,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     try:
         case_uuid = uuid.UUID(id)
@@ -374,37 +238,13 @@ async def add_case_note(
         raise HTTPException(status_code=400, detail=INVALID_CASE_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        case_row = await conn.fetchrow(
-            "SELECT id, status FROM cases WHERE id = $1 AND tenant_id = $2;",
-            case_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not case_row:
-            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
-
-        # State transition check (STATE-01): cannot add notes to closed case without elevated privileges
-        if case_row["status"] == "CLOSED" and current_user.get("role") not in ("ADMIN", "MLRO", "TENANT_ADMIN", "SUPER_ADMIN"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid workflow state: Cannot append notes to a CLOSED case without MLRO or Admin authorization."
-            )
-
-        note_id = await conn.fetchval(
-            """
-            INSERT INTO case_notes (case_id, author_id, author_username, note)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id;
-            """,
-            case_uuid,
-            uuid.UUID(str(current_user["id"])) if current_user.get("id") else None,
-            current_user.get("username", "investigator"),
-            payload.note
-        )
-
-        return {
-            "note_id": str(note_id),
-            "message": "Investigation note added successfully."
-        }
+    return await add_case_note_atomic(
+        case_uuid=case_uuid,
+        tenant_id=str(tenant_id),
+        note=payload.note,
+        current_user=current_user,
+        conn_factory=get_async_db_conn,
+    )
 
 
 def _build_case_updates(payload: CaseUpdateRequest) -> tuple[list[str], list[Any], int]:
@@ -447,7 +287,7 @@ async def update_case(
     request: Request = None,
     response: Response = None,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     try:
         case_uuid = uuid.UUID(id)
@@ -455,43 +295,17 @@ async def update_case(
         raise HTTPException(status_code=400, detail=INVALID_CASE_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        case_row = await conn.fetchrow(
-            "SELECT * FROM cases WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
-            case_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not case_row:
-            raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
-
-        current_etag = _case_row_etag(case_row)
-        check_if_match(request, current_etag, resource_label=f"case {case_uuid}")
-
-        if payload.status:
-            validate_case_transition(case_row["status"], payload.status)
-
-        updates, params, p_idx = _build_case_updates(payload)
-        updated_at_val = case_row["updated_at"] if ("updated_at" in case_row and case_row["updated_at"]) else case_row["created_at"]
-
-        if updates:
-            updates.append("updated_at = NOW()")
-            params.append(case_uuid)
-            params.append(uuid.UUID(str(tenant_id)))
-            query = f"UPDATE cases SET {', '.join(updates)} WHERE id = ${p_idx} AND tenant_id = ${p_idx+1} RETURNING updated_at;"
-            ret_ts = await conn.fetchval(query, *params)
-            if ret_ts is not None:
-                updated_at_val = ret_ts
-
-        final_status = payload.status or case_row["status"]
-        new_etag = build_entity_etag("case", case_uuid, updated_at_val, final_status)
-        if response is not None:
-            response.headers["ETag"] = new_etag
-
-        return {
-            "case_id": str(case_uuid),
-            "status": final_status,
-            "etag": new_etag,
-            "message": "Case updated successfully."
-        }
+    result = await update_case_atomic(
+        case_uuid=case_uuid,
+        tenant_id=str(tenant_id),
+        payload=payload,
+        request=request,
+        build_updates_fn=_build_case_updates,
+        conn_factory=get_async_db_conn,
+    )
+    if response is not None:
+        response.headers["ETag"] = result["etag"]
+    return result
 
 
 @router.post("/{id}/close")
@@ -500,7 +314,7 @@ async def close_case(
     payload: CaseCloseRequest,
     request: Request = None,
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "MLRO", "ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=20, window=60))
+    _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
     try:
         case_uuid = uuid.UUID(id)
@@ -510,47 +324,14 @@ async def close_case(
     tenant_id = enforce_tenant_data_scope(current_user)
 
     async def _execute_close():
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            case_row = await conn.fetchrow(
-                SELECT_CASE_BY_ID_AND_TENANT,
-                case_uuid, uuid.UUID(str(tenant_id))
-            )
-            if not case_row:
-                raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
-
-            # State machine validation (STATE-01): Deterministic FSM transition guard
-            validate_case_transition(case_row["status"], "CLOSED")
-
-            await conn.execute(
-                """
-                UPDATE cases
-                SET status = 'CLOSED',
-                    closure_reason = $1,
-                    closed_at = NOW(),
-                    updated_at = NOW()
-                WHERE id = $2 AND tenant_id = $3 AND status != 'CLOSED';
-                """,
-                payload.closure_reason, case_uuid, uuid.UUID(str(tenant_id))
-            )
-
-            # Add closure note to timeline
-            await conn.execute(
-                """
-                INSERT INTO case_notes (case_id, author_id, author_username, note)
-                VALUES ($1, $2, $3, $4);
-                """,
-                case_uuid,
-                uuid.UUID(str(current_user["id"])) if current_user.get("id") else None,
-                current_user.get("username", "investigator"),
-                f"Case closed with disposition '{payload.closure_reason}': {payload.closing_notes}"
-            )
-
-            return {
-                "case_id": str(case_uuid),
-                "status": "CLOSED",
-                "closure_reason": payload.closure_reason,
-                "message": f"Case closed successfully with status '{payload.closure_reason}'."
-            }
+        return await close_case_atomic(
+            case_uuid=case_uuid,
+            tenant_id=str(tenant_id),
+            closure_reason=payload.closure_reason,
+            closing_notes=payload.closing_notes,
+            current_user=current_user,
+            conn_factory=get_async_db_conn,
+        )
 
     return await run_idempotent_operation(
         request=request,

@@ -522,7 +522,10 @@ async def test_rest_fincen_and_str_batches(admin_token):
             assert resp_sar_status.json()["alert_status"] == "PENDING_TRANSMISSION"
 
             # 3. POST /api/v1/str/batch/batches -> 201 Created + Location
-            resp_batch = await ac.post("/api/v1/str/batch/batches")
+            resp_batch = await ac.post(
+                "/api/v1/str/batch/batches",
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            )
             assert resp_batch.status_code == 201
             assert "Location" in resp_batch.headers
             assert resp_batch.headers["Location"] == f"/api/v1/str/batch/batches/{batch_id}"
@@ -577,6 +580,7 @@ async def test_rest_rules_config_persistence_and_pubsub():
         async with httpx.AsyncClient(transport=transport, base_url="http://test", headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {super_admin_token}"}) as ac:
             resp = await ac.put(
                 "/api/v1/rules/config",
+                headers={"Idempotency-Key": str(uuid.uuid4())},
                 json={
                     "rules": {
                         "LARGE_TRANSACTION": {

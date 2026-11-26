@@ -1,35 +1,48 @@
 """
-Rules Engine Configuration & Builder Router (Sprint 1 / Task 1.5, 1.6 Audit Remediation)
-========================================================================================
-Provides multi-tenant rule configuration management backed by PostgreSQL rule_configs
-and rule_config_history tables, with Redis pub/sub invalidation and simulation test harness.
+Rules Engine Configuration & Builder Router
+===========================================
+Thin HTTP controller for multi-tenant rule configuration management,
+shadow hit inspection, historical backtesting, and rule simulation.
+All PostgreSQL SQL lives in `repositories/rules_repo.py`.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field, field_validator
-from observability.sanitizer import sanitize_text
-from typing import Optional, Dict, Any, List, Tuple
+import asyncio
 import json
+import logging
 import os
 import uuid
-import logging
-import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
-from services.auth import RoleChecker, enforce_tenant_data_scope
-from services.http_cache import build_conditional_json_response, build_version_etag, check_if_match
-from services.idempotency import run_idempotent_operation
-from services.rate_limiter import RateLimiter
-from database.postgres import get_async_db_conn
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
+
+from database.postgres import get_async_db_conn, get_async_db_read_conn
 from database.redis_db import get_async_redis_client
 from observability.logging import log_audit_event
+from observability.sanitizer import sanitize_text
+from repositories.rules_repo import (
+    get_rule_history_repo,
+    list_rule_configs_repo,
+    list_rule_shadow_hits_repo,
+    patch_rule_config_atomic,
+    persist_global_rules_config_atomic,
+)
+from services.auth import RoleChecker, enforce_tenant_data_scope
+from services.http_cache import build_conditional_json_response, build_version_etag
+from services.idempotency import run_idempotent_operation
+from services.rate_limiter import RateLimiter
 from services.rules import RulesEngine, get_rules_config
 
 logger = logging.getLogger(__name__)
 
+
 def _write_config_sync(path: str, data: dict) -> None:
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
+
 
 router = APIRouter(prefix="/api/v1/rules", tags=["Rules Configuration & Builder"])
 
@@ -69,6 +82,7 @@ class RuleTestPayload(BaseModel):
     @classmethod
     def validate_rule_test_amount(cls, v: Any) -> Decimal:
         from domain.money import InvalidMoneyError, parse_decimal_amount
+
         try:
             return parse_decimal_amount(v, allow_zero=False)
         except InvalidMoneyError as exc:
@@ -82,6 +96,7 @@ class RuleTestPayload(BaseModel):
 
 class LegacyRulesConfigPayload(BaseModel):
     """Strict bounded schema replacing raw untyped `dict` on PUT /api/v1/rules/config (P2-10)."""
+
     rules: Dict[str, Dict[str, Any]] = Field(..., min_length=1)
 
     @field_validator("rules")
@@ -101,52 +116,44 @@ async def list_rules(
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
-    """
-    Lists all detection rules configured for the current tenant, including
-    active parameters, version number, per-rule ETag, and toggle status.
-    Supports conditional `If-None-Match` -> `304 Not Modified`.
-    """
+    """Lists all detection rules configured for the current tenant with per-rule ETags."""
     tenant_id = enforce_tenant_data_scope(current_user)
-    tenant_uuid = uuid.UUID(str(tenant_id))
 
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, rule_name, enabled, mode, config, shadow_config, version,
-                       updated_by_name, updated_at, description
-                FROM rule_configs
-                WHERE tenant_id = $1
-                ORDER BY rule_name ASC;
-                """,
-                tenant_uuid
-            )
-            if rows:
-                payload = [
-                    {
-                        "id": str(r["id"]),
-                        "rule_name": r["rule_name"],
-                        "enabled": r["enabled"],
-                        "mode": r.get("mode") if hasattr(r, "get") else (r["mode"] if "mode" in r else "ACTIVE"),
-                        "config": r["config"] if isinstance(r["config"], dict) else json.loads(r["config"]),
-                        "shadow_config": (
-                            r["shadow_config"]
-                            if isinstance(r.get("shadow_config") if hasattr(r, "get") else (r["shadow_config"] if "shadow_config" in r else None), dict)
-                            else (json.loads(r["shadow_config"]) if ("shadow_config" in r and r["shadow_config"]) else None)
-                        ),
-                        "version": r["version"],
-                        "etag": build_version_etag("rule", r["version"]),
-                        "updated_by_name": r["updated_by_name"] or "SYSTEM",
-                        "updated_at": r["updated_at"].isoformat() if r["updated_at"] else "",
-                        "description": r["description"] or ""
-                    }
-                    for r in rows
-                ]
-                return build_conditional_json_response(request, payload)
+        rows = await list_rule_configs_repo(
+            tenant_id=str(tenant_id),
+            conn_factory=get_async_db_conn,
+        )
+        if rows:
+            payload = [
+                {
+                    "id": str(r["id"]),
+                    "rule_name": r["rule_name"],
+                    "enabled": r["enabled"],
+                    "mode": r.get("mode") if hasattr(r, "get") else (r["mode"] if "mode" in r else "ACTIVE"),
+                    "config": r["config"] if isinstance(r["config"], dict) else json.loads(r["config"]),
+                    "shadow_config": (
+                        r["shadow_config"]
+                        if isinstance(
+                            r.get("shadow_config")
+                            if hasattr(r, "get")
+                            else (r["shadow_config"] if "shadow_config" in r else None),
+                            dict,
+                        )
+                        else (json.loads(r["shadow_config"]) if ("shadow_config" in r and r["shadow_config"]) else None)
+                    ),
+                    "version": r["version"],
+                    "etag": build_version_etag("rule", r["version"]),
+                    "updated_by_name": r["updated_by_name"] or "SYSTEM",
+                    "updated_at": r["updated_at"].isoformat() if r["updated_at"] else "",
+                    "description": r["description"] or "",
+                }
+                for r in rows
+            ]
+            return build_conditional_json_response(request, payload)
     except Exception as e:
-        logger.warning(f"Failed to query rule_configs from DB: {e}. Falling back to default list.")
+        logger.warning("Failed to query rule_configs from DB: %s. Falling back to default list.", e)
 
-    # Fallback to local config file
     fallback = get_rules_config().get("rules", {})
     payload = [
         {
@@ -158,7 +165,7 @@ async def list_rules(
             "etag": build_version_etag("rule", 1),
             "updated_by_name": "LOCAL_CONFIG",
             "updated_at": "",
-            "description": f"Standard {name} monitoring rule"
+            "description": f"Standard {name} monitoring rule",
         }
         for name, conf in fallback.items()
     ]
@@ -202,7 +209,7 @@ async def _broadcast_rule_invalidation(rule_name: str) -> None:
         if redis:
             await redis.publish("aml:rules:cache_invalidate", f"rule_updated:{rule_name}")
     except Exception as re:
-        logger.warning(f"Redis cache invalidation broadcast skipped: {re}")
+        logger.warning("Redis cache invalidation broadcast skipped: %s", re)
 
 
 @router.patch("/{rule_name}")
@@ -214,118 +221,35 @@ async def patch_rule(
     current_user: dict = Depends(RoleChecker(["ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
-    """
-    Updates rule thresholds, parameters, and/or enabled state.
-    Enforces optimistic concurrency via `If-Match` header or `expected_version` (HTTP 412 on stale write).
-    Increments version, logs historical audit record, and invalidates Redis cache.
-    """
+    """Updates rule thresholds, parameters, and/or enabled state with optimistic concurrency."""
     tenant_id = enforce_tenant_data_scope(current_user)
-    tenant_uuid = uuid.UUID(str(tenant_id))
     user_id = current_user.get("id")
     user_uuid = _parse_user_uuid(user_id)
     username = current_user.get("username", "Admin")
 
     async def _execute_patch():
         try:
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                # 1. Fetch & lock existing rule row for atomic optimistic concurrency check
-                current_row = await conn.fetchrow(
-                    """
-                    SELECT id, enabled, mode, config, shadow_config, version
-                    FROM rule_configs
-                    WHERE tenant_id = $1 AND rule_name = $2
-                    FOR UPDATE;
-                    """,
-                    tenant_uuid, rule_name
-                )
+            result = await patch_rule_config_atomic(
+                tenant_id=str(tenant_id),
+                rule_name=rule_name,
+                payload=payload,
+                request=request,
+                user_id=user_id,
+                user_uuid=user_uuid,
+                username=username,
+                actor_role=current_user.get("role", "ADMIN"),
+                compute_updates_fn=_compute_rule_updates,
+                conn_factory=get_async_db_conn,
+            )
 
-                current_version = (
-                    int(current_row["version"])
-                    if (current_row and "version" in current_row and current_row["version"] is not None)
-                    else 0
-                )
-                current_etag = build_version_etag("rule", current_version)
-                check_if_match(request, current_etag, resource_label=f"rule '{rule_name}'")
-                if payload.expected_version is not None and payload.expected_version != current_version:
-                    raise HTTPException(
-                        status_code=status.HTTP_412_PRECONDITION_FAILED,
-                        detail=(
-                            f"Precondition Failed: rule '{rule_name}' is at version {current_version}, "
-                            f"not {payload.expected_version}. Reload the latest configuration and retry."
-                        ),
-                        headers={"ETag": current_etag},
-                    )
-
-                new_enabled, new_config, new_version = _compute_rule_updates(current_row, payload)
-                existing_mode = (current_row["mode"] if current_row and "mode" in current_row else "ACTIVE") or "ACTIVE"
-                new_mode = payload.mode or ("DISABLED" if payload.enabled is False else existing_mode)
-                if payload.mode == "DISABLED":
-                    new_enabled = False
-                elif payload.mode in ("ACTIVE", "SHADOW") and payload.enabled is None:
-                    new_enabled = True
-
-                existing_shadow = current_row["shadow_config"] if (current_row and "shadow_config" in current_row) else None
-                new_shadow = payload.shadow_config if payload.shadow_config is not None else existing_shadow
-                new_shadow_json = json.dumps(new_shadow) if isinstance(new_shadow, dict) else new_shadow
-
-                # 2. Upsert into rule_configs
-                saved_id = await conn.fetchval(
-                    """
-                    INSERT INTO rule_configs (
-                        tenant_id, rule_name, enabled, mode, config, shadow_config, version,
-                        updated_by, updated_by_name, updated_at
-                    )
-                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, NOW())
-                    ON CONFLICT (tenant_id, rule_name) DO UPDATE
-                    SET enabled = EXCLUDED.enabled,
-                        mode = EXCLUDED.mode,
-                        config = EXCLUDED.config,
-                        shadow_config = EXCLUDED.shadow_config,
-                        version = EXCLUDED.version,
-                        updated_by = EXCLUDED.updated_by,
-                        updated_by_name = EXCLUDED.updated_by_name,
-                        updated_at = NOW()
-                    RETURNING id;
-                    """,
-                    tenant_uuid, rule_name, new_enabled, new_mode, json.dumps(new_config),
-                    new_shadow_json, new_version, user_uuid, username
-                )
-
-                # 3. Insert audit snapshot into rule_config_history
-                await conn.execute(
-                    """
-                    INSERT INTO rule_config_history (
-                        rule_config_id, tenant_id, rule_name, enabled, config,
-                        version, changed_by, changed_by_name, change_reason
-                    )
-                    VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9);
-                    """,
-                    saved_id, tenant_uuid, rule_name, new_enabled,
-                    json.dumps(new_config), new_version, user_uuid, username,
-                    payload.change_reason or "Rule adjusted"
-                )
-
-                # 3b. Transactional WORM audit record
-                try:
-                    from services.audit import record_audit_event_tx
-                    await record_audit_event_tx(
-                        conn=conn,
-                        action="UPDATE_RULE",
-                        actor_id=str(user_id or username),
-                        actor_username=username,
-                        actor_role=current_user.get("role", "ADMIN"),
-                        resource_type="RULE",
-                        resource_id=rule_name,
-                        tenant_id=str(tenant_id),
-                        details={"rule_name": rule_name, "version": new_version, "enabled": new_enabled, "mode": new_mode},
-                    )
-                except Exception as audit_err:
-                    logger.warning(f"Transactional audit write skipped in patch_rule: {audit_err}")
-
-            # 4. Invalidate memory cache and broadcast to Redis
             await _broadcast_rule_invalidation(rule_name)
 
-            # 5. Log audit event
+            new_version = result["new_version"]
+            new_enabled = result["new_enabled"]
+            new_mode = result["new_mode"]
+            new_config = result["new_config"]
+            new_shadow = result["new_shadow"]
+
             log_audit_event(
                 event_type="RULE_CONFIG_UPDATED",
                 actor_id=str(user_id),
@@ -339,8 +263,8 @@ async def patch_rule(
                     "version": new_version,
                     "enabled": new_enabled,
                     "config": new_config,
-                    "reason": payload.change_reason
-                }
+                    "reason": payload.change_reason,
+                },
             )
 
             new_etag = build_version_etag("rule", new_version)
@@ -354,7 +278,6 @@ async def patch_rule(
                 "config": new_config,
                 "shadow_config": new_shadow if isinstance(new_shadow, dict) else (json.loads(new_shadow) if new_shadow else None),
             }
-            from fastapi.responses import JSONResponse
             if response is not None:
                 response.headers["ETag"] = new_etag
             return JSONResponse(content=body, status_code=status.HTTP_200_OK, headers={"ETag": new_etag})
@@ -382,11 +305,7 @@ async def backtest_rule_endpoint(
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=15, window=60)),
 ):
-    """
-    Read-only Historical Rule Backtesting (P1-2):
-    Replays a candidate threshold configuration against historical transactions
-    on the read replica to project alert volume delta & false-positive impact.
-    """
+    """Read-only Historical Rule Backtesting (P1-2)."""
     from services.rule_backtest import backtest_rule_config
 
     tenant_id = enforce_tenant_data_scope(current_user)
@@ -406,22 +325,12 @@ async def list_rule_shadow_hits(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Lists silent Challenger Shadow Mode hits recorded for a rule without paging analysts."""
-    from database.postgres import get_async_db_read_conn
-
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, rule_name, transaction_id, sender_account_id,
-                   amount_base_usd, rule_version, matched_reason, created_at
-            FROM rule_shadow_hits
-            WHERE rule_name = $1 AND tenant_id = $2::uuid
-            ORDER BY created_at DESC
-            LIMIT 100;
-            """,
-            rule_name.upper().strip(),
-            str(tenant_id),
-        )
+    rows = await list_rule_shadow_hits_repo(
+        tenant_id=str(tenant_id),
+        rule_name=rule_name,
+        read_conn_factory=get_async_db_read_conn,
+    )
     return {
         "rule_name": rule_name.upper().strip(),
         "total_shadow_hits": len(rows or []),
@@ -431,6 +340,7 @@ async def list_rule_shadow_hits(
                 "transaction_id": str(r["transaction_id"]) if r["transaction_id"] else None,
                 "sender_account_id": str(r["sender_account_id"]) if r["sender_account_id"] else None,
                 "amount_base_usd": float(r["amount_base_usd"] or 0.0),
+                "amount_base_usd_str": str(r["amount_base_usd"] if r["amount_base_usd"] is not None else "0.0000"),
                 "rule_version": int(r["rule_version"] or 1),
                 "matched_reason": r["matched_reason"],
                 "created_at": r["created_at"].isoformat() if r["created_at"] else None,
@@ -446,37 +356,28 @@ async def get_rule_history(
     current_user: dict = Depends(RoleChecker(["ADMIN", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
-    """
-    Returns the immutable audit history of changes made to this rule.
-    """
+    """Returns the immutable audit history of changes made to this rule."""
     tenant_id = enforce_tenant_data_scope(current_user)
-    tenant_uuid = uuid.UUID(str(tenant_id))
-
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, version, enabled, config, changed_by_name, changed_at, change_reason
-                FROM rule_config_history
-                WHERE tenant_id = $1 AND rule_name = $2
-                ORDER BY version DESC;
-                """,
-                tenant_uuid, rule_name
-            )
-            return [
-                {
-                    "id": str(r["id"]),
-                    "version": r["version"],
-                    "enabled": r["enabled"],
-                    "config": r["config"] if isinstance(r["config"], dict) else json.loads(r["config"]),
-                    "changed_by_name": r["changed_by_name"] or "ANONYMOUS",
-                    "changed_at": r["changed_at"].isoformat() if r["changed_at"] else "",
-                    "change_reason": r["change_reason"] or ""
-                }
-                for r in rows
-            ]
+        rows = await get_rule_history_repo(
+            tenant_id=str(tenant_id),
+            rule_name=rule_name,
+            conn_factory=get_async_db_conn,
+        )
+        return [
+            {
+                "id": str(r["id"]),
+                "version": r["version"],
+                "enabled": r["enabled"],
+                "config": r["config"] if isinstance(r["config"], dict) else json.loads(r["config"]),
+                "changed_by_name": r["changed_by_name"] or "ANONYMOUS",
+                "changed_at": r["changed_at"].isoformat() if r["changed_at"] else "",
+                "change_reason": r["change_reason"] or "",
+            }
+            for r in rows
+        ]
     except Exception as e:
-        logger.warning(f"Failed to fetch rule history: {e}")
+        logger.warning("Failed to fetch rule history: %s", e)
         return []
 
 
@@ -486,10 +387,7 @@ async def test_rule_simulation(
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "ADMIN", "ANALYST", "MLRO"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Rule Testing Harness: Evaluates a synthetic transaction against the current
-    rule definitions without committing transactions or firing production alerts.
-    """
+    """Evaluates a synthetic transaction against current rule definitions without side effects."""
     tenant_id = enforce_tenant_data_scope(current_user)
     triggered = await RulesEngine.evaluate_transaction(
         sender_id=payload.sender_id,
@@ -500,7 +398,7 @@ async def test_rule_simulation(
         receiver_name=payload.receiver_name,
         receiver_bic=payload.receiver_bic,
         timestamp=datetime.now(timezone.utc),
-        tenant_id=tenant_id
+        tenant_id=tenant_id,
     )
 
     return {
@@ -508,11 +406,12 @@ async def test_rule_simulation(
         "input": payload.model_dump(),
         "triggered_count": len(triggered),
         "triggered_rules": triggered,
-        "is_suspicious": len(triggered) > 0
+        "is_suspicious": len(triggered) > 0,
     }
 
 
 # ── Backward Compatible Global Platform Endpoints (SUPER_ADMIN Only) ──────────
+
 @router.get("/config")
 async def get_legacy_rules_config(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
@@ -535,53 +434,29 @@ async def update_legacy_rules_config(
 
     async def _execute_global_update():
         try:
-            # 1. Persist to PostgreSQL if available
             try:
-                from database.postgres import get_async_db_conn as _get_db
-                async with _get_db() as conn:
-                    await conn.execute(
-                        """
-                        INSERT INTO rules_configuration (rules_json, updated_by)
-                        VALUES ($1, $2);
-                        """,
-                        json.dumps(payload),
-                        current_user.get("username", "SUPER_ADMIN")
-                    )
-                    try:
-                        from services.audit import record_audit_event_tx
-                        await record_audit_event_tx(
-                            conn=conn,
-                            action="UPDATE_GLOBAL_RULES_CONFIG",
-                            actor_id=str(current_user.get("id") or current_user.get("username") or "super_admin"),
-                            actor_username=current_user.get("username", "SUPER_ADMIN"),
-                            actor_role=current_user.get("role", "SUPER_ADMIN"),
-                            resource_type="GLOBAL_RULES_CONFIG",
-                            resource_id="rules_config.json",
-                            tenant_id=tenant_id,
-                            details={"rule_keys": list((payload.get("rules") or {}).keys())},
-                        )
-                    except Exception:
-                        pass
+                await persist_global_rules_config_atomic(
+                    payload=payload,
+                    current_user=current_user,
+                    tenant_id=tenant_id,
+                    conn_factory=get_async_db_conn,
+                )
             except Exception as dbe:
-                logger.warning(f"Failed to persist rules to PostgreSQL (falling back to disk): {dbe}")
+                logger.warning("Failed to persist rules to PostgreSQL (falling back to disk): %s", dbe)
 
-            # 2. Persist to local disk file for node cache / offline mode
             try:
                 await asyncio.to_thread(_write_config_sync, CONFIG_PATH, payload)
             except Exception as fe:
-                logger.warning(f"Failed to write local rules file: {fe}")
+                logger.warning("Failed to write local rules file: %s", fe)
 
-            # 3. Trigger reload in rules engine memory cache
             RulesEngine.reload_config()
 
-            # 4. Broadcast Redis cache invalidation event
             try:
-                from database.redis_db import get_async_redis_client as _get_redis
-                redis = await _get_redis()
+                redis = await get_async_redis_client()
                 if redis:
                     await redis.publish("aml:rules:cache_invalidate", "reload")
             except Exception as re:
-                logger.warning(f"Failed to publish rules invalidation to Redis: {re}")
+                logger.warning("Failed to publish rules invalidation to Redis: %s", re)
 
             return {"status": "SUCCESS", "message": "Rules configuration updated successfully"}
         except HTTPException:

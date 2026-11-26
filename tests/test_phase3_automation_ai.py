@@ -363,7 +363,7 @@ async def test_risk_appetite_settings_lifecycle(mlro_token):
         # 2. PUT update
         res_put = await ac.put(
             "/api/v1/settings/risk-appetite",
-            headers=headers,
+            headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
             json={
                 "jurisdiction_risk_multiplier": 1.8,
                 "high_risk_jurisdictions": ["RU", "IR", "KP", "SY", "MM"],
