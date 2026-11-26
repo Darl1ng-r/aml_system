@@ -77,14 +77,58 @@ def _evaluate_jurisdiction_risk(countries: list) -> float:
     return 0.1
 
 
+def _compute_baseline_stats_sync(account_id: str, rows: list) -> dict:
+    if not rows:
+        return _build_default_baseline(account_id)
+
+    amounts = [float(row["amount"]) for row in rows]
+    hours = [row["timestamp"].hour for row in rows]
+    receivers = [str(row["receiver_account_id"]) for row in rows]
+    countries = [row["country"] for row in rows if row["country"]]
+    merchants = [row["merchant"] for row in rows if row["merchant"]]
+    devices = [row["device"] for row in rows if row["device"]]
+    channels = [row["channel"] for row in rows if row["channel"]]
+
+    daily_freq, weekly_freq, count_30 = _calculate_frequencies(rows)
+    avg_hour_val, var_hour_val = _compute_circular_hour_stats(hours)
+
+    # Unbiased sample variance with Bessel's correction (ddof=1) capped for numeric(15,2) safety
+    raw_variance = float(np.var(amounts, ddof=1)) if len(amounts) > 1 else 0.0
+    safe_variance = min(raw_variance, 999_999_999_999.0)
+    j_risk = _evaluate_jurisdiction_risk(countries)
+
+    return {
+        "account_id": account_id,
+        "avg_amount": float(np.mean(amounts)),
+        "median_amount": float(np.median(amounts)),
+        "variance_amount": safe_variance,
+        "daily_frequency": daily_freq,
+        "weekly_frequency": weekly_freq,
+        "monthly_frequency": count_30,
+        "unique_receivers_count": int(len(set(receivers))),
+        "unique_receiver_countries_count": int(len(set(countries))),
+        "avg_hour": avg_hour_val,
+        "variance_hour": var_hour_val,
+        "top_countries": get_mode_list(countries),
+        "top_merchants": get_mode_list(merchants),
+        "top_devices": get_mode_list(devices),
+        "top_channels": get_mode_list(channels),
+        "jurisdiction_risk_score": float(j_risk),
+        "kyc_risk_tier": "HIGH" if j_risk > 0.5 else "STANDARD",
+    }
+
+
 async def calculate_customer_baseline(account_id: str, tenant_id: str | None = None) -> dict:
     """
     Computes a customer's transaction baseline behavior using historical data
-    and updates/inserts the baseline cache in the database.
+    and updates/inserts the baseline cache in the database without holding a DB
+    transaction open during NumPy CPU aggregation.
     """
+    from services.compute_executor import run_analytics_compute
+
     logger.info(f"Recalculating baseline for customer account: {account_id}")
-    
-    # 1. Fetch completed outgoing transactions for this account in the last 90 days (bounded to 10,000 to prevent OOM)
+
+    # 1. Fetch completed outgoing transactions for this account in the last 90 days (bounded to 10,000)
     # Normalize amounts to base reporting currency (USD) so multi-currency baselines are consistent (V-06)
     query = """
         SELECT COALESCE(amount_base_usd, amount) AS amount,
@@ -96,82 +140,47 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
         ORDER BY timestamp DESC
         LIMIT 10000;
     """
-    
+
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             rows = await conn.fetch(query, account_id)
-            
-            if not rows:
-                baseline = _build_default_baseline(account_id)
-            else:
-                amounts = [float(row["amount"]) for row in rows]
-                hours = [row["timestamp"].hour for row in rows]
-                receivers = [str(row["receiver_account_id"]) for row in rows]
-                countries = [row["country"] for row in rows if row["country"]]
-                merchants = [row["merchant"] for row in rows if row["merchant"]]
-                devices = [row["device"] for row in rows if row["device"]]
-                channels = [row["channel"] for row in rows if row["channel"]]
-                
-                daily_freq, weekly_freq, count_30 = _calculate_frequencies(rows)
-                avg_hour_val, var_hour_val = _compute_circular_hour_stats(hours)
 
-                # Unbiased sample variance with Bessel's correction (ddof=1) capped for numeric(15,2) safety
-                raw_variance = float(np.var(amounts, ddof=1)) if len(amounts) > 1 else 0.0
-                safe_variance = min(raw_variance, 999_999_999_999.0)
-                j_risk = _evaluate_jurisdiction_risk(countries)
+        # Offload CPU-bound NumPy aggregation outside the DB transaction onto the analytics bulkhead
+        baseline = await run_analytics_compute(_compute_baseline_stats_sync, account_id, list(rows or []), timeout=10.0)
 
-                baseline = {
-                    "account_id": account_id,
-                    "avg_amount": float(np.mean(amounts)),
-                    "median_amount": float(np.median(amounts)),
-                    "variance_amount": safe_variance,
-                    "daily_frequency": daily_freq,
-                    "weekly_frequency": weekly_freq,
-                    "monthly_frequency": count_30,
-                    "unique_receivers_count": int(len(set(receivers))),
-                    "unique_receiver_countries_count": int(len(set(countries))),
-                    "avg_hour": avg_hour_val,
-                    "variance_hour": var_hour_val,
-                    "top_countries": get_mode_list(countries),
-                    "top_merchants": get_mode_list(merchants),
-                    "top_devices": get_mode_list(devices),
-                    "top_channels": get_mode_list(channels),
-                    "jurisdiction_risk_score": float(j_risk),
-                    "kyc_risk_tier": "HIGH" if j_risk > 0.5 else "STANDARD"
-                }
+        # 2. Upsert baseline in PostgreSQL with tenant_id from accounts
+        upsert_query = """
+            INSERT INTO customer_profiles (
+                account_id, tenant_id, avg_amount, median_amount, variance_amount,
+                daily_frequency, weekly_frequency, monthly_frequency,
+                unique_receivers_count, unique_receiver_countries_count,
+                avg_hour, variance_hour, top_countries, top_merchants, top_devices, top_channels,
+                jurisdiction_risk_score, kyc_risk_tier, updated_at
+            )
+            SELECT $1, a.tenant_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW()
+            FROM accounts a WHERE a.id = $1::uuid
+            ON CONFLICT (account_id) DO UPDATE SET
+                tenant_id = EXCLUDED.tenant_id,
+                avg_amount = EXCLUDED.avg_amount,
+                median_amount = EXCLUDED.median_amount,
+                variance_amount = EXCLUDED.variance_amount,
+                daily_frequency = EXCLUDED.daily_frequency,
+                weekly_frequency = EXCLUDED.weekly_frequency,
+                monthly_frequency = EXCLUDED.monthly_frequency,
+                unique_receivers_count = EXCLUDED.unique_receivers_count,
+                unique_receiver_countries_count = EXCLUDED.unique_receiver_countries_count,
+                avg_hour = EXCLUDED.avg_hour,
+                variance_hour = EXCLUDED.variance_hour,
+                top_countries = EXCLUDED.top_countries,
+                top_merchants = EXCLUDED.top_merchants,
+                top_devices = EXCLUDED.top_devices,
+                top_channels = EXCLUDED.top_channels,
+                jurisdiction_risk_score = EXCLUDED.jurisdiction_risk_score,
+                kyc_risk_tier = EXCLUDED.kyc_risk_tier,
+                updated_at = NOW();
+        """
 
-            # 2. Upsert baseline in PostgreSQL with tenant_id from accounts
-            upsert_query = """
-                INSERT INTO customer_profiles (
-                    account_id, tenant_id, avg_amount, median_amount, variance_amount,
-                    daily_frequency, weekly_frequency, monthly_frequency,
-                    unique_receivers_count, unique_receiver_countries_count,
-                    avg_hour, variance_hour, top_countries, top_merchants, top_devices, top_channels,
-                    jurisdiction_risk_score, kyc_risk_tier, updated_at
-                )
-                SELECT $1, a.tenant_id, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW()
-                FROM accounts a WHERE a.id = $1::uuid
-                ON CONFLICT (account_id) DO UPDATE SET
-                    tenant_id = EXCLUDED.tenant_id,
-                    avg_amount = EXCLUDED.avg_amount,
-                    median_amount = EXCLUDED.median_amount,
-                    variance_amount = EXCLUDED.variance_amount,
-                    daily_frequency = EXCLUDED.daily_frequency,
-                    weekly_frequency = EXCLUDED.weekly_frequency,
-                    monthly_frequency = EXCLUDED.monthly_frequency,
-                    unique_receivers_count = EXCLUDED.unique_receivers_count,
-                    unique_receiver_countries_count = EXCLUDED.unique_receiver_countries_count,
-                    avg_hour = EXCLUDED.avg_hour,
-                    variance_hour = EXCLUDED.variance_hour,
-                    top_countries = EXCLUDED.top_countries,
-                    top_merchants = EXCLUDED.top_merchants,
-                    top_devices = EXCLUDED.top_devices,
-                    top_channels = EXCLUDED.top_channels,
-                    jurisdiction_risk_score = EXCLUDED.jurisdiction_risk_score,
-                    kyc_risk_tier = EXCLUDED.kyc_risk_tier,
-                    updated_at = NOW();
-            """
-            
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
             await conn.execute(
                 upsert_query,
                 baseline["account_id"],
@@ -190,10 +199,10 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
                 baseline["top_devices"],
                 baseline["top_channels"],
                 float(baseline.get("jurisdiction_risk_score", 0.1)),
-                str(baseline.get("kyc_risk_tier", "STANDARD"))
+                str(baseline.get("kyc_risk_tier", "STANDARD")),
             )
-            
-            return baseline
+
+        return baseline
 
     except Exception as e:
         logger.exception(f"Failed to calculate or cache customer baseline for {account_id}: {e}")

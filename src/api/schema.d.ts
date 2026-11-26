@@ -300,7 +300,7 @@ export interface Schemas {
     destination_url?: string | null;
   };
   TransactionRequest: {
-    amount: number;
+    amount: number | string;
     channel?: string | null;
     country?: string | null;
     currency?: string;

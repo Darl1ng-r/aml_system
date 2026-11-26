@@ -759,11 +759,9 @@ async def review_sar_draft(
             if not draft:
                 raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
 
-            if draft["status"] != "PENDING_MLRO_REVIEW":
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid state transition: SAR draft is already {draft['status']} and cannot be re-reviewed."
-                )
+            new_status = "APPROVED" if payload.action == "APPROVE" else "REJECTED"
+            from services.state_machine import validate_sar_draft_transition
+            validate_sar_draft_transition(str(draft["status"]), new_status, allow_noop=False)
 
             caller_id = str(current_user.get("id", ""))
             caller_role = current_user.get("role", "")
@@ -772,8 +770,6 @@ async def review_sar_draft(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Segregation of Duties Violation: Reviewer cannot approve a SAR draft they authored."
                 )
-
-            new_status = "APPROVED" if payload.action == "APPROVE" else "REJECTED"
             user_uuid = None
             if caller_id:
                 try:
@@ -947,6 +943,8 @@ async def update_sar_draft(
         new_narrative = payload.narrative
         new_xml = payload.xml_payload
         new_status = payload.status or draft["status"]
+        from services.state_machine import validate_sar_draft_transition
+        validate_sar_draft_transition(str(draft["status"]), str(new_status))
 
         updated_ts = await conn.fetchval(
             """

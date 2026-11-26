@@ -1,32 +1,66 @@
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Response, Request, status, status as http_status, Query
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from datetime import datetime, timezone
-import uuid
+"""
+Transaction Ingestion & Ledger Query HTTP Controller
+====================================================
+Pure HTTP transport layer (Functional Core / Imperative Shell).
+All SQL queries live in `repositories/transaction_repo.py`, all compliance math
+lives in `domain/rules_core.py` & `domain/money.py`, and all scoring/persistence
+orchestration lives in `services/transaction_ingestion.py` (shared with
+`workers/scoring_worker.py` for 100% sync-vs-async parity).
+"""
+
+from __future__ import annotations
+
+import hashlib
 import logging
-import json
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator, model_validator
+
 from database.postgres import get_async_db_conn, get_async_db_read_conn
-from services.rules import RulesEngine, get_rules_config
-from services.ml_model import anomaly_model
-from services.redpanda import publish_transaction
-from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
-from services.rate_limiter import RateLimiter
-from services.behavioral import get_customer_baseline, calculate_customer_baseline
-from services.isolation_forest import get_iforest_score
+from domain.money import InvalidMoneyError, parse_decimal_amount
+from observability.sanitizer import sanitize_text
+from repositories.transaction_repo import (
+    ConcurrentAccountBlockError,
+    DuplicateTransactionIdempotencyError,
+    _row_val,
+    get_transaction_by_id_repo,
+    list_transactions_page_repo,
+)
+from services.auth import RoleChecker, enforce_tenant_data_scope
+from services.behavioral import calculate_customer_baseline, get_customer_baseline
 from services.dynamic_scorer import compute_dynamic_risk
-from services.idempotency import check_idempotency, save_idempotency_result, clear_idempotency_key, extract_idempotency_key
+from services.idempotency import (
+    check_idempotency,
+    clear_idempotency_key,
+    extract_idempotency_key,
+    save_idempotency_result,
+)
+from services.isolation_forest import get_iforest_score
+from services.ml_model import anomaly_model
+from services.rate_limiter import RateLimiter
+from services.redpanda import publish_transaction  # retained for legacy test spies
+from services.rules import RulesEngine
+from services.transaction_ingestion import (
+    AccountNotFoundError,
+    AccountStatusBlockedError,
+    IngestionDependencies,
+    TransactionIngestionService,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["Transactions"])
 
-from pydantic import BaseModel, Field, field_validator, model_validator
-from observability.sanitizer import sanitize_text
 
 class TransactionRequest(BaseModel):
     sender_account: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
     receiver_account: str = Field(..., min_length=3, max_length=50, pattern=r"^[A-Za-z0-9_-]+$")
-    amount: float = Field(..., gt=0.0, le=1_000_000_000.0)
+    amount: Decimal = Field(..., gt=Decimal("0"), le=Decimal("1000000000"))
     currency: str = Field("USD", min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")
     timestamp: datetime
     country: str | None = Field(None, min_length=2, max_length=3, pattern=r"^[A-Za-z]{2,3}$")
@@ -34,6 +68,14 @@ class TransactionRequest(BaseModel):
     device: str | None = Field(None, max_length=100)
     channel: str | None = Field(None, max_length=50)
     idempotency_key: str | None = Field(None, max_length=128)
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def validate_exact_decimal_amount(cls, v: Any) -> Decimal:
+        try:
+            return parse_decimal_amount(v, allow_zero=False)
+        except InvalidMoneyError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("sender_account", "receiver_account", "merchant", "device", "channel", "idempotency_key", mode="before")
     @classmethod
@@ -46,708 +88,224 @@ class TransactionRequest(BaseModel):
             raise ValueError("sender_account and receiver_account must be different")
         return self
 
-from typing import Any
 
-
-def _extract_row_val(row: Any, key: str, default: Any = None) -> Any:
-    if hasattr(row, "get"):
-        val = row.get(key)
-        return val if val is not None else default
-    if isinstance(row, dict) and key in row:
-        val = row[key]
-        return val if val is not None else default
-    try:
-        val = row[key]
-        return val if val is not None else default
-    except Exception:
-        return default
-
-
-async def _fetch_and_validate_accounts(
-    payload: TransactionRequest,
-    user_tenant_id: Any,
-    current_user: dict
-) -> dict:
-    async with get_async_db_read_conn(tenant_id=user_tenant_id) as conn:
-        row = await conn.fetchrow(
-            """
-            WITH sender_info AS (
-                SELECT id, tenant_id, risk_score, owner_name, swift_bic, status
-                FROM accounts 
-                WHERE account_number = $1
-            ),
-            receiver_info AS (
-                SELECT id, risk_score, owner_name, swift_bic, status
-                FROM accounts 
-                WHERE account_number = $2
-            ),
-            velocity_info AS (
-                SELECT COUNT(*) AS velocity_count 
-                FROM transactions 
-                WHERE sender_account_id = (SELECT id FROM sender_info)
-                  AND timestamp >= NOW() - INTERVAL '24 hours'
-            )
-            SELECT 
-                s.id AS sender_id, 
-                s.tenant_id AS sender_tenant, 
-                s.risk_score AS sender_risk,
-                s.owner_name AS sender_name,
-                s.swift_bic AS sender_bic,
-                s.status AS sender_status,
-                r.id AS receiver_id, 
-                r.risk_score AS receiver_risk,
-                r.owner_name AS receiver_name,
-                r.swift_bic AS receiver_bic,
-                r.status AS receiver_status,
-                COALESCE(v.velocity_count, 0) AS velocity_count
-            FROM (SELECT 1) dummy
-            LEFT JOIN sender_info s ON TRUE
-            LEFT JOIN receiver_info r ON TRUE
-            LEFT JOIN velocity_info v ON TRUE;
-            """,
-            payload.sender_account,
-            payload.receiver_account
-        )
-
-        if not row or row["sender_id"] is None:
-            raise HTTPException(status_code=404, detail=f"Sender account {payload.sender_account} not found")
-        if row["receiver_id"] is None:
-            raise HTTPException(status_code=404, detail=f"Receiver account {payload.receiver_account} not found")
-
-        tenant_id = row["sender_tenant"]
-        if tenant_id:
-            enforce_tenant_data_scope(current_user, target_tenant_id=str(tenant_id))
-
-        sender_status = _extract_row_val(row, "sender_status", "ACTIVE")
-        receiver_status = _extract_row_val(row, "receiver_status", "ACTIVE")
-
-        if sender_status == "FROZEN":
-            raise HTTPException(
-                status_code=http_status.HTTP_403_FORBIDDEN,
-                detail=f"Transaction rejected: Sender account {payload.sender_account} is FROZEN under regulatory/court order."
-            )
-        if receiver_status == "FROZEN":
-            raise HTTPException(
-                status_code=http_status.HTTP_403_FORBIDDEN,
-                detail=f"Transaction rejected: Receiver account {payload.receiver_account} is FROZEN under regulatory/court order."
-            )
-        if sender_status == "CIP_PENDING":
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail=f"Transaction rejected: Sender account {payload.sender_account} has pending Customer Identification (CIP) verification."
-            )
-        if receiver_status == "CIP_PENDING":
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail=f"Transaction rejected: Receiver account {payload.receiver_account} has pending Customer Identification (CIP) verification."
-            )
-
-        return {
-            "sender_id": row["sender_id"],
-            "sender_tenant": tenant_id,
-            "sender_risk": float(row["sender_risk"]),
-            "sender_name": row["sender_name"],
-            "sender_bic": row["sender_bic"],
-            "receiver_id": row["receiver_id"],
-            "receiver_risk": float(row["receiver_risk"]),
-            "receiver_name": row["receiver_name"],
-            "receiver_bic": row["receiver_bic"],
-            "velocity_count": int(row["velocity_count"]),
-        }
-
-
-def _is_high_risk_geo(sender_bic: str | None, receiver_bic: str | None) -> int:
-    rules_cfg = get_rules_config()
-    geo_config = rules_cfg.get("rules", {}).get("GEOGRAPHIC_SANCTIONS", {})
-    high_risk_countries = geo_config.get("high_risk_countries", ["RU", "IR", "KP", "SY"])
-    for bic in [sender_bic, receiver_bic]:
-        if bic and len(bic) >= 6 and bic[4:6].upper() in high_risk_countries:
-            return 1
-    return 0
-
-
-async def _compute_transaction_risk(
-    payload: TransactionRequest,
-    acct: dict,
-    tenant_id: Any
-) -> dict:
-    sender_id = acct["sender_id"]
-    receiver_id = acct["receiver_id"]
-    sender_risk = acct["sender_risk"]
-    receiver_risk = acct["receiver_risk"]
-    velocity_count = acct["velocity_count"]
-
-    baseline = {}
-    try:
-        baseline = await get_customer_baseline(str(sender_id), tenant_id=str(tenant_id) if tenant_id else None)
-    except Exception as e_base:
-        logger.debug(f"Baseline lookup prior to rules bypassed: {e_base}")
-
-    kyc_risk_tier = baseline.get("kyc_risk_tier", "STANDARD") if baseline else "STANDARD"
-
-    # P0-1: Multi-Currency FX Normalization to Base Reporting Currency (USD)
-    from services.fx_rates import convert_to_base_currency
-    amount_base_usd, fx_rate_applied = await convert_to_base_currency(payload.amount, payload.currency)
-
-    triggered_rules = await RulesEngine.evaluate_transaction(
-        sender_id=str(sender_id),
-        receiver_id=str(receiver_id),
-        amount=amount_base_usd,
-        sender_name=acct["sender_name"],
-        sender_bic=acct["sender_bic"],
-        receiver_name=acct["receiver_name"],
-        receiver_bic=acct["receiver_bic"],
-        timestamp=payload.timestamp,
-        tenant_id=str(tenant_id) if tenant_id else None,
-        metadata={
-            "kyc_risk_tier": kyc_risk_tier,
-            "sender_risk": sender_risk,
-            "receiver_risk": receiver_risk,
-            "channel": payload.channel,
-            "merchant": payload.merchant,
-            "country": payload.country,
-            "original_amount": payload.amount,
-            "original_currency": payload.currency,
-            "fx_rate_applied": fx_rate_applied,
-        }
+def _build_sync_deps() -> IngestionDependencies:
+    return IngestionDependencies(
+        read_conn_factory=get_async_db_read_conn,
+        write_conn_factory=get_async_db_conn,
+        rules_evaluate_fn=RulesEngine.evaluate_transaction,
+        ml_predict_risk_fn=anomaly_model.predict_risk,
+        baseline_loader=get_customer_baseline,
+        iforest_scorer=get_iforest_score,
+        dynamic_scorer=compute_dynamic_risk,
     )
 
-    import asyncio as _asyncio
-    ml_result = await _asyncio.to_thread(
-        anomaly_model.predict_risk, amount_base_usd, sender_risk, receiver_risk, velocity_count
-    )
-    ai_score = ml_result["risk_score"]
-    attributions = ml_result["attributions"]
 
-    is_geo = _is_high_risk_geo(acct["sender_bic"], acct["receiver_bic"])
-
-    try:
-        iforest_score = await get_iforest_score(
-            amount=amount_base_usd,
-            sender_risk=sender_risk,
-            receiver_risk=receiver_risk,
-            hour=payload.timestamp.hour,
-            is_geo=is_geo
-        )
-        jurisdiction_risk = float(baseline.get("jurisdiction_risk_score", 0.1))
-        if is_geo == 1:
-            jurisdiction_risk = max(jurisdiction_risk, 0.85)
-
-        taint_risk = 0.0
-        try:
-            from services.network_analysis import compute_transitive_counterparty_taint
-            taint_risk = await compute_transitive_counterparty_taint(
-                account_number=payload.sender_account,
-                tenant_id=str(tenant_id) if tenant_id else None
-            )
-        except Exception:
-            pass
-
-        dynamic_res = compute_dynamic_risk(
-            rules_triggered=triggered_rules,
-            ml_score=ai_score,
-            amount=amount_base_usd,
-            baseline=baseline,
-            iforest_score=iforest_score,
-            sender_risk=sender_risk,
-            receiver_risk=receiver_risk,
-            jurisdiction_risk=jurisdiction_risk,
-            taint_risk=taint_risk
-        )
-        dynamic_score = dynamic_res["dynamic_risk_score"]
-        explainability = dynamic_res["explainability"]
-        top_drivers = dynamic_res.get("top_drivers", [])
-    except Exception:
-        logger.exception("Failed to calculate dynamic risk scoring")
-        dynamic_score = ai_score
-        explainability = {
-            "ml_model_contribution": ai_score,
-            "isolation_forest_contribution": 0.5,
-            "baseline_zscore_contribution": 0.0,
-            "amount_zscore": 0.0,
-            "rule_escalated": len(triggered_rules) > 0
-        }
-        top_drivers = []
-
-    hard_hold_triggers = {"SANCTIONS_HIT", "ACCOUNT_FROZEN", "OFAC_SANCTIONS_MATCH"}
-    is_hard_hold = any(r in hard_hold_triggers for r in triggered_rules)
-    alert_triggered = dynamic_score >= 0.75 or len(triggered_rules) > 0
-    decision = "HELD" if is_hard_hold else "APPROVED"
-    tx_status = "HELD" if is_hard_hold else "COMPLETED"
-
-    if not alert_triggered:
-        threat_level = "NONE"
-    elif dynamic_score >= 0.90:
-        threat_level = "CRITICAL"
-    elif dynamic_score >= 0.75:
-        threat_level = "HIGH"
-    else:
-        threat_level = "MEDIUM"
-
-    try:
-        from observability.prometheus import (
-            record_transaction_ingested,
-            record_transaction_scored,
-            record_rule_triggered,
-        )
-        record_transaction_ingested(decision=decision, channel=payload.channel)
-        record_transaction_scored(threat_level=threat_level)
-        for rname in triggered_rules:
-            record_rule_triggered(rname)
-    except Exception:
-        pass
-
-    return {
-        "dynamic_score": dynamic_score,
-        "triggered_rules": triggered_rules,
-        "decision": decision,
-        "tx_status": tx_status,
-        "alert_triggered": alert_triggered,
-        "threat_level": threat_level,
-        "explainability": explainability,
-        "attributions": attributions,
-        "top_drivers": top_drivers,
-        "is_geo": is_geo,
-        "amount_base_usd": amount_base_usd,
-        "fx_rate_applied": fx_rate_applied,
-    }
+def _hash_tx_request(payload: TransactionRequest) -> str:
+    return hashlib.sha256(
+        payload.model_dump_json(exclude={"idempotency_key"}).encode("utf-8")
+    ).hexdigest()
 
 
-async def _run_in_savepoint(conn: Any, fn):
-    """Runs a best-effort query inside a PostgreSQL SAVEPOINT when supported so caught errors never abort the outer tx (T-01)."""
-    import inspect
-    tx_factory = getattr(conn, "transaction", None)
-    if callable(tx_factory) and not inspect.iscoroutinefunction(tx_factory):
-        sp = tx_factory()
-        if hasattr(sp, "__aenter__"):
-            async with sp:
-                return await fn()
-    return await fn()
-
-
-async def _verify_concurrency_lock(conn: Any, sender_id: Any, receiver_id: Any) -> None:
-    if hasattr(conn, "fetch"):
-        try:
-            # Deterministic ascending lock order prevents AB-BA PostgreSQL deadlocks
-            locked_accounts = await _run_in_savepoint(
-                conn,
-                lambda: conn.fetch(
-                    "SELECT id, status FROM accounts WHERE id IN ($1, $2) ORDER BY id ASC FOR UPDATE;",
-                    sender_id, receiver_id
-                ),
-            )
-            for acc in (locked_accounts or []):
-                st = _extract_row_val(acc, "status", "ACTIVE")
-                if st == "FROZEN":
-                    raise HTTPException(
-                        status_code=http_status.HTTP_403_FORBIDDEN,
-                        detail=f"Transaction aborted: Account {acc['id']} was FROZEN concurrently."
-                    )
-        except HTTPException:
-            raise
-        except Exception as ex_lock:
-            logger.debug(f"Row lock check bypassed or non-fatal: {ex_lock}")
-
-
-async def _handle_ctr_and_structuring(
-    conn: Any,
-    tenant_id: Any,
-    tx_id: str,
-    sender_id: Any,
-    payload: TransactionRequest,
-    dt: datetime,
-    amount_base_usd: float | None = None,
-) -> None:
-    is_cash_channel = (payload.channel and payload.channel.upper() == "CASH") or (payload.merchant and payload.merchant.upper() == "CASH")
-    if not is_cash_channel:
-        return
-
-    prior_24h_cash = 0.0
-    cash_count_24h = 0
-    try:
-        rolling_cash_row = await _run_in_savepoint(
-            conn,
-            lambda: conn.fetchrow(
-                """
-                WITH customer_scope AS (
-                    SELECT customer_id FROM accounts WHERE id = $1
-                )
-                SELECT COALESCE(SUM(COALESCE(t.amount_base_usd, t.amount)), 0) AS total_cash_24h,
-                       COUNT(t.id) AS cash_count_24h
-                FROM transactions t
-                JOIN accounts a ON t.sender_account_id = a.id
-                WHERE (
-                    ((SELECT customer_id FROM customer_scope) IS NOT NULL AND a.customer_id = (SELECT customer_id FROM customer_scope))
-                    OR ((SELECT customer_id FROM customer_scope) IS NULL AND t.sender_account_id = $1)
-                )
-                  AND t.id != $2::uuid
-                  AND (UPPER(COALESCE(t.channel, '')) = 'CASH' OR UPPER(COALESCE(t.merchant, '')) = 'CASH')
-                  AND t.timestamp >= ($3::timestamptz - INTERVAL '24 hours')
-                  AND t.timestamp <= $3::timestamptz;
-                """,
-                sender_id, uuid.UUID(tx_id), dt
-            ),
-        )
-        if rolling_cash_row:
-            prior_24h_cash = float(_extract_row_val(rolling_cash_row, "total_cash_24h", 0))
-            cash_count_24h = int(_extract_row_val(rolling_cash_row, "cash_count_24h", 0))
-    except Exception as ex_ctr:
-        logger.warning(f"Failed to query 24h rolling cash aggregation: {ex_ctr}")
-
-    # Evaluate CTR & structuring strictly against FX-normalized USD equivalent (31 CFR 1010.311 / 1010.313, V-06)
-    if amount_base_usd is None:
-        from services.fx_rates import convert_to_base_currency
-        tx_amount_usd, _ = await convert_to_base_currency(payload.amount, payload.currency)
-    else:
-        tx_amount_usd = float(amount_base_usd)
-
-    total_aggregate_cash = prior_24h_cash + float(tx_amount_usd)
-    if tx_amount_usd >= 10000.0 or total_aggregate_cash >= 10000.0:
-        await conn.execute(
-            """
-            INSERT INTO ctr_filings (tenant_id, transaction_id, account_id, amount, currency, cash_in_out, status)
-            VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'PENDING');
-            """,
-            tenant_id, uuid.UUID(tx_id), sender_id, payload.amount, payload.currency
-        )
-
-    is_sub_threshold = 9000.0 <= float(tx_amount_usd) < 10000.0
-    if (is_sub_threshold and (prior_24h_cash > 0 or cash_count_24h >= 1)) or (cash_count_24h >= 1 and total_aggregate_cash >= 9500.0):
-        structuring_payload = {
-            "rule": "CTR_STRUCTURING_DETECTION",
-            "current_amount": payload.amount,
-            "current_currency": payload.currency,
-            "current_amount_usd": float(tx_amount_usd),
-            "prior_24h_cash_usd": prior_24h_cash,
-            "total_aggregate_cash_usd": total_aggregate_cash,
-            "message": "Potential structuring/smurfing detected under FinCEN 31 CFR 1010.313."
-        }
-        await conn.execute(
-            """
-            INSERT INTO alerts (tenant_id, transaction_id, rule_name, threat_level, ai_risk_score, explainability_payload)
-            VALUES ($1, $2, 'CTR_STRUCTURING_DETECTION', 'HIGH', 0.85, $3);
-            """,
-            tenant_id, tx_id, json.dumps(structuring_payload)
-        )
-
-
-async def _persist_transaction_record(
-    tenant_id: Any,
-    tx_id: str,
-    sender_id: Any,
-    receiver_id: Any,
-    payload: TransactionRequest,
-    scoring: dict,
-    acct: dict | None = None,
-    current_user: dict | None = None,
-) -> datetime:
-    dt = payload.timestamp
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-
-    amount_base_usd = float(scoring.get("amount_base_usd", payload.amount))
-    fx_rate_applied = float(scoring.get("fx_rate_applied", 1.0))
-
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        await _verify_concurrency_lock(conn, sender_id, receiver_id)
-
-        await conn.execute(
-            """
-            INSERT INTO transactions (
-                id, tenant_id, sender_account_id, receiver_account_id, amount, currency,
-                amount_base_usd, fx_rate_applied, status, timestamp, country, merchant, device, channel
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14);
-            """,
-            tx_id, tenant_id, sender_id, receiver_id, payload.amount, payload.currency,
-            amount_base_usd, fx_rate_applied,
-            scoring["tx_status"], dt,
-            payload.country, payload.merchant, payload.device, payload.channel
-        )
-
-        # P0-2: Enqueue signed core-banking interdiction webhook on HELD transactions
-        if scoring.get("decision") == "HELD" and tenant_id:
-            from services.webhooks import enqueue_webhook_event_tx
-            await enqueue_webhook_event_tx(
-                conn=conn,
-                tenant_id=str(tenant_id),
-                event_type="TRANSACTION_HELD",
-                aggregate_id=tx_id,
-                payload={
-                    "transaction_id": tx_id,
-                    "sender_account": payload.sender_account,
-                    "receiver_account": payload.receiver_account,
-                    "amount": payload.amount,
-                    "currency": payload.currency,
-                    "amount_base_usd": amount_base_usd,
-                    "fx_rate_applied": fx_rate_applied,
-                    "triggered_rules": scoring.get("triggered_rules", []),
-                    "threat_level": scoring.get("threat_level", "HIGH"),
-                },
-            )
-
-        # P1-2: Evaluate SHADOW challenger rules silently into rule_shadow_hits
-        if tenant_id:
-            from services.rule_backtest import evaluate_shadow_rules
-            await evaluate_shadow_rules(
-                conn=conn,
-                tenant_id=tenant_id,
-                transaction_id=tx_id,
-                sender_account_id=sender_id,
-                amount_base_usd=amount_base_usd,
-                country=payload.country,
-                channel=payload.channel,
-            )
-
-        if scoring["alert_triggered"]:
-            threat_level = scoring["threat_level"]
-            if threat_level == "NONE":
-                threat_level = "CRITICAL" if scoring["dynamic_score"] >= 0.90 else "HIGH"
-            rule_name = scoring["triggered_rules"][0] if scoring["triggered_rules"] else "BEHAVIORAL_ANOMALY"
-
-            explainability_payload = {
-                "ml_attributions": scoring["attributions"],
-                "dynamic_risk": scoring["explainability"],
-                "top_drivers": scoring["top_drivers"]
-            }
-
-            await conn.execute(
-                """
-                INSERT INTO alerts (tenant_id, transaction_id, rule_name, threat_level, ai_risk_score, explainability_payload)
-                VALUES ($1, $2, $3, $4, $5, $6);
-                """,
-                tenant_id, tx_id, rule_name, threat_level, scoring["dynamic_score"], json.dumps(explainability_payload)
-            )
-
-        await _handle_ctr_and_structuring(conn, tenant_id, tx_id, sender_id, payload, dt, amount_base_usd=amount_base_usd)
-
-        # T-06: Atomically persist cryptographic WORM audit_log for alerted / held transactions
-        if (scoring["alert_triggered"] or scoring.get("decision") == "HELD") and tenant_id:
-            from services.audit import record_audit_event_tx
-            actor = current_user or {}
-            await record_audit_event_tx(
-                conn=conn,
-                action="TRANSACTION_HELD" if scoring.get("decision") == "HELD" else "TRANSACTION_ALERTED",
-                actor_id=str(actor.get("id") or actor.get("username") or "api_ingest"),
-                actor_username=str(actor.get("username") or "api_ingest"),
-                actor_role=str(actor.get("role") or "ANALYST"),
-                resource_type="TRANSACTION",
-                resource_id=tx_id,
-                tenant_id=str(tenant_id),
-                details={
-                    "decision": scoring.get("decision"),
-                    "threat_level": scoring.get("threat_level"),
-                    "risk_score": scoring.get("dynamic_score"),
-                    "amount": payload.amount,
-                    "currency": payload.currency,
-                    "amount_base_usd": amount_base_usd,
-                    "fx_rate_applied": fx_rate_applied,
-                    "triggered_rules": scoring.get("triggered_rules", []),
-                },
-            )
-
-        # V-05 & T-01: Canonical single-publisher transactional outbox event (fail closed inside ACID tx!)
-        from database.outbox import record_outbox_event
-        acct_meta = acct or {}
-        outbox_payload = {
-            "transaction_id": tx_id,
-            "tenant_id": str(tenant_id),
-            "sender_id": str(sender_id),
-            "sender_account": payload.sender_account,
-            "receiver_id": str(receiver_id),
-            "receiver_account": payload.receiver_account,
-            "amount": payload.amount,
-            "currency": payload.currency,
-            "amount_base_usd": amount_base_usd,
-            "fx_rate_applied": fx_rate_applied,
-            "status": scoring["tx_status"],
-            "timestamp": dt.isoformat(),
-            "country": payload.country,
-            "merchant": payload.merchant,
-            "device": payload.device,
-            "channel": payload.channel,
-            "sender_risk": acct_meta.get("sender_risk"),
-            "receiver_risk": acct_meta.get("receiver_risk"),
-            "velocity_count": acct_meta.get("velocity_count"),
-            "is_geo_risk": scoring.get("is_geo", 0),
-            "dynamic_score": scoring["dynamic_score"],
-            "alert_triggered": scoring["alert_triggered"],
-            "triggered_rules": scoring.get("triggered_rules", []),
-            "ingested_by": (current_user or {}).get("username", "api_ingest"),
-        }
-        await record_outbox_event(
-            conn=conn,
-            aggregate_type="TRANSACTION",
-            aggregate_id=tx_id,
-            event_type="aml.core.transaction.ingested.v1",
-            payload=outbox_payload,
-            tenant_id=str(tenant_id) if tenant_id else None,
-        )
-
-    return dt
-
-
-async def _check_ingest_idempotency(
+async def _check_tx_idempotency(
+    *,
     request: Request | None,
-    idemp_key_param: str | None,
-    user_tenant_id: Any,
+    body_key: str | None,
+    tenant_id: Any,
     payload: TransactionRequest,
-    response: Response | None
+    response: Response | None,
+    default_status: int,
+    scope: str,
 ) -> tuple[str | None, str | None, JSONResponse | None]:
-    idemp_key = await extract_idempotency_key(request, idemp_key_param)
-    if not idemp_key:
+    raw_key = await extract_idempotency_key(request, body_key)
+    if not raw_key:
         return None, None, None
-    import hashlib
-    body_hash = hashlib.sha256(payload.model_dump_json(exclude={"idempotency_key"}).encode("utf-8")).hexdigest()
+    scoped_key = f"{scope}:{raw_key}"
+    body_hash = _hash_tx_request(payload)
     is_cached, cached_val = await check_idempotency(
-        idemp_key,
-        tenant_id=str(user_tenant_id) if user_tenant_id else None,
-        request_hash=body_hash
+        scoped_key,
+        tenant_id=str(tenant_id) if tenant_id else None,
+        request_hash=body_hash,
     )
     if is_cached and cached_val:
-        headers = {"Idempotency-Key": idemp_key, "X-Cache-Lookup": "HIT"}
+        headers = {
+            "Idempotency-Key": raw_key,
+            "X-Cache-Lookup": "HIT",
+            "Idempotency-Replayed": "true",
+        }
         if response is not None:
-            response.headers["Idempotency-Key"] = idemp_key
+            response.headers["Idempotency-Key"] = raw_key
             response.headers["X-Cache-Lookup"] = "HIT"
-        cached_resp = JSONResponse(
-            status_code=cached_val.get("status_code", status.HTTP_201_CREATED),
+            response.headers["Idempotency-Replayed"] = "true"
+        return raw_key, body_hash, JSONResponse(
+            status_code=int(cached_val.get("status_code", default_status)),
             content=cached_val.get("body", {}),
-            headers=headers
+            headers=headers,
         )
-        return idemp_key, body_hash, cached_resp
-    return idemp_key, body_hash, None
+    return raw_key, body_hash, None
 
 
-def _dispatch_ingest_background_tasks(
+def _dispatch_post_commit_tasks(
     background_tasks: BackgroundTasks,
+    *,
     tx_id: str,
     tenant_id: Any,
-    acct: dict,
+    acct: dict[str, Any],
     payload: TransactionRequest,
-    scoring: dict,
-    tx_dt: datetime | None = None,
+    scoring: dict[str, Any],
+    tx_dt: datetime,
 ) -> None:
-    # V-05: Kafka/Redpanda delivery is owned solely by `transactional_outbox` + OutboxRelayEngine
-    # (eliminates duplicate publishing and schema divergence on `aml.transactions.scored`).
     background_tasks.add_task(
         calculate_customer_baseline,
         str(acct["sender_id"]),
-        tenant_id=str(tenant_id) if tenant_id else None
-    )
-
-    dt_iso = tx_dt.isoformat() if tx_dt is not None else (
-        payload.timestamp.replace(tzinfo=timezone.utc).isoformat()
-        if payload.timestamp.tzinfo is None
-        else payload.timestamp.astimezone(timezone.utc).isoformat()
+        tenant_id=str(tenant_id) if tenant_id else None,
     )
     from routers.metrics import ws_manager
+
     event_payload = {
         "event": "NEW_ALERT" if scoring["alert_triggered"] else "NEW_TRANSACTION",
         "tenant_id": str(tenant_id) if tenant_id else None,
         "transaction_id": tx_id,
-        "amount": payload.amount,
+        "amount": float(payload.amount),
         "currency": payload.currency,
-        "amount_base_usd": float(scoring.get("amount_base_usd", payload.amount)),
-        "fx_rate_applied": float(scoring.get("fx_rate_applied", 1.0)),
+        "amount_base_usd": float(scoring["amount_base_usd"]),
+        "fx_rate_applied": float(scoring["fx_rate_applied"]),
         "risk_score": scoring["dynamic_score"],
         "alert_triggered": scoring["alert_triggered"],
         "threat_level": scoring["threat_level"] if scoring["alert_triggered"] else "NONE",
         "rule_name": scoring["triggered_rules"][0] if scoring["triggered_rules"] else "NORMAL",
-        "timestamp": dt_iso
+        "timestamp": tx_dt.isoformat(),
     }
-    background_tasks.add_task(ws_manager.broadcast, event_payload, target_tenant_id=str(tenant_id) if tenant_id else None)
-
-
-async def _finalize_ingest_response(
-    idemp_key: str | None,
-    body_hash: str | None,
-    user_tenant_id: Any,
-    result: dict,
-    tx_id: str,
-    response: Response | None
-) -> dict:
-    if idemp_key:
-        await save_idempotency_result(
-            key=idemp_key,
-            status_code=status.HTTP_201_CREATED,
-            body=result,
-            tenant_id=str(user_tenant_id) if user_tenant_id else None,
-            request_hash=body_hash
-        )
-        if response is not None:
-            response.headers["Idempotency-Key"] = idemp_key
-            response.headers["X-Cache-Lookup"] = "MISS"
-
-    if response is not None:
-        response.headers["Location"] = f"/api/v1/transactions/{tx_id}"
-
-    return result
-
-
-async def _clear_idemp_if_set(idemp_key: str | None, tenant_id: Any) -> None:
-    if idemp_key:
-        await clear_idempotency_key(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
-
-
-async def _execute_ingest_pipeline(
-    payload: TransactionRequest,
-    user_tenant_id: Any,
-    current_user: dict,
-    idemp_key: str | None
-) -> tuple[str, dict, dict, Any]:
-    try:
-        try:
-            acct = await _fetch_and_validate_accounts(payload, user_tenant_id, current_user)
-        except HTTPException:
-            raise
-        except Exception:
-            logger.exception("Database lookup failed for account")
-            raise HTTPException(status_code=500, detail="Database lookup failed during transaction validation.")
-
-        tenant_id = acct["sender_tenant"]
-        scoring = await _compute_transaction_risk(payload, acct, tenant_id)
-        tx_id = str(uuid.uuid4())
-
-        try:
-            tx_dt = await _persist_transaction_record(
-                tenant_id, tx_id, acct["sender_id"], acct["receiver_id"], payload, scoring,
-                acct=acct, current_user=current_user,
-            )
-        except HTTPException:
-            raise
-        except Exception:
-            logger.exception("Failed to record transaction %s", tx_id)
-            raise HTTPException(status_code=500, detail="Failed to record transaction due to internal database error.")
-
-        scoring["utc_timestamp"] = tx_dt
-        return tx_id, acct, scoring, tenant_id
-    except BaseException:
-        await _clear_idemp_if_set(idemp_key, user_tenant_id)
-        raise
+    background_tasks.add_task(
+        ws_manager.broadcast,
+        event_payload,
+        target_tenant_id=str(tenant_id) if tenant_id else None,
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def ingest_transaction(
-    payload: TransactionRequest, 
-    background_tasks: BackgroundTasks, 
+    payload: TransactionRequest,
+    background_tasks: BackgroundTasks,
     request: Request = None,
     response: Response = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
-    _rate_limit=Depends(RateLimiter(limit=100, window=60))
+    _rate_limit=Depends(RateLimiter(limit=100, window=60)),
 ):
+    """
+    Synchronous real-time transaction compliance ingestion endpoint.
+    Enforces dual-layer idempotency (when `Idempotency-Key` is supplied), exact Decimal FX
+    normalization, consolidated single-query AML rule evaluation, offloaded ML + dynamic RBA
+    scoring, and single-ACID ledger/alert/CTR/audit/outbox persistence.
+    """
     user_tenant_id = enforce_tenant_data_scope(current_user)
+    scope = "tx_ingest"
 
-    idemp_key, body_hash, cached_resp = await _check_ingest_idempotency(
-        request, payload.idempotency_key, user_tenant_id, payload, response
+    raw_idemp_key, body_hash, cached_resp = await _check_tx_idempotency(
+        request=request,
+        body_key=payload.idempotency_key,
+        tenant_id=user_tenant_id,
+        payload=payload,
+        response=response,
+        default_status=status.HTTP_201_CREATED,
+        scope=scope,
     )
-    if cached_resp:
+    if cached_resp is not None:
         return cached_resp
 
-    tx_id, acct, scoring, tenant_id = await _execute_ingest_pipeline(payload, user_tenant_id, current_user, idemp_key)
-    _dispatch_ingest_background_tasks(
-        background_tasks, tx_id, tenant_id, acct, payload, scoring, tx_dt=scoring.get("utc_timestamp")
+    scoped_idemp_key = f"{scope}:{raw_idemp_key}" if raw_idemp_key else None
+    deps = _build_sync_deps()
+    evaluated_at = datetime.now(timezone.utc)
+    tx_id = str(uuid.uuid4())
+
+    try:
+        try:
+            acct = await TransactionIngestionService.resolve_and_validate_accounts(
+                sender_ref=payload.sender_account,
+                receiver_ref=payload.receiver_account,
+                tenant_id=user_tenant_id,
+                evaluated_at=evaluated_at,
+                deps=deps,
+            )
+        except AccountNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except AccountStatusBlockedError as exc:
+            code = status.HTTP_403_FORBIDDEN if exc.status_value == "FROZEN" else status.HTTP_400_BAD_REQUEST
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Database lookup failed for account")
+            raise HTTPException(
+                status_code=500,
+                detail="Database lookup failed during transaction validation.",
+            ) from exc
+
+        tenant_id = acct["sender_tenant"]
+        if tenant_id:
+            enforce_tenant_data_scope(current_user, target_tenant_id=str(tenant_id))
+
+        scoring = await TransactionIngestionService.compute_risk_and_decision(
+            amount_original=payload.amount,
+            currency=payload.currency,
+            tx_timestamp=payload.timestamp,
+            evaluated_at=evaluated_at,
+            country=payload.country,
+            merchant=payload.merchant,
+            channel=payload.channel,
+            acct=acct,
+            tenant_id=tenant_id,
+            deps=deps,
+        )
+
+        try:
+            tx_dt, _ = await TransactionIngestionService.persist_decision(
+                tenant_id=tenant_id,
+                tx_id=tx_id,
+                acct=acct,
+                amount_original=payload.amount,
+                currency=payload.currency,
+                tx_timestamp=payload.timestamp,
+                country=payload.country,
+                merchant=payload.merchant,
+                device=payload.device,
+                channel=payload.channel,
+                scoring=scoring,
+                actor=current_user,
+                deps=deps,
+                idempotency_key=raw_idemp_key,
+                upsert_on_id=False,
+                ingestion_mode="SYNC",
+            )
+        except ConcurrentAccountBlockError as exc:
+            code = status.HTTP_403_FORBIDDEN if exc.account_status == "FROZEN" else status.HTTP_400_BAD_REQUEST
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        except DuplicateTransactionIdempotencyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Duplicate transaction rejected by database idempotency constraint.",
+            ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Failed to record transaction %s", tx_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to record transaction due to internal database error.",
+            ) from exc
+    except BaseException:
+        if scoped_idemp_key:
+            await clear_idempotency_key(scoped_idemp_key, tenant_id=str(user_tenant_id) if user_tenant_id else None)
+        raise
+
+    _dispatch_post_commit_tasks(
+        background_tasks,
+        tx_id=tx_id,
+        tenant_id=tenant_id,
+        acct=acct,
+        payload=payload,
+        scoring=scoring,
+        tx_dt=tx_dt,
     )
 
     result = {
@@ -758,48 +316,67 @@ async def ingest_transaction(
         "triggered_rules": scoring["triggered_rules"],
         "explainability": {
             "attributions": scoring["attributions"],
-            "dynamic_risk": scoring["explainability"]
-        }
+            "dynamic_risk": scoring["explainability"],
+        },
+        "provenance": {
+            "ruleset_hash": scoring["ruleset_hash"],
+            "model_version": scoring["model_version"],
+            "fx_rate_source": scoring["fx_rate_source"],
+            "evaluated_at": scoring["evaluated_at"].isoformat(),
+            "degraded_rules": scoring["degraded_rules"],
+        },
     }
 
-    return await _finalize_ingest_response(idemp_key, body_hash, user_tenant_id, result, tx_id, response)
-
-
-async def _check_async_idempotency(
-    idemp_key: str | None,
-    user_tenant_id: Any,
-    payload: TransactionRequest,
-    response: Response | None
-) -> tuple[str | None, JSONResponse | None]:
-    if not idemp_key:
-        return None, None
-    import hashlib
-    body_hash = hashlib.sha256(payload.model_dump_json(exclude={"idempotency_key"}).encode("utf-8")).hexdigest()
-    is_cached, cached_val = await check_idempotency(
-        idemp_key,
-        tenant_id=str(user_tenant_id) if user_tenant_id else None,
-        request_hash=body_hash,
-    )
-    if is_cached and cached_val:
-        headers = {"Idempotency-Key": idemp_key, "X-Cache-Lookup": "HIT"}
-        if response is not None:
-            response.headers["Idempotency-Key"] = idemp_key
-            response.headers["X-Cache-Lookup"] = "HIT"
-        return body_hash, JSONResponse(
-            status_code=cached_val.get("status_code", status.HTTP_202_ACCEPTED),
-            content=cached_val.get("body", {}),
-            headers=headers
+    if scoped_idemp_key and raw_idemp_key:
+        await save_idempotency_result(
+            key=scoped_idemp_key,
+            status_code=status.HTTP_201_CREATED,
+            body=result,
+            tenant_id=str(user_tenant_id) if user_tenant_id else None,
+            request_hash=body_hash,
         )
-    return body_hash, None
+        if response is not None:
+            response.headers["Idempotency-Key"] = raw_idemp_key
+            response.headers["X-Cache-Lookup"] = "MISS"
+
+    if response is not None:
+        response.headers["Location"] = f"/api/v1/transactions/{tx_id}"
+
+    return result
 
 
-async def _buffer_async_transaction(
-    tx_id: str,
+@router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_transaction_async(
     payload: TransactionRequest,
-    user_tenant_id: Any,
-    username: str,
-    background_tasks: BackgroundTasks
-) -> None:
+    background_tasks: BackgroundTasks,
+    request: Request = None,
+    response: Response = None,
+    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
+    _rate_limit=Depends(RateLimiter(limit=1000, window=60)),
+):
+    """
+    Decoupled, high-throughput asynchronous ingestion buffer route (GAP-ASYNC).
+    Validates dual-layer idempotency, persists durably to `transactional_outbox`
+    (`aml.transactions.raw`) failing closed (503) on DB outage, returning HTTP 202
+    for `workers.scoring_worker` (which runs the identical `TransactionIngestionService`).
+    """
+    user_tenant_id = enforce_tenant_data_scope(current_user)
+    scope = "tx_ingest_async"
+
+    raw_idemp_key, body_hash, cached_resp = await _check_tx_idempotency(
+        request=request,
+        body_key=payload.idempotency_key,
+        tenant_id=user_tenant_id,
+        payload=payload,
+        response=response,
+        default_status=status.HTTP_202_ACCEPTED,
+        scope=scope,
+    )
+    if cached_resp is not None:
+        return cached_resp
+
+    scoped_idemp_key = f"{scope}:{raw_idemp_key}" if raw_idemp_key else None
+    tx_id = str(uuid.uuid4())
     tenant_str = str(user_tenant_id) if user_tenant_id else None
     dt_utc = (
         payload.timestamp.replace(tzinfo=timezone.utc)
@@ -811,21 +388,21 @@ async def _buffer_async_transaction(
         "tenant_id": tenant_str,
         "sender_account": payload.sender_account,
         "receiver_account": payload.receiver_account,
-        "amount": payload.amount,
+        "amount": str(payload.amount),
         "currency": payload.currency,
         "timestamp": dt_utc.isoformat(),
         "country": payload.country,
         "merchant": payload.merchant,
         "device": payload.device,
         "channel": payload.channel,
-        "ingested_by": username,
+        "idempotency_key": raw_idemp_key,
+        "ingested_by": current_user.get("username", "api_ingest"),
         "ingested_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    # V-01: Persist durably to transactional_outbox as the single source of truth; FAIL CLOSED (503) on DB failure
-    # instead of returning HTTP 202 with a fire-and-forget fallback that can silently drop data.
     try:
         from database.outbox import record_outbox_event
+
         async with get_async_db_conn(tenant_id=user_tenant_id) as conn:
             await record_outbox_event(
                 conn=conn,
@@ -837,37 +414,31 @@ async def _buffer_async_transaction(
                 headers={"topic": "aml.transactions.raw"},
             )
     except Exception as ex_buf:
+        if scoped_idemp_key:
+            await clear_idempotency_key(scoped_idemp_key, tenant_id=tenant_str)
         logger.exception("Async ingestion durable outbox buffering failed for tx %s: %s", tx_id, ex_buf)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Durable async ingestion buffer is temporarily unavailable; transaction was not accepted."
-        )
+            detail="Durable async ingestion buffer is temporarily unavailable; transaction was not accepted.",
+        ) from ex_buf
 
-
-async def _finalize_async_response(
-    idemp_key: str | None,
-    body_hash: str | None,
-    user_tenant_id: Any,
-    tx_id: str,
-    response: Response | None
-) -> dict[str, str]:
     accepted_body = {
         "status": "ACCEPTED",
         "transaction_id": tx_id,
         "message": "Transaction buffered for asynchronous AML scoring.",
-        "ingestion_mode": "ASYNC_BUFFERED"
+        "ingestion_mode": "ASYNC_BUFFERED",
     }
 
-    if idemp_key:
+    if scoped_idemp_key and raw_idemp_key:
         await save_idempotency_result(
-            key=idemp_key,
+            key=scoped_idemp_key,
             status_code=status.HTTP_202_ACCEPTED,
             body=accepted_body,
-            tenant_id=str(user_tenant_id) if user_tenant_id else None,
+            tenant_id=tenant_str,
             request_hash=body_hash,
         )
         if response is not None:
-            response.headers["Idempotency-Key"] = idemp_key
+            response.headers["Idempotency-Key"] = raw_idemp_key
             response.headers["X-Cache-Lookup"] = "MISS"
 
     if response is not None:
@@ -876,49 +447,13 @@ async def _finalize_async_response(
     return accepted_body
 
 
-@router.post("/ingest", status_code=status.HTTP_202_ACCEPTED)
-async def ingest_transaction_async(
-    payload: TransactionRequest,
-    background_tasks: BackgroundTasks,
-    request: Request = None,
-    response: Response = None,
-    current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
-    _rate_limit=Depends(RateLimiter(limit=1000, window=60))
-):
-    """
-    Decoupled, high-throughput asynchronous ingestion buffer route (GAP-ASYNC).
-    Accepts transactions, validates idempotency with SHA-256 payload conflict check,
-    durably persists to transactional_outbox (`aml.transactions.raw`) failing closed on
-    DB outage, returning HTTP 202 for `workers.scoring_worker`.
-    """
-    user_tenant_id = enforce_tenant_data_scope(current_user)
-    idemp_key = await extract_idempotency_key(request, payload.idempotency_key)
-
-    body_hash, cached_resp = await _check_async_idempotency(idemp_key, user_tenant_id, payload, response)
-    if cached_resp is not None:
-        return cached_resp
-
-    tx_id = str(uuid.uuid4())
-    username = current_user.get("username", "api_ingest")
-    try:
-        await _buffer_async_transaction(tx_id, payload, user_tenant_id, username, background_tasks)
-    except BaseException:
-        await _clear_idemp_if_set(idemp_key, user_tenant_id)
-        raise
-
-    return await _finalize_async_response(idemp_key, body_hash, user_tenant_id, tx_id, response)
-
-
-
 @router.get("/{id}")
 async def get_transaction_by_id(
     id: str,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
-    """
-    Retrieves a single transaction by its UUID with sender/receiver details and tenant isolation.
-    """
+    """Retrieves a single transaction by UUID with sender/receiver details and provenance."""
     try:
         tx_uuid = uuid.UUID(id)
     except ValueError:
@@ -926,50 +461,45 @@ async def get_transaction_by_id(
 
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT t.id, t.amount, t.currency, t.amount_base_usd, t.fx_rate_applied,
-                       t.status, t.timestamp,
-                       t.country, t.merchant, t.device, t.channel,
-                       s.account_number as sender_account, s.owner_name as sender_name,
-                       r.account_number as receiver_account, r.owner_name as receiver_name
-                FROM transactions t
-                JOIN accounts s ON t.sender_account_id = s.id
-                JOIN accounts r ON t.receiver_account_id = r.id
-                WHERE t.id = $1;
-                """,
-                tx_uuid
-            )
-            if not row:
-                raise HTTPException(status_code=404, detail="Transaction not found")
+        row = await get_transaction_by_id_repo(
+            tx_uuid,
+            tenant_id=tenant_id,
+            read_conn_factory=get_async_db_read_conn,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Transaction not found")
 
-            raw_amt = float(row["amount"])
-            amt_usd = float(_extract_row_val(row, "amount_base_usd", raw_amt))
-            fx_rate = float(_extract_row_val(row, "fx_rate_applied", 1.0))
+        raw_amt = float(row["amount"])
+        amt_usd = float(_row_val(row, "amount_base_usd", raw_amt))
+        fx_rate = float(_row_val(row, "fx_rate_applied", 1.0))
+        eval_at = _row_val(row, "evaluated_at")
 
-            return {
-                "id": str(row["id"]),
-                "transaction_id": str(row["id"]),
-                "amount": raw_amt,
-                "currency": row["currency"],
-                "amount_base_usd": amt_usd,
-                "fx_rate_applied": fx_rate,
-                "status": row["status"],
-                "timestamp": row["timestamp"].isoformat() if hasattr(row["timestamp"], "isoformat") else str(row["timestamp"]),
-                "country": row["country"] or "DOMESTIC",
-                "channel": row["channel"] or "Wire Transfer",
-                "merchant": row["merchant"],
-                "device": row["device"],
-                "sender": {
-                    "account_number": row["sender_account"],
-                    "owner_name": row["sender_name"]
-                },
-                "receiver": {
-                    "account_number": row["receiver_account"],
-                    "owner_name": row["receiver_name"]
-                }
-            }
+        return {
+            "id": str(row["id"]),
+            "transaction_id": str(row["id"]),
+            "amount": raw_amt,
+            "currency": row["currency"],
+            "amount_base_usd": amt_usd,
+            "fx_rate_applied": fx_rate,
+            "fx_rate_source": _row_val(row, "fx_rate_source"),
+            "ruleset_hash": _row_val(row, "ruleset_hash"),
+            "model_version": _row_val(row, "model_version"),
+            "evaluated_at": eval_at.isoformat() if hasattr(eval_at, "isoformat") else eval_at,
+            "status": row["status"],
+            "timestamp": row["timestamp"].isoformat() if hasattr(row["timestamp"], "isoformat") else str(row["timestamp"]),
+            "country": row["country"] or "DOMESTIC",
+            "channel": row["channel"] or "Wire Transfer",
+            "merchant": row["merchant"],
+            "device": row["device"],
+            "sender": {
+                "account_number": row["sender_account"],
+                "owner_name": row["sender_name"],
+            },
+            "receiver": {
+                "account_number": row["receiver_account"],
+                "owner_name": row["receiver_name"],
+            },
+        }
     except HTTPException:
         raise
     except Exception:
@@ -984,8 +514,8 @@ def _serialize_tx_row(r: Any) -> dict:
         "transaction_id": str(r["id"]),
         "amount": raw_amt,
         "currency": r["currency"],
-        "amount_base_usd": float(_extract_row_val(r, "amount_base_usd", raw_amt)),
-        "fx_rate_applied": float(_extract_row_val(r, "fx_rate_applied", 1.0)),
+        "amount_base_usd": float(_row_val(r, "amount_base_usd", raw_amt)),
+        "fx_rate_applied": float(_row_val(r, "fx_rate_applied", 1.0)),
         "status": r["status"],
         "timestamp": r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else str(r["timestamp"]),
         "country": r["country"] or "DOMESTIC",
@@ -993,59 +523,8 @@ def _serialize_tx_row(r: Any) -> dict:
         "sender_account": r["sender_account"],
         "sender_name": r["sender_name"],
         "receiver_account": r["receiver_account"],
-        "receiver_name": r["receiver_name"]
+        "receiver_name": r["receiver_name"],
     }
-
-
-async def _fetch_tx_page(
-    conn: Any,
-    tenant_id: Any,
-    cursor_timestamp: datetime | None,
-    cursor_id: uuid.UUID | None,
-    limit: int,
-    offset: int
-) -> tuple[list, int | None]:
-    if cursor_timestamp:
-        cid = cursor_id or uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
-        rows = await conn.fetch(
-            """
-            SELECT t.id, t.amount, t.currency, t.amount_base_usd, t.fx_rate_applied,
-                   t.status, t.timestamp,
-                   t.country, t.channel,
-                   s.account_number as sender_account, s.owner_name as sender_name,
-                   r.account_number as receiver_account, r.owner_name as receiver_name
-            FROM transactions t
-            JOIN accounts s ON t.sender_account_id = s.id
-            JOIN accounts r ON t.receiver_account_id = r.id
-            WHERE t.tenant_id = $1 AND (t.timestamp < $2 OR (t.timestamp = $2 AND t.id < $3))
-            ORDER BY t.timestamp DESC, t.id DESC
-            LIMIT $4;
-            """,
-            tenant_id, cursor_timestamp, cid, limit
-        )
-        return rows, None
-
-    total_count = await conn.fetchval(
-        "SELECT COUNT(*) FROM transactions WHERE tenant_id = $1;",
-        tenant_id
-    )
-    rows = await conn.fetch(
-        """
-        SELECT t.id, t.amount, t.currency, t.amount_base_usd, t.fx_rate_applied,
-               t.status, t.timestamp,
-               t.country, t.channel,
-               s.account_number as sender_account, s.owner_name as sender_name,
-               r.account_number as receiver_account, r.owner_name as receiver_name
-        FROM transactions t
-        JOIN accounts s ON t.sender_account_id = s.id
-        JOIN accounts r ON t.receiver_account_id = r.id
-        WHERE t.tenant_id = $1
-        ORDER BY t.timestamp DESC, t.id DESC
-        LIMIT $2 OFFSET $3;
-        """,
-        tenant_id, limit, offset
-    )
-    return rows, total_count
 
 
 @router.get("")
@@ -1056,29 +535,32 @@ async def list_transactions(
     cursor_timestamp: datetime | None = Query(default=None),
     cursor_id: uuid.UUID | None = Query(default=None),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
-    """
-    Retrieves a paginated list of transactions within the caller's tenant boundary.
-    Supports both traditional offset pagination (page/limit) and high-throughput keyset cursor pagination.
-    """
+    """Retrieves a paginated list of transactions within the caller's tenant boundary."""
     tenant_id = enforce_tenant_data_scope(current_user)
     offset = (page - 1) * limit
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            rows, total_count = await _fetch_tx_page(conn, tenant_id, cursor_timestamp, cursor_id, limit, offset)
-            transactions = [_serialize_tx_row(r) for r in rows]
+        rows, total_count = await list_transactions_page_repo(
+            tenant_id=tenant_id,
+            cursor_timestamp=cursor_timestamp,
+            cursor_id=cursor_id,
+            limit=limit,
+            offset=offset,
+            read_conn_factory=get_async_db_read_conn,
+        )
+        transactions = [_serialize_tx_row(r) for r in rows]
 
-            if rows:
-                last_r = rows[-1]
-                ts_val = last_r["timestamp"]
-                response.headers["X-Next-Cursor-Timestamp"] = ts_val.isoformat() if hasattr(ts_val, "isoformat") else str(ts_val)
-                response.headers["X-Next-Cursor-ID"] = str(last_r["id"])
+        if rows:
+            last_r = rows[-1]
+            ts_val = last_r["timestamp"]
+            response.headers["X-Next-Cursor-Timestamp"] = ts_val.isoformat() if hasattr(ts_val, "isoformat") else str(ts_val)
+            response.headers["X-Next-Cursor-ID"] = str(last_r["id"])
 
-            if total_count is not None:
-                response.headers["X-Total-Count"] = str(total_count)
-            response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Next-Cursor-Timestamp, X-Next-Cursor-ID"
-            return transactions
+        if total_count is not None:
+            response.headers["X-Total-Count"] = str(total_count)
+        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Next-Cursor-Timestamp, X-Next-Cursor-ID"
+        return transactions
     except HTTPException:
         raise
     except Exception:

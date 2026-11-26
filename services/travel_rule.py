@@ -3,63 +3,45 @@ FATF Recommendation 16 / FinCEN & EU TFR Travel Rule Verification Engine (P0-1)
 ===============================================================================
 Enforces complete originator and beneficiary information on wire transfers
 exceeding $3,000 USD (FinCEN 31 CFR 1010.410) or €1,000 EUR (EU TFR 2023/1113),
-using FX currency normalization so non-USD/EUR currencies are evaluated accurately.
+using exact fixed-point Decimal arithmetic via `domain/rules_core.py`.
 """
 
-from typing import Dict, Any, Tuple
+from decimal import Decimal
+from typing import Any, Dict, Tuple
+
+from domain.rules_core import (
+    TRAVEL_RULE_THRESHOLD_EUR as _DEC_EUR,
+    TRAVEL_RULE_THRESHOLD_USD as _DEC_USD,
+    evaluate_travel_rule_pure,
+)
 from services.fx_rates import convert_to_base_currency_sync
 
-
-TRAVEL_RULE_THRESHOLD_USD = 3000.0
-TRAVEL_RULE_THRESHOLD_EUR = 1000.0
+# Backward-compatible float constants for legacy importers
+TRAVEL_RULE_THRESHOLD_USD = float(_DEC_USD)
+TRAVEL_RULE_THRESHOLD_EUR = float(_DEC_EUR)
 
 
 def validate_travel_rule(
-    amount: float,
+    amount: float | Decimal | str,
     currency: str,
     channel: str | None,
     originator_info: Dict[str, Any],
     beneficiary_info: Dict[str, Any],
-    amount_usd: float | None = None,
+    amount_usd: float | Decimal | str | None = None,
 ) -> Tuple[bool, list[str]]:
     """
-    Validates FATF Travel Rule completeness across currencies.
-    - EUR transfers are evaluated against EU TFR €1,000 threshold.
-    - All other currencies are normalized to USD and evaluated against FinCEN $3,000 threshold.
-    Returns:
-        (is_valid: bool, missing_fields: list[str])
+    Validates FATF Travel Rule completeness across currencies using exact Decimal thresholds.
     """
-    is_wire = channel and channel.upper() in ["WIRE", "SWIFT", "ACH", "CROSS_BORDER", "SEPA"]
-    if not is_wire:
-        return True, []
-
     curr = (currency or "USD").upper().strip()
-    if curr == "EUR":
-        if float(amount) < TRAVEL_RULE_THRESHOLD_EUR:
-            return True, []
-    else:
-        normalized_usd = (
-            float(amount_usd)
-            if amount_usd is not None
-            else convert_to_base_currency_sync(float(amount), curr, "USD")[0]
-        )
-        if normalized_usd < TRAVEL_RULE_THRESHOLD_USD:
-            return True, []
+    resolved_usd: Decimal | float | str | None = amount_usd
+    if curr != "EUR" and resolved_usd is None:
+        resolved_usd = convert_to_base_currency_sync(amount, curr, "USD")[0]
 
-    missing = []
-
-    # 1. Originator checks
-    if not originator_info.get("name") or len(str(originator_info["name"]).strip()) < 2:
-        missing.append("originator_name")
-    if not originator_info.get("account_number"):
-        missing.append("originator_account_number")
-    if not (originator_info.get("address") or originator_info.get("date_of_birth") or originator_info.get("tax_id")):
-        missing.append("originator_address_or_identifier")
-
-    # 2. Beneficiary checks
-    if not beneficiary_info.get("name") or len(str(beneficiary_info["name"]).strip()) < 2:
-        missing.append("beneficiary_name")
-    if not beneficiary_info.get("account_number"):
-        missing.append("beneficiary_account_number")
-
-    return len(missing) == 0, missing
+    return evaluate_travel_rule_pure(
+        amount=amount,
+        currency=curr,
+        channel=channel,
+        originator_info=originator_info,
+        beneficiary_info=beneficiary_info,
+        amount_usd=resolved_usd,
+    )

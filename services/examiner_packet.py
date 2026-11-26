@@ -260,51 +260,56 @@ async def build_signed_examiner_packet(
     audits = _norm(audit_rows)
 
     generated_at = datetime.now(timezone.utc).isoformat()
-    files_map: Dict[str, bytes] = {
-        "summary.html": _build_summary_html(case_dict, alerts, sars, evidence, notes, generated_at, generated_by),
-        "transactions.csv": _build_transactions_csv(txs),
-        "case_dossier.json": json.dumps(
-            {"case": case_dict, "alerts": alerts, "sars": sars, "notes": notes},
-            indent=2,
-            sort_keys=True,
-        ).encode("utf-8"),
-        "evidence_manifest.json": json.dumps(evidence, indent=2, sort_keys=True).encode("utf-8"),
-        "audit_trail.json": json.dumps(audits, indent=2, sort_keys=True).encode("utf-8"),
-    }
 
-    file_digests = {
-        fname: hashlib.sha256(content).hexdigest()
-        for fname, content in sorted(files_map.items())
-    }
+    def _assemble_and_sign_zip() -> tuple[bytes, dict, str]:
+        files_map: Dict[str, bytes] = {
+            "summary.html": _build_summary_html(case_dict, alerts, sars, evidence, notes, generated_at, generated_by),
+            "transactions.csv": _build_transactions_csv(txs),
+            "case_dossier.json": json.dumps(
+                {"case": case_dict, "alerts": alerts, "sars": sars, "notes": notes},
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8"),
+            "evidence_manifest.json": json.dumps(evidence, indent=2, sort_keys=True).encode("utf-8"),
+            "audit_trail.json": json.dumps(audits, indent=2, sort_keys=True).encode("utf-8"),
+        }
 
-    manifest = {
-        "packet_version": "1.0",
-        "signature_algorithm": "RS256",
-        "tenant_id": str(tenant_id),
-        "case_id": str(case_uuid),
-        "case_number": case_dict.get("case_number"),
-        "generated_at": generated_at,
-        "generated_by": generated_by,
-        "counts": {
-            "alerts": len(alerts),
-            "transactions": len(txs),
-            "sars": len(sars),
-            "evidence_artifacts": len(evidence),
-            "notes": len(notes),
-            "audit_events": len(audits),
-        },
-        "file_sha256_digests": file_digests,
-    }
-    manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
-    signature_b64 = sign_manifest_rs256(manifest_bytes)
+        file_digests = {
+            fname: hashlib.sha256(content).hexdigest()
+            for fname, content in sorted(files_map.items())
+        }
 
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for fname, content in files_map.items():
-            zf.writestr(fname, content)
-        zf.writestr("manifest.json", manifest_bytes)
-        zf.writestr("signature.sig", signature_b64.encode("ascii"))
+        manifest = {
+            "packet_version": "1.0",
+            "signature_algorithm": "RS256",
+            "tenant_id": str(tenant_id),
+            "case_id": str(case_uuid),
+            "case_number": case_dict.get("case_number"),
+            "generated_at": generated_at,
+            "generated_by": generated_by,
+            "counts": {
+                "alerts": len(alerts),
+                "transactions": len(txs),
+                "sars": len(sars),
+                "evidence_artifacts": len(evidence),
+                "notes": len(notes),
+                "audit_events": len(audits),
+            },
+            "file_sha256_digests": file_digests,
+        }
+        manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
+        signature_b64 = sign_manifest_rs256(manifest_bytes)
 
-    zip_bytes = zip_buf.getvalue()
-    zip_sha256 = hashlib.sha256(zip_bytes).hexdigest()
-    return zip_bytes, manifest, zip_sha256
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for fname, content in files_map.items():
+                zf.writestr(fname, content)
+            zf.writestr("manifest.json", manifest_bytes)
+            zf.writestr("signature.sig", signature_b64.encode("ascii"))
+
+        zip_bytes = zip_buf.getvalue()
+        zip_sha256 = hashlib.sha256(zip_bytes).hexdigest()
+        return zip_bytes, manifest, zip_sha256
+
+    from services.compute_executor import run_crypto_compute
+    return await run_crypto_compute(_assemble_and_sign_zip, timeout=15.0)

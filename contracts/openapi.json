@@ -2078,10 +2078,18 @@
       "TransactionRequest": {
         "properties": {
           "amount": {
-            "exclusiveMinimum": 0.0,
-            "maximum": 1000000000.0,
-            "title": "Amount",
-            "type": "number"
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1000000000.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Amount"
           },
           "channel": {
             "anyOf": [
@@ -14247,7 +14255,7 @@
     },
     "/api/v1/transactions": {
       "get": {
-        "description": "Retrieves a paginated list of transactions within the caller's tenant boundary.\nSupports both traditional offset pagination (page/limit) and high-throughput keyset cursor pagination.",
+        "description": "Retrieves a paginated list of transactions within the caller's tenant boundary.",
         "operationId": "list_transactions_api_v1_transactions_get",
         "parameters": [
           {
@@ -14356,6 +14364,7 @@
         ]
       },
       "post": {
+        "description": "Synchronous real-time transaction compliance ingestion endpoint.\nEnforces dual-layer idempotency (when `Idempotency-Key` is supplied), exact Decimal FX\nnormalization, consolidated single-query AML rule evaluation, offloaded ML + dynamic RBA\nscoring, and single-ACID ledger/alert/CTR/audit/outbox persistence.",
         "operationId": "ingest_transaction_api_v1_transactions_post",
         "parameters": [
           {
@@ -14418,7 +14427,7 @@
     },
     "/api/v1/transactions/ingest": {
       "post": {
-        "description": "Decoupled, high-throughput asynchronous ingestion buffer route (GAP-ASYNC).\nAccepts transactions, validates idempotency with SHA-256 payload conflict check,\ndurably persists to transactional_outbox (`aml.transactions.raw`) failing closed on\nDB outage, returning HTTP 202 for `workers.scoring_worker`.",
+        "description": "Decoupled, high-throughput asynchronous ingestion buffer route (GAP-ASYNC).\nValidates dual-layer idempotency, persists durably to `transactional_outbox`\n(`aml.transactions.raw`) failing closed (503) on DB outage, returning HTTP 202\nfor `workers.scoring_worker` (which runs the identical `TransactionIngestionService`).",
         "operationId": "ingest_transaction_async_api_v1_transactions_ingest_post",
         "parameters": [
           {
@@ -14481,7 +14490,7 @@
     },
     "/api/v1/transactions/{id}": {
       "get": {
-        "description": "Retrieves a single transaction by its UUID with sender/receiver details and tenant isolation.",
+        "description": "Retrieves a single transaction by UUID with sender/receiver details and provenance.",
         "operationId": "get_transaction_by_id_api_v1_transactions__id__get",
         "parameters": [
           {

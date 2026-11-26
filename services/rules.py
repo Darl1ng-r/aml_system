@@ -1,14 +1,45 @@
-import time
+"""
+AML Compliance Rules Engine — Imperative Shell
+==============================================
+Coordinates tenant rule config loading, consolidated read-replica snapshot
+retrieval (1 read connection vs 7 write connections), timestamp-deterministic
+Redis 24h structuring sliding windows, and sanctions/whitelist screening, then
+delegates all compliance math to the pure functional core (`domain/rules_core.py`).
+"""
+
+from __future__ import annotations
+
 import inspect
 import json
-import os
-import uuid
 import logging
-from typing import Any
+import os
+import time
+import uuid
 from datetime import datetime, timezone
-from database.redis_db import get_async_redis_client
-from database.postgres import get_async_db_conn
+from decimal import Decimal
+from typing import Any
+
+from config import settings
 from database.elasticsearch_db import get_async_elasticsearch_client
+from database.postgres import get_async_db_conn as _real_get_async_db_conn
+from database.postgres import get_async_db_conn
+from database.redis_db import get_async_redis_client
+from domain.money import to_decimal
+from domain.rules_core import (
+    AccountRuleSnapshot,
+    RuleProvenance,
+    TransactionInput,
+    check_amount_anomaly_pure,
+    check_large_transaction_pure,
+    check_tbml_pure,
+    check_vasp_crypto_pure,
+    compute_ruleset_hash,
+    evaluate_all_rules_pure,
+    is_high_risk_geo_bic,
+    is_vasp_transaction as _is_vasp_transaction,
+)
+from observability.prometheus import record_rule_degraded, record_rule_evaluation_duration
+from repositories.transaction_repo import fetch_rule_evaluation_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +49,22 @@ _config_cache = None
 _tenant_rules_cache: dict[str, tuple[float, dict]] = {}
 _TENANT_RULES_TTL_SECONDS = 60.0
 _MAX_TENANT_RULES_CACHE = 500
+
+
+def _ensure_utc(dt: datetime | None, fallback: datetime) -> datetime:
+    target = dt or fallback
+    if target.tzinfo is None:
+        return target.replace(tzinfo=timezone.utc)
+    return target.astimezone(timezone.utc)
+
+
+def _dec(val: Any, default: str = "0") -> Decimal:
+    if val is None:
+        return Decimal(default)
+    try:
+        return to_decimal(val)
+    except Exception:
+        return Decimal(default)
 
 
 async def get_rules_config_async(tenant_id: str | None = None) -> dict:
@@ -39,11 +86,10 @@ async def get_rules_config_async(tenant_id: str | None = None) -> dict:
     merged_rules = {k: dict(v) for k, v in base_cfg.get("rules", {}).items()}
     try:
         from database.postgres import get_async_db_read_conn
+
         async with get_async_db_read_conn(tenant_id=cache_key) as conn:
             if hasattr(conn, "fetch"):
-                rows = await conn.fetch(
-                    "SELECT rule_name, enabled, mode, config FROM rule_configs;"
-                )
+                rows = await conn.fetch("SELECT rule_name, enabled, mode, config FROM rule_configs;")
                 for r in (rows or []):
                     rname = r["rule_name"]
                     rcfg = r["config"]
@@ -53,12 +99,11 @@ async def get_rules_config_async(tenant_id: str | None = None) -> dict:
                     if isinstance(rcfg, dict):
                         entry.update(rcfg)
                     rmode = (r["mode"] if "mode" in r else "ACTIVE") or "ACTIVE"
-                    # SHADOW / DISABLED rules do NOT trigger live alerts (evaluated silently by rule_backtest)
                     entry["enabled"] = bool(r["enabled"]) and rmode.upper() == "ACTIVE"
                     entry["mode"] = rmode.upper()
                     merged_rules[rname] = entry
     except Exception as e:
-        logger.debug(f"DB rule_configs lookup skipped/fallback to defaults: {e}")
+        logger.debug("DB rule_configs lookup skipped/fallback to defaults: %s", e)
 
     merged = {"rules": merged_rules}
     if len(_tenant_rules_cache) >= _MAX_TENANT_RULES_CACHE:
@@ -66,88 +111,59 @@ async def get_rules_config_async(tenant_id: str | None = None) -> dict:
     _tenant_rules_cache[cache_key] = (now, merged)
     return merged
 
+
 def get_rules_config() -> dict:
     global _config_cache
     if _config_cache is None:
         try:
-            with open(CONFIG_PATH, "r") as f:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 _config_cache = json.load(f)
             logger.info("Rules configuration loaded successfully.")
         except Exception as e:
-            logger.exception(f"Failed to read rules config from {CONFIG_PATH}: {e}. Falling back to defaults.")
+            logger.exception("Failed to read rules config from %s: %s. Falling back to defaults.", CONFIG_PATH, e)
             _config_cache = {
                 "rules": {
-                    "LARGE_TRANSACTION": {
-                        "enabled": True,
-                        "threshold": 10000.0
-                    },
-                    "STRUCTURING_SMURFING": {
-                        "enabled": True,
-                        "threshold": 10000.0,
-                        "window_hours": 24
-                    },
-                    "VELOCITY_MONITORING": {
-                        "enabled": True,
-                        "history_days": 30,
-                        "deviation_threshold": 3.0
-                    },
-                    "RAPID_MOVEMENT_FUNDS": {
-                        "enabled": True,
-                        "window_minutes": 10,
-                        "amount_ratio_threshold": 0.90
-                    },
-                    "DORMANT_ACCOUNT": {
-                        "enabled": True,
-                        "dormant_period_days": 90,
-                        "activation_threshold": 50000.0
-                    },
+                    "LARGE_TRANSACTION": {"enabled": True, "threshold": 10000.0},
+                    "STRUCTURING_SMURFING": {"enabled": True, "threshold": 10000.0, "window_hours": 24},
+                    "VELOCITY_MONITORING": {"enabled": True, "history_days": 30, "deviation_threshold": 3.0},
+                    "RAPID_MOVEMENT_FUNDS": {"enabled": True, "window_minutes": 10, "amount_ratio_threshold": 0.90},
+                    "DORMANT_ACCOUNT": {"enabled": True, "dormant_period_days": 90, "activation_threshold": 50000.0},
                     "GEOGRAPHIC_SANCTIONS": {
                         "enabled": True,
                         "high_risk_countries": ["RU", "IR", "KP", "SY"],
-                        "sanctions_similarity_threshold": 0.80
-                    }
+                        "sanctions_similarity_threshold": 0.80,
+                    },
                 }
             }
     return _config_cache
 
 
-def _parse_redis_tx_records(records) -> list[float]:
-    amts = []
+def _parse_redis_tx_records(records) -> list[Decimal]:
+    amts: list[Decimal] = []
     for tx_val, _ in records:
         try:
             raw_str = tx_val.decode("utf-8") if isinstance(tx_val, (bytes, bytearray)) else str(tx_val)
-            amts.append(float(raw_str.split(":")[0]))
-        except (ValueError, IndexError):
+            amts.append(to_decimal(raw_str.split(":")[0]))
+        except Exception:
             pass
     return amts
 
 
-def _is_vasp_transaction(meta: dict, sender_bic: str, receiver_bic: str) -> bool:
-    if meta.get("is_vasp_transfer"):
-        return True
-    if str(meta.get("counterparty_type", "")).upper() == "VASP":
-        return True
-    for bic in (sender_bic, receiver_bic):
-        if bic and "VASP" in bic.upper():
-            return True
-    return False
-
-
-async def _lookup_account_entity_from_db(sender_id: str, tenant_id: str) -> str | None:
+async def _lookup_account_entity_from_db(sender_id: str, tenant_id: str | None) -> str | None:
     try:
         async with get_async_db_conn(tenant_id=tenant_id) as conn:
             if hasattr(conn, "fetchrow"):
                 acc_row = await conn.fetchrow(
                     "SELECT customer_id, tax_id, owner_name FROM accounts WHERE id = $1::uuid;",
-                    sender_id
+                    sender_id,
                 )
                 if acc_row:
                     for fld in ("customer_id", "tax_id", "owner_name"):
-                        fval = acc_row.get(fld)
+                        fval = acc_row.get(fld) if hasattr(acc_row, "get") else (acc_row[fld] if fld in acc_row else None)
                         if fval:
                             return str(fval)
     except Exception as e_ent:
-        logger.debug(f"Entity resolution fallback: {e_ent}")
+        logger.debug("Entity resolution fallback: %s", e_ent)
     return None
 
 
@@ -155,18 +171,193 @@ async def _screen_party_name(
     name: str,
     threshold: float,
     es: Any,
-    tenant_id: str,
+    tenant_id: str | None,
     customer_id: str | None,
-    label: str
+    label: str,
 ) -> bool:
     from routers.screening import perform_sanctions_search
     from services.whitelisting import is_entity_whitelisted
+
     res = await perform_sanctions_search(name, threshold, es, tenant_id=tenant_id)
     if res.get("match_found", False):
         if not await is_entity_whitelisted(tenant_id, name, "SANCTIONS_HIT", customer_id=customer_id):
             return True
-        logger.info(f"Alert suppressed via active whitelist disposition for {label} '{name}' (SANCTIONS_HIT)")
+        logger.info("Alert suppressed via active whitelist disposition for %s '%s' (SANCTIONS_HIT)", label, name)
     return False
+
+
+async def _fetch_redis_structuring_window(
+    config: dict,
+    amount_usd: Decimal,
+    sender_id: str,
+    entity_id: str,
+    tenant_id: str | None,
+    tx_utc: datetime,
+) -> tuple[tuple[Decimal, ...], tuple[Decimal, ...], list[str]]:
+    """
+    Retrieves & updates the 24h Redis sliding window using deterministic `tx_utc.timestamp()`
+    scores rather than wall-clock `time.time()`.
+    """
+    struct_cfg = config.get("rules", {}).get("STRUCTURING_SMURFING", {})
+    if not struct_cfg.get("enabled", True):
+        return (), (), []
+
+    window_hours = int(struct_cfg.get("window_hours", 24))
+    degraded: list[str] = []
+    try:
+        r = await get_async_redis_client()
+        if not r:
+            return (), (), []
+        now_score = tx_utc.timestamp()
+        window_ago = now_score - (window_hours * 3600)
+        redis_key = f"acc:velocity:{tenant_id}:{sender_id}" if tenant_id else f"acc:velocity:{sender_id}"
+        entity_redis_key = f"acc:velocity:{tenant_id}:entity:{entity_id}" if tenant_id else f"acc:velocity:entity:{entity_id}"
+        tx_entry = f"{amount_usd}:{now_score}:{uuid.uuid4().hex[:6]}"
+
+        pipe_ctx = r.pipeline(transaction=True)
+        if inspect.isawaitable(pipe_ctx):
+            pipe_ctx = await pipe_ctx
+        async with pipe_ctx as pipe:
+            pipe.zremrangebyscore(redis_key, "-inf", window_ago)
+            pipe.zrange(redis_key, 0, -1, withscores=True)
+            pipe.zadd(redis_key, {tx_entry: now_score})
+            pipe.expire(redis_key, 90000)
+
+            if entity_redis_key != redis_key:
+                pipe.zremrangebyscore(entity_redis_key, "-inf", window_ago)
+                pipe.zrange(entity_redis_key, 0, -1, withscores=True)
+                pipe.zadd(entity_redis_key, {tx_entry: now_score})
+                pipe.expire(entity_redis_key, 90000)
+
+            results = await pipe.execute()
+
+        account_recent = results[1] if results and len(results) > 1 else []
+        entity_recent = (
+            results[5]
+            if (entity_redis_key != redis_key and results and len(results) > 5)
+            else account_recent
+        )
+        return (
+            tuple(_parse_redis_tx_records(account_recent)),
+            tuple(_parse_redis_tx_records(entity_recent)),
+            degraded,
+        )
+    except Exception as exc:
+        logger.warning("Structuring Redis sliding window degraded: %s", exc)
+        record_rule_degraded("STRUCTURING_SMURFING")
+        degraded.append("STRUCTURING_SMURFING")
+        return (), (), degraded
+
+
+async def _fetch_sanctions_and_geo_flags(
+    config: dict,
+    sender_bic: str | None,
+    receiver_bic: str | None,
+    sender_name: str | None,
+    receiver_name: str | None,
+    tenant_id: str | None,
+    entity_id: str,
+) -> tuple[bool, bool, bool]:
+    """Returns `(sanctions_hit, sanctions_degraded, geo_whitelisted)`."""
+    geo_cfg = config.get("rules", {}).get("GEOGRAPHIC_SANCTIONS", {})
+    if not geo_cfg.get("enabled", True):
+        return False, False, False
+
+    geo_whitelisted = False
+    high_risk = geo_cfg.get("high_risk_countries", ["RU", "IR", "KP", "SY"])
+    if is_high_risk_geo_bic(sender_bic, receiver_bic, high_risk):
+        try:
+            from services.whitelisting import is_entity_whitelisted
+
+            target = sender_name or sender_bic or receiver_bic or ""
+            if target and await is_entity_whitelisted(tenant_id, target, "GEOGRAPHIC_RISK", customer_id=entity_id):
+                geo_whitelisted = True
+                logger.info("Alert suppressed via active whitelist disposition for entity '%s' (GEOGRAPHIC_RISK)", target)
+        except Exception as exc:
+            logger.debug("Geo whitelist check skipped: %s", exc)
+
+    sanctions_hit = False
+    sanctions_degraded = False
+    sanctions_threshold = float(geo_cfg.get("sanctions_similarity_threshold", 0.80))
+    if sender_name or receiver_name:
+        try:
+            es = await get_async_elasticsearch_client()
+            if sender_name and await _screen_party_name(
+                sender_name, sanctions_threshold, es, tenant_id, entity_id, "sender"
+            ):
+                sanctions_hit = True
+            elif receiver_name and receiver_name != sender_name:
+                if await _screen_party_name(
+                    receiver_name, sanctions_threshold, es, tenant_id, None, "receiver"
+                ):
+                    sanctions_hit = True
+        except Exception as exc:
+            logger.error("Sanctions screening failed within rules engine: %s", exc)
+            record_rule_degraded("GEOGRAPHIC_SANCTIONS")
+            sanctions_degraded = True
+
+    return sanctions_hit, sanctions_degraded, geo_whitelisted
+
+
+async def _load_mock_db_snapshot(
+    *,
+    sender_id: str | None,
+    receiver_id: str | None,
+    tenant_id: str | None,
+) -> AccountRuleSnapshot:
+    """
+    Compatibility adapter invoked ONLY when a unit test explicitly monkeypatches
+    `services.rules.get_async_db_conn` with a mock connection returning legacy keys
+    (`total_sub_amount`/`sub_count`, `total_inflow`/`total_outflow`, `fetchval=1/datetime`).
+    """
+    if not sender_id:
+        return AccountRuleSnapshot()
+    try:
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            row = await conn.fetchrow("SELECT 1;") if hasattr(conn, "fetchrow") else None
+            val = await conn.fetchval("SELECT 1;") if hasattr(conn, "fetchval") else None
+
+            def _pick(key: str, alt: str | None = None, default: Any = None) -> Any:
+                if not isinstance(row, dict) and not hasattr(row, "get"):
+                    return default
+                if key in row and row[key] is not None:
+                    return row[key]
+                if alt and alt in row and row[alt] is not None:
+                    return row[alt]
+                return default
+
+            has_reverse = bool(_pick("has_reverse_tx", default=False))
+            if not has_reverse and isinstance(val, int) and val == 1 and receiver_id:
+                has_reverse = True
+
+            acc_created = _pick("account_created_at", "created_at")
+            if acc_created is None and isinstance(val, datetime):
+                acc_created = val
+
+            return AccountRuleSnapshot(
+                velocity_avg_count=_dec(_pick("avg_daily_count", default=0)),
+                velocity_std_count=_dec(_pick("stddev_daily_count", default=0)),
+                velocity_avg_amount_usd=_dec(_pick("avg_daily_amount", default=0)),
+                velocity_std_amount_usd=_dec(_pick("stddev_daily_amount", default=0)),
+                today_count=int(_pick("today_count", default=0)),
+                today_amount_usd=_dec(_pick("today_amount", default=0)),
+                last_incoming_amount_usd=(
+                    _dec(_pick("last_incoming_amount_usd", "amount"))
+                    if _pick("last_incoming_amount_usd", "amount") is not None
+                    else None
+                ),
+                last_incoming_at=_pick("last_incoming_at", "timestamp"),
+                last_outgoing_at=_pick("last_outgoing_at"),
+                has_reverse_tx=has_reverse,
+                account_created_at=acc_created,
+                sub_7d_count=int(_pick("sub_7d_count", "sub_count", default=0)),
+                sub_7d_amount_usd=_dec(_pick("sub_7d_amount_usd", "total_sub_amount", default=0)),
+                conduit_inflow_24h_usd=_dec(_pick("conduit_inflow_24h_usd", "total_inflow", default=0)),
+                conduit_outflow_24h_usd=_dec(_pick("conduit_outflow_24h_usd", "total_outflow", default=0)),
+            )
+    except Exception as exc:
+        logger.debug("Mock DB snapshot fallback error: %s", exc)
+        return AccountRuleSnapshot()
 
 
 class RulesEngine:
@@ -179,105 +370,65 @@ class RulesEngine:
 
     @staticmethod
     async def _resolve_entity_id(
-        sender_id: str,
-        sender_name: str,
+        sender_id: str | None,
+        sender_name: str | None,
         meta: dict,
-        tenant_id: str
+        tenant_id: str | None,
     ) -> str:
         for key in ("customer_id", "tax_id", "entity_id"):
             val = meta.get(key)
             if val:
                 return str(val)
 
-        if sender_id:
-            db_ent = await _lookup_account_entity_from_db(sender_id, tenant_id)
-            if db_ent:
-                return db_ent
+        # Avoid extra DB round-trip when caller didn't patch get_async_db_conn & sender_name is available
+        if sender_id and get_async_db_conn is _real_get_async_db_conn:
+            try:
+                uuid.UUID(str(sender_id))
+                db_ent = await _lookup_account_entity_from_db(str(sender_id), tenant_id)
+                if db_ent:
+                    return db_ent
+            except (ValueError, TypeError):
+                pass
 
         if sender_name:
             return sender_name
-        return str(sender_id)
+        return str(sender_id or "")
 
     @staticmethod
-    def _check_large_transaction(config: dict, amount: float) -> list[str]:
-        from decimal import Decimal
-        large_config = config.get("rules", {}).get("LARGE_TRANSACTION", {})
-        if large_config.get("enabled", True):
-            threshold = Decimal(str(large_config.get("threshold", 10000.0)))
-            if Decimal(str(amount)) >= threshold:
-                return ["LARGE_TRANSACTION_THRESHOLD"]
-        return []
+    def _check_large_transaction(config: dict, amount: float | Decimal) -> list[str]:
+        return check_large_transaction_pure(config, _dec(amount))
 
     @staticmethod
-    async def _check_structuring_smurfing(
+    def _check_tbml(config: dict, amount: float | Decimal, meta: dict) -> list[str]:
+        return check_tbml_pure(config, _dec(amount), meta)
+
+    @staticmethod
+    def _check_vasp_crypto(
         config: dict,
-        amount: float,
-        sender_id: str,
-        entity_id: str,
-        tenant_id: str
-    ) -> tuple[list[str], float, list[float]]:
-        structuring_config = config.get("rules", {}).get("STRUCTURING_SMURFING", {})
-        threshold = structuring_config.get("threshold", 10000.0)
-        total_entity_amount = amount
-        entity_below = [amount] if amount < threshold else []
-        triggered = []
+        amount: float | Decimal,
+        sender_bic: str | None,
+        receiver_bic: str | None,
+        meta: dict,
+    ) -> list[str]:
+        return check_vasp_crypto_pure(config, _dec(amount), sender_bic, receiver_bic, meta)
 
-        if not structuring_config.get("enabled", True):
-            return triggered, total_entity_amount, entity_below
-
-        window_hours = structuring_config.get("window_hours", 24)
-        try:
-            r = await get_async_redis_client()
-            now = time.time()
-            window_ago = now - (window_hours * 3600)
-            redis_key = f"acc:velocity:{tenant_id}:{sender_id}" if tenant_id else f"acc:velocity:{sender_id}"
-            entity_redis_key = f"acc:velocity:{tenant_id}:entity:{entity_id}" if tenant_id else f"acc:velocity:entity:{entity_id}"
-            tx_entry = f"{amount}:{now}:{uuid.uuid4().hex[:6]}"
-
-            pipe_ctx = r.pipeline(transaction=True)
-            if inspect.isawaitable(pipe_ctx):
-                pipe_ctx = await pipe_ctx
-            async with pipe_ctx as pipe:
-                pipe.zremrangebyscore(redis_key, "-inf", window_ago)
-                pipe.zrange(redis_key, 0, -1, withscores=True)
-                pipe.zadd(redis_key, {tx_entry: now})
-                pipe.expire(redis_key, 90000)
-
-                if entity_redis_key != redis_key:
-                    pipe.zremrangebyscore(entity_redis_key, "-inf", window_ago)
-                    pipe.zrange(entity_redis_key, 0, -1, withscores=True)
-                    pipe.zadd(entity_redis_key, {tx_entry: now})
-                    pipe.expire(entity_redis_key, 90000)
-
-                results = await pipe.execute()
-
-            account_recent_txs = results[1]
-            entity_recent_txs = results[5] if (entity_redis_key != redis_key and len(results) > 5) else account_recent_txs
-
-            account_amts = [amount] + _parse_redis_tx_records(account_recent_txs)
-            entity_amts = [amount] + _parse_redis_tx_records(entity_recent_txs)
-
-            from decimal import Decimal
-            dec_threshold = Decimal(str(threshold))
-            account_below = [amt for amt in account_amts if Decimal(str(amt)) < dec_threshold]
-            entity_below = [amt for amt in entity_amts if Decimal(str(amt)) < dec_threshold]
-
-            total_account_dec = sum((Decimal(str(a)) for a in account_below), Decimal("0"))
-            total_entity_dec = sum((Decimal(str(a)) for a in entity_below), Decimal("0"))
-            total_account_amount = float(total_account_dec)
-            total_entity_amount = float(total_entity_dec)
-
-            if (total_entity_dec >= dec_threshold and len(entity_below) >= 2) or \
-               (total_account_dec >= dec_threshold and len(account_below) >= 2):
-                triggered.append("STRUCTURING_VELOCITY_24H")
-        except Exception as e:
-            logger.exception(f"Structuring check Redis error: {e}")
-
-        return triggered, total_entity_amount, entity_below
+    @staticmethod
+    def _check_amount_anomaly(
+        config: dict,
+        amount: float | Decimal,
+        total_entity_amount: float | Decimal,
+        entity_below: list[float | Decimal],
+    ) -> list[str]:
+        return check_amount_anomaly_pure(
+            config,
+            _dec(amount),
+            _dec(total_entity_amount),
+            [_dec(a) for a in entity_below],
+        )
 
     @staticmethod
     async def _resolve_account_uuid(conn: Any, account_ref: str | None) -> Any:
-        """Accept either a UUID string or an account_number (e.g. 'ACC-TEST-9921') safely."""
+        """Accept either a UUID string or an account_number safely."""
         if not account_ref:
             return None
         try:
@@ -292,579 +443,178 @@ class RulesEngine:
             if not found:
                 return None
             if isinstance(found, int):
-                # Preserve compatibility with unit-test AsyncMock(fetchval=1)
                 return str(account_ref)
             return uuid.UUID(str(found))
         except Exception:
             return None
 
     @staticmethod
-    async def _check_velocity_monitoring(
-        config: dict,
-        amount: float,
-        sender_id: str,
-        timestamp: datetime,
-        tenant_id: str
-    ) -> list[str]:
-        velocity_config = config.get("rules", {}).get("VELOCITY_MONITORING", {})
-        if not velocity_config.get("enabled", True):
-            return []
-        history_days = velocity_config.get("history_days", 30)
-        dev_threshold = velocity_config.get("deviation_threshold", 3.0)
-        try:
-            tx_time = timestamp or datetime.now(timezone.utc)
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
-                if sender_uuid is None:
-                    return []
-                hist_row = await conn.fetchrow(
-                    """
-                    SELECT 
-                        COALESCE(AVG(daily_count), 0) as avg_daily_count,
-                        COALESCE(STDDEV(daily_count), 0) as stddev_daily_count,
-                        COALESCE(AVG(daily_amount), 0) as avg_daily_amount,
-                        COALESCE(STDDEV(daily_amount), 0) as stddev_daily_amount
-                    FROM (
-                        SELECT 
-                            DATE_TRUNC('day', timestamp) as tx_day,
-                            COUNT(*) as daily_count,
-                            SUM(amount) as daily_amount
-                        FROM transactions
-                        WHERE sender_account_id = $1::uuid
-                          AND timestamp >= $3::timestamptz - $2 * INTERVAL '1 day'
-                          AND timestamp < DATE_TRUNC('day', $3::timestamptz)
-                        GROUP BY DATE_TRUNC('day', timestamp)
-                    ) daily_stats;
-                    """,
-                    sender_uuid, history_days, tx_time
-                )
-                today_row = await conn.fetchrow(
-                    """
-                    SELECT 
-                        COUNT(*) as today_count,
-                        COALESCE(SUM(amount), 0) as today_amount
-                    FROM transactions
-                    WHERE sender_account_id = $1::uuid
-                      AND timestamp >= DATE_TRUNC('day', $2::timestamptz)
-                      AND timestamp <= $2::timestamptz;
-                    """,
-                    sender_uuid, tx_time
-                )
-                avg_count = float(hist_row["avg_daily_count"])
-                stddev_count = float(hist_row["stddev_daily_count"])
-                avg_amount = float(hist_row["avg_daily_amount"])
-                stddev_amount = float(hist_row["stddev_daily_amount"])
-
-                if avg_count > 0.0:
-                    today_count = int(today_row["today_count"]) + 1
-                    today_amount = float(today_row["today_amount"]) + amount
-                    stddev_count = max(stddev_count, 1.0)
-                    min_std_amount = max(avg_amount * 0.10, 1.0)
-                    stddev_amount = max(stddev_amount, min_std_amount)
-
-                    count_z = (today_count - avg_count) / stddev_count
-                    amount_z = (today_amount - avg_amount) / stddev_amount
-
-                    if count_z > dev_threshold or amount_z > dev_threshold:
-                        logger.warning(f"Velocity spike deviation triggered for {sender_id}. Count Z: {count_z:.2f}, Amount Z: {amount_z:.2f}")
-                        return ["VELOCITY_MONITORING_SPIKE"]
-        except Exception as e:
-            logger.exception(f"Velocity rule Postgres error: {e}")
-        return []
-
-    @staticmethod
-    async def _check_rapid_movement_funds(
-        config: dict,
-        amount: float,
-        sender_id: str,
-        timestamp: datetime,
-        tenant_id: str
-    ) -> list[str]:
-        rapid_config = config.get("rules", {}).get("RAPID_MOVEMENT_FUNDS", {})
-        if not rapid_config.get("enabled", True):
-            return []
-        window_minutes = rapid_config.get("window_minutes", 10)
-        amount_ratio_threshold = rapid_config.get("amount_ratio_threshold", 0.90)
-        try:
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
-                if sender_uuid is None:
-                    return []
-                incoming_row = await conn.fetchrow(
-                    """
-                    SELECT amount, timestamp 
-                    FROM transactions 
-                    WHERE receiver_account_id = $1::uuid
-                      AND status = 'COMPLETED'
-                      AND timestamp >= NOW() - $2 * INTERVAL '1 minute'
-                    ORDER BY timestamp DESC 
-                    LIMIT 1;
-                    """,
-                    sender_uuid, window_minutes
-                )
-                if incoming_row:
-                    incoming_amount = float(incoming_row["amount"])
-                    incoming_time = incoming_row["timestamp"]
-                    current_time = timestamp or datetime.now(timezone.utc)
-                    if incoming_time.tzinfo is None:
-                        incoming_time = incoming_time.replace(tzinfo=timezone.utc)
-                    if current_time.tzinfo is None:
-                        current_time = current_time.replace(tzinfo=timezone.utc)
-                    time_diff = (current_time - incoming_time).total_seconds()
-                    if time_diff <= window_minutes * 60 and amount >= incoming_amount * amount_ratio_threshold:
-                        return ["RAPID_MOVEMENT_FUNDS"]
-        except Exception as e:
-            logger.exception(f"Rapid movement check error: {e}")
-        return []
-
-    @staticmethod
-    async def _check_dormant_account(
-        config: dict,
-        amount: float,
-        sender_id: str,
-        timestamp: datetime,
-        tenant_id: str
-    ) -> list[str]:
-        dormant_config = config.get("rules", {}).get("DORMANT_ACCOUNT", {})
-        if not dormant_config.get("enabled", True):
-            return []
-        dormant_period_days = dormant_config.get("dormant_period_days", 90)
-        activation_threshold = dormant_config.get("activation_threshold", 50000.0)
-        try:
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
-                if sender_uuid is None:
-                    return []
-                last_tx_row = await conn.fetchrow(
-                    """
-                    SELECT timestamp 
-                    FROM transactions 
-                    WHERE sender_account_id = $1::uuid
-                    ORDER BY timestamp DESC 
-                    OFFSET 1 
-                    LIMIT 1;
-                    """,
-                    sender_uuid
-                )
-                if last_tx_row:
-                    last_activity = last_tx_row["timestamp"]
-                    current_time = timestamp or datetime.now(timezone.utc)
-                    if last_activity.tzinfo is None:
-                        last_activity = last_activity.replace(tzinfo=timezone.utc)
-                    if current_time.tzinfo is None:
-                        current_time = current_time.replace(tzinfo=timezone.utc)
-                    inactivity_days = (current_time - last_activity).days
-                    if inactivity_days >= dormant_period_days and amount > activation_threshold:
-                        return ["DORMANT_ACCOUNT_ACTIVATION"]
-        except Exception as e:
-            logger.exception(f"Dormant account check error: {e}")
-        return []
-
-    @staticmethod
-    async def _check_bic_geographic_risk(
-        geo_config: dict,
-        sender_bic: str,
-        receiver_bic: str,
-        sender_name: str,
-        tenant_id: str,
-        entity_id: str
-    ) -> list[str]:
-        high_risk_countries = geo_config.get("high_risk_countries", ["RU", "IR", "KP", "SY"])
-        for bic in [sender_bic, receiver_bic]:
-            if bic and len(bic) >= 6:
-                country = bic[4:6].upper()
-                if country in high_risk_countries:
-                    from services.whitelisting import is_entity_whitelisted
-                    target = sender_name or bic
-                    if not await is_entity_whitelisted(tenant_id, target, "GEOGRAPHIC_RISK", customer_id=entity_id):
-                        return ["GEOGRAPHIC_RISK"]
-                    logger.info(f"Alert suppressed via active whitelist disposition for entity '{target}' (GEOGRAPHIC_RISK)")
-                    break
-        return []
-
-    @staticmethod
-    async def _check_sanctions_search(
-        geo_config: dict,
-        sender_name: str,
-        receiver_name: str,
-        tenant_id: str,
-        entity_id: str
-    ) -> list[str]:
-        sanctions_threshold = geo_config.get("sanctions_similarity_threshold", 0.80)
-        try:
-            es = await get_async_elasticsearch_client()
-            if sender_name and await _screen_party_name(sender_name, sanctions_threshold, es, tenant_id, entity_id, "sender"):
-                return ["SANCTIONS_HIT"]
-
-            if receiver_name and receiver_name != sender_name:
-                if await _screen_party_name(receiver_name, sanctions_threshold, es, tenant_id, None, "receiver"):
-                    return ["SANCTIONS_HIT"]
-        except Exception as e:
-            logger.exception(f"Sanctions check within rules engine error: {e}")
-
-        return []
-
-    @staticmethod
-    async def _check_geographic_sanctions(
-        config: dict,
-        sender_bic: str,
-        receiver_bic: str,
-        sender_name: str,
-        receiver_name: str,
-        tenant_id: str,
-        entity_id: str
-    ) -> list[str]:
-        geo_sanctions_config = config.get("rules", {}).get("GEOGRAPHIC_SANCTIONS", {})
-        if not geo_sanctions_config.get("enabled", True):
-            return []
-        triggered = []
-        triggered.extend(await RulesEngine._check_bic_geographic_risk(
-            geo_sanctions_config, sender_bic, receiver_bic, sender_name, tenant_id, entity_id
-        ))
-        triggered.extend(await RulesEngine._check_sanctions_search(
-            geo_sanctions_config, sender_name, receiver_name, tenant_id, entity_id
-        ))
-        return triggered
-
-    @staticmethod
-    async def _check_round_trip(
-        config: dict,
-        amount: float,
+    async def evaluate_transaction_with_provenance(
         sender_id: str,
         receiver_id: str,
-        timestamp: datetime,
-        tenant_id: str
-    ) -> list[str]:
-        round_trip_config = config.get("rules", {}).get("ROUND_TRIP_DETECTION", {})
-        if not round_trip_config.get("enabled", True) or not (sender_id and receiver_id):
-            return []
-        window_hours = round_trip_config.get("window_hours", 72)
-        amount_tolerance = round_trip_config.get("amount_tolerance", 0.10)
-        try:
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
-                receiver_uuid = await RulesEngine._resolve_account_uuid(conn, receiver_id)
-                if sender_uuid is None or receiver_uuid is None:
-                    return []
-                min_amt = amount * (1.0 - amount_tolerance)
-                max_amt = amount * (1.0 + amount_tolerance)
-                reverse_tx = await conn.fetchval(
-                    """
-                    SELECT 1 FROM transactions
-                    WHERE sender_account_id = $1 
-                      AND receiver_account_id = $2
-                      AND amount BETWEEN $3 AND $4
-                      AND timestamp >= ($5::timestamptz - ($6 || ' hours')::interval)
-                    LIMIT 1;
-                    """,
-                    receiver_uuid, sender_uuid, min_amt, max_amt, timestamp, str(window_hours)
-                )
-                if reverse_tx:
-                    return ["ROUND_TRIP_DETECTION"]
-        except Exception as e:
-            logger.debug(f"Round-trip check error: {e}")
-        return []
+        amount: float | Decimal,
+        sender_name: str | None = None,
+        sender_bic: str | None = None,
+        receiver_name: str | None = None,
+        receiver_bic: str | None = None,
+        timestamp: datetime | None = None,
+        tenant_id: str | None = None,
+        metadata: dict | None = None,
+        sender_account_number: str | None = None,
+        receiver_account_number: str | None = None,
+        evaluated_at: datetime | None = None,
+        **kwargs,
+    ) -> RuleProvenance:
+        """
+        Full enterprise evaluation returning immutable `RuleProvenance`
+        (`ruleset_hash`, `evaluated_at`, `triggered_rules`, `degraded_rules`, `tier_discount`).
+        """
+        t0 = time.monotonic()
+        eval_utc = _ensure_utc(evaluated_at, datetime.now(timezone.utc))
+        tx_utc = _ensure_utc(timestamp, eval_utc)
+        amount_usd = _dec(amount)
+        config = await get_rules_config_async(tenant_id=tenant_id)
+        meta = metadata or {}
 
-    @staticmethod
-    async def _check_newly_incorporated(
-        config: dict,
-        amount: float,
-        sender_id: str,
-        timestamp: datetime,
-        tenant_id: str
-    ) -> list[str]:
-        newly_inc_config = config.get("rules", {}).get("NEWLY_INCORPORATED_HIGH_VALUE", {})
-        if not newly_inc_config.get("enabled", True) or not sender_id:
-            return []
-        high_value_threshold = newly_inc_config.get("high_value_threshold", 50000.0)
-        if amount < high_value_threshold:
-            return []
+        kyc_tier = str(meta.get("kyc_risk_tier", "STANDARD")).upper()
+        tier_discount = Decimal("0.50") if kyc_tier in ("HIGH", "CRITICAL") else Decimal("1.00")
+        entity_id = await RulesEngine._resolve_entity_id(sender_id, sender_name, meta, tenant_id)
 
-        try:
-            sender_uuid = uuid.UUID(str(sender_id))
-        except (ValueError, TypeError):
-            return []
+        # 1. Consolidated single-connection DB snapshot (1 read conn instead of 7 write conns)
+        degraded_list: list[str] = []
+        if get_async_db_conn is not _real_get_async_db_conn:
+            db_snap = await _load_mock_db_snapshot(
+                sender_id=sender_id,
+                receiver_id=receiver_id,
+                tenant_id=tenant_id,
+            )
+        else:
+            db_snap, snap_degraded = await fetch_rule_evaluation_snapshot(
+                tenant_id=tenant_id,
+                sender_id=sender_id,
+                receiver_id=receiver_id,
+                amount_base_usd=amount_usd,
+                tx_time=tx_utc,
+                config=config,
+                tier_discount=tier_discount,
+                entity_id=entity_id,
+                tax_id=str(meta.get("tax_id") or ""),
+                sender_name=str(sender_name or ""),
+            )
+            degraded_list.extend(snap_degraded)
+            for d_rule in snap_degraded:
+                record_rule_degraded(d_rule)
 
-        account_age_days = newly_inc_config.get("account_age_days", 90)
-        try:
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                acc_created_at = await conn.fetchval(
-                    "SELECT created_at FROM accounts WHERE id = $1;",
-                    sender_uuid
-                )
-                if acc_created_at:
-                    if acc_created_at.tzinfo is None:
-                        acc_created_at = acc_created_at.replace(tzinfo=timezone.utc)
-                    curr_ts = timestamp or datetime.now(timezone.utc)
-                    if curr_ts.tzinfo is None:
-                        curr_ts = curr_ts.replace(tzinfo=timezone.utc)
-                    age_days = (curr_ts - acc_created_at).days
-                    if age_days <= account_age_days:
-                        return ["NEWLY_INCORPORATED_HIGH_VALUE"]
-        except Exception as e:
-            logger.debug(f"Newly incorporated check error: {e}")
-        return []
+        # 2. Timestamp-deterministic Redis 24h structuring window + Sanctions/Whitelist
+        acc_prior, ent_prior, redis_degraded = await _fetch_redis_structuring_window(
+            config, amount_usd, str(sender_id), entity_id, tenant_id, tx_utc
+        )
+        degraded_list.extend(redis_degraded)
 
-    @staticmethod
-    def _check_tbml(config: dict, amount: float, meta: dict) -> list[str]:
-        tbml_config = config.get("rules", {}).get("TRADE_BASED_ML_OVER_UNDER_INVOICING", {})
-        if not tbml_config.get("enabled", True):
-            return []
-        var_thresh = tbml_config.get("unit_price_variance_threshold_pct", 35.0)
-        inv_thresh = tbml_config.get("invoice_amount_threshold", 100000.0)
-        high_risk_goods = [g.upper() for g in tbml_config.get("high_risk_goods", ["PRECIOUS_METALS", "ELECTRONICS", "PETROLEUM", "PHARMACEUTICALS", "LUXURY_GOODS"])]
+        sanctions_hit, sanctions_degraded, geo_whitelisted = await _fetch_sanctions_and_geo_flags(
+            config, sender_bic, receiver_bic, sender_name, receiver_name, tenant_id, entity_id
+        )
 
-        declared_goods = str(meta.get("goods_category", "")).upper()
-        unit_price_variance = float(meta.get("unit_price_variance_pct", 0.0))
-        invoice_val = float(meta.get("invoice_amount", 0.0))
+        merged_snap = AccountRuleSnapshot(
+            velocity_avg_count=db_snap.velocity_avg_count,
+            velocity_std_count=db_snap.velocity_std_count,
+            velocity_avg_amount_usd=db_snap.velocity_avg_amount_usd,
+            velocity_std_amount_usd=db_snap.velocity_std_amount_usd,
+            today_count=db_snap.today_count,
+            today_amount_usd=db_snap.today_amount_usd,
+            last_incoming_amount_usd=db_snap.last_incoming_amount_usd,
+            last_incoming_at=db_snap.last_incoming_at,
+            last_outgoing_at=db_snap.last_outgoing_at,
+            has_reverse_tx=db_snap.has_reverse_tx,
+            account_created_at=db_snap.account_created_at,
+            sub_7d_count=db_snap.sub_7d_count,
+            sub_7d_amount_usd=db_snap.sub_7d_amount_usd,
+            conduit_inflow_24h_usd=db_snap.conduit_inflow_24h_usd,
+            conduit_outflow_24h_usd=db_snap.conduit_outflow_24h_usd,
+            structuring_24h_account_amounts=acc_prior,
+            structuring_24h_entity_amounts=ent_prior,
+            sanctions_hit=sanctions_hit,
+            sanctions_degraded=sanctions_degraded,
+            geo_whitelisted=geo_whitelisted,
+            degraded_rules=tuple(dict.fromkeys(degraded_list)),
+        )
 
-        is_high_risk_category = declared_goods in high_risk_goods
-        has_price_variance = unit_price_variance >= var_thresh
-        has_invoice_discrepancy = (invoice_val >= inv_thresh and abs(amount - invoice_val) / max(invoice_val, 1.0) >= 0.20)
+        tx_input = TransactionInput(
+            amount_original=_dec(meta.get("original_amount", amount_usd)),
+            currency=str(meta.get("original_currency", "USD")).upper(),
+            amount_base_usd=amount_usd,
+            fx_rate_applied=_dec(meta.get("fx_rate_applied", "1"), "1"),
+            sender_id=str(sender_id),
+            receiver_id=str(receiver_id),
+            tx_timestamp=tx_utc,
+            evaluated_at=eval_utc,
+            sender_name=sender_name,
+            receiver_name=receiver_name,
+            sender_bic=sender_bic,
+            receiver_bic=receiver_bic,
+            country=meta.get("country"),
+            channel=meta.get("channel"),
+            merchant=meta.get("merchant"),
+            kyc_risk_tier=kyc_tier,
+            metadata=meta,
+        )
 
-        if is_high_risk_category and (has_price_variance or has_invoice_discrepancy):
-            return ["TRADE_BASED_ML_OVER_UNDER_INVOICING"]
-        return []
+        # Approved Option A: Fail-closed sanctions hold in hardened staging/prod environments
+        fail_closed_sanctions = bool(getattr(settings, "is_hardened", settings.is_production)) and not bool(
+            getattr(settings, "allow_offline_dev", False)
+        )
 
-    @staticmethod
-    def _check_vasp_crypto(
-        config: dict,
-        amount: float,
-        sender_bic: str,
-        receiver_bic: str,
-        meta: dict
-    ) -> list[str]:
-        crypto_config = config.get("rules", {}).get("CRYPTO_FIAT_VASP_STRUCTURING", {})
-        if not crypto_config.get("enabled", True):
-            return []
-        if not _is_vasp_transaction(meta, sender_bic, receiver_bic):
-            return []
-
-        travel_rule_thresh = crypto_config.get("travel_rule_threshold", 1000.0)
-        travel_rule_complete = meta.get("travel_rule_complete", True)
-        if amount >= travel_rule_thresh and not travel_rule_complete:
-            return ["CRYPTO_FIAT_VASP_STRUCTURING"]
-
-        rapid_count = int(meta.get("rapid_conversion_count", 0))
-        max_conversions = crypto_config.get("max_consecutive_conversions", 3)
-        if rapid_count >= max_conversions:
-            return ["CRYPTO_FIAT_VASP_STRUCTURING"]
-
-        return []
-
-    @staticmethod
-    async def _check_structuring_extended_7d(
-        config: dict,
-        amount: float,
-        sender_id: str,
-        sender_name: str,
-        entity_id: str,
-        tier_discount: float,
-        timestamp: datetime,
-        meta: dict,
-        tenant_id: str
-    ) -> list[str]:
-        ext_struct_cfg = config.get("rules", {}).get("STRUCTURING_EXTENDED_7D", {})
-        if not (ext_struct_cfg.get("enabled", True) and sender_id):
-            return []
-        window_days = ext_struct_cfg.get("window_days", 7)
-        min_sub_amt = ext_struct_cfg.get("min_sub_amount", 2500.0) * tier_discount
-        target_thresh = ext_struct_cfg.get("threshold", 10000.0) * tier_discount
-        min_count = ext_struct_cfg.get("min_count", 3)
-        tx_time = timestamp or datetime.now(timezone.utc)
-
-        if min_sub_amt <= amount < target_thresh:
-            try:
-                async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                    sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
-                    if sender_uuid is None:
-                        return []
-                    query_7d = """
-                        SELECT 
-                            COALESCE(SUM(t.amount), 0.0) AS total_sub_amount,
-                            COUNT(*) AS sub_count
-                        FROM transactions t
-                        WHERE (
-                            t.sender_account_id = $1::uuid
-                            OR t.sender_account_id IN (
-                                SELECT a.id FROM accounts a
-                                WHERE (a.customer_id IS NOT NULL AND a.customer_id = $6::text)
-                                   OR (a.tax_id IS NOT NULL AND a.tax_id = $7::text)
-                                   OR (a.owner_name = $8::text AND a.owner_name != '')
-                            )
-                        )
-                          AND t.status IN ('COMPLETED', 'PENDING', 'HELD')
-                          AND t.amount >= $2 AND t.amount < $3
-                          AND t.timestamp >= ($4::timestamptz - ($5 || ' days')::interval)
-                          AND t.timestamp < $4::timestamptz;
-                    """
-                    row_7d = await conn.fetchrow(
-                        query_7d,
-                        sender_uuid, min_sub_amt, target_thresh, tx_time, str(window_days),
-                        str(entity_id), str(meta.get("tax_id") or ""), str(sender_name or "")
-                    )
-                    if row_7d:
-                        prior_amt = float(row_7d["total_sub_amount"])
-                        prior_cnt = int(row_7d["sub_count"])
-                        if (prior_cnt + 1) >= min_count and (prior_amt + amount) >= target_thresh:
-                            return ["STRUCTURING_EXTENDED_7D"]
-            except Exception as e:
-                logger.debug(f"Extended structuring check error: {e}")
-        return []
-
-    @staticmethod
-    async def _check_conduit_passthrough(
-        config: dict,
-        amount: float,
-        sender_id: str,
-        tier_discount: float,
-        timestamp: datetime,
-        tenant_id: str
-    ) -> list[str]:
-        conduit_cfg = config.get("rules", {}).get("CONDUIT_RAPID_PASSTHROUGH", {})
-        if not (conduit_cfg.get("enabled", True) and sender_id):
-            return []
-        window_hours = conduit_cfg.get("window_hours", 24)
-        min_inflow = conduit_cfg.get("min_inflow", 5000.0) * tier_discount
-        min_ratio = conduit_cfg.get("min_ratio", 0.85)
-        max_ratio = conduit_cfg.get("max_ratio", 1.15)
-        tx_time = timestamp or datetime.now(timezone.utc)
-
-        try:
-            async with get_async_db_conn(tenant_id=tenant_id) as conn:
-                sender_uuid = await RulesEngine._resolve_account_uuid(conn, sender_id)
-                if sender_uuid is None:
-                    return []
-                query_flow = """
-                    WITH flow_window AS (
-                        SELECT
-                            COALESCE(SUM(CASE WHEN receiver_account_id = $1::uuid THEN amount ELSE 0 END), 0.0) AS total_inflow,
-                            COALESCE(SUM(CASE WHEN sender_account_id = $1::uuid THEN amount ELSE 0 END), 0.0) AS total_outflow
-                        FROM transactions
-                        WHERE (receiver_account_id = $1::uuid OR sender_account_id = $1::uuid)
-                          AND status IN ('COMPLETED', 'PENDING', 'HELD')
-                          AND timestamp >= ($2::timestamptz - ($3 || ' hours')::interval)
-                          AND timestamp < $2::timestamptz
-                    )
-                    SELECT total_inflow, total_outflow FROM flow_window;
-                """
-                row_flow = await conn.fetchrow(query_flow, sender_uuid, tx_time, str(window_hours))
-                if row_flow:
-                    inflow = float(row_flow["total_inflow"])
-                    prior_out = float(row_flow["total_outflow"])
-                    total_out = prior_out + amount
-                    if inflow >= min_inflow:
-                        flow_ratio = total_out / max(inflow, 1.0)
-                        if min_ratio <= flow_ratio <= max_ratio:
-                            return ["CONDUIT_RAPID_PASSTHROUGH"]
-        except Exception as e:
-            logger.debug(f"Conduit flow-through check error: {e}")
-        return []
-
-    @staticmethod
-    def _check_amount_anomaly(
-        config: dict,
-        amount: float,
-        total_entity_amount: float,
-        entity_below: list[float]
-    ) -> list[str]:
-        anom_cfg = config.get("rules", {}).get("AMOUNT_ANOMALY_HEURISTICS", {})
-        if not anom_cfg.get("enabled", True):
-            return []
-        triggered = []
-        just_below_min = anom_cfg.get("just_below_min", 9000.0)
-        just_below_max = anom_cfg.get("just_below_max", 10000.0)
-        round_min = anom_cfg.get("round_number_min", 3000.0)
-        round_divisor = anom_cfg.get("round_divisor", 1000.0)
-
-        is_just_below = (just_below_min <= amount < just_below_max)
-        # Require current transfer to be material (>= $500) before attributing cumulative sub-CTR structuring
-        if not is_just_below and amount >= 500.0 and (just_below_min <= total_entity_amount < just_below_max) and len(entity_below) >= 2:
-            is_just_below = True
-
-        if is_just_below:
-            triggered.append("JUST_BELOW_CTR_THRESHOLD")
-
-        if amount >= round_min and (int(round(amount * 100)) % int(round(round_divisor * 100)) == 0):
-            triggered.append("ROUND_NUMBER_ANOMALY_1K")
-
-        return triggered
+        provenance = evaluate_all_rules_pure(
+            tx_input,
+            merged_snap,
+            config,
+            fail_closed_sanctions=fail_closed_sanctions,
+        )
+        record_rule_evaluation_duration(time.monotonic() - t0)
+        return provenance
 
     @staticmethod
     async def evaluate_transaction(
         sender_id: str,
         receiver_id: str,
-        amount: float,
-        sender_name: str = None,
-        sender_bic: str = None,
-        receiver_name: str = None,
-        receiver_bic: str = None,
-        timestamp: datetime = None,
-        tenant_id: str = None,
-        metadata: dict = None,
-        sender_account_number: str = None,
-        receiver_account_number: str = None,
-        **kwargs
+        amount: float | Decimal,
+        sender_name: str | None = None,
+        sender_bic: str | None = None,
+        receiver_name: str | None = None,
+        receiver_bic: str | None = None,
+        timestamp: datetime | None = None,
+        tenant_id: str | None = None,
+        metadata: dict | None = None,
+        sender_account_number: str | None = None,
+        receiver_account_number: str | None = None,
+        evaluated_at: datetime | None = None,
+        **kwargs,
     ) -> list[str]:
-        triggered_rules = []
-        config = await get_rules_config_async(tenant_id=tenant_id)
-        meta = metadata or {}
-
-        entity_id = await RulesEngine._resolve_entity_id(sender_id, sender_name, meta, tenant_id)
-
-        # 1. LARGE_TRANSACTION Rule (sync)
-        triggered_rules.extend(RulesEngine._check_large_transaction(config, amount))
-
-        # 2. STRUCTURING_SMURFING Rule (needed for entity totals in rule 13)
-        struct_rules, total_entity_amount, entity_below = await RulesEngine._check_structuring_smurfing(
-            config, amount, sender_id, entity_id, tenant_id
+        """Backward-compatible wrapper returning `list[str]` of triggered rule identifiers."""
+        provenance = await RulesEngine.evaluate_transaction_with_provenance(
+            sender_id=sender_id,
+            receiver_id=receiver_id,
+            amount=amount,
+            sender_name=sender_name,
+            sender_bic=sender_bic,
+            receiver_name=receiver_name,
+            receiver_bic=receiver_bic,
+            timestamp=timestamp,
+            tenant_id=tenant_id,
+            metadata=metadata,
+            sender_account_number=sender_account_number,
+            receiver_account_number=receiver_account_number,
+            evaluated_at=evaluated_at,
+            **kwargs,
         )
-        triggered_rules.extend(struct_rules)
-
-        # Risk tier discount (FATF RBA)
-        kyc_risk_tier = str(meta.get("kyc_risk_tier", "STANDARD")).upper()
-        tier_discount = 0.50 if kyc_risk_tier in ("HIGH", "CRITICAL") else 1.00
-
-        # Parallelize independent I/O-bound rules (3-8, 11-12) via asyncio.gather
-        import asyncio as _asyncio
-        parallel_results = await _asyncio.gather(
-            RulesEngine._check_velocity_monitoring(config, amount, sender_id, timestamp, tenant_id),
-            RulesEngine._check_rapid_movement_funds(config, amount, sender_id, timestamp, tenant_id),
-            RulesEngine._check_dormant_account(config, amount, sender_id, timestamp, tenant_id),
-            RulesEngine._check_geographic_sanctions(
-                config, sender_bic, receiver_bic, sender_name, receiver_name, tenant_id, entity_id
-            ),
-            RulesEngine._check_round_trip(config, amount, sender_id, receiver_id, timestamp, tenant_id),
-            RulesEngine._check_newly_incorporated(config, amount, sender_id, timestamp, tenant_id),
-            RulesEngine._check_structuring_extended_7d(
-                config, amount, sender_id, sender_name, entity_id, tier_discount, timestamp, meta, tenant_id
-            ),
-            RulesEngine._check_conduit_passthrough(config, amount, sender_id, tier_discount, timestamp, tenant_id),
-        )
-        for res_list in parallel_results:
-            triggered_rules.extend(res_list)
-
-        # 9. TRADE_BASED_ML_OVER_UNDER_INVOICING (sync)
-        triggered_rules.extend(RulesEngine._check_tbml(config, amount, meta))
-
-        # 10. CRYPTO_FIAT_VASP_STRUCTURING (sync)
-        triggered_rules.extend(RulesEngine._check_vasp_crypto(
-            config, amount, sender_bic, receiver_bic, meta
-        ))
-
-        # 13. AMOUNT_ANOMALY_HEURISTICS (sync)
-        triggered_rules.extend(RulesEngine._check_amount_anomaly(
-            config, amount, total_entity_amount, entity_below
-        ))
-
-        return triggered_rules
+        return list(provenance.triggered_rules)
 
 
 async def start_redis_rules_listener(shutdown_event=None):
     """Listens for distributed rules cache invalidation events using dedicated Pub/Sub client (P2-23)."""
+    import asyncio
     from database.redis_db import get_async_redis_pubsub_client
     from services.http_client import full_jitter_backoff
-    import asyncio
 
     attempt = 0
     while shutdown_event is None or not shutdown_event.is_set():

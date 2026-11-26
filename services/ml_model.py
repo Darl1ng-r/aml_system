@@ -75,17 +75,22 @@ class AMLAnomalyModel:
         self._explainer = None
         self._recommended_threshold = 0.50
         self._mode = "fallback"
+        self._model_version = "fallback-logreg-v1"
 
         # ── Try loading XGBoost pipeline ──────────────────────────────────────
         if os.path.exists(_MODEL_PATH):
             try:
+                import hashlib
                 import joblib
                 import shap
+                with open(_MODEL_PATH, "rb") as mf:
+                    digest = hashlib.sha256(mf.read()).hexdigest()[:12]
                 self._pipeline = joblib.load(_MODEL_PATH)
                 # Build SHAP explainer from the XGBoost classifier inside the pipeline
                 xgb_model = self._pipeline.named_steps["classifier"]
                 self._explainer = shap.TreeExplainer(xgb_model)
                 self._mode = "xgboost"
+                self._model_version = f"xgboost-{digest}"
 
                 # Load recommended threshold from training report
                 if os.path.exists(_REPORT_PATH):
@@ -264,6 +269,7 @@ class AMLAnomalyModel:
             return {
                 "risk_score": round(risk_score, 4),
                 "model_mode": "xgboost",
+                "model_version": self._model_version,
                 "recommended_threshold": self._recommended_threshold,
                 "attributions": attributions,
             }
@@ -299,6 +305,7 @@ class AMLAnomalyModel:
         return {
             "risk_score": round(score, 4),
             "model_mode": "fallback",
+            "model_version": "fallback-logreg-v1",
             "recommended_threshold": 0.75,
             "attributions": attributions,
         }
@@ -306,6 +313,10 @@ class AMLAnomalyModel:
     @property
     def mode(self) -> str:
         return self._mode
+
+    @property
+    def model_version(self) -> str:
+        return self._model_version
 
     @property
     def recommended_threshold(self) -> float:

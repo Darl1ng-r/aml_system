@@ -2,75 +2,91 @@
 Historical Rule Backtesting & Champion-Challenger Shadow Mode Service (P1-2)
 =============================================================================
 1. Read-Only Backtesting: Replays proposed rule thresholds against historical
-   transactions on the read replica to quantify projected alert deltas, true-positive
-   SAR capture, and avoided false positives BEFORE saving rule changes.
+   transactions on the read replica using exact Decimal arithmetic and O(N)
+   sliding-deque windows offloaded onto the bounded analytics compute bulkhead.
 2. Shadow Challenger Evaluation: Silently evaluates rules configured in `SHADOW`
    mode (or with `shadow_config`) on live transactions and persists hits to
    `rule_shadow_hits` without alerting analysts.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from decimal import Decimal
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from database.postgres import get_async_db_read_conn
+from domain.money import to_decimal
+from services.compute_executor import run_analytics_compute
 from services.rules import get_rules_config
 
 logger = logging.getLogger("aml.rule_backtest")
+
+
+def _dec(val: Any, default: str = "0") -> Decimal:
+    if val is None:
+        return Decimal(default)
+    try:
+        return to_decimal(val)
+    except Exception:
+        return Decimal(default)
 
 
 def evaluate_rule_on_tx_row(
     rule_name: str,
     cfg: Dict[str, Any],
     tx: Dict[str, Any],
-    sender_24h_sum: float = 0.0,
+    sender_24h_sum: float | Decimal = Decimal("0"),
     sender_7d_sub_count: int = 0,
-    sender_7d_sub_sum: float = 0.0,
+    sender_7d_sub_sum: float | Decimal = Decimal("0"),
 ) -> Tuple[bool, str]:
     """
     Pure, deterministic rule evaluator over a historical/live transaction row
-    using FX-normalized `amount_base_usd`.
+    using exact fixed-point Decimal arithmetic on FX-normalized `amount_base_usd`.
     """
     if cfg.get("enabled") is False:
         return False, ""
 
     raw_base = tx.get("amount_base_usd")
-    amount = float(raw_base if raw_base is not None else (tx.get("amount") if tx.get("amount") is not None else 0.0))
+    amount = _dec(raw_base if raw_base is not None else tx.get("amount"), "0")
+    sum_24h = _dec(sender_24h_sum, "0")
+    sum_7d = _dec(sender_7d_sub_sum, "0")
     country = str(tx.get("country") or "").upper().strip()
     channel = str(tx.get("channel") or "").upper().strip()
     rname = rule_name.upper().strip()
 
     if rname == "LARGE_TRANSACTION":
-        threshold = float(cfg.get("threshold", 10000.0))
+        threshold = _dec(cfg.get("threshold", "10000.00"), "10000.00")
         if amount >= threshold:
             return True, f"amount_usd={amount:.2f} >= threshold={threshold:.2f}"
         return False, ""
 
     if rname == "STRUCTURING_SMURFING":
-        threshold = float(cfg.get("threshold", 10000.0))
-        if amount < threshold and (sender_24h_sum >= threshold):
-            return True, f"24h_sum={sender_24h_sum:.2f} >= threshold={threshold:.2f} with sub-threshold tx={amount:.2f}"
+        threshold = _dec(cfg.get("threshold", "10000.00"), "10000.00")
+        if amount < threshold and (sum_24h >= threshold):
+            return True, f"24h_sum={sum_24h:.2f} >= threshold={threshold:.2f} with sub-threshold tx={amount:.2f}"
         return False, ""
 
     if rname == "STRUCTURING_EXTENDED_7D":
-        threshold = float(cfg.get("threshold", 10000.0))
-        min_sub = float(cfg.get("min_sub_amount", 2500.0))
+        threshold = _dec(cfg.get("threshold", "10000.00"), "10000.00")
+        min_sub = _dec(cfg.get("min_sub_amount", "2500.00"), "2500.00")
         min_count = int(cfg.get("min_count", 3))
-        if min_sub <= amount < threshold and sender_7d_sub_count >= min_count and sender_7d_sub_sum >= threshold:
-            return True, f"7d_sub_count={sender_7d_sub_count} sum={sender_7d_sub_sum:.2f}"
+        if min_sub <= amount < threshold and sender_7d_sub_count >= min_count and sum_7d >= threshold:
+            return True, f"7d_sub_count={sender_7d_sub_count} sum={sum_7d:.2f}"
         return False, ""
 
     if rname == "AMOUNT_ANOMALY_HEURISTICS":
-        jb_min = float(cfg.get("just_below_min", 9000.0))
-        jb_max = float(cfg.get("just_below_max", 10000.0))
-        rnd_min = float(cfg.get("round_number_min", 3000.0))
-        divisor = max(1.0, float(cfg.get("round_divisor", 1000.0)))
+        jb_min = _dec(cfg.get("just_below_min", "9000.00"), "9000.00")
+        jb_max = _dec(cfg.get("just_below_max", "10000.00"), "10000.00")
+        rnd_min = _dec(cfg.get("round_number_min", "3000.00"), "3000.00")
+        divisor = max(Decimal("1"), _dec(cfg.get("round_divisor", "1000.00"), "1000.00"))
         if jb_min <= amount < jb_max:
             return True, f"just_below_threshold amount={amount:.2f} in [{jb_min:.0f}, {jb_max:.0f})"
-        if amount >= rnd_min and (int(round(amount * 100)) % int(round(divisor * 100)) == 0):
+        if amount >= rnd_min and (amount % divisor == Decimal("0")):
             return True, f"round_number amount={amount:.2f} divisible by {divisor:.0f}"
         return False, ""
 
@@ -81,35 +97,175 @@ def evaluate_rule_on_tx_row(
         return False, ""
 
     if rname == "CRYPTO_FIAT_VASP_STRUCTURING":
-        threshold = float(cfg.get("travel_rule_threshold", 1000.0))
+        threshold = _dec(cfg.get("travel_rule_threshold", "1000.00"), "1000.00")
         if channel in ("CRYPTO", "VASP", "DIGITAL_ASSET") and amount >= threshold:
             return True, f"vasp_channel={channel} amount={amount:.2f} >= {threshold:.2f}"
         return False, ""
 
     if rname == "NEWLY_INCORPORATED_HIGH_VALUE":
-        threshold = float(cfg.get("high_value_threshold", 50000.0))
+        threshold = _dec(cfg.get("high_value_threshold", "50000.00"), "50000.00")
         if amount >= threshold:
             return True, f"high_value={amount:.2f} >= {threshold:.2f}"
         return False, ""
 
     if rname == "DORMANT_ACCOUNT":
-        threshold = float(cfg.get("activation_threshold", 50000.0))
+        threshold = _dec(cfg.get("activation_threshold", "50000.00"), "50000.00")
         if amount >= threshold:
             return True, f"activation_amount={amount:.2f} >= {threshold:.2f}"
         return False, ""
 
     if rname == "TRADE_BASED_ML_OVER_UNDER_INVOICING":
-        threshold = float(cfg.get("invoice_amount_threshold", 100000.0))
+        threshold = _dec(cfg.get("invoice_amount_threshold", "100000.00"), "100000.00")
         if amount >= threshold:
             return True, f"invoice_amount={amount:.2f} >= {threshold:.2f}"
         return False, ""
 
-    # Generic fallback for custom threshold-based rules
     if "threshold" in cfg:
-        threshold = float(cfg["threshold"])
+        threshold = _dec(cfg["threshold"], "0")
         if amount >= threshold:
             return True, f"amount={amount:.2f} >= threshold={threshold:.2f}"
     return False, ""
+
+
+class _SlidingDecimalWindow:
+    """O(1)-amortized sliding time window maintaining exact Decimal running sum & count."""
+
+    __slots__ = ("_entries", "_sum", "_delta")
+
+    def __init__(self, delta: timedelta) -> None:
+        self._entries: Deque[Tuple[datetime, Decimal]] = deque()
+        self._sum: Decimal = Decimal("0")
+        self._delta = delta
+
+    def evict_before(self, now: datetime) -> None:
+        cutoff = now - self._delta
+        while self._entries and self._entries[0][0] < cutoff:
+            _, old_amt = self._entries.popleft()
+            self._sum -= old_amt
+
+    def add(self, ts: datetime, amount: Decimal) -> None:
+        self._entries.append((ts, amount))
+        self._sum += amount
+
+    @property
+    def total(self) -> Decimal:
+        return self._sum
+
+    @property
+    def count(self) -> int:
+        return len(self._entries)
+
+
+def _run_backtest_replay_sync(
+    norm_rule: str,
+    lookback_days: int,
+    champion_cfg: Dict[str, Any],
+    challenger_cfg: Dict[str, Any],
+    tx_list: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """O(N) pure-CPU Champion vs Challenger replay executed inside the analytics bulkhead."""
+    champ_thresh = _dec(champion_cfg.get("threshold", "10000.00"), "10000.00")
+    chall_thresh = _dec(challenger_cfg.get("threshold", "10000.00"), "10000.00")
+    champ_min_sub = _dec(champion_cfg.get("min_sub_amount", "2500.00"), "2500.00")
+    chall_min_sub = _dec(challenger_cfg.get("min_sub_amount", "2500.00"), "2500.00")
+
+    champ_24h_windows: Dict[str, _SlidingDecimalWindow] = defaultdict(lambda: _SlidingDecimalWindow(timedelta(hours=24)))
+    chall_24h_windows: Dict[str, _SlidingDecimalWindow] = defaultdict(lambda: _SlidingDecimalWindow(timedelta(hours=24)))
+    champ_7d_windows: Dict[str, _SlidingDecimalWindow] = defaultdict(lambda: _SlidingDecimalWindow(timedelta(days=7)))
+    chall_7d_windows: Dict[str, _SlidingDecimalWindow] = defaultdict(lambda: _SlidingDecimalWindow(timedelta(days=7)))
+
+    champion_hits = 0
+    challenger_hits = 0
+    newly_triggered: List[Dict[str, Any]] = []
+    suppressed: List[Dict[str, Any]] = []
+    captured_historical_sars = 0
+    missed_historical_sars = 0
+    avoided_false_positives = 0
+
+    for tx in tx_list:
+        sender_key = str(tx.get("sender_account_id") or "")
+        ts = tx.get("timestamp") or datetime.now(timezone.utc)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        raw_base = tx.get("amount_base_usd")
+        amt = _dec(raw_base if raw_base is not None else tx.get("amount"), "0")
+
+        c24 = champ_24h_windows[sender_key]
+        x24 = chall_24h_windows[sender_key]
+        c7 = champ_7d_windows[sender_key]
+        x7 = chall_7d_windows[sender_key]
+
+        c24.evict_before(ts)
+        x24.evict_before(ts)
+        c7.evict_before(ts)
+        x7.evict_before(ts)
+
+        if amt < champ_thresh:
+            c24.add(ts, amt)
+        if amt < chall_thresh:
+            x24.add(ts, amt)
+        if champ_min_sub <= amt < champ_thresh:
+            c7.add(ts, amt)
+        if chall_min_sub <= amt < chall_thresh:
+            x7.add(ts, amt)
+
+        champ_hit, _ = evaluate_rule_on_tx_row(
+            norm_rule, champion_cfg, tx, c24.total, c7.count, c7.total
+        )
+        chall_hit, chall_reason = evaluate_rule_on_tx_row(
+            norm_rule, challenger_cfg, tx, x24.total, x7.count, x7.total
+        )
+
+        if champ_hit:
+            champion_hits += 1
+        if chall_hit:
+            challenger_hits += 1
+
+        hist_status = (tx.get("historical_alert_status") or "").upper()
+        if hist_status == "CLOSED_SAR":
+            if chall_hit:
+                captured_historical_sars += 1
+            elif champ_hit and not chall_hit:
+                missed_historical_sars += 1
+        elif hist_status == "CLOSED_FALSE_POSITIVE" and champ_hit and not chall_hit:
+            avoided_false_positives += 1
+
+        if chall_hit and not champ_hit and len(newly_triggered) < 10:
+            newly_triggered.append({
+                "transaction_id": str(tx["id"]),
+                "amount_base_usd": float(amt),
+                "currency": tx.get("currency") or "USD",
+                "reason": chall_reason,
+                "timestamp": ts.isoformat(),
+            })
+        elif champ_hit and not chall_hit and len(suppressed) < 10:
+            suppressed.append({
+                "transaction_id": str(tx["id"]),
+                "amount_base_usd": float(amt),
+                "currency": tx.get("currency") or "USD",
+                "historical_status": hist_status or "NONE",
+                "timestamp": ts.isoformat(),
+            })
+
+    delta_hits = challenger_hits - champion_hits
+    delta_pct = round((delta_hits / champion_hits) * 100.0, 2) if champion_hits > 0 else (100.0 if challenger_hits > 0 else 0.0)
+
+    return {
+        "rule_name": norm_rule,
+        "lookback_days": lookback_days,
+        "transactions_evaluated": len(tx_list),
+        "champion_config": champion_cfg,
+        "challenger_config": challenger_cfg,
+        "champion_hits": champion_hits,
+        "challenger_hits": challenger_hits,
+        "delta_hits": delta_hits,
+        "delta_pct": delta_pct,
+        "captured_historical_sars": captured_historical_sars,
+        "missed_historical_sars": missed_historical_sars,
+        "avoided_false_positives": avoided_false_positives,
+        "sample_newly_triggered": newly_triggered,
+        "sample_suppressed": suppressed,
+    }
 
 
 async def backtest_rule_config(
@@ -171,102 +327,17 @@ async def backtest_rule_config(
 
     challenger_cfg = dict(champion_cfg)
     challenger_cfg.update(candidate_config or {})
-
-    # Pre-compute lightweight per-sender rolling sums for structuring rules
     tx_list = [dict(r) for r in (tx_rows or [])]
-    sender_history: Dict[str, List[Tuple[datetime, float]]] = defaultdict(list)
 
-    champion_hits = 0
-    challenger_hits = 0
-    newly_triggered: List[Dict[str, Any]] = []
-    suppressed: List[Dict[str, Any]] = []
-    captured_historical_sars = 0
-    missed_historical_sars = 0
-    avoided_false_positives = 0
-
-    for tx in tx_list:
-        sender_key = str(tx.get("sender_account_id") or "")
-        ts = tx.get("timestamp") or datetime.now(timezone.utc)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        raw_base = tx.get("amount_base_usd")
-        amt = float(raw_base if raw_base is not None else (tx.get("amount") if tx.get("amount") is not None else 0.0))
-
-        hist = sender_history[sender_key]
-        hist.append((ts, amt))
-
-        cutoff_24h = ts - timedelta(hours=24)
-        cutoff_7d = ts - timedelta(days=7)
-
-        # Compute independent Champion vs Challenger sub-threshold windows so Challenger
-        # thresholds never contaminate the Champion baseline metrics.
-        champ_thresh = float(champion_cfg.get("threshold", 10000.0))
-        chall_thresh = float(challenger_cfg.get("threshold", 10000.0))
-        champ_sum_24h = sum(a for t0, a in hist if t0 >= cutoff_24h and a < champ_thresh)
-        chall_sum_24h = sum(a for t0, a in hist if t0 >= cutoff_24h and a < chall_thresh)
-
-        champ_min_sub = float(champion_cfg.get("min_sub_amount", 2500.0))
-        chall_min_sub = float(challenger_cfg.get("min_sub_amount", 2500.0))
-        champ_sub_7d = [a for t0, a in hist if t0 >= cutoff_7d and champ_min_sub <= a < champ_thresh]
-        chall_sub_7d = [a for t0, a in hist if t0 >= cutoff_7d and chall_min_sub <= a < chall_thresh]
-
-        champ_hit, _ = evaluate_rule_on_tx_row(
-            norm_rule, champion_cfg, tx, champ_sum_24h, len(champ_sub_7d), sum(champ_sub_7d)
-        )
-        chall_hit, chall_reason = evaluate_rule_on_tx_row(
-            norm_rule, challenger_cfg, tx, chall_sum_24h, len(chall_sub_7d), sum(chall_sub_7d)
-        )
-
-        if champ_hit:
-            champion_hits += 1
-        if chall_hit:
-            challenger_hits += 1
-
-        hist_status = (tx.get("historical_alert_status") or "").upper()
-        if hist_status == "CLOSED_SAR":
-            if chall_hit:
-                captured_historical_sars += 1
-            elif champ_hit and not chall_hit:
-                missed_historical_sars += 1
-        elif hist_status == "CLOSED_FALSE_POSITIVE" and champ_hit and not chall_hit:
-            avoided_false_positives += 1
-
-        if chall_hit and not champ_hit and len(newly_triggered) < 10:
-            newly_triggered.append({
-                "transaction_id": str(tx["id"]),
-                "amount_base_usd": amt,
-                "currency": tx.get("currency") or "USD",
-                "reason": chall_reason,
-                "timestamp": ts.isoformat(),
-            })
-        elif champ_hit and not chall_hit and len(suppressed) < 10:
-            suppressed.append({
-                "transaction_id": str(tx["id"]),
-                "amount_base_usd": amt,
-                "currency": tx.get("currency") or "USD",
-                "historical_status": hist_status or "NONE",
-                "timestamp": ts.isoformat(),
-            })
-
-    delta_hits = challenger_hits - champion_hits
-    delta_pct = round((delta_hits / champion_hits) * 100.0, 2) if champion_hits > 0 else (100.0 if challenger_hits > 0 else 0.0)
-
-    return {
-        "rule_name": norm_rule,
-        "lookback_days": lookback_days,
-        "transactions_evaluated": len(tx_list),
-        "champion_config": champion_cfg,
-        "challenger_config": challenger_cfg,
-        "champion_hits": champion_hits,
-        "challenger_hits": challenger_hits,
-        "delta_hits": delta_hits,
-        "delta_pct": delta_pct,
-        "captured_historical_sars": captured_historical_sars,
-        "missed_historical_sars": missed_historical_sars,
-        "avoided_false_positives": avoided_false_positives,
-        "sample_newly_triggered": newly_triggered,
-        "sample_suppressed": suppressed,
-    }
+    return await run_analytics_compute(
+        _run_backtest_replay_sync,
+        norm_rule,
+        lookback_days,
+        champion_cfg,
+        challenger_cfg,
+        tx_list,
+        timeout=15.0,
+    )
 
 
 async def evaluate_shadow_rules(
@@ -274,7 +345,7 @@ async def evaluate_shadow_rules(
     tenant_id: str | uuid.UUID,
     transaction_id: str | uuid.UUID,
     sender_account_id: str | uuid.UUID | None,
-    amount_base_usd: float,
+    amount_base_usd: float | Decimal,
     country: Optional[str] = None,
     channel: Optional[str] = None,
 ) -> List[str]:
@@ -294,8 +365,9 @@ async def evaluate_shadow_rules(
         if not rows:
             return []
 
+        amt_dec = _dec(amount_base_usd, "0")
         tx_row = {
-            "amount_base_usd": float(amount_base_usd),
+            "amount_base_usd": amt_dec,
             "country": country,
             "channel": channel,
         }
@@ -322,11 +394,11 @@ async def evaluate_shadow_rules(
                     r["rule_name"],
                     tx_uuid,
                     sender_uuid,
-                    round(float(amount_base_usd), 2),
+                    round(float(amt_dec), 2),
                     int(r["version"] or 1),
                     reason,
                 )
     except Exception as exc:
-        logger.debug(f"Shadow rule evaluation skipped: {exc}")
+        logger.debug("Shadow rule evaluation skipped: %s", exc)
 
     return matched_shadow_rules

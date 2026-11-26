@@ -11,7 +11,8 @@ from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, 
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
-from observability.middleware import CorrelationIdMiddleware
+from observability.middleware import CorrelationIdMiddleware, RequestTimeoutMiddleware
+from observability.event_loop_monitor import event_loop_monitor
 from services.trusted_proxy import TrustedProxyMiddleware
 from services.csrf import CSRFProtectionMiddleware
 import asyncio
@@ -308,7 +309,24 @@ async def lifespan(app_instance: FastAPI):
     else:
         logger.info("RUN_EMBEDDED_WORKER=false; skipping embedded Outbox Relay (handled by dedicated worker).")
 
+    # Start AsyncIO Event-Loop Lag Watchdog (skip under pytest unless explicitly invoked)
+    import sys as _sys
+    if "pytest" not in _sys.modules and not os.getenv("PYTEST_CURRENT_TEST"):
+        event_loop_monitor.start()
+        logger.info("AsyncIO event-loop lag monitor started (100ms sampling interval).")
+
     yield
+
+    # Stop Event-Loop Lag Watchdog and shut down compute bulkhead executors cleanly
+    try:
+        await event_loop_monitor.stop()
+    except Exception:
+        pass
+    try:
+        from services.compute_executor import shutdown_compute_executors
+        shutdown_compute_executors(wait=False)
+    except Exception:
+        pass
 
     # Shutdown Outbox Relay Engine gracefully
     if _outbox_relay_task:
@@ -402,7 +420,10 @@ app.add_middleware(
 from services.security_headers import SecurityHeadersMiddleware
 app.add_middleware(SecurityHeadersMiddleware)
 
-# 3. Correlation-ID & request telemetry middleware
+# 3b. Pure-ASGI bounded request deadline guard (20s default; 60s for exports/packets/network)
+app.add_middleware(RequestTimeoutMiddleware, default_timeout_seconds=20.0, extended_timeout_seconds=60.0)
+
+# 3. Correlation-ID & request telemetry middleware (pure ASGI)
 app.add_middleware(CorrelationIdMiddleware)
 
 # 2. Trusted Host enforcement in hardened environments when ALLOWED_HOSTS is configured (P2-09)

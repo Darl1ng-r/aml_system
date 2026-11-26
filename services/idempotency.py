@@ -1,39 +1,52 @@
 """
-Financial Ingestion Idempotency Service (GAP-IDEMP)
-===================================================
-Enforces RFC 7231 / FinTech standard idempotency semantics for financial
-transaction ingestion and state-mutating compliance operations.
-
-Uses Redis atomic key reservation (`SET NX EX`) to:
-1. Prevent duplicate balance deductions and duplicate AML alert creation.
-2. Fast-return the exact previously cached HTTP response on retried requests.
-3. Detect and reject concurrent duplicate in-flight requests (HTTP 409 Conflict).
+Dual-Layer Financial Ingestion Idempotency Service (GAP-IDEMP + Logic Pillar L2)
+================================================================================
+Enforces RFC 7231 / FinTech standard idempotency semantics across TWO coordinated layers:
+  - L1 (Redis): Sub-millisecond `SET NX EX` reservation + Lua compare-and-delete.
+  - L2 (PostgreSQL `idempotency_records`, FORCE RLS): Durable authority that
+    guarantees zero duplicate financial mutations or regulatory filings even across
+    Redis restarts, key evictions, or network failovers.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
-import asyncio
 import re
-from typing import Optional, Tuple, Any, Dict, Callable, Awaitable
-from fastapi import Request, HTTPException, status
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+
+from fastapi import HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+
 from database.redis_db import get_async_redis_client
+from observability.prometheus import record_idempotency_event
+from repositories.idempotency_repo import (
+    complete_db_idempotency,
+    release_in_flight_db_idempotency,
+    try_reserve_db_idempotency,
+)
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_IDEMPOTENCY_TTL_SECONDS = 86400  # 24 Hours retention per financial compliance requirements
 
 
+def _split_scope_and_key(raw_scoped_key: str) -> Tuple[str, str]:
+    if ":" in raw_scoped_key:
+        scope, key = raw_scoped_key.split(":", 1)
+        return scope[:64], key[:128]
+    return "default", raw_scoped_key[:128]
+
+
 async def check_idempotency(
     key: str,
     tenant_id: Optional[str] = None,
     request_hash: Optional[str] = None,
-    ttl_seconds: int = DEFAULT_IDEMPOTENCY_TTL_SECONDS
+    ttl_seconds: int = DEFAULT_IDEMPOTENCY_TTL_SECONDS,
 ) -> Tuple[bool, Optional[Dict[str, Any]]]:
     """
-    Checks if an idempotency key is already registered.
+    Checks if an idempotency key is already registered across L1 (Redis) and L2 (PostgreSQL).
     Returns:
         (is_cached, cached_payload_or_none)
     Raises:
@@ -44,56 +57,91 @@ async def check_idempotency(
         return False, None
 
     redis_key = f"idemp:{tenant_id}:{key}" if tenant_id else f"idemp:{key}"
+    scope, pure_key = _split_scope_and_key(key)
+    redis_client = None
+    l1_acquired = False
 
+    # ── L1: Redis Fast Path ───────────────────────────────────────────────────
     try:
-        r = await get_async_redis_client()
-        if not r:
-            return False, None
+        redis_client = await get_async_redis_client()
+        if redis_client:
+            in_flight_payload: Dict[str, Any] = {"status": "IN_FLIGHT"}
+            if request_hash:
+                in_flight_payload["request_hash"] = request_hash
 
-        # Attempt to atomically set the key in 'IN_FLIGHT' state if not present
-        in_flight_payload = {"status": "IN_FLIGHT"}
-        if request_hash:
-            in_flight_payload["request_hash"] = request_hash
-
-        acquired = await r.set(
-            redis_key,
-            json.dumps(in_flight_payload),
-            nx=True,
-            ex=ttl_seconds
-        )
-
-        if acquired:
-            # First time seeing this key; processing proceeds
-            return False, None
-
-        # Key already existed; fetch cached value
-        val = await r.get(redis_key)
-        if not val:
-            return False, None
-
-        data = json.loads(val)
-        if data.get("status") == "IN_FLIGHT":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Concurrent request with identical Idempotency-Key is currently being processed."
+            acquired = await redis_client.set(
+                redis_key,
+                json.dumps(in_flight_payload),
+                nx=True,
+                ex=ttl_seconds,
             )
 
-        if data.get("status") == "COMPLETED":
-            # Guard against idempotency key reuse with mismatched body (RFC 7231 / FinTech standard)
-            if request_hash and data.get("request_hash") and data["request_hash"] != request_hash:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Idempotency-Key mismatch: payload differs from previous request with identical key."
-                )
-            return True, data
+            if acquired:
+                l1_acquired = True
+            else:
+                val = await redis_client.get(redis_key)
+                if val:
+                    data = json.loads(val)
+                    if data.get("status") == "IN_FLIGHT":
+                        record_idempotency_event("redis", "in_flight_409")
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Concurrent request with identical Idempotency-Key is currently being processed.",
+                        )
 
-        return False, None
-
+                    if data.get("status") == "COMPLETED":
+                        if request_hash and data.get("request_hash") and data["request_hash"] != request_hash:
+                            record_idempotency_event("redis", "hash_mismatch_422")
+                            raise HTTPException(
+                                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                                detail="Idempotency-Key mismatch: payload differs from previous request with identical key.",
+                            )
+                        record_idempotency_event("redis", "hit")
+                        return True, data
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning(f"Idempotency check bypassed due to Redis error: {e}")
-        return False, None
+        logger.warning("Idempotency L1 Redis error (%s); delegating to L2 PostgreSQL.", e)
+        record_idempotency_event("postgres", "l2_fallback")
+
+    # ── L2: Durable PostgreSQL Authority (guards against Redis eviction/failover) ─
+    outcome, db_record = await try_reserve_db_idempotency(
+        tenant_id=tenant_id,
+        scope=scope,
+        idempotency_key=pure_key,
+        request_hash=request_hash or "",
+        ttl_seconds=ttl_seconds,
+    )
+
+    if outcome == "IN_FLIGHT":
+        if l1_acquired:
+            await _clear_redis_only(redis_key, redis_client)
+        record_idempotency_event("postgres", "in_flight_409")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Concurrent request with identical Idempotency-Key is currently being processed.",
+        )
+
+    if outcome == "HASH_MISMATCH":
+        if l1_acquired:
+            await _clear_redis_only(redis_key, redis_client)
+        record_idempotency_event("postgres", "hash_mismatch_422")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Idempotency-Key mismatch: payload differs from previous request with identical key.",
+        )
+
+    if outcome == "COMPLETED" and db_record is not None:
+        record_idempotency_event("postgres", "hit")
+        # Re-warm L1 Redis so subsequent retries hit cache in <1ms
+        if redis_client:
+            try:
+                await redis_client.set(redis_key, json.dumps(db_record), ex=ttl_seconds)
+            except Exception:
+                pass
+        return True, db_record
+
+    return False, None
 
 
 async def save_idempotency_result(
@@ -102,30 +150,42 @@ async def save_idempotency_result(
     body: Dict[str, Any],
     tenant_id: Optional[str] = None,
     request_hash: Optional[str] = None,
-    ttl_seconds: int = DEFAULT_IDEMPOTENCY_TTL_SECONDS
+    ttl_seconds: int = DEFAULT_IDEMPOTENCY_TTL_SECONDS,
 ) -> None:
-    """Stores the final response payload and status code for the idempotency key."""
+    """Stores the final response payload and status code in both L2 PostgreSQL and L1 Redis."""
     if not key:
         return
 
     redis_key = f"idemp:{tenant_id}:{key}" if tenant_id else f"idemp:{key}"
+    scope, pure_key = _split_scope_and_key(key)
+
+    # Persist durably in PostgreSQL first so evictions never lose completed state
+    await complete_db_idempotency(
+        tenant_id=tenant_id,
+        scope=scope,
+        idempotency_key=pure_key,
+        status_code=status_code,
+        body=body,
+        request_hash=request_hash or "",
+        ttl_seconds=ttl_seconds,
+    )
 
     try:
         r = await get_async_redis_client()
         if not r:
             return
 
-        payload = {
+        payload: Dict[str, Any] = {
             "status": "COMPLETED",
             "status_code": status_code,
-            "body": body
+            "body": body,
         }
         if request_hash:
             payload["request_hash"] = request_hash
 
         await r.set(redis_key, json.dumps(payload), ex=ttl_seconds)
     except Exception as e:
-        logger.warning(f"Failed to cache idempotency result for key {key}: {e}")
+        logger.warning("Failed to cache L1 idempotency result for key %s: %s", key, e)
 
 
 store_idempotency_result = save_idempotency_result
@@ -143,41 +203,46 @@ return 0
 """
 
 
-async def clear_idempotency_key(
-    key: str,
-    tenant_id: Optional[str] = None
-) -> None:
-    """
-    Atomically clears an in-flight idempotency key so failed requests can be safely retried
-    without being locked out for 24 hours, while never deleting a COMPLETED cache entry.
-    """
-    if not key:
-        return
-
-    redis_key = f"idemp:{tenant_id}:{key}" if tenant_id else f"idemp:{key}"
-
+async def _clear_redis_only(redis_key: str, redis_client: Any = None) -> None:
     try:
-        r = await get_async_redis_client()
+        r = redis_client or await get_async_redis_client()
         if not r:
             return
-
         if hasattr(r, "eval"):
             try:
-                deleted = await r.eval(_LUA_DELETE_IF_IN_FLIGHT, 1, redis_key)
-                if deleted:
-                    logger.debug(f"Atomically cleared in-flight idempotency key: {key}")
+                await r.eval(_LUA_DELETE_IF_IN_FLIGHT, 1, redis_key)
                 return
             except Exception:
                 pass
-
         val = await r.get(redis_key)
         if val:
             data = json.loads(val)
             if data.get("status") == "IN_FLIGHT":
                 await r.delete(redis_key)
-                logger.debug(f"Cleared in-flight idempotency key: {key}")
-    except Exception as e:
-        logger.warning(f"Failed to clear idempotency key {key}: {e}")
+    except Exception:
+        pass
+
+
+async def clear_idempotency_key(
+    key: str,
+    tenant_id: Optional[str] = None,
+) -> None:
+    """
+    Atomically clears an in-flight idempotency key from both L1 Redis and L2 PostgreSQL
+    so failed requests can be safely retried without ever deleting a COMPLETED entry.
+    """
+    if not key:
+        return
+
+    redis_key = f"idemp:{tenant_id}:{key}" if tenant_id else f"idemp:{key}"
+    scope, pure_key = _split_scope_and_key(key)
+
+    await release_in_flight_db_idempotency(
+        tenant_id=tenant_id,
+        scope=scope,
+        idempotency_key=pure_key,
+    )
+    await _clear_redis_only(redis_key)
 
 
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -214,10 +279,11 @@ async def run_idempotent_operation(
     ttl_seconds: int = DEFAULT_IDEMPOTENCY_TTL_SECONDS,
 ) -> Any:
     """
-    Executes a state-mutating compliance operation under Redis-backed idempotency protection.
+    Executes a state-mutating compliance operation under dual-layer (Redis + PostgreSQL)
+    idempotency protection.
       - When `request` is present and `required=True`, enforces a valid `Idempotency-Key` header
         (HTTP 400 Bad Request if missing or malformed).
-      - Replays cached completed responses with `Idempotency-Replayed: true`.
+      - Replays cached/persisted completed responses with `Idempotency-Replayed: true`.
       - Returns HTTP 409 Conflict for concurrent duplicate in-flight keys and HTTP 422 on payload mismatch.
       - Atomically clears in-flight locks on error so callers can safely retry.
     """

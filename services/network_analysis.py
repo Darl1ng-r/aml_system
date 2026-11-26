@@ -498,13 +498,23 @@ async def run_network_analysis(
     intermediaries, gds_success = await _detect_gds_betweenness(driver, tenant_id=tenant_id)
 
     if not cypher_degrees_success or not cypher_cycles_success or not gds_success:
+        from services.compute_executor import run_analytics_compute
+
         graph = await fetch_transaction_graph(tenant_id=tenant_id, limit=2000, window_hours=window_hours)
-        if not cypher_cycles_success:
-            circular_flows = _compute_tarjan_cycle_fallback(graph)
-        if not cypher_degrees_success:
-            fan_in_nodes, fan_out_nodes = _compute_degree_fallback(graph)
-        if not gds_success:
-            intermediaries = _compute_centrality_fallback(graph)
+
+        def _compute_fallbacks():
+            c_flows = _compute_tarjan_cycle_fallback(graph) if not cypher_cycles_success else None
+            deg = _compute_degree_fallback(graph) if not cypher_degrees_success else None
+            cent = _compute_centrality_fallback(graph) if not gds_success else None
+            return c_flows, deg, cent
+
+        fb_cycles, fb_deg, fb_cent = await run_analytics_compute(_compute_fallbacks, timeout=15.0)
+        if fb_cycles is not None:
+            circular_flows = fb_cycles
+        if fb_deg is not None:
+            fan_in_nodes, fan_out_nodes = fb_deg
+        if fb_cent is not None:
+            intermediaries = fb_cent
 
     return {
         "circular_flows": circular_flows,

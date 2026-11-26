@@ -1,188 +1,109 @@
 """
-Deterministic Compliance State Machine Engine (GAP-FSM)
-=========================================================
-Enforces strict, non-bypassable lifecycle state transitions for AML Cases,
-Alerts, and SAR Filings to prevent illegal state jumps, phantom resolutions,
-and compliance audit trail tampering.
+Deterministic Compliance State Machine Adapter (GAP-FSM)
+========================================================
+Thin FastAPI HTTP adapter over the pure, zero-I/O state machine engine in
+`domain/state_machine.py`. Translates domain state violations into RFC-compliant
+HTTP 400 (illegal/terminal transition) and HTTP 409 (corrupted persisted state)
+responses while preserving 100% backward compatibility.
 """
 
-from enum import Enum
-from typing import Dict, Set, Optional, List
-from fastapi import HTTPException, status
 import logging
+from fastapi import HTTPException, status
+
+from domain.state_machine import (
+    ALERT_TRANSITIONS,
+    AlertStatus,
+    CASE_TRANSITIONS,
+    CTR_TRANSITIONS,
+    CTRFilingStatus,
+    CaseStatus,
+    CorruptedDomainStateError,
+    DomainStateTransitionError,
+    RFI_TRANSITIONS,
+    RFIStatus,
+    SAR_DRAFT_TRANSITIONS,
+    SARDraftStatus,
+    validate_alert_transition_pure,
+    validate_case_transition_pure,
+    validate_ctr_transition_pure,
+    validate_rfi_transition_pure,
+    validate_sar_draft_transition_pure,
+)
 
 logger = logging.getLogger(__name__)
 
-
-class CaseStatus(str, Enum):
-    OPEN = "OPEN"
-    IN_REVIEW = "IN_REVIEW"
-    INVESTIGATING = "INVESTIGATING"
-    PENDING_EDD = "PENDING_EDD"
-    PENDING_SAR = "PENDING_SAR"
-    CLOSED = "CLOSED"
-
-
-# Formal Case Transition Table
-CASE_TRANSITIONS: Dict[CaseStatus, Set[CaseStatus]] = {
-    CaseStatus.OPEN: {
-        CaseStatus.IN_REVIEW,
-        CaseStatus.INVESTIGATING,
-        CaseStatus.PENDING_EDD,
-        CaseStatus.CLOSED,
-    },
-    CaseStatus.IN_REVIEW: {
-        CaseStatus.INVESTIGATING,
-        CaseStatus.PENDING_EDD,
-        CaseStatus.PENDING_SAR,
-        CaseStatus.CLOSED,
-    },
-    CaseStatus.INVESTIGATING: {
-        CaseStatus.PENDING_EDD,
-        CaseStatus.PENDING_SAR,
-        CaseStatus.CLOSED,
-    },
-    CaseStatus.PENDING_EDD: {
-        CaseStatus.IN_REVIEW,
-        CaseStatus.INVESTIGATING,
-        CaseStatus.PENDING_SAR,
-        CaseStatus.CLOSED,
-    },
-    CaseStatus.PENDING_SAR: {
-        CaseStatus.CLOSED,
-    },
-    CaseStatus.CLOSED: set(),  # Terminal: Cannot reopen a closed case directly
-}
+__all__ = [
+    "ALERT_TRANSITIONS",
+    "AlertStatus",
+    "CASE_TRANSITIONS",
+    "CTR_TRANSITIONS",
+    "CTRFilingStatus",
+    "CaseStatus",
+    "RFI_TRANSITIONS",
+    "RFIStatus",
+    "SAR_DRAFT_TRANSITIONS",
+    "SARDraftStatus",
+    "validate_alert_transition",
+    "validate_case_transition",
+    "validate_ctr_transition",
+    "validate_rfi_transition",
+    "validate_sar_draft_transition",
+]
 
 
-class AlertStatus(str, Enum):
-    NEW = "NEW"
-    OPEN = "OPEN"
-    CLAIMED = "CLAIMED"
-    IN_REVIEW = "IN_REVIEW"
-    ESCALATED = "ESCALATED"
-    PENDING_SAR = "PENDING_SAR"
-    CLOSED_SAR = "CLOSED_SAR"
-    CLOSED_FALSE_POSITIVE = "CLOSED_FALSE_POSITIVE"
-    CLOSED = "CLOSED"
-
-
-# Formal Alert Transition Table
-ALERT_TRANSITIONS: Dict[AlertStatus, Set[AlertStatus]] = {
-    AlertStatus.NEW: {
-        AlertStatus.OPEN,
-        AlertStatus.CLAIMED,
-        AlertStatus.IN_REVIEW,
-        AlertStatus.ESCALATED,
-    },
-    AlertStatus.OPEN: {
-        AlertStatus.CLAIMED,
-        AlertStatus.IN_REVIEW,
-        AlertStatus.ESCALATED,
-        AlertStatus.CLOSED_SAR,
-        AlertStatus.CLOSED_FALSE_POSITIVE,
-    },
-    AlertStatus.CLAIMED: {
-        AlertStatus.IN_REVIEW,
-        AlertStatus.ESCALATED,
-        AlertStatus.CLOSED_SAR,
-        AlertStatus.CLOSED_FALSE_POSITIVE,
-    },
-    AlertStatus.IN_REVIEW: {
-        AlertStatus.ESCALATED,
-        AlertStatus.PENDING_SAR,
-        AlertStatus.CLOSED_SAR,
-        AlertStatus.CLOSED_FALSE_POSITIVE,
-    },
-    AlertStatus.ESCALATED: {
-        AlertStatus.PENDING_SAR,
-        AlertStatus.CLOSED_SAR,
-        AlertStatus.CLOSED_FALSE_POSITIVE,
-    },
-    AlertStatus.PENDING_SAR: {
-        AlertStatus.CLOSED_SAR,
-        AlertStatus.CLOSED_FALSE_POSITIVE,
-        AlertStatus.CLOSED,
-    },
-    AlertStatus.CLOSED_SAR: set(),             # Terminal
-    AlertStatus.CLOSED_FALSE_POSITIVE: set(),  # Terminal
-    AlertStatus.CLOSED: set(),                 # Terminal
-}
+def _translate_fsm_call(fn, current_status: str, target_status: str) -> None:
+    try:
+        fn(current_status, target_status)
+    except CorruptedDomainStateError as exc:
+        logger.error("Corrupted or unrecognized current %s state: %s", exc.entity_type, exc.current_state)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except DomainStateTransitionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 def validate_case_transition(current_status: str, target_status: str) -> None:
     """Validates that a Case state transition conforms to the deterministic transition matrix."""
-    try:
-        current_enum = CaseStatus(current_status.upper())
-    except ValueError:
-        logger.error(f"Corrupted or unrecognized current case state: {current_status}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Corrupted or unrecognized current case state: '{current_status}'. Manual admin review required."
-        )
-
-    try:
-        target_enum = CaseStatus(target_status.upper())
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid target case status: '{target_status}'. Must be one of {[s.value for s in CaseStatus]}."
-        )
-
-    if current_enum == CaseStatus.CLOSED:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Deterministic state guard violation: Case is already CLOSED and cannot be modified."
-        )
-
-    if current_enum == target_enum:
-        return
-
-    allowed = CASE_TRANSITIONS.get(current_enum, set())
-    if target_enum not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Illegal Case state transition from '{current_enum.value}' to '{target_enum.value}'. "
-                f"Permitted next states: {[s.value for s in allowed]}."
-            )
-        )
+    _translate_fsm_call(validate_case_transition_pure, current_status, target_status)
 
 
 def validate_alert_transition(current_status: str, target_status: str) -> None:
     """Validates that an Alert state transition conforms to the deterministic transition matrix."""
+    _translate_fsm_call(validate_alert_transition_pure, current_status, target_status)
+
+
+def validate_sar_draft_transition(
+    current_status: str,
+    target_status: str,
+    *,
+    allow_noop: bool = True,
+) -> None:
+    """Validates that a SAR Draft state transition conforms to the deterministic transition matrix."""
     try:
-        current_enum = AlertStatus(current_status.upper())
-    except ValueError:
-        logger.error(f"Corrupted or unrecognized current alert state: {current_status}")
+        validate_sar_draft_transition_pure(current_status, target_status, allow_noop=allow_noop)
+    except CorruptedDomainStateError as exc:
+        logger.error("Corrupted or unrecognized current %s state: %s", exc.entity_type, exc.current_state)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Corrupted or unrecognized current alert state: '{current_status}'. Manual admin review required."
-        )
-
-    try:
-        target_enum = AlertStatus(target_status.upper())
-    except ValueError:
+            detail=str(exc),
+        ) from exc
+    except DomainStateTransitionError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid target alert status: '{target_status}'. Must be one of {[s.value for s in AlertStatus]}."
-        )
+            detail=str(exc),
+        ) from exc
 
-    if current_enum in {AlertStatus.CLOSED_SAR, AlertStatus.CLOSED_FALSE_POSITIVE, AlertStatus.CLOSED}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Deterministic state guard violation: Alert is already terminal ('{current_enum.value}') and cannot be transitioned."
-        )
 
-    if current_enum == target_enum:
-        return
+def validate_ctr_transition(current_status: str, target_status: str) -> None:
+    """Validates that a CTR Filing state transition conforms to the deterministic transition matrix."""
+    _translate_fsm_call(validate_ctr_transition_pure, current_status, target_status)
 
-    allowed = ALERT_TRANSITIONS.get(current_enum, set())
-    if target_enum not in allowed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"Illegal Alert state transition from '{current_enum.value}' to '{target_enum.value}'. "
-                f"Permitted next states: {[s.value for s in allowed]}."
-            )
-        )
+
+def validate_rfi_transition(current_status: str, target_status: str) -> None:
+    """Validates that an External RFI state transition conforms to the deterministic transition matrix."""
+    _translate_fsm_call(validate_rfi_transition_pure, current_status, target_status)

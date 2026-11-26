@@ -9,6 +9,12 @@ Provides standard Prometheus metrics tracking for compliance, SLOs, and alerting
 - transactions_scored_total{threat_level}
 - rules_triggered_total{rule_name}
 - outbox_pending_events
+- asyncio_event_loop_lag_seconds / asyncio_event_loop_lag_current_seconds
+- logic_rule_evaluation_duration_seconds
+- logic_ml_inference_duration_seconds{model, status}
+- logic_rule_degraded_total{rule_name}
+- logic_idempotency_conflicts_total{layer, outcome}
+- compute_executor_active_tasks{pool}
 
 Supports shared-memory multi-process mode via PROMETHEUS_MULTIPROC_DIR.
 """
@@ -21,10 +27,12 @@ from prometheus_client import (
     CollectorRegistry,
     generate_latest,
     multiprocess,
-    REGISTRY
+    REGISTRY,
 )
 
 DURATION_BUCKETS = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+LAG_BUCKETS = (0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0)
+FAST_LOGIC_BUCKETS = (0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5)
 
 _is_multiproc = "PROMETHEUS_MULTIPROC_DIR" in os.environ
 
@@ -106,6 +114,50 @@ outbox_pending_events = _get_or_create_gauge(
     "Current count of pending/processing events in the transactional outbox.",
 )
 
+# ── Logic Pillar Runtime, Compute & Reliability SLIs ──────────────────────────
+
+asyncio_event_loop_lag_seconds = _get_or_create_histogram(
+    "asyncio_event_loop_lag_seconds",
+    "Observed asyncio event loop scheduling lag in seconds.",
+    buckets=LAG_BUCKETS,
+)
+
+asyncio_event_loop_lag_current_seconds = _get_or_create_gauge(
+    "asyncio_event_loop_lag_current_seconds",
+    "Most recent observed asyncio event loop scheduling lag in seconds.",
+)
+
+logic_rule_evaluation_duration_seconds = _get_or_create_histogram(
+    "logic_rule_evaluation_duration_seconds",
+    "End-to-end AML rules evaluation duration in seconds.",
+    buckets=FAST_LOGIC_BUCKETS,
+)
+
+logic_ml_inference_duration_seconds = _get_or_create_histogram(
+    "logic_ml_inference_duration_seconds",
+    "ML risk inference duration in seconds by model and outcome status.",
+    ["model", "status"],
+    buckets=FAST_LOGIC_BUCKETS,
+)
+
+logic_rule_degraded_total = _get_or_create_counter(
+    "logic_rule_degraded_total",
+    "Total degraded AML rule evaluations caused by downstream dependency failures.",
+    ["rule_name"],
+)
+
+logic_idempotency_conflicts_total = _get_or_create_counter(
+    "logic_idempotency_conflicts_total",
+    "Total idempotency cache hits, conflicts, mismatches, and L2 PostgreSQL fallbacks.",
+    ["layer", "outcome"],
+)
+
+compute_executor_active_tasks = _get_or_create_gauge(
+    "compute_executor_active_tasks",
+    "Current active tasks executing in bounded bulkhead compute executors.",
+    ["pool"],
+)
+
 
 def record_http_request(method: str, endpoint: str, status_code: int, duration_seconds: float):
     """Records an incoming HTTP request execution."""
@@ -139,6 +191,45 @@ def record_rule_triggered(rule_name: str):
 def set_outbox_pending_events(count: int):
     if outbox_pending_events:
         outbox_pending_events.set(max(0, int(count)))
+
+
+def record_event_loop_lag(lag_seconds: float):
+    val = max(0.0, float(lag_seconds))
+    if asyncio_event_loop_lag_seconds:
+        asyncio_event_loop_lag_seconds.observe(val)
+    if asyncio_event_loop_lag_current_seconds:
+        asyncio_event_loop_lag_current_seconds.set(val)
+
+
+def record_rule_evaluation_duration(duration_seconds: float):
+    if logic_rule_evaluation_duration_seconds:
+        logic_rule_evaluation_duration_seconds.observe(max(0.0, float(duration_seconds)))
+
+
+def record_ml_inference_duration(model: str, status: str, duration_seconds: float):
+    if logic_ml_inference_duration_seconds:
+        logic_ml_inference_duration_seconds.labels(model=str(model), status=str(status)).observe(
+            max(0.0, float(duration_seconds))
+        )
+
+
+def record_rule_degraded(rule_name: str):
+    if logic_rule_degraded_total:
+        logic_rule_degraded_total.labels(rule_name=str(rule_name)).inc()
+
+
+def record_idempotency_event(layer: str, outcome: str):
+    if logic_idempotency_conflicts_total:
+        logic_idempotency_conflicts_total.labels(layer=str(layer), outcome=str(outcome)).inc()
+
+
+def update_executor_active_tasks(pool: str, delta: int):
+    if compute_executor_active_tasks:
+        gauge = compute_executor_active_tasks.labels(pool=str(pool))
+        if delta > 0:
+            gauge.inc(delta)
+        elif delta < 0:
+            gauge.dec(abs(delta))
 
 
 def generate_metrics_text() -> str:

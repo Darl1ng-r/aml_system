@@ -1,20 +1,30 @@
 """
-Correlation-ID Middleware
-==========================
-Generates (or extracts from the incoming ``X-Correlation-ID`` header) a unique
-correlation ID and stores it in a ``contextvars.ContextVar`` so that every log
-line emitted during the request lifetime carries the same ID.
-
-The ID is also returned to the client via the ``X-Correlation-ID`` response
-header, making end-to-end request tracing trivial.
+Pure-ASGI Correlation-ID, Telemetry & Request-Deadline Middleware
+=================================================================
+1. `CorrelationIdMiddleware`: Pure ASGI middleware (eliminates Starlette
+   `BaseHTTPMiddleware` streaming buffer overhead while keeping a `.dispatch()`
+   compatibility helper for unit tests). Extracts/generates `X-Correlation-ID`,
+   resets `tenant_id_var` and `user_id_var` fail-closed, echoes the header, and
+   records normalized Prometheus HTTP metrics.
+2. `RequestTimeoutMiddleware`: Pure ASGI request-deadline guard that bounds
+   runaway HTTP handlers (default 20s; 60s for export/packet/backtest/network
+   endpoints), returning structured HTTP 504 Gateway Timeout with correlation ID.
 """
 
-import contextvars
-import uuid
+from __future__ import annotations
 
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+import asyncio
+import contextvars
+import json
+import re
+import time
+import uuid
+from typing import Callable, Awaitable
+
+from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 # ContextVar accessible from logging filters, services, etc.
 correlation_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -27,13 +37,17 @@ user_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "user_id", default=""
 )
 
-
-import time
-import re
-
 _UUID_REGEX = re.compile(r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _NUMERIC_ID_REGEX = re.compile(r"/\d+")
 _CORRELATION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
+
+_EXTENDED_TIMEOUT_MARKERS = (
+    "/export/",
+    "/examiner-packet",
+    "/backtest",
+    "/network",
+    "/watchlist/sync",
+)
 
 
 def sanitize_correlation_id(raw: str | None) -> str:
@@ -43,33 +57,89 @@ def sanitize_correlation_id(raw: str | None) -> str:
     return str(uuid.uuid4())
 
 
-def normalize_metric_path(request: Request) -> str:
-    """Normalizes URL paths to prevent Prometheus metric label cardinality explosion."""
-    route = request.scope.get("route")
+def _normalize_scope_path(scope: Scope) -> str:
+    route = scope.get("route")
     if route and hasattr(route, "path"):
         return getattr(route, "path")
-    path = request.scope.get("path") or (request.url.path if hasattr(request, "url") else "")
+    path = scope.get("path") or ""
     path = _UUID_REGEX.sub("/{id}", path)
     path = _NUMERIC_ID_REGEX.sub("/{id}", path)
     return path
 
 
-class CorrelationIdMiddleware(BaseHTTPMiddleware):
+def normalize_metric_path(request: Request) -> str:
+    """Normalizes URL paths to prevent Prometheus metric label cardinality explosion."""
+    return _normalize_scope_path(request.scope)
+
+
+def _extract_header_from_scope(scope: Scope, target_name: bytes) -> str | None:
+    for k, v in scope.get("headers") or ():
+        if k.lower() == target_name:
+            try:
+                return v.decode("latin-1")
+            except Exception:
+                return None
+    return None
+
+
+class CorrelationIdMiddleware:
     """
-    FastAPI / Starlette middleware that:
+    Pure-ASGI FastAPI / Starlette middleware that:
     1. Reads ``X-Correlation-ID`` from the request (or generates a UUID4).
     2. Stores ``correlation_id_var``, ``tenant_id_var``, and ``user_id_var`` in contextvars.
-    3. Echoes ``X-Correlation-ID`` back in the response headers.
+    3. Echoes ``X-Correlation-ID`` back in response headers without buffering streams.
     4. Records Prometheus HTTP request counts and latency metrics.
     """
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        cid = sanitize_correlation_id(request.headers.get("x-correlation-id"))
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        raw_cid = _extract_header_from_scope(scope, b"x-correlation-id")
+        cid = sanitize_correlation_id(raw_cid)
 
         # Security: Never trust raw unauthenticated X-Tenant-ID headers in log context.
-        # tenant_id_var & user_id_var are populated strictly after JWT/gateway verification.
+        tok_cid = correlation_id_var.set(cid)
+        tok_tid = tenant_id_var.set("")
+        tok_uid = user_id_var.set("")
+
+        t0 = time.monotonic()
+        status_code = 500
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message.get("status", 200))
+                headers = MutableHeaders(scope=message)
+                headers["X-Correlation-ID"] = cid
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            duration = time.monotonic() - t0
+            endpoint = _normalize_scope_path(scope)
+            method = scope.get("method", "GET")
+            try:
+                from observability.prometheus import record_http_request
+                record_http_request(method, endpoint, status_code, duration)
+            except Exception:
+                pass
+            correlation_id_var.reset(tok_cid)
+            tenant_id_var.reset(tok_tid)
+            user_id_var.reset(tok_uid)
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Backward-compatible helper for unit tests invoking `.dispatch()` directly."""
+        cid = sanitize_correlation_id(request.headers.get("x-correlation-id"))
         correlation_id_var.set(cid)
         tenant_id_var.set("")
         user_id_var.set("")
@@ -78,7 +148,6 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             duration = time.monotonic() - t0
-            # Normalize AFTER call_next() so request.scope["route"] is populated
             endpoint = normalize_metric_path(request)
             response.headers["X-Correlation-ID"] = cid
             try:
@@ -96,3 +165,67 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
             except Exception:
                 pass
             raise exc
+
+
+class RequestTimeoutMiddleware:
+    """
+    Pure-ASGI request deadline guard preventing runaway computations from tying up
+    worker slots indefinitely. Skips WebSockets and already-started streaming responses.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        default_timeout_seconds: float = 20.0,
+        extended_timeout_seconds: float = 60.0,
+    ) -> None:
+        self.app = app
+        self.default_timeout_seconds = max(1.0, float(default_timeout_seconds))
+        self.extended_timeout_seconds = max(self.default_timeout_seconds, float(extended_timeout_seconds))
+
+    def _deadline_for_path(self, path: str) -> float:
+        lower = (path or "").lower()
+        for marker in _EXTENDED_TIMEOUT_MARKERS:
+            if marker in lower:
+                return self.extended_timeout_seconds
+        return self.default_timeout_seconds
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        deadline = self._deadline_for_path(path)
+        response_started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await asyncio.wait_for(self.app(scope, receive, tracking_send), timeout=deadline)
+        except asyncio.TimeoutError:
+            if response_started:
+                return
+            cid = correlation_id_var.get("") or str(uuid.uuid4())
+            payload = json.dumps(
+                {
+                    "detail": f"Request exceeded server deadline ({deadline:.0f}s).",
+                    "correlation_id": cid,
+                }
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 504,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"x-correlation-id", cid.encode("latin-1")),
+                        (b"content-length", str(len(payload)).encode("ascii")),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": payload})
