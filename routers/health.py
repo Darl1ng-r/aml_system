@@ -1,14 +1,9 @@
 """
 Hardened Health Check Endpoints
 ================================
-Provides secure, topology-masked, timeout-bounded health endpoints:
-  - `/health/live`: Lightweight liveness probe (200 OK).
-  - `/health/ready`: Decoupled K8s readiness probe with explicit acquire(timeout=2.0)
-    plus Tier-1 Redis verification in hardened environments; returns opaque status.
-  - `/health`: Deep readiness probe rate-limited & cached (5s TTL) to prevent DoS;
-    respects `enable_neo4j` / `enable_elasticsearch` flags; restricts diagnostic
-    breakdown to `X-Health-Token` or revoked-checked `SUPER_ADMIN` JWT and NEVER
-    exposes raw `str(e)` driver errors (fixes P1-06, P2-03, P2-17, P2-22).
+Thin HTTP controller for liveness, event-loop-aware readiness, deep cached
+health probes, system topology, and streaming queue telemetry.
+All PostgreSQL queries live in `repositories/ops_repo.py`.
 """
 
 import asyncio
@@ -23,16 +18,14 @@ from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 
 from config import settings
+from repositories.ops_repo import fetch_queue_health_counts_repo, ping_postgres_pool_repo
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
-SQL_PING_QUERY = "SELECT 1"
-
 router = APIRouter(tags=["Health"])
 
-# Short 5s cache for deep /health checks to prevent unauthenticated DB/Redis ping amplification
 _HEALTH_CACHE_TTL_SECONDS = 5.0
 _health_cache_ts: float = 0.0
 _health_cache_result: Optional[tuple[bool, dict[str, dict[str, Any]]]] = None
@@ -42,11 +35,6 @@ async def is_authenticated_health_request(
     authorization: Optional[str] = Header(None),
     x_health_token: Optional[str] = Header(None),
 ) -> bool:
-    """
-    Validates diagnostic clearance for `/health`:
-      1. Constant-time match against HEALTH_CHECK_SECRET via X-Health-Token
-      2. Active (non-revoked) SUPER_ADMIN access JWT (strictly `type == 'access'`)
-    """
     health_secret = os.getenv("HEALTH_CHECK_SECRET")
     if health_secret and x_health_token and hmac.compare_digest(x_health_token, health_secret):
         return True
@@ -54,8 +42,8 @@ async def is_authenticated_health_request(
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:].strip()
         try:
-            from services.secrets_manager import decode_jwt_with_rotation
             from services.auth import _is_jti_revoked, _verify_token_version
+            from services.secrets_manager import decode_jwt_with_rotation
 
             payload = decode_jwt_with_rotation(token, algorithm=settings.jwt_algorithm)
             if payload.get("type") != "access":
@@ -85,12 +73,7 @@ async def liveness():
 
 @router.get("/health/ready")
 async def readiness_probe():
-    """
-    Decoupled readiness probe for Kubernetes.
-    Fails fast (503) on asyncio event-loop saturation (>=500ms lag), then checks
-    PostgreSQL (2s acquire timeout) and Tier-1 Redis (1.5s timeout in hardened envs).
-    Never exposes internal pool/driver details.
-    """
+    """Decoupled readiness probe failing fast (503) on event-loop saturation or DB/Redis outage."""
     try:
         from observability.event_loop_monitor import (
             is_event_loop_saturated,
@@ -106,14 +89,11 @@ async def readiness_probe():
             logger.warning("Readiness probe failed fast: event loop tick lag %.1fms >= 500ms.", live_lag * 1000.0)
             return JSONResponse(content={"status": "not_ready"}, status_code=503)
 
-        from database.postgres import db_pool
-        if db_pool is None:
-            return JSONResponse(content={"status": "not_ready"}, status_code=503)
-        async with db_pool.acquire(timeout=2.0) as conn:
-            await asyncio.wait_for(conn.fetchval(SQL_PING_QUERY), timeout=2.0)
+        await ping_postgres_pool_repo(timeout=2.0)
 
         if getattr(settings, "is_hardened", settings.is_production):
             from database.redis_db import get_async_redis_client
+
             redis_client = await get_async_redis_client()
             if redis_client is None:
                 return JSONResponse(content={"status": "not_ready"}, status_code=503)
@@ -136,7 +116,6 @@ async def _run_deep_health_checks() -> tuple[bool, dict[str, dict[str, Any]]]:
     checks: dict[str, dict[str, Any]] = {}
     all_healthy = True
 
-    # ── AsyncIO Event-Loop Health ─────────────────────────────────────────
     try:
         from observability.event_loop_monitor import get_event_loop_health, is_event_loop_saturated
 
@@ -151,22 +130,14 @@ async def _run_deep_health_checks() -> tuple[bool, dict[str, dict[str, Any]]]:
     except Exception:
         pass
 
-    # ── PostgreSQL ────────────────────────────────────────────────────────
     try:
-        from database.postgres import db_pool
-
-        t0 = time.monotonic()
-        if db_pool is None:
-            raise RuntimeError("Connection pool not initialised")
-        async with db_pool.acquire(timeout=2.0) as conn:
-            await asyncio.wait_for(conn.fetchval(SQL_PING_QUERY), timeout=2.0)
-        checks["postgres"] = {"status": "ok", "latency_ms": round((time.monotonic() - t0) * 1000, 1)}
+        pg_stats = await ping_postgres_pool_repo(timeout=2.0)
+        checks["postgres"] = {"status": "ok", "latency_ms": pg_stats["latency_ms"]}
     except Exception as e:
         logger.warning("Health check PostgreSQL failed: %s", e)
         checks["postgres"] = {"status": "error", "detail": "Service unavailable"}
         all_healthy = False
 
-    # ── Redis ─────────────────────────────────────────────────────────────
     try:
         from database.redis_db import get_async_redis_client
 
@@ -179,7 +150,6 @@ async def _run_deep_health_checks() -> tuple[bool, dict[str, dict[str, Any]]]:
         checks["redis"] = {"status": "error", "detail": "Service unavailable"}
         all_healthy = False
 
-    # ── Neo4j (only checked when enabled — fixes P2-22) ───────────────────
     if getattr(settings, "enable_neo4j", False):
         try:
             from database.neo4j_db import get_async_neo4j_driver
@@ -196,7 +166,6 @@ async def _run_deep_health_checks() -> tuple[bool, dict[str, dict[str, Any]]]:
     else:
         checks["neo4j"] = {"status": "disabled"}
 
-    # ── Elasticsearch (only checked when enabled — fixes P2-22) ───────────
     if getattr(settings, "enable_elasticsearch", False):
         try:
             from database.elasticsearch_db import get_async_elasticsearch_client
@@ -245,35 +214,20 @@ async def get_system_topology_health(
     current_user: dict = Depends(RoleChecker(["ADMIN", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
-    """
-    Exposes institutional component health, pool utilization, and latencies
-    for the Admin System Health command center without leaking raw driver exceptions.
-    """
+    """Exposes institutional component health, pool utilization, and latencies."""
     is_super_admin = str(current_user.get("role", "")).upper() == "SUPER_ADMIN"
     services: dict[str, Any] = {}
 
-    # 1. PostgreSQL
     try:
-        from database.postgres import db_pool
-        t0 = time.monotonic()
-        if db_pool:
-            async with db_pool.acquire(timeout=2.0) as conn:
-                await asyncio.wait_for(conn.fetchval(SQL_PING_QUERY), timeout=2.0)
-            pool_size = (
-                db_pool.get_size()
-                if callable(getattr(db_pool, "get_size", None))
-                else getattr(db_pool, "_size", None)
-            )
-            free_conns = (
-                db_pool.get_idle_size()
-                if callable(getattr(db_pool, "get_idle_size", None))
-                else getattr(db_pool, "_free", None)
-            )
+        import database.postgres as _pg
+
+        if _pg.db_pool:
+            pg_stats = await ping_postgres_pool_repo(timeout=2.0)
             services["postgres"] = {
                 "status": "UP",
-                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
-                "pool_size": pool_size,
-                "free_connections": free_conns,
+                "latency_ms": pg_stats["latency_ms"],
+                "pool_size": pg_stats["pool_size"],
+                "free_connections": pg_stats["free_connections"],
             }
         else:
             services["postgres"] = {"status": "DEGRADED", "detail": "Pool not initialized"}
@@ -281,9 +235,9 @@ async def get_system_topology_health(
         logger.warning("System topology PostgreSQL probe failed: %s", e)
         services["postgres"] = {"status": "DOWN", "error": "Service check failed"}
 
-    # 2. Redis
     try:
         from database.redis_db import get_async_redis_client
+
         t0 = time.monotonic()
         redis_client = await get_async_redis_client()
         if redis_client:
@@ -299,10 +253,10 @@ async def get_system_topology_health(
         logger.warning("System topology Redis probe failed: %s", e)
         services["redis"] = {"status": "DOWN", "error": "Service check failed"}
 
-    # 3. Elasticsearch
     if getattr(settings, "enable_elasticsearch", False):
         try:
             from database.elasticsearch_db import get_async_elasticsearch_client
+
             t0 = time.monotonic()
             es = await get_async_elasticsearch_client()
             if es:
@@ -320,10 +274,10 @@ async def get_system_topology_health(
     else:
         services["elasticsearch"] = {"status": "DISABLED"}
 
-    # 4. Neo4j
     if getattr(settings, "enable_neo4j", False):
         try:
             from database.neo4j_db import get_async_neo4j_driver
+
             t0 = time.monotonic()
             driver = await get_async_neo4j_driver()
             if driver:
@@ -341,12 +295,12 @@ async def get_system_topology_health(
     else:
         services["neo4j"] = {"status": "DISABLED"}
 
-    # 5. Redpanda / Kafka Messaging Bus (live TCP reachability probe)
     from config import KAFKA_BOOTSTRAP_SERVERS, TRANSACTIONS_TOPIC
+
     try:
         t0 = time.monotonic()
         first_broker = str(KAFKA_BOOTSTRAP_SERVERS).split(",")[0].strip()
-        host, port_str = (first_broker.rsplit(":", 1) if ":" in first_broker else (first_broker, "9092"))
+        host, port_str = first_broker.rsplit(":", 1) if ":" in first_broker else (first_broker, "9092")
         _reader, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port_str)), timeout=1.5)
         writer.close()
         await writer.wait_closed()
@@ -384,8 +338,7 @@ async def get_queue_health(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Returns tenant-scoped streaming queue & outbox telemetry without leaking raw exceptions."""
-    from database.postgres import get_async_db_conn
-    from config import TRANSACTIONS_TOPIC, KAFKA_BOOTSTRAP_SERVERS
+    from config import KAFKA_BOOTSTRAP_SERVERS, TRANSACTIONS_TOPIC
 
     tenant_id = enforce_tenant_data_scope(current_user)
     is_super_admin = str(current_user.get("role", "")).upper() == "SUPER_ADMIN"
@@ -395,31 +348,9 @@ async def get_queue_health(
     tx_rate_per_sec = 0.0
     alert_rate_per_sec = 0.0
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            pending_outbox = await conn.fetchval(
-                "SELECT COUNT(*) FROM transactional_outbox WHERE tenant_id = $1::uuid AND status IN ('PENDING', 'PROCESSING');",
-                str(tenant_id),
-            )
-            if pending_outbox is None:
-                pending_outbox = 0
-            try:
-                published_60s = await conn.fetchval(
-                    """
-                    SELECT COUNT(*) FROM transactional_outbox
-                    WHERE tenant_id = $1::uuid AND status = 'PUBLISHED' AND updated_at >= NOW() - INTERVAL '60 seconds';
-                    """,
-                    str(tenant_id),
-                )
-                if isinstance(published_60s, (int, float)):
-                    tx_rate_per_sec = round(float(published_60s) / 60.0, 2)
-                alerts_60s = await conn.fetchval(
-                    "SELECT COUNT(*) FROM alerts WHERE tenant_id = $1::uuid AND created_at >= NOW() - INTERVAL '60 seconds';",
-                    str(tenant_id),
-                )
-                if isinstance(alerts_60s, (int, float)):
-                    alert_rate_per_sec = round(float(alerts_60s) / 60.0, 2)
-            except Exception:
-                pass
+        pending_outbox, tx_rate_per_sec, alert_rate_per_sec = await fetch_queue_health_counts_repo(
+            tenant_id=str(tenant_id),
+        )
     except Exception as exc:
         logger.exception("Failed to query queue health from transactional_outbox")
         if getattr(settings, "is_hardened", settings.is_production):
@@ -431,7 +362,7 @@ async def get_queue_health(
     broker_reachable = False
     try:
         first_broker = str(KAFKA_BOOTSTRAP_SERVERS).split(",")[0].strip()
-        host, port_str = (first_broker.rsplit(":", 1) if ":" in first_broker else (first_broker, "9092"))
+        host, port_str = first_broker.rsplit(":", 1) if ":" in first_broker else (first_broker, "9092")
         _r, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port_str)), timeout=1.0)
         writer.close()
         await writer.wait_closed()

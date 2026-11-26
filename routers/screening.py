@@ -1,22 +1,32 @@
-from fastapi import APIRouter, HTTPException, Depends
-from fastapi.params import Depends as DependsClass
-from pydantic import BaseModel
+"""
+Sanctions, PEP & Live Adverse Media Screening Router
+====================================================
+Thin HTTP controller for multi-tiered sanctions/PEP search and live OSINT
+adverse media screening.
+All PostgreSQL fallback queries live in `repositories/ops_repo.py`.
+"""
+
 import json
 import logging
-import rapidfuzz
-import uuid
+import re
+import unicodedata
 
-logger = logging.getLogger(__name__)
+import rapidfuzz
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
+
+from config import SANCTIONS_INDEX
 from database.elasticsearch_db import get_async_elasticsearch_client
 from database.redis_db import get_async_redis_client
-from config import SANCTIONS_INDEX
-from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
+from observability.sanitizer import sanitize_text
+from repositories.ops_repo import query_pep_entities_pg_repo
+from services.auth import RoleChecker, enforce_tenant_data_scope, get_current_user
 from services.rate_limiter import RateLimiter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/screening", tags=["Screening"])
 
-from pydantic import BaseModel, Field, field_validator
-from observability.sanitizer import sanitize_text
 
 class ScreeningRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
@@ -28,61 +38,52 @@ class ScreeningRequest(BaseModel):
     def sanitize_name(cls, v: str) -> str:
         return sanitize_text(v)
 
-import unicodedata
-import re
 
-# Mapping of common Cyrillic and Greek lookalike homoglyphs to ASCII Latin
 HOMOGLYPH_MAP = {
-    '\u0430': 'a', '\u0410': 'A',
-    '\u0435': 'e', '\u0415': 'E',
-    '\u043E': 'o', '\u041E': 'O',
-    '\u0440': 'p', '\u0420': 'P',
-    '\u0441': 'c', '\u0421': 'C',
-    '\u0442': 't', '\u0422': 'T',
-    '\u0443': 'y', '\u0423': 'Y',
-    '\u0445': 'x', '\u0425': 'X',
-    '\u0456': 'i', '\u0406': 'I',
-    '\u0458': 'j', '\u0408': 'J',
-    '\u0455': 's', '\u0405': 'S',
-    '\u0432': 'b', '\u0412': 'B',
-    '\u043C': 'm', '\u041C': 'M',
-    '\u043D': 'h', '\u041D': 'H',
-    '\u043A': 'k', '\u041A': 'K',
-    '\u0391': 'A', '\u03B1': 'a',
-    '\u0392': 'B', '\u03B2': 'b',
-    '\u0395': 'E', '\u03B5': 'e',
-    '\u0397': 'H', '\u03B7': 'h',
-    '\u0399': 'I', '\u03B9': 'i',
-    '\u039A': 'K', '\u03BA': 'k',
-    '\u039C': 'M',
-    '\u039D': 'N',
-    '\u039F': 'O', '\u03BF': 'o',
-    '\u03A1': 'P', '\u03C1': 'p',
-    '\u03A4': 'T', '\u03C4': 't',
-    '\u03A5': 'Y', '\u03C5': 'y',
-    '\u03A7': 'X', '\u03C7': 'x',
+    "\u0430": "a", "\u0410": "A",
+    "\u0435": "e", "\u0415": "E",
+    "\u043E": "o", "\u041E": "O",
+    "\u0440": "p", "\u0420": "P",
+    "\u0441": "c", "\u0421": "C",
+    "\u0442": "t", "\u0422": "T",
+    "\u0443": "y", "\u0423": "Y",
+    "\u0445": "x", "\u0425": "X",
+    "\u0456": "i", "\u0406": "I",
+    "\u0458": "j", "\u0408": "J",
+    "\u0455": "s", "\u0405": "S",
+    "\u0432": "b", "\u0412": "B",
+    "\u043C": "m", "\u041C": "M",
+    "\u043D": "h", "\u041D": "H",
+    "\u043A": "k", "\u041A": "K",
+    "\u0391": "A", "\u03B1": "a",
+    "\u0392": "B", "\u03B2": "b",
+    "\u0395": "E", "\u03B5": "e",
+    "\u0397": "H", "\u03B7": "h",
+    "\u0399": "I", "\u03B9": "i",
+    "\u039A": "K", "\u03BA": "k",
+    "\u039C": "M",
+    "\u039D": "N",
+    "\u039F": "O", "\u03BF": "o",
+    "\u03A1": "P", "\u03C1": "p",
+    "\u03A4": "T", "\u03C4": "t",
+    "\u03A5": "Y", "\u03C5": "y",
+    "\u03A7": "X", "\u03C7": "x",
 }
 HOMOGLYPH_TRANS = str.maketrans(HOMOGLYPH_MAP)
-ZERO_WIDTH_RE = re.compile(r'[\u200B-\u200D\uFEFF\u00A0\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]')
+ZERO_WIDTH_RE = re.compile(r"[\u200B-\u200D\uFEFF\u00A0\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]")
+
 
 def normalize_screening_name(text: str) -> str:
-    """
-    Strips zero-width characters, maps Cyrillic/Greek homoglyphs to Latin,
-    decomposes Unicode diacritics via NFKD, and returns clean lowercase string.
-    """
     if not text:
         return ""
-    cleaned = ZERO_WIDTH_RE.sub('', text)
+    cleaned = ZERO_WIDTH_RE.sub("", text)
     cleaned = cleaned.translate(HOMOGLYPH_TRANS)
-    nfkd = unicodedata.normalize('NFKD', cleaned)
-    stripped = ''.join(c for c in nfkd if unicodedata.category(c) != 'Mn')
-    return ' '.join(stripped.split()).lower()
+    nfkd = unicodedata.normalize("NFKD", cleaned)
+    stripped = "".join(c for c in nfkd if unicodedata.category(c) != "Mn")
+    return " ".join(stripped.split()).lower()
+
 
 def levenshtein_ratio(s1: str, s2: str) -> float:
-    """
-    Computes Levenshtein similarity ratio between s1 and s2 in range [0.0, 1.0]
-    using the high-performance C-optimized rapidfuzz library with adversarial homoglyph normalization.
-    """
     norm_s1 = normalize_screening_name(s1)
     norm_s2 = normalize_screening_name(s2)
     max_len = len(norm_s1) + len(norm_s2)
@@ -91,13 +92,8 @@ def levenshtein_ratio(s1: str, s2: str) -> float:
     dist = rapidfuzz.distance.Levenshtein.distance(norm_s1, norm_s2, weights=(1, 1, 2))
     return (max_len - dist) / max_len
 
+
 def name_similarity_score(s1: str, s2: str) -> float:
-    """
-    Computes comprehensive string and token similarity between two names in [0.0, 1.0]
-    combining homoglyph/diacritic normalization, Jaro-Winkler prefix weighting (LexisNexis standard),
-    Levenshtein edit distance, and token-order-independent matching (token_sort_ratio / token_set_ratio)
-    with asymmetric length-discounting to prevent false-positive inflation on short tokens.
-    """
     norm_s1 = normalize_screening_name(s1)
     norm_s2 = normalize_screening_name(s2)
     if not norm_s1 and not norm_s2:
@@ -108,18 +104,17 @@ def name_similarity_score(s1: str, s2: str) -> float:
     lev = levenshtein_ratio(norm_s1, norm_s2)
     jw = rapidfuzz.distance.JaroWinkler.similarity(norm_s1, norm_s2)
     token_sort = rapidfuzz.fuzz.token_sort_ratio(norm_s1, norm_s2) / 100.0
-    
+
     len_ratio = min(len(norm_s1), len(norm_s2)) / max(len(norm_s1), len(norm_s2))
     token_set = (rapidfuzz.fuzz.token_set_ratio(norm_s1, norm_s2) / 100.0) * (len_ratio ** 0.15)
-    
+
     return max(lev, jw, token_sort, token_set)
+
 
 OFAC_SDN_LIST = "OFAC SDN List"
 UN_SANCTIONS_LIST = "UN Consolidated Sanctions List"
-
 UNKNOWN_LIST = "Unknown List"
 
-# Reliable built-in sanctions baseline dataset for resilient offline / in-engine screening
 SANCTIONS_BASELINE = [
     {"name": "Vladimir Smirnov", "source_list": OFAC_SDN_LIST, "entity_type": "Individual", "program": "UKRAINE-EO13661"},
     {"name": "Wladimir Smirnow", "source_list": OFAC_SDN_LIST, "entity_type": "Individual", "program": "UKRAINE-EO13661"},
@@ -140,38 +135,6 @@ def _extract_candidate_names(source: dict) -> list[str]:
     elif isinstance(aliases, str):
         names_to_check.append(aliases)
     return [n for n in names_to_check if n]
-
-
-async def _query_pep_entities_pg(conn, name: str, tenant_id: str | None, columns: str):
-    search_pattern = f"%{name.strip()}%"
-    clean_name = name.strip()
-    if tenant_id:
-        try:
-            t_uuid = uuid.UUID(str(tenant_id))
-            return await conn.fetch(
-                f"""
-                SELECT {columns}
-                FROM pep_entities
-                WHERE (tenant_id = $1 OR tenant_id IS NULL)
-                  AND is_active = true
-                  AND (name ILIKE $2 OR $3 ILIKE '%' || name || '%')
-                LIMIT 100;
-                """,
-                t_uuid, search_pattern, clean_name
-            )
-        except ValueError:
-            pass
-    return await conn.fetch(
-        f"""
-        SELECT {columns}
-        FROM pep_entities
-        WHERE tenant_id IS NULL
-          AND is_active = true
-          AND (name ILIKE $1 OR $2 ILIKE '%' || name || '%')
-        LIMIT 100;
-        """,
-        search_pattern, clean_name
-    )
 
 
 async def _search_es_sanctions_hits(es, name: str, norm_name: str) -> list[dict]:
@@ -206,24 +169,26 @@ def _eval_es_sanctions_hits(hits: list[dict], name: str) -> tuple[float, str, st
 
 
 async def _eval_pg_sanctions(name: str, tenant_id: str | None) -> tuple[float, str, str]:
-    from database.postgres import get_async_db_read_conn
     best_similarity = 0.0
     best_source_list = UNKNOWN_LIST
     best_matched_name = ""
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            rows = await _query_pep_entities_pg(conn, name, tenant_id, "name, tier, country")
-            for row in rows:
-                p_name = row["name"]
-                sim = name_similarity_score(name, p_name)
-                if sim > best_similarity:
-                    best_similarity = sim
-                    tier_val = row.get("tier") if hasattr(row, "get") else None
-                    src_val = row.get("source_database") if hasattr(row, "get") else None
-                    best_source_list = src_val or f"PostgreSQL Watchlist ({tier_val or 'PEP'})"
-                    best_matched_name = p_name
+        rows = await query_pep_entities_pg_repo(
+            name=name,
+            tenant_id=tenant_id,
+            columns="name, tier, country",
+        )
+        for row in rows:
+            p_name = row["name"]
+            sim = name_similarity_score(name, p_name)
+            if sim > best_similarity:
+                best_similarity = sim
+                tier_val = row.get("tier") if hasattr(row, "get") else None
+                src_val = row.get("source_database") if hasattr(row, "get") else None
+                best_source_list = src_val or f"PostgreSQL Watchlist ({tier_val or 'PEP'})"
+                best_matched_name = p_name
     except Exception as pg_err:
-        logger.warning(f"PostgreSQL sanctions query fallback warning: {pg_err}")
+        logger.warning("PostgreSQL sanctions query fallback warning: %s", pg_err)
     return best_similarity, best_source_list, best_matched_name
 
 
@@ -242,11 +207,6 @@ def _eval_baseline_sanctions(name: str) -> tuple[float, str, str]:
 
 
 async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_id: str | None = None) -> dict:
-    """
-    Core fuzzy sanctions search logic with Redis hot caching (300s TTL),
-    Elasticsearch short-circuiting on clean responses (eliminating redundant PG scans),
-    native PostgreSQL pg_trgm/ILIKE matching, and resilient built-in baseline evaluation.
-    """
     best_similarity = 0.0
     best_source_list = UNKNOWN_LIST
     best_matched_name = ""
@@ -254,7 +214,6 @@ async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_
     norm_name = normalize_screening_name(name)
     cache_key = f"screening:sanctions:{tenant_id or 'global'}:{norm_name}:{threshold:.2f}"
 
-    # 0. Check Redis hot cache first (sub-millisecond path for repeat counterparties)
     redis = None
     try:
         redis = await get_async_redis_client()
@@ -265,7 +224,6 @@ async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_
     except Exception:
         redis = None
 
-    # 1. Search Elasticsearch sanctions index if explicitly provided / enabled
     es_succeeded = False
     if es is not None:
         try:
@@ -275,16 +233,13 @@ async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_
             if es_sim > best_similarity:
                 best_similarity, best_source_list, best_matched_name = es_sim, es_src, es_match
         except Exception as es_err:
-            logger.warning(f"Elasticsearch sanctions search offline/bypass ({es_err}); falling back to PostgreSQL...")
+            logger.warning("Elasticsearch sanctions search offline/bypass (%s); falling back to PostgreSQL...", es_err)
 
-    # 2. PostgreSQL sanctions/PEP query ONLY when ES was unavailable or not enabled
-    # (Short-circuits clean ES results to eliminate 2 full table scans per transaction)
     if not es_succeeded:
         pg_sim, pg_src, pg_match = await _eval_pg_sanctions(name, tenant_id)
         if pg_sim > best_similarity:
             best_similarity, best_source_list, best_matched_name = pg_sim, pg_src, pg_match
 
-    # 3. Built-in Sanctions Baseline Fallback (Zero-infrastructure guarantee, O(8) in-memory)
     base_sim, base_src, base_match = _eval_baseline_sanctions(name)
     if base_sim > best_similarity:
         best_similarity, best_source_list, best_matched_name = base_sim, base_src, base_match
@@ -296,8 +251,10 @@ async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_
         "source_list": best_source_list if best_similarity > 0.0 else None,
         "matched_entry": {
             "name": best_matched_name,
-            "reason": f"Fuzzy similarity match of {int(best_similarity * 100)}%"
-        } if best_similarity > 0.0 else None
+            "reason": f"Fuzzy similarity match of {int(best_similarity * 100)}%",
+        }
+        if best_similarity > 0.0
+        else None,
     }
 
     if redis:
@@ -321,20 +278,21 @@ def _build_pep_dict(candidate_name: str, source: dict, sim: float, threshold: fl
         "matched_entry": {
             "name": source.get("name", candidate_name),
             "edd_required": True,
-            "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory."
-        }
+            "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory.",
+        },
     }
 
 
 async def _search_es_pep(es, name: str, threshold: float) -> dict | None:
     from config import PEP_INDEX
+
     query = {
         "query": {
             "match": {
                 "name": {
                     "query": name,
                     "fuzziness": "AUTO",
-                    "prefix_length": 2
+                    "prefix_length": 2,
                 }
             }
         }
@@ -354,55 +312,57 @@ async def _search_es_pep(es, name: str, threshold: float) -> dict | None:
 
 
 async def _search_pg_pep(name: str, threshold: float, tenant_id: str | None) -> dict | None:
-    from database.postgres import get_async_db_read_conn
     best_res = None
     best_score = 0.0
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            rows = await _query_pep_entities_pg(
-                conn, name, tenant_id, "name, tier, position, country"
-            )
-            for row in rows:
-                p_name = row["name"]
-                sim = name_similarity_score(name, p_name)
-                if sim > best_score:
-                    best_score = sim
-                    pos = (row.get("position") if hasattr(row, "get") else row["position"]) or "Senior Official"
-                    tier_val = (row.get("tier") if hasattr(row, "get") else None) or (row.get("pep_tier") if hasattr(row, "get") else None) or "TIER_2_GOVERNMENT_OFFICIAL"
-                    country_val = (row.get("country") if hasattr(row, "get") else row["country"]) or "GLOBAL"
-                    src_val = (row.get("source_database") if hasattr(row, "get") else None) or "PostgreSQL PEP Registry"
-                    rca_raw = row.get("rca_flag") if hasattr(row, "get") else None
-                    is_rca = bool(rca_raw) if rca_raw is not None else any(k in pos.lower() for k in ("associate", "relative", "family"))
-                    best_res = {
-                        "match_found": sim >= threshold,
-                        "score": round(sim, 2),
-                        "pep_tier": tier_val,
-                        "position": pos,
-                        "country": country_val,
-                        "rca_flag": is_rca,
-                        "source_list": src_val,
-                        "matched_entry": {
-                            "name": p_name,
-                            "edd_required": True,
-                            "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory."
-                        }
-                    }
+        rows = await query_pep_entities_pg_repo(
+            name=name,
+            tenant_id=tenant_id,
+            columns="name, tier, position, country",
+        )
+        for row in rows:
+            p_name = row["name"]
+            sim = name_similarity_score(name, p_name)
+            if sim > best_score:
+                best_score = sim
+                pos = (row.get("position") if hasattr(row, "get") else row["position"]) or "Senior Official"
+                tier_val = (
+                    (row.get("tier") if hasattr(row, "get") else None)
+                    or (row.get("pep_tier") if hasattr(row, "get") else None)
+                    or "TIER_2_GOVERNMENT_OFFICIAL"
+                )
+                country_val = (row.get("country") if hasattr(row, "get") else row["country"]) or "GLOBAL"
+                src_val = (row.get("source_database") if hasattr(row, "get") else None) or "PostgreSQL PEP Registry"
+                rca_raw = row.get("rca_flag") if hasattr(row, "get") else None
+                is_rca = bool(rca_raw) if rca_raw is not None else any(
+                    k in pos.lower() for k in ("associate", "relative", "family")
+                )
+                best_res = {
+                    "match_found": sim >= threshold,
+                    "score": round(sim, 2),
+                    "pep_tier": tier_val,
+                    "position": pos,
+                    "country": country_val,
+                    "rca_flag": is_rca,
+                    "source_list": src_val,
+                    "matched_entry": {
+                        "name": p_name,
+                        "edd_required": True,
+                        "recommendation": "Enhanced Due Diligence (EDD) Required — Source of Wealth verification mandatory.",
+                    },
+                }
     except Exception as e:
-        logger.warning(f"PostgreSQL PEP query fallback bypass: {e}")
+        logger.warning("PostgreSQL PEP query fallback bypass: %s", e)
     return best_res
 
 
 async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | None = None) -> dict:
-    """
-    Dedicated Politically Exposed Persons (PEP) database search & tiering evaluation.
-    Evaluates all returned hits and aliases across Elasticsearch and PostgreSQL fallback (M11).
-    """
     try:
         es_res = await _search_es_pep(es, name, threshold)
         if es_res and es_res["match_found"]:
             return es_res
     except Exception as e:
-        logger.warning(f"Elasticsearch PEP search bypass/fallback: {e}")
+        logger.warning("Elasticsearch PEP search bypass/fallback: %s", e)
 
     pg_res = await _search_pg_pep(name, threshold, tenant_id)
     if pg_res and pg_res["match_found"]:
@@ -415,11 +375,9 @@ async def perform_pep_search(name: str, threshold: float, es, tenant_id: str | N
         "score": 0.0,
         "pep_tier": None,
         "source_list": None,
-        "matched_entry": None
+        "matched_entry": None,
     }
 
-
-from fastapi import Query
 
 @router.get("")
 @router.get("/search")
@@ -429,27 +387,21 @@ async def get_screening(
     date_of_birth: str | None = Query(None, max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     es=Depends(get_async_elasticsearch_client),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    RESTful idempotent identity screening query via GET.
-    """
+    """RESTful idempotent identity screening query via GET."""
     req = ScreeningRequest(name=name, threshold=threshold, date_of_birth=date_of_birth)
     return await search_sanctions_and_pep(payload=req, es=es, current_user=current_user, _rate_limit=_rate_limit)
 
 
 @router.post("/search")
 async def search_sanctions_and_pep(
-    payload: ScreeningRequest, 
-    es=Depends(get_async_elasticsearch_client), 
+    payload: ScreeningRequest,
+    es=Depends(get_async_elasticsearch_client),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Multi-tiered identity screening querying both:
-      1. Global Sanctions Blocklists (OFAC, UN, EU) -> Mandatory Immediate Freeze
-      2. Politically Exposed Persons (PEP) Tiering Database -> Enhanced Due Diligence (EDD)
-    """
+    """Multi-tiered identity screening querying Global Sanctions + PEP databases."""
     tenant_id = enforce_tenant_data_scope(current_user)
     cache_key = f"screening:combined:{tenant_id}:{payload.name.lower().strip()}:{payload.threshold}"
     try:
@@ -458,7 +410,7 @@ async def search_sanctions_and_pep(
         if cached_result:
             return json.loads(cached_result)
     except Exception as e:
-        logger.warning(f"Failed to query Redis cache: {e}")
+        logger.warning("Failed to query Redis cache: %s", e)
         redis_client = None
 
     try:
@@ -481,18 +433,16 @@ async def search_sanctions_and_pep(
             "match_found": has_sanctions_hit or has_pep_hit,
             "sanctions_hit": sanctions_res,
             "pep_hit": pep_res,
-            # Legacy compatibility fields
             "source_list": source_list_val,
             "score": max(sanctions_res.get("score", 0.0), pep_res.get("score", 0.0)),
-            "matched_entry": sanctions_res.get("matched_entry") or pep_res.get("matched_entry")
+            "matched_entry": sanctions_res.get("matched_entry") or pep_res.get("matched_entry"),
         }
 
-        # Cache the successful result with a 1-hour TTL
         if redis_client:
             try:
                 await redis_client.setex(cache_key, 3600, json.dumps(result))
             except Exception as e:
-                logger.warning(f"Failed to save result to Redis cache: {e}")
+                logger.warning("Failed to save result to Redis cache: %s", e)
 
         return result
     except HTTPException:
@@ -515,11 +465,7 @@ async def screen_live_adverse_media_endpoint(
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    P2-5 Live Adverse Media NLP Screening & Entity Disambiguation:
-    Queries GDELT 2.0 global OSINT news feed (6h Redis cached) with sentence-window
-    predicate proximity scoring and namesake false-positive suppression.
-    """
+    """P2-5 Live Adverse Media NLP Screening & Entity Disambiguation."""
     from services.adverse_media import screen_live_adverse_media
 
     enforce_tenant_data_scope(current_user)
@@ -529,4 +475,3 @@ async def screen_live_adverse_media_endpoint(
         entity_type=payload.entity_type,
         max_articles=payload.max_articles,
     )
-

@@ -330,6 +330,11 @@ def test_all_rules_core_branches_disabled_negative_and_positive():
     ) == []
     assert check_tbml_pure(disabled, Decimal("100000"), {}) == []
     assert check_tbml_pure({"rules": {}}, Decimal("1000"), {}) == []
+    assert check_tbml_pure(
+        {"rules": {}},
+        Decimal("150000"),
+        {"goods_category": "PRECIOUS_METALS", "invoice_amount": "100000"},
+    ) == ["TRADE_BASED_ML_OVER_UNDER_INVOICING"]
     assert check_vasp_crypto_pure(disabled, Decimal("5000"), None, None, {"is_vasp_transfer": True}) == []
     assert check_vasp_crypto_pure({"rules": {}}, Decimal("5000"), None, None, {}) == []
     assert check_vasp_crypto_pure(
@@ -551,3 +556,39 @@ def test_all_five_compliance_state_machines():
 
     with pytest.raises(CorruptedDomainStateError):
         validate_ctr_transition_pure("UNKNOWN_LEGACY", "FILED")
+
+
+# ── 7. Architectural Layering Guard (Zero Raw SQL or Direct DB Access in routers/) ─
+
+def test_routers_contain_zero_raw_sql_and_zero_direct_db_connections():
+    """Enforces clean layering: HTTP controllers in routers/ must never embed raw SQL or open DB connections."""
+    import pathlib
+    import re
+
+    routers_dir = pathlib.Path(__file__).resolve().parent.parent / "routers"
+    sql_pattern = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE)\b\s+(?:INTO|FROM|SET|DISTINCT|COUNT|\*|[a-zA-Z0-9_]+)")
+    direct_db_pattern = re.compile(r"(async\s+with\s+.*get_async_db_|conn\.(fetch|fetchrow|fetchval|execute|transaction)\s*\()")
+
+    violations: list[str] = []
+    for py_file in sorted(routers_dir.glob("*.py")):
+        src = py_file.read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=str(py_file))
+        # Inspect every string literal in the AST for raw SQL statements
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                val = node.value
+                # Ignore Cypher queries (Neo4j MATCH/MERGE/RETURN) and human prose messages
+                if "MATCH " in val or "MERGE " in val:
+                    continue
+                if re.search(r"\b(SELECT\s+.+\s+FROM|INSERT\s+INTO|UPDATE\s+[a-z_]+\s+SET|DELETE\s+FROM)\b", val, re.IGNORECASE | re.DOTALL):
+                    violations.append(f"{py_file.name}:{node.lineno}: raw SQL string literal")
+                if val.strip().upper() == "SELECT 1":
+                    violations.append(f"{py_file.name}:{node.lineno}: raw SQL ping literal")
+        for idx, line in enumerate(src.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if direct_db_pattern.search(line):
+                violations.append(f"{py_file.name}:{idx}: direct DB call/context in controller: {stripped}")
+
+    assert violations == [], f"Architectural layering violations found in routers/: {violations}"

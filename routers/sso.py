@@ -1,17 +1,14 @@
 """
 Enterprise OpenID Connect (OIDC) SSO Router (P0-6)
 ==================================================
-Endpoints:
-  - GET    /api/v1/auth/sso/providers/public      (Login UI discovery — non-secret metadata)
-  - GET    /api/v1/auth/sso/providers             (Admin provider listing)
-  - POST   /api/v1/auth/sso/providers             (Admin register OIDC IdP)
-  - DELETE /api/v1/auth/sso/providers/{id}        (Admin remove OIDC IdP)
-  - GET    /api/v1/auth/sso/{id}/authorize        (Start PKCE + state OIDC flow)
-  - GET    /api/v1/auth/sso/{id}/callback         (Exchange code, verify ID token, JIT provision & issue cookies)
+Thin HTTP controller for OIDC provider management, PKCE authorization,
+and JIT-provisioned SSO login callbacks.
+All PostgreSQL SQL lives in `repositories/auth_repo.py`.
 """
 
 import hashlib
 import hmac
+import inspect as _inspect
 import json
 import logging
 import secrets
@@ -29,6 +26,14 @@ from config import settings
 from database.postgres import get_async_db_conn, get_async_db_read_conn, get_db_pool
 from observability.logging import log_audit_event
 from observability.sanitizer import sanitize_text
+from repositories.auth_repo import (
+    create_sso_provider_repo,
+    delete_sso_provider_atomic,
+    fetch_enabled_sso_provider_repo,
+    jit_provision_sso_user_atomic,
+    list_public_sso_providers_repo,
+    list_sso_providers_admin_repo,
+)
 from routers.auth import set_auth_cookies
 from services.auth import (
     RoleChecker,
@@ -36,7 +41,7 @@ from services.auth import (
     create_refresh_token,
     enforce_tenant_data_scope,
 )
-from services.encryption import encrypt_pii, decrypt_pii, DecryptionError
+from services.encryption import DecryptionError, decrypt_pii, encrypt_pii
 from services.rate_limiter import RateLimiter
 from services.siem_forwarder import validate_siem_destination_url
 from services.sso import (
@@ -72,23 +77,18 @@ async def list_public_sso_providers(
     tenant_id: str = Query(default="00000000-0000-0000-0000-000000000001"),
     _rate_limit=Depends(RateLimiter(limit=30, window=60, ip_only=True)),
 ):
-    """Returns minimal public metadata (id + provider_name) so login.html can render active SSO buttons."""
+    """Returns minimal public metadata (id + provider_name) for active SSO buttons."""
     try:
         uuid.UUID(tenant_id)
     except ValueError:
         return []
 
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, provider_name
-                FROM sso_providers
-                WHERE enabled = TRUE
-                ORDER BY provider_name ASC;
-                """
-            )
-            return [{"id": str(r["id"]), "provider_name": r["provider_name"]} for r in rows]
+        rows = await list_public_sso_providers_repo(
+            tenant_id=tenant_id,
+            read_conn_factory=get_async_db_read_conn,
+        )
+        return [{"id": str(r["id"]), "provider_name": r["provider_name"]} for r in rows]
     except Exception:
         return []
 
@@ -99,33 +99,28 @@ async def list_sso_providers_admin(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, provider_name, issuer_url, client_id, scopes,
-                   group_role_mapping, default_role, enabled, created_at
-            FROM sso_providers
-            ORDER BY created_at DESC;
-            """
-        )
-        return [
-            {
-                "id": str(r["id"]),
-                "provider_name": r["provider_name"],
-                "issuer_url": r["issuer_url"],
-                "client_id": r["client_id"],
-                "scopes": r["scopes"],
-                "group_role_mapping": (
-                    json.loads(r["group_role_mapping"])
-                    if isinstance(r["group_role_mapping"], str)
-                    else (r["group_role_mapping"] or {})
-                ),
-                "default_role": r["default_role"],
-                "enabled": bool(r["enabled"]),
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            }
-            for r in rows
-        ]
+    rows = await list_sso_providers_admin_repo(
+        tenant_id=str(tenant_id),
+        read_conn_factory=get_async_db_read_conn,
+    )
+    return [
+        {
+            "id": str(r["id"]),
+            "provider_name": r["provider_name"],
+            "issuer_url": r["issuer_url"],
+            "client_id": r["client_id"],
+            "scopes": r["scopes"],
+            "group_role_mapping": (
+                json.loads(r["group_role_mapping"])
+                if isinstance(r["group_role_mapping"], str)
+                else (r["group_role_mapping"] or {})
+            ),
+            "default_role": r["default_role"],
+            "enabled": bool(r["enabled"]),
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in rows
+    ]
 
 
 @router.post("/providers", status_code=status.HTTP_201_CREATED)
@@ -142,7 +137,10 @@ async def create_sso_provider(
 
     default_role = payload.default_role.upper().strip()
     if default_role not in ALLOWED_SSO_ROLES:
-        raise HTTPException(status_code=400, detail=f"Invalid default_role '{default_role}'. Allowed: {sorted(ALLOWED_SSO_ROLES)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid default_role '{default_role}'. Allowed: {sorted(ALLOWED_SSO_ROLES)}",
+        )
 
     for grp, role in payload.group_role_mapping.items():
         if str(role).upper().strip() not in ALLOWED_SSO_ROLES:
@@ -151,26 +149,18 @@ async def create_sso_provider(
     enc_secret = encrypt_pii(payload.client_secret, tenant_id=str(tenant_id)) if payload.client_secret else ""
     safe_name = sanitize_text(payload.provider_name)
 
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        pid = await conn.fetchval(
-            """
-            INSERT INTO sso_providers (
-                tenant_id, provider_name, issuer_url, client_id, client_secret_enc,
-                scopes, group_role_mapping, default_role, enabled
-            )
-            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
-            RETURNING id;
-            """,
-            str(tenant_id),
-            safe_name,
-            safe_issuer,
-            payload.client_id.strip(),
-            enc_secret,
-            payload.scopes.strip(),
-            json.dumps(payload.group_role_mapping),
-            default_role,
-            payload.enabled,
-        )
+    pid = await create_sso_provider_repo(
+        tenant_id=str(tenant_id),
+        safe_name=safe_name,
+        safe_issuer=safe_issuer,
+        client_id=payload.client_id.strip(),
+        enc_secret=enc_secret,
+        scopes=payload.scopes.strip(),
+        group_role_mapping=payload.group_role_mapping,
+        default_role=default_role,
+        enabled=payload.enabled,
+        conn_factory=get_async_db_conn,
+    )
 
     log_audit_event(
         event_type="SSO_PROVIDER_CREATED",
@@ -205,22 +195,12 @@ async def delete_sso_provider(
         raise HTTPException(status_code=400, detail="Invalid SSO provider ID.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        deleted = await conn.fetchval("DELETE FROM sso_providers WHERE id = $1 RETURNING id;", p_uuid)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="SSO provider not found.")
-        from services.audit import record_audit_event_tx
-        await record_audit_event_tx(
-            conn=conn,
-            action="DELETE_SSO_PROVIDER",
-            actor_id=str(current_user.get("id", "")),
-            actor_username=current_user.get("username", "admin"),
-            actor_role=current_user.get("role", "ADMIN"),
-            resource_type="SSO_PROVIDER",
-            resource_id=provider_id,
-            tenant_id=str(tenant_id),
-            details={"provider_id": provider_id},
-        )
+    await delete_sso_provider_atomic(
+        p_uuid=p_uuid,
+        tenant_id=str(tenant_id),
+        current_user=current_user,
+        conn_factory=get_async_db_conn,
+    )
     return {"status": "DELETED", "id": provider_id}
 
 
@@ -230,19 +210,14 @@ async def _load_provider_for_login(provider_id: str, tenant_id: str) -> dict:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid SSO provider ID.")
 
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT id, tenant_id, provider_name, issuer_url, client_id, client_secret_enc,
-                   scopes, group_role_mapping, default_role, enabled
-            FROM sso_providers
-            WHERE id = $1 AND enabled = TRUE;
-            """,
-            p_uuid,
-        )
-        if not row:
-            raise HTTPException(status_code=404, detail="Enabled SSO provider not found.")
-        return dict(row)
+    provider = await fetch_enabled_sso_provider_repo(
+        p_uuid=p_uuid,
+        tenant_id=tenant_id,
+        read_conn_factory=get_async_db_read_conn,
+    )
+    if not provider:
+        raise HTTPException(status_code=404, detail="Enabled SSO provider not found.")
+    return provider
 
 
 def _sso_state_cookie_digest(state: str) -> str:
@@ -250,7 +225,6 @@ def _sso_state_cookie_digest(state: str) -> str:
 
 
 def _resolve_sso_redirect_uri(request: Request, provider_id: str) -> str:
-    """Builds canonical OIDC redirect_uri from configured PUBLIC_BASE_URL to prevent Host header poisoning (AUTHN-02)."""
     canonical = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
     if canonical:
         return f"{canonical}/api/v1/auth/sso/{provider_id}/callback"
@@ -340,20 +314,11 @@ async def sso_callback(
     state: str = Query(...),
     _rate_limit=Depends(RateLimiter(limit=30, window=60, ip_only=True)),
 ):
-    """
-    Completes OIDC PKCE callback:
-      - Verifies single-use state + browser-bound CSRF cookie (`sso_state_binding`)
-      - Fails closed if encrypted client_secret fails decryption
-      - Verifies ID token via JWKS + constant-time nonce
-      - Requires `email_verified == True` when using email
-      - Provisions / matches strictly by deterministic `(issuer, sub)` UUID scoped to `tenant_id`
-        (never collides with or overwrites local password-managed accounts!)
-    """
+    """Completes OIDC PKCE callback with browser state-binding CSRF check and deterministic JIT provisioning."""
     state_data = await consume_sso_state(state)
     if not state_data or state_data.get("provider_id") != str(provider_id):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired SSO state token.")
 
-    # AUTHN-02: Enforce RFC 6749 §10.12 browser state-binding cookie to block OAuth Login CSRF
     expected_binding = state_data.get("state_binding") or _sso_state_cookie_digest(state)
     cookie_binding = request.cookies.get("sso_state_binding") or ""
     if not cookie_binding or not hmac.compare_digest(cookie_binding, str(expected_binding)):
@@ -366,7 +331,6 @@ async def sso_callback(
     provider = await _load_provider_for_login(provider_id, tenant_id)
     discovery = await fetch_oidc_discovery(provider["issuer_url"])
 
-    # AUTHN-02: Fail closed if confidential client_secret_enc fails integrity/decryption
     client_secret = ""
     if provider.get("client_secret_enc"):
         try:
@@ -390,6 +354,7 @@ async def sso_callback(
 
     try:
         from services.http_client import request_with_resilience
+
         token_resp = await request_with_resilience(
             "POST",
             discovery["token_endpoint"],
@@ -414,7 +379,6 @@ async def sso_callback(
 
     try:
         if verify_oidc_id_token is not _ORIGINAL_VERIFY_OIDC_ID_TOKEN:
-            import inspect as _inspect
             maybe_claims = verify_oidc_id_token(
                 id_token=id_token,
                 jwks_uri=discovery["jwks_uri"],
@@ -438,7 +402,6 @@ async def sso_callback(
     if not sub_claim:
         raise HTTPException(status_code=401, detail="OIDC ID token missing subject claim.")
 
-    # AUTHN-02: Require verified email before trusting email claim (prevents unverified-email takeover)
     email = str(claims.get("email") or "").strip()
     if email and claims.get("email_verified") is not True:
         raise HTTPException(
@@ -452,63 +415,38 @@ async def sso_callback(
     idp_groups = claims.get("groups") or claims.get("roles") or []
     assigned_role = resolve_role_from_groups(idp_groups, mapping, default_role=provider.get("default_role", "L1_ANALYST"))
 
-    # AUTHN-02: Strict deterministic SSO identity binding scoped to (tenant_id, issuer, sub).
-    # NEVER match or overwrite existing local password-managed accounts by local-part username!
     user_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}:{provider['issuer_url']}:{sub_claim}"))
     sso_marker = f"sso_managed:{provider['id']}"
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        existing = await conn.fetchrow(
-            "SELECT id, token_version, password_hash, is_active FROM users WHERE id = $1::uuid AND tenant_id = $2::uuid;",
-            user_id,
-            tenant_id,
-        )
-        if existing:
-            if existing.get("is_active") is False:
-                raise HTTPException(status_code=403, detail="SSO user account has been disabled.")
-            if not str(existing.get("password_hash") or "").startswith("sso_managed:"):
-                raise HTTPException(status_code=409, detail="Account collision with local user denied.")
-            token_version = int(existing["token_version"] or 1)
-            await conn.execute(
-                "UPDATE users SET role = $1 WHERE id = $2::uuid AND tenant_id = $3::uuid;",
-                assigned_role,
-                user_id,
-                tenant_id,
-            )
-        else:
-            # Ensure username does not collide with an existing local user in this or any tenant
-            collision = await conn.fetchrow("SELECT id FROM users WHERE username = $1;", username)
-            if collision:
-                username = f"{username}_sso_{user_id[:6]}"
-            token_version = 1
-            await conn.execute(
-                """
-                INSERT INTO users (id, username, role, tenant_id, password_hash)
-                VALUES ($1::uuid, $2, $3, $4::uuid, $5);
-                """,
-                user_id,
-                username,
-                assigned_role,
-                tenant_id,
-                sso_marker,
-            )
+    username, token_version = await jit_provision_sso_user_atomic(
+        user_id=user_id,
+        username=username,
+        assigned_role=assigned_role,
+        tenant_id=tenant_id,
+        sso_marker=sso_marker,
+        conn_factory=get_async_db_conn,
+    )
 
     family_id = f"fam_{uuid.uuid4().hex}"
-    access_token = create_access_token({
-        "sub": user_id,
-        "role": assigned_role,
-        "username": username,
-        "email": email or f"{username}@sso.local",
-        "tenant_id": tenant_id,
-        "token_version": token_version,
-    })
-    refresh_token = create_refresh_token({
-        "sub": user_id,
-        "role": assigned_role,
-        "username": username,
-        "tenant_id": tenant_id,
-        "token_version": token_version,
-        "family_id": family_id,
-    })
+    access_token = create_access_token(
+        {
+            "sub": user_id,
+            "role": assigned_role,
+            "username": username,
+            "email": email or f"{username}@sso.local",
+            "tenant_id": tenant_id,
+            "token_version": token_version,
+        }
+    )
+    refresh_token = create_refresh_token(
+        {
+            "sub": user_id,
+            "role": assigned_role,
+            "username": username,
+            "tenant_id": tenant_id,
+            "token_version": token_version,
+            "family_id": family_id,
+        }
+    )
 
     log_audit_event(
         event_type="USER_LOGIN_SSO",
@@ -523,7 +461,9 @@ async def sso_callback(
 
     is_secure = bool(settings.enable_tls or settings.is_production)
     if "application/json" in request.headers.get("accept", ""):
-        response.delete_cookie("sso_state_binding", path="/api/v1/auth/sso", httponly=True, samesite="lax", secure=is_secure)
+        response.delete_cookie(
+            "sso_state_binding", path="/api/v1/auth/sso", httponly=True, samesite="lax", secure=is_secure
+        )
         set_auth_cookies(response, access_token, refresh_token)
         return {
             "access_token": access_token,
@@ -535,6 +475,8 @@ async def sso_callback(
         }
 
     redirect_resp = RedirectResponse(url="/dashboard/executive", status_code=status.HTTP_302_FOUND)
-    redirect_resp.delete_cookie("sso_state_binding", path="/api/v1/auth/sso", httponly=True, samesite="lax", secure=is_secure)
+    redirect_resp.delete_cookie(
+        "sso_state_binding", path="/api/v1/auth/sso", httponly=True, samesite="lax", secure=is_secure
+    )
     set_auth_cookies(redirect_resp, access_token, refresh_token)
     return redirect_resp

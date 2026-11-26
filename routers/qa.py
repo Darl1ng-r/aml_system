@@ -1,9 +1,8 @@
 """
 Independent Quality Assurance (QA) Four-Eyes Sampling Router (P1-5)
 ===================================================================
-Samples closed False Positive alerts for independent QA audit (OCC / FCA mandate),
-enforces Segregation of Duties (QA reviewer != original dismissing analyst),
-and reopens faulty dismissals back into the active investigation queue.
+Thin HTTP controller for closed false-positive QA sampling and reviews.
+All PostgreSQL SQL lives in `repositories/ops_repo.py`.
 """
 
 import logging
@@ -16,6 +15,11 @@ from pydantic import BaseModel, Field, field_validator
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 from observability.logging import log_audit_event
 from observability.sanitizer import sanitize_text
+from repositories.ops_repo import (
+    create_qa_sample_repo,
+    fetch_qa_queue_repo,
+    submit_qa_review_atomic,
+)
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.notifications import create_notification
 from services.pkyc_and_qa import sample_closed_false_positives_for_qa
@@ -49,14 +53,14 @@ async def create_qa_sample(
 ) -> Dict[str, Any]:
     """Randomly samples a percentage of closed False Positive alerts into the QA queue."""
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        return await sample_closed_false_positives_for_qa(
-            conn=conn,
-            tenant_id=tenant_id,
-            sampled_by_username=current_user.get("username", "mlro"),
-            sample_rate=payload.sample_rate,
-            max_samples=payload.max_samples,
-        )
+    return await create_qa_sample_repo(
+        tenant_id=str(tenant_id),
+        sampled_by_username=current_user.get("username", "mlro"),
+        sample_rate=payload.sample_rate,
+        max_samples=payload.max_samples,
+        sample_fn=sample_closed_false_positives_for_qa,
+        conn_factory=get_async_db_conn,
+    )
 
 
 @router.get("/queue")
@@ -68,41 +72,12 @@ async def get_qa_queue(
 ) -> Dict[str, Any]:
     """Lists QA sampling queue entries along with tenant QA Pass Rate KPI."""
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        if status_filter:
-            rows = await conn.fetch(
-                """
-                SELECT q.*, a.rule_name, a.threat_level, a.ai_risk_score
-                FROM qa_reviews q
-                LEFT JOIN alerts a ON q.alert_id = a.id
-                WHERE q.status = $1
-                ORDER BY q.sampled_at DESC
-                LIMIT $2;
-                """,
-                status_filter,
-                limit,
-            )
-        else:
-            rows = await conn.fetch(
-                """
-                SELECT q.*, a.rule_name, a.threat_level, a.ai_risk_score
-                FROM qa_reviews q
-                LEFT JOIN alerts a ON q.alert_id = a.id
-                ORDER BY q.sampled_at DESC
-                LIMIT $1;
-                """,
-                limit,
-            )
-
-        stats = await conn.fetchrow(
-            """
-            SELECT
-                COUNT(*) FILTER (WHERE status = 'PENDING') AS pending_count,
-                COUNT(*) FILTER (WHERE status = 'PASSED') AS passed_count,
-                COUNT(*) FILTER (WHERE status = 'FAILED_REOPENED') AS failed_count
-            FROM qa_reviews;
-            """
-        )
+    rows, stats = await fetch_qa_queue_repo(
+        tenant_id=str(tenant_id),
+        status_filter=status_filter,
+        limit=limit,
+        read_conn_factory=get_async_db_read_conn,
+    )
 
     passed = int((stats["passed_count"] if stats else 0) or 0)
     failed = int((stats["failed_count"] if stats else 0) or 0)
@@ -131,7 +106,7 @@ async def get_qa_queue(
                 "sampled_at": r["sampled_at"].isoformat() if r["sampled_at"] else None,
                 "reviewed_at": r["reviewed_at"].isoformat() if r["reviewed_at"] else None,
             }
-            for r in (rows or [])
+            for r in rows
         ],
     }
 
@@ -143,11 +118,7 @@ async def submit_qa_review(
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "QA_REVIEWER", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ) -> Dict[str, Any]:
-    """
-    Completes an independent QA review.
-    Enforces Segregation of Duties (original dismissing analyst cannot QA their own closure).
-    On FAILED_REOPENED, transitions the alert back to OPEN and emits a QA_REOPEN notification.
-    """
+    """Completes an independent QA review enforcing Segregation of Duties."""
     try:
         rev_uuid = uuid.UUID(review_id)
     except ValueError:
@@ -157,83 +128,17 @@ async def submit_qa_review(
     reviewer_username = str(current_user.get("username") or "").strip()
     reviewer_id = str(current_user.get("id") or "").strip()
 
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM qa_reviews WHERE id = $1 AND tenant_id = $2::uuid FOR UPDATE;",
-            rev_uuid,
-            str(tenant_id),
-        )
-        if not row:
-            raise HTTPException(status_code=404, detail="QA review item not found.")
-        if row["status"] != "PENDING":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"QA review is already finalized ({row['status']}).",
-            )
-
-        orig_analyst = str(row["original_analyst_username"] or "").strip()
-        orig_analyst_id = str(row.get("original_analyst_id") or "").strip() if hasattr(row, "get") else ""
-        if (orig_analyst_id and reviewer_id and orig_analyst_id == reviewer_id) or (
-            orig_analyst and orig_analyst.lower() == reviewer_username.lower()
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Segregation of Duties Violation: QA reviewer cannot audit their own dismissed alert.",
-            )
-
-        await conn.execute(
-            """
-            UPDATE qa_reviews
-            SET status = $1,
-                qa_reviewer_username = $2,
-                qa_notes = $3,
-                reviewed_at = NOW()
-            WHERE id = $4 AND tenant_id = $5::uuid;
-            """,
-            payload.decision,
-            reviewer_username,
-            payload.notes,
-            rev_uuid,
-            str(tenant_id),
-        )
-
-        reopened = False
-        if payload.decision == "FAILED_REOPENED":
-            reopened = True
-            await conn.execute(
-                "UPDATE alerts SET status = 'OPEN' WHERE id = $1 AND tenant_id = $2::uuid;",
-                row["alert_id"],
-                str(tenant_id),
-            )
-            await create_notification(
-                conn=conn,
-                tenant_id=tenant_id,
-                category="QA_REOPEN",
-                severity="CRITICAL",
-                recipient_role="MLRO",
-                title=f"QA Audit Reopened Alert {str(row['alert_id'])[:8]}",
-                body=f"Reviewer {reviewer_username} failed QA on dismissed alert: {payload.notes}",
-                link_url=f"/alerts/triage?search={str(row['alert_id'])[:8]}",
-                resource_type="ALERT",
-                resource_id=str(row["alert_id"]),
-                dedup_hours=0,
-            )
-
-        try:
-            from services.audit import record_audit_event_tx
-            await record_audit_event_tx(
-                conn=conn,
-                action=f"QA_REVIEW_{payload.decision}",
-                actor_id=str(current_user.get("id") or reviewer_username),
-                actor_username=reviewer_username,
-                actor_role=current_user.get("role", "QA_REVIEWER"),
-                resource_type="QA_REVIEW",
-                resource_id=review_id,
-                tenant_id=str(tenant_id),
-                details={"alert_id": str(row["alert_id"]), "decision": payload.decision, "reopened": reopened},
-            )
-        except Exception as audit_err:
-            logger.warning(f"Transactional audit write skipped in submit_qa_review: {audit_err}")
+    res = await submit_qa_review_atomic(
+        rev_uuid=rev_uuid,
+        tenant_id=str(tenant_id),
+        decision=payload.decision,
+        notes=payload.notes,
+        reviewer_username=reviewer_username,
+        reviewer_id=reviewer_id,
+        current_user=current_user,
+        notify_fn=create_notification,
+        conn_factory=get_async_db_conn,
+    )
 
     log_audit_event(
         event_type=f"QA_REVIEW_{payload.decision}",
@@ -244,17 +149,17 @@ async def submit_qa_review(
         resource_id=review_id,
         tenant_id=str(tenant_id),
         details={
-            "alert_id": str(row["alert_id"]),
+            "alert_id": res["alert_id"],
             "decision": payload.decision,
-            "reopened": reopened,
+            "reopened": res["reopened"],
             "notes": payload.notes,
         },
     )
 
     return {
         "review_id": review_id,
-        "alert_id": str(row["alert_id"]),
+        "alert_id": res["alert_id"],
         "status": payload.decision,
-        "reopened": reopened,
+        "reopened": res["reopened"],
         "qa_reviewer_username": reviewer_username,
     }

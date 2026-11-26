@@ -256,7 +256,7 @@ export interface Schemas {
   SARNarrativeGenerationRequest: {
     account_number?: string | null;
     alert_id?: string | null;
-    amount?: number | null;
+    amount?: number | string | null;
     case_id?: string | null;
     counterparty_account?: string | null;
     counterparty_name?: string | null;

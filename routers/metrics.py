@@ -1,28 +1,30 @@
 """
 Dashboard Analytics & Real-Time WebSocket Streaming Router
 ============================================================
-Provides live PostgreSQL analytics endpoints and WebSocket streaming feeds:
-
-  - GET /api/v1/metrics/dashboard:
-      Computes real-time KPI metrics, 7-day daily alert trends, category
-      distribution breakdown, and live analyst workload leaderboard from PostgreSQL.
-
-  - WebSocket /ws/live-stream:
-      Real-time event pipe pushing live transaction ingestion events, newly
-      triggered alerts, and case resolution updates directly to dashboard client charts.
+Thin HTTP + WebSocket controller for live dashboard KPIs, executive metrics,
+and tenant-isolated WebSocket event streams.
+All PostgreSQL SQL lives in `repositories/analytics_repo.py`.
 """
 
 import asyncio
 import json
 import logging
-import os
-from datetime import datetime, timezone, timedelta
-from typing import List, Any
+import uuid as _ws_uuid
+from typing import Any
 
-from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+
 from database.postgres import get_async_db_read_conn
-from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
+from repositories.analytics_repo import (
+    fetch_dashboard_metrics_repo,
+    fetch_executive_analytics_tx as _fetch_executive_analytics,
+    fetch_executive_counts_tx as _fetch_executive_counts,
+    fetch_executive_metrics_repo,
+    fetch_executive_sla_breaches_tx as _fetch_executive_sla_breaches,
+)
+from services.auth import RoleChecker, enforce_tenant_data_scope, get_current_user
 from services.http_cache import build_conditional_json_response
+from services.rate_limiter import RateLimiter, _check_local_rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -30,39 +32,37 @@ router = APIRouter(tags=["Analytics & Real-Time Streaming"])
 
 
 # ── WebSocket Manager ──────────────────────────────────────────────────────────
+
 class ConnectionManager:
-    """
-    Manages active WebSocket dashboard connections with tenant partitioning
-    and a distributed Redis Pub/Sub backplane for horizontal multi-pod replicas.
-    """
+    """Manages active WebSocket connections with tenant partitioning and Redis Pub/Sub."""
 
     def __init__(self):
-        # Maps WebSocket instance -> {"tenant_id": str, "role": str}
         self.active_connections: dict[WebSocket, dict] = {}
 
     async def connect(
         self,
         websocket: WebSocket,
         tenant_id: str = "00000000-0000-0000-0000-000000000001",
-        role: str = "ANALYST"
+        role: str = "ANALYST",
     ):
         await websocket.accept()
         self.active_connections[websocket] = {
             "tenant_id": str(tenant_id),
-            "role": role
+            "role": role,
         }
         logger.info(
-            f"WebSocket client connected (tenant={tenant_id}, role={role}). "
-            f"Active connections on this pod: {len(self.active_connections)}"
+            "WebSocket client connected (tenant=%s, role=%s). Active connections on this pod: %s",
+            tenant_id,
+            role,
+            len(self.active_connections),
         )
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             del self.active_connections[websocket]
-            logger.info(f"WebSocket client disconnected. Remaining on this pod: {len(self.active_connections)}")
+            logger.info("WebSocket client disconnected. Remaining on this pod: %s", len(self.active_connections))
 
     async def _send_local(self, message: dict, target_tenant_id: str | None = None):
-        """Dispatches message only to authorized local connections (tenant-scoped or global roles)."""
         if not self.active_connections:
             return
         payload = json.dumps(message)
@@ -71,16 +71,11 @@ class ConnectionManager:
         disconnected = []
 
         for connection, info in self.active_connections.items():
-            # Enforce Tenant Isolation:
-            # If target tenant is set, only broadcast to connections from that tenant
-            # or global compliance overseers (SUPER_ADMIN, GLOBAL_AUDITOR).
-            # If no target tenant is set and not an explicit global broadcast, do NOT leak to tenant-scoped users.
             is_overseer = info.get("role") in ["SUPER_ADMIN", "GLOBAL_AUDITOR"]
             if target:
                 if info.get("tenant_id") != str(target) and not is_overseer:
                     continue
             elif not is_global and not is_overseer:
-                # Omitted target tenant on non-system message: fail closed for tenant analysts
                 continue
 
             try:
@@ -92,29 +87,22 @@ class ConnectionManager:
             self.disconnect(conn)
 
     async def broadcast(self, message: dict, target_tenant_id: str | None = None):
-        """
-        Broadcasts message to authorized local sockets and publishes to Redis Pub/Sub
-        for distribution across other horizontal worker processes and pods.
-        """
-        # 1. Deliver to local clients connected to this pod
         await self._send_local(message, target_tenant_id)
-
-        # 2. Publish to Redis Pub/Sub channel for inter-pod distribution
         try:
             from database.redis_db import get_async_redis_client
+
             redis = await get_async_redis_client()
             if redis:
                 envelope = {
                     "message": message,
                     "target_tenant_id": target_tenant_id or message.get("tenant_id"),
-                    "sender_instance_id": _WS_INSTANCE_ID
+                    "sender_instance_id": _WS_INSTANCE_ID,
                 }
                 await redis.publish("aml:events:broadcast", json.dumps(envelope))
         except Exception as e:
-            logger.debug(f"Redis Pub/Sub broadcast skipped/non-fatal: {e}")
+            logger.debug("Redis Pub/Sub broadcast skipped/non-fatal: %s", e)
 
 
-import uuid as _ws_uuid
 _WS_INSTANCE_ID = str(_ws_uuid.uuid4())
 ws_manager = ConnectionManager()
 
@@ -174,291 +162,26 @@ def _determine_risk_tier(active: int) -> str:
     return "Normal"
 
 
-from services.rate_limiter import RateLimiter, _check_local_rate_limit
+# ── Analytics API Endpoints ───────────────────────────────────────────────────
 
-
-# ── Analytics API Endpoint ────────────────────────────────────────────────────
 @router.get("/api/v1/metrics/dashboard")
 async def get_dashboard_metrics(
     request: Request = None,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Computes dynamic, non-hardcoded dashboard metrics directly from PostgreSQL:
-      - Active cases & critical pending counts
-      - 7-day daily alert frequency trend
-      - Alert category distribution breakdown
-      - Live analyst workload leaderboard
-    """
+    """Computes dynamic dashboard KPIs, 7-day trends, category breakdown, and analyst leaderboard."""
     tenant_id = enforce_tenant_data_scope(current_user)
-
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            # 1. KPI Counts
-            active_cases = await conn.fetchval(
-                "SELECT COUNT(*) FROM alerts WHERE status = 'OPEN';"
-            )
-            critical_cases = await conn.fetchval(
-                "SELECT COUNT(*) FROM alerts WHERE status = 'OPEN' AND threat_level = 'CRITICAL';"
-            )
-
-            # 2. 7-Day Daily Trend Data
-            trend_rows = await conn.fetch(
-                """
-                SELECT DATE(created_at) as day, COUNT(*) as count
-                FROM alerts
-                WHERE created_at >= NOW() - INTERVAL '7 days'
-                GROUP BY DATE(created_at)
-                ORDER BY day ASC;
-                """
-            )
-            days_map = { (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%a"): 0 for i in reversed(range(7)) }
-            for row in trend_rows:
-                day_name = row["day"].strftime("%a")
-                if day_name in days_map:
-                    days_map[day_name] = int(row["count"])
-
-            # 3. Category Distribution Breakdown
-            cat_rows = await conn.fetch(
-                """
-                SELECT rule_name, COUNT(*) as count
-                FROM alerts
-                GROUP BY rule_name
-                ORDER BY count DESC;
-                """
-            )
-            categories = [
-                {"category": row["rule_name"], "count": int(row["count"])}
-                for row in cat_rows
-            ]
-
-            # 4. Analyst Workload Leaderboard
-            leaderboard_rows = await conn.fetch(
-                """
-                SELECT u.username,
-                       COUNT(a.id) FILTER (WHERE a.status = 'OPEN') as active_cases,
-                       COUNT(a.id) FILTER (WHERE a.status LIKE 'CLOSED%') as resolved_cases,
-                       COUNT(a.id) as total_cases
-                FROM users u
-                LEFT JOIN alerts a ON u.id = a.assigned_officer_id
-                GROUP BY u.username
-                ORDER BY active_cases DESC;
-                """
-            )
-            analysts = []
-            for row in leaderboard_rows:
-                active = int(row["active_cases"])
-                resolved = int(row["resolved_cases"])
-                total = int(row["total_cases"])
-                res_rate = round((resolved / total * 100), 1) if total > 0 else 100.0
-                analysts.append({
-                    "username": row["username"],
-                    "active_cases": active,
-                    "resolution_rate": f"{res_rate}%",
-                    "risk_tier": _determine_risk_tier(active)
-                })
-
-            # 1b. Real Resolution Time & Escalation Rate (replaces static Executive Modal KPIs)
-            avg_res_hours = 0.0
-            escalation_rate = 0.0
-            try:
-                raw_avg = await conn.fetchval(
-                    """
-                    SELECT AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) / 3600.0)
-                    FROM alerts
-                    WHERE status LIKE 'CLOSED%' AND updated_at IS NOT NULL AND created_at IS NOT NULL AND updated_at >= created_at;
-                    """
-                )
-                if isinstance(raw_avg, (int, float)):
-                    avg_res_hours = round(float(raw_avg), 1)
-                total_alerts_all = await conn.fetchval("SELECT COUNT(*) FROM alerts;")
-                escalated_alerts = await conn.fetchval(
-                    "SELECT COUNT(*) FROM alerts WHERE status IN ('ESCALATED', 'CLOSED_SAR');"
-                )
-                if isinstance(total_alerts_all, (int, float)) and total_alerts_all > 0 and isinstance(escalated_alerts, (int, float)):
-                    escalation_rate = round((float(escalated_alerts) / float(total_alerts_all)) * 100.0, 1)
-            except Exception:
-                pass
-
-            payload = {
-                "active_cases": active_cases or 0,
-                "critical_cases": critical_cases or 0,
-                "avg_resolution_hours": avg_res_hours,
-                "escalation_rate": escalation_rate,
-                "daily_trend": {
-                    "labels": list(days_map.keys()),
-                    "data": list(days_map.values())
-                },
-                "category_distribution": categories,
-                "analyst_leaderboard": analysts
-            }
-            return build_conditional_json_response(request, payload)
+        payload = await fetch_dashboard_metrics_repo(
+            tenant_id=tenant_id,
+            determine_risk_tier_fn=_determine_risk_tier,
+            read_conn_factory=get_async_db_read_conn,
+        )
+        return build_conditional_json_response(request, payload)
     except Exception:
         logger.exception("Dashboard metrics query failed")
         raise HTTPException(status_code=500, detail="Failed to load dashboard analytics.")
-
-
-async def _fetch_executive_counts(conn: Any) -> dict:
-    alerts_24h = await conn.fetchval(
-        "SELECT COUNT(*) FROM alerts WHERE created_at >= NOW() - INTERVAL '24 hours';"
-    )
-    open_alerts = await conn.fetchval(
-        "SELECT COUNT(*) FROM alerts WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN');"
-    )
-    open_cases = await conn.fetchval(
-        "SELECT COUNT(*) FROM cases WHERE status IN ('OPEN', 'INVESTIGATING', 'PENDING_EDD', 'PENDING_SAR');"
-    )
-    sars_mtd = await conn.fetchval(
-        """
-        SELECT COUNT(*) FROM sar_drafts
-        WHERE status IN ('APPROVED', 'FILED')
-          AND created_at >= DATE_TRUNC('month', NOW());
-        """
-    )
-    total_closed = await conn.fetchval(
-        "SELECT COUNT(*) FROM alerts WHERE status LIKE 'CLOSED%';"
-    )
-    fps_closed = await conn.fetchval(
-        "SELECT COUNT(*) FROM alerts WHERE status = 'CLOSED_FALSE_POSITIVE';"
-    )
-    median_triage = await conn.fetchval(
-        """
-        SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (
-            ORDER BY EXTRACT(EPOCH FROM (COALESCE(res.resolved_at, a.fincen_submitted_at) - a.created_at)) / 3600.0
-        )
-        FROM alerts a
-        LEFT JOIN LATERAL (
-            SELECT MAX(al.occurred_at) AS resolved_at
-            FROM audit_log al
-            WHERE al.resource_id = a.id::text
-              AND al.action IN ('CLOSE_FALSE_POSITIVE', 'RESOLVE_ALERT', 'FINCEN_SAR_FILED', 'UPDATE_ALERT')
-        ) res ON TRUE
-        WHERE a.status LIKE 'CLOSED%'
-          AND a.created_at IS NOT NULL
-          AND COALESCE(res.resolved_at, a.fincen_submitted_at) IS NOT NULL
-          AND COALESCE(res.resolved_at, a.fincen_submitted_at) >= a.created_at;
-        """
-    )
-
-    t_closed = int(total_closed or 0)
-    f_closed = int(fps_closed or 0)
-    fp_rate = round((f_closed / t_closed * 100), 1) if t_closed > 0 else 0.0
-    median_hours = round(float(median_triage), 1) if median_triage is not None else 0.0
-
-    return {
-        "alerts_24h": int(alerts_24h or 0),
-        "open_alerts": int(open_alerts or 0),
-        "open_cases": int(open_cases or 0),
-        "sars_filed_mtd": int(sars_mtd or 0),
-        "false_positive_rate": f"{fp_rate}%",
-        "median_triage_hours": median_hours
-    }
-
-
-async def _fetch_executive_sla_breaches(conn: Any) -> dict:
-    breach_24h = await conn.fetchval(
-        """
-        SELECT COUNT(*) FROM alerts
-        WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
-          AND created_at <= NOW() - INTERVAL '24 hours';
-        """
-    )
-    breach_48h = await conn.fetchval(
-        """
-        SELECT COUNT(*) FROM alerts
-        WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
-          AND created_at <= NOW() - INTERVAL '48 hours';
-        """
-    )
-    breach_72h = await conn.fetchval(
-        """
-        SELECT COUNT(*) FROM alerts
-        WHERE status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
-          AND created_at <= NOW() - INTERVAL '72 hours';
-        """
-    )
-
-    breach_rows = await conn.fetch(
-        """
-        SELECT a.id, a.rule_name, a.threat_level, a.created_at,
-               ROUND(EXTRACT(EPOCH FROM (NOW() - a.created_at)) / 3600.0, 1) as age_hours,
-               COALESCE(u.username, 'UNASSIGNED') as assignee
-        FROM alerts a
-        LEFT JOIN users u ON a.assigned_officer_id = u.id
-        WHERE a.status IN ('NEW', 'IN_REVIEW', 'ESCALATED', 'OPEN')
-          AND a.created_at <= NOW() - INTERVAL '24 hours'
-        ORDER BY a.created_at ASC
-        LIMIT 10;
-        """
-    )
-    breach_items = [
-        {
-            "alert_id": str(r["id"]),
-            "rule_name": r["rule_name"],
-            "threat_level": r["threat_level"],
-            "age_hours": float(r["age_hours"]),
-            "assignee": r["assignee"]
-        }
-        for r in breach_rows
-    ]
-
-    return {
-        "breach_24h": int(breach_24h or 0),
-        "breach_48h": int(breach_48h or 0),
-        "breach_72h": int(breach_72h or 0),
-        "items": breach_items
-    }
-
-
-async def _fetch_executive_analytics(conn: Any) -> tuple[list[dict], dict, list[dict]]:
-    cat_rows = await conn.fetch(
-        "SELECT rule_name, COUNT(*) as count FROM alerts GROUP BY rule_name ORDER BY count DESC LIMIT 8;"
-    )
-    typologies = [{"rule_name": r["rule_name"], "count": int(r["count"])} for r in cat_rows]
-
-    trend_rows = await conn.fetch(
-        """
-        SELECT DATE(created_at) as day, COUNT(*) as count
-        FROM alerts
-        WHERE created_at >= NOW() - INTERVAL '7 days'
-        GROUP BY DATE(created_at)
-        ORDER BY day ASC;
-        """
-    )
-    days_map = { (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%a"): 0 for i in reversed(range(7)) }
-    for row in trend_rows:
-        day_name = row["day"].strftime("%a")
-        if day_name in days_map:
-            days_map[day_name] = int(row["count"])
-
-    leaderboard_rows = await conn.fetch(
-        """
-        SELECT u.username,
-               COUNT(a.id) FILTER (WHERE a.status IN ('OPEN', 'IN_REVIEW', 'ESCALATED')) as active_cases,
-               COUNT(a.id) FILTER (WHERE a.status LIKE 'CLOSED%') as resolved_cases,
-               COUNT(a.id) as total_cases
-        FROM users u
-        LEFT JOIN alerts a ON u.id = a.assigned_officer_id
-        GROUP BY u.username
-        ORDER BY resolved_cases DESC
-        LIMIT 10;
-        """
-    )
-    analysts = []
-    for row in leaderboard_rows:
-        active = int(row["active_cases"])
-        resolved = int(row["resolved_cases"])
-        total = int(row["total_cases"])
-        res_rate = round((resolved / total * 100), 1) if total > 0 else 100.0
-        analysts.append({
-            "username": row["username"],
-            "active_cases": active,
-            "resolved_cases": resolved,
-            "resolution_rate": f"{res_rate}%"
-        })
-
-    return typologies, days_map, analysts
 
 
 @router.get("/api/v1/metrics/executive")
@@ -467,16 +190,13 @@ async def get_executive_metrics(
     current_user: dict = Depends(RoleChecker(["ANALYST", "AUDITOR", "MLRO", "ADMIN", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Computes executive compliance KPIs, SLA breach trackers, SAR filing throughput,
-    and institutional efficiency metrics for MLRO & Compliance Leadership.
-    Backed by a 30s tenant-scoped Redis cache + ETag/304 conditional revalidation.
-    """
+    """Computes executive compliance KPIs, SLA breach trackers, and SAR throughput (30s Redis cached)."""
     tenant_id = enforce_tenant_data_scope(current_user)
     cache_key = f"metrics:executive:{tenant_id}"
     redis = None
     try:
         from database.redis_db import get_async_redis_client
+
         redis = await get_async_redis_client()
         if redis:
             cached = await redis.get(cache_key)
@@ -486,31 +206,22 @@ async def get_executive_metrics(
         redis = None
 
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            kpis = await _fetch_executive_counts(conn)
-            sla_breaches = await _fetch_executive_sla_breaches(conn)
-            typologies, days_map, analysts = await _fetch_executive_analytics(conn)
-
-            payload = {
-                "kpis": kpis,
-                "sla_breaches": sla_breaches,
-                "typologies": typologies,
-                "daily_trend": {
-                    "labels": list(days_map.keys()),
-                    "data": list(days_map.values())
-                },
-                "leaderboard": analysts
-            }
-            if redis:
-                try:
-                    await redis.set(cache_key, json.dumps(payload), ex=30)
-                except Exception:
-                    pass
-            return build_conditional_json_response(request, payload)
+        payload = await fetch_executive_metrics_repo(
+            tenant_id=tenant_id,
+            counts_fn=_fetch_executive_counts,
+            sla_fn=_fetch_executive_sla_breaches,
+            analytics_fn=_fetch_executive_analytics,
+            read_conn_factory=get_async_db_read_conn,
+        )
+        if redis:
+            try:
+                await redis.set(cache_key, json.dumps(payload), ex=30)
+            except Exception:
+                pass
+        return build_conditional_json_response(request, payload)
     except Exception:
         logger.exception("Failed to calculate executive compliance metrics")
         raise HTTPException(status_code=500, detail="Failed to calculate executive compliance metrics.")
-
 
 
 MAX_WS_CONNECTIONS_PER_USER = 10
@@ -518,13 +229,12 @@ MAX_WS_CONNECTIONS_PER_IP = 25
 
 
 def _is_ws_origin_allowed(websocket: WebSocket) -> bool:
-    """Validates WebSocket Origin header against configured ALLOWED_ORIGINS / same-host (AUTHN-05 CSWSH defense)."""
     from config import settings
+
     headers = getattr(websocket, "headers", None)
     raw_origin = headers.get("origin") if headers is not None else None
     origin = raw_origin.strip().lower().rstrip("/") if isinstance(raw_origin, str) else ""
     if not origin:
-        # Non-browser native clients may omit Origin; disallow empty Origin in production if cookie-authed
         cookies = getattr(websocket, "cookies", None) or {}
         has_cookie = isinstance(cookies, dict) and bool(cookies.get("access_token"))
         return not (settings.is_production and has_cookie)
@@ -543,20 +253,14 @@ async def _authenticate_ws_connection(
     ticket: str | None,
     token: str | None,
 ) -> tuple[str, str, str] | None:
-    """
-    Authenticates WebSocket upgrade via:
-      1. Single-use opaque Redis ticket (`?ticket=wst_...`)
-      2. HttpOnly `access_token` cookie (with strict `type == 'access'` and `_verify_token_version`)
-      3. Query `?token=<JWT>` (strictly disabled in production; still enforces access type & revocation in dev)
-    Returns `(user_id, tenant_id, role)` or None.
-    """
     from config import settings
-    from services.secrets_manager import decode_jwt_with_rotation
     from services.auth import _verify_token_version
+    from services.secrets_manager import decode_jwt_with_rotation
 
     if ticket:
         try:
             from database.redis_db import get_async_redis_client
+
             redis = await get_async_redis_client()
             if redis:
                 key = f"ws:ticket:{ticket}"
@@ -572,7 +276,6 @@ async def _authenticate_ws_connection(
             logger.warning("WebSocket ticket auth failed: %s", err)
         return None
 
-    # AUTHN-05: Prohibit passing live JWTs in URL query strings in production
     if token and settings.is_production:
         return None
 
@@ -596,16 +299,11 @@ async def _authenticate_ws_connection(
         return None
 
 
-# ── Real-Time WebSocket Endpoint ──────────────────────────────────────────────
 @router.websocket("/ws/live-stream")
 async def websocket_live_stream(websocket: WebSocket, ticket: str | None = None, token: str | None = None):
-    """
-    WebSocket connection handler pushing real-time tenant-isolated events.
-    Enforces Origin CSWSH verification, single-use WS ticket or HttpOnly cookie auth,
-    access-token type & revocation checks, and per-user/per-IP connection limits.
-    """
-    # P1-06: Enforce per-IP WebSocket connection attempt rate limit using TrustedProxy IP resolution
+    """WebSocket connection handler pushing real-time tenant-isolated events."""
     from services.trusted_proxy import get_trusted_client_ip
+
     peer_ip = get_trusted_client_ip(websocket)
     ws_allowed, _ = _check_local_rate_limit(f"ws_connect:{peer_ip}", limit=30, window=60)
     if not ws_allowed:
@@ -641,7 +339,6 @@ async def websocket_live_stream(websocket: WebSocket, ticket: str | None = None,
         ws_manager.active_connections[websocket]["peer_ip"] = peer_ip
     try:
         while True:
-            # Keep-alive loop reading client heartbeats with 65s idle timeout
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=65.0)
                 if data == "ping":
@@ -653,6 +350,6 @@ async def websocket_live_stream(websocket: WebSocket, ticket: str | None = None,
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        logger.warning(f"WebSocket connection error: {e}")
+        logger.warning("WebSocket connection error: %s", e)
     finally:
         ws_manager.disconnect(websocket)

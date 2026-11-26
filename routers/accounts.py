@@ -23,6 +23,7 @@ from repositories.account_repo import (
     unfreeze_account_atomic,
     verify_account_cip_atomic,
 )
+from services.audit import record_audit_event_tx
 from services.auth import PermissionChecker, RoleChecker, enforce_tenant_data_scope
 from services.idempotency import run_idempotent_operation
 from services.rate_limiter import RateLimiter
@@ -152,6 +153,7 @@ async def freeze_account(
             freezing_order_ref=payload.freezing_order_ref,
             current_user=current_user,
             conn_factory=get_async_db_conn,
+            audit_fn=record_audit_event_tx,
         )
 
     return await run_idempotent_operation(

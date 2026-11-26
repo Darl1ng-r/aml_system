@@ -1,25 +1,45 @@
 """
-Immutable Audit Log Vault Router
-=================================
-Provides regulatory inspection endpoints for querying, filtering, and exporting
-tamper-evident audit logs (FFIEC, BSA 31 CFR 1010.430, EU AMLD6).
-Accessible by AUDITOR, GLOBAL_AUDITOR, MLRO, and ADMIN roles.
+Immutable Audit Log Vault & Regulatory Auditor Room Router
+==========================================================
+Thin HTTP controller for WORM audit log inspection, SHA-256 hash-chain
+verification, signed Examiner Packet exports, and Auditor Rooms.
+All PostgreSQL SQL lives in `repositories/audit_repo.py`.
 """
 
 import csv
+import hashlib
 import io
 import json
 import logging
 import re
 import uuid
-import hashlib
-from datetime import datetime, timezone
-from typing import Optional, List, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel
+from datetime import datetime, timedelta as _timedelta, timezone
+from typing import Any, List, Optional
 
-from database.postgres import get_async_db_read_conn
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status as _status
+from pydantic import BaseModel, Field as _Field
+
+from database.postgres import get_async_db_conn, get_async_db_read_conn
+from observability.logging import log_audit_event
+from observability.sanitizer import sanitize_text
+from repositories.audit_repo import (
+    build_examiner_packet_repo,
+    create_auditor_room_atomic,
+    fetch_audit_chain_rows_repo,
+    fetch_audit_export_rows_repo,
+    fetch_audit_log_detail_repo,
+    fetch_auditor_room_cases_repo,
+    list_audit_logs_repo,
+    list_auditor_rooms_repo,
+    revoke_auditor_room_atomic,
+    validate_and_touch_auditor_room_repo,
+)
 from services.auth import RoleChecker, enforce_tenant_data_scope
+from services.examiner_packet import (
+    build_signed_examiner_packet,
+    generate_auditor_room_token,
+    parse_auditor_room_token,
+)
 from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
@@ -34,52 +54,6 @@ def _escape_ilike(val: str) -> str:
 def _sanitize_download_filename(name: str, fallback: str = "export") -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", str(name or "")).strip("._")
     return cleaned[:100] or fallback
-
-
-def _build_audit_filter_clause(
-    tenant_id: Any,
-    actor: Optional[str],
-    action: Optional[str],
-    resource_type: Optional[str],
-    date_from: Optional[str],
-    date_to: Optional[str],
-) -> tuple[str, list, int]:
-    conditions = ["tenant_id = $1"]
-    params = [uuid.UUID(str(tenant_id))]
-    p_idx = 2
-
-    if actor:
-        conditions.append(f"(actor_username ILIKE ${p_idx} ESCAPE '\\' OR actor_id ILIKE ${p_idx} ESCAPE '\\')")
-        params.append(f"%{_escape_ilike(actor)}%")
-        p_idx += 1
-
-    if action:
-        conditions.append(f"action = ${p_idx}")
-        params.append(action.upper())
-        p_idx += 1
-
-    if resource_type:
-        conditions.append(f"resource_type = ${p_idx}")
-        params.append(resource_type.upper())
-        p_idx += 1
-
-    if date_from:
-        try:
-            params.append(datetime.fromisoformat(date_from))
-            conditions.append(f"created_at >= ${p_idx}")
-            p_idx += 1
-        except ValueError:
-            pass
-
-    if date_to:
-        try:
-            params.append(datetime.fromisoformat(date_to))
-            conditions.append(f"created_at <= ${p_idx}")
-            p_idx += 1
-        except ValueError:
-            pass
-
-    return " AND ".join(conditions), params, p_idx
 
 
 def _serialize_audit_row(r: dict) -> dict:
@@ -97,7 +71,7 @@ def _serialize_audit_row(r: dict) -> dict:
         "resource_type": r["resource_type"],
         "resource_id": r["resource_id"],
         "has_state_diff": bool(r["before_state"] or r["after_state"]),
-        "details": details
+        "details": details,
     }
 
 
@@ -112,41 +86,27 @@ async def list_audit_logs(
     date_from: Optional[str] = Query(None, description="ISO timestamp start filter"),
     date_to: Optional[str] = Query(None, description="ISO timestamp end filter"),
     current_user: dict = Depends(RoleChecker(["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "MLRO"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Queries paginated audit logs with dynamic filtering within tenant boundaries."""
     tenant_id = enforce_tenant_data_scope(current_user)
     offset = (page - 1) * limit
-    where_clause, params, p_idx = _build_audit_filter_clause(
-        tenant_id, actor, action, resource_type, date_from, date_to
-    )
-
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            count_query = f"SELECT COUNT(*) FROM audit_log WHERE {where_clause};"
-            total_count = await conn.fetchval(count_query, *params)
-
-            data_query = f"""
-                SELECT id, created_at, actor_id, actor_username, actor_role,
-                       actor_ip, actor_user_agent, session_id,
-                       action, resource_type, resource_id,
-                       before_state, after_state, details
-                FROM audit_log
-                WHERE {where_clause}
-                ORDER BY created_at DESC
-                LIMIT ${p_idx} OFFSET ${p_idx + 1};
-            """
-            rows = await conn.fetch(data_query, *params, limit, offset)
-            items = [_serialize_audit_row(r) for r in rows]
-
-            response.headers["X-Total-Count"] = str(total_count or 0)
-            response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
-            return {
-                "items": items,
-                "total": total_count or 0,
-                "page": page,
-                "limit": limit
-            }
+        total_count, rows = await list_audit_logs_repo(
+            tenant_id=tenant_id,
+            limit=limit,
+            offset=offset,
+            actor=actor,
+            action=action,
+            resource_type=resource_type,
+            date_from=date_from,
+            date_to=date_to,
+            read_conn_factory=get_async_db_read_conn,
+        )
+        items = [_serialize_audit_row(r) for r in rows]
+        response.headers["X-Total-Count"] = str(total_count)
+        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+        return {"items": items, "total": total_count, "page": page, "limit": limit}
     except Exception:
         logger.exception("Failed to query audit logs")
         raise HTTPException(status_code=500, detail="Audit query failed.")
@@ -155,39 +115,15 @@ async def list_audit_logs(
 @router.get("/verify-chain")
 async def verify_audit_hash_chain(
     current_user: dict = Depends(RoleChecker(["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "MLRO"])),
-    _rate_limit=Depends(RateLimiter(limit=10, window=60))
+    _rate_limit=Depends(RateLimiter(limit=10, window=60)),
 ):
-    """
-    Cryptographically verifies the immutable SHA-256 hash chain across audit records.
-    Guarantees tamper-evidence and regulatory compliance (WORM storage).
-    """
+    """Cryptographically verifies the immutable SHA-256 hash chain across audit records."""
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            try:
-                rows = await conn.fetch(
-                    """
-                    SELECT id, created_at, actor_id, action, resource_type, resource_id, details,
-                           prev_hash, record_hash
-                    FROM audit_log
-                    WHERE tenant_id = $1
-                    ORDER BY created_at ASC, id ASC
-                    LIMIT 5000;
-                    """,
-                    uuid.UUID(str(tenant_id))
-                )
-            except Exception:
-                rows = await conn.fetch(
-                    """
-                    SELECT id, created_at, actor_id, action, resource_type, resource_id, details
-                    FROM audit_log
-                    WHERE tenant_id = $1
-                    ORDER BY created_at ASC, id ASC
-                    LIMIT 5000;
-                    """,
-                    uuid.UUID(str(tenant_id))
-                )
-
+        rows = await fetch_audit_chain_rows_repo(
+            tenant_id=tenant_id,
+            read_conn_factory=get_async_db_read_conn,
+        )
         if not rows:
             return {
                 "status": "VALID",
@@ -196,10 +132,11 @@ async def verify_audit_hash_chain(
                 "chain_head": "GENESIS_EMPTY_CHAIN_00000000000000000000000000000000",
                 "tampered": False,
                 "tampered_record_id": None,
-                "verified_at": datetime.now(timezone.utc).isoformat()
+                "verified_at": datetime.now(timezone.utc).isoformat(),
             }
 
         from services.audit import GENESIS_AUDIT_HASH, compute_audit_record_hash
+
         prev_hash = GENESIS_AUDIT_HASH
         genesis_hash = prev_hash
         persisted_hash_count = 0
@@ -219,7 +156,7 @@ async def verify_audit_hash_chain(
                 action=r["action"],
                 resource_type=r["resource_type"],
                 resource_id=r["resource_id"],
-                details=raw_details
+                details=raw_details,
             )
 
             stored_prev = r["prev_hash"] if "prev_hash" in r else None
@@ -234,7 +171,7 @@ async def verify_audit_hash_chain(
                     "tampered": True,
                     "tampered_record_id": str(r["id"]),
                     "reason": "Broken prev_hash link in audit chain",
-                    "verified_at": datetime.now(timezone.utc).isoformat()
+                    "verified_at": datetime.now(timezone.utc).isoformat(),
                 }
             if stored_hash is not None:
                 persisted_hash_count += 1
@@ -247,7 +184,7 @@ async def verify_audit_hash_chain(
                         "tampered": True,
                         "tampered_record_id": str(r["id"]),
                         "reason": "Stored SHA-256 record_hash mismatch",
-                        "verified_at": datetime.now(timezone.utc).isoformat()
+                        "verified_at": datetime.now(timezone.utc).isoformat(),
                     }
             prev_hash = expected_hash
 
@@ -259,7 +196,7 @@ async def verify_audit_hash_chain(
             "chain_head": prev_hash,
             "tampered": False,
             "tampered_record_id": None,
-            "verified_at": datetime.now(timezone.utc).isoformat()
+            "verified_at": datetime.now(timezone.utc).isoformat(),
         }
     except Exception:
         logger.exception("Audit hash chain verification failed")
@@ -273,45 +210,17 @@ async def export_audit_logs(
     action: Optional[str] = None,
     resource_type: Optional[str] = None,
     current_user: dict = Depends(RoleChecker(["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "MLRO"])),
-    _rate_limit=Depends(RateLimiter(limit=10, window=60))
+    _rate_limit=Depends(RateLimiter(limit=10, window=60)),
 ):
     """Exports audit logs for regulatory submission or forensic archiving with digital checksum."""
     tenant_id = enforce_tenant_data_scope(current_user)
-    conditions = ["tenant_id = $1"]
-    params = [uuid.UUID(str(tenant_id))]
-    p_idx = 2
-
-    if actor:
-        safe_actor = actor.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        conditions.append(f"actor_username ILIKE ${p_idx} ESCAPE '\\'")
-        params.append(f"%{safe_actor}%")
-        p_idx += 1
-
-    if action:
-        conditions.append(f"action = ${p_idx}")
-        params.append(action.upper())
-        p_idx += 1
-
-    if resource_type:
-        conditions.append(f"resource_type = ${p_idx}")
-        params.append(resource_type.upper())
-        p_idx += 1
-
-    where_clause = " AND ".join(conditions)
-
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        rows = await conn.fetch(
-            f"""
-            SELECT id, created_at, actor_id, actor_username, actor_role,
-                   actor_ip, action, resource_type, resource_id, details
-            FROM audit_log
-            WHERE {where_clause}
-            ORDER BY created_at DESC
-            LIMIT 5000;
-            """,
-            *params
-        )
-
+    rows = await fetch_audit_export_rows_repo(
+        tenant_id=tenant_id,
+        actor=actor,
+        action=action,
+        resource_type=resource_type,
+        read_conn_factory=get_async_db_read_conn,
+    )
     timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
     if format.lower() == "json":
@@ -326,7 +235,7 @@ async def export_audit_logs(
                 "action": r["action"],
                 "resource_type": r["resource_type"],
                 "resource_id": r["resource_id"],
-                "details": r["details"]
+                "details": r["details"],
             }
             for r in rows
         ]
@@ -337,11 +246,10 @@ async def export_audit_logs(
             media_type="application/json",
             headers={
                 "Content-Disposition": f"attachment; filename=audit_export_{timestamp_str}.json",
-                "X-Audit-Checksum-SHA256": checksum
-            }
+                "X-Audit-Checksum-SHA256": checksum,
+            },
         )
 
-    # CSV Format (CWE-1236 formula injection neutralization)
     def _csv_safe(val: object) -> str:
         s = "" if val is None else str(val)
         if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
@@ -354,17 +262,19 @@ async def export_audit_logs(
     for r in rows:
         ts = r["created_at"].isoformat() if r["created_at"] else ""
         det = json.dumps(r["details"]) if r["details"] else ""
-        writer.writerow([
-            _csv_safe(str(r["id"])),
-            _csv_safe(ts),
-            _csv_safe(r["actor_username"] or r["actor_id"]),
-            _csv_safe(r["actor_role"]),
-            _csv_safe(r["actor_ip"]),
-            _csv_safe(r["action"]),
-            _csv_safe(r["resource_type"]),
-            _csv_safe(r["resource_id"]),
-            _csv_safe(det),
-        ])
+        writer.writerow(
+            [
+                _csv_safe(str(r["id"])),
+                _csv_safe(ts),
+                _csv_safe(r["actor_username"] or r["actor_id"]),
+                _csv_safe(r["actor_role"]),
+                _csv_safe(r["actor_ip"]),
+                _csv_safe(r["action"]),
+                _csv_safe(r["resource_type"]),
+                _csv_safe(r["resource_id"]),
+                _csv_safe(det),
+            ]
+        )
 
     csv_data = output.getvalue()
     checksum = hashlib.sha256(csv_data.encode("utf-8")).hexdigest()
@@ -373,8 +283,8 @@ async def export_audit_logs(
         media_type="text/csv",
         headers={
             "Content-Disposition": f"attachment; filename=audit_export_{timestamp_str}.csv",
-            "X-Audit-Checksum-SHA256": checksum
-        }
+            "X-Audit-Checksum-SHA256": checksum,
+        },
     )
 
 
@@ -391,7 +301,7 @@ def _parse_json_field(val: Any) -> Any:
 async def get_audit_log_detail(
     id: str,
     current_user: dict = Depends(RoleChecker(["AUDITOR", "GLOBAL_AUDITOR", "ADMIN", "MLRO"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Retrieves single audit record including full before/after state diff JSON."""
     try:
@@ -401,41 +311,30 @@ async def get_audit_log_detail(
 
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT id, created_at, actor_id, actor_username, actor_role,
-                       actor_ip, actor_user_agent, session_id,
-                       action, resource_type, resource_id,
-                       before_state, after_state, details
-                FROM audit_log
-                WHERE id = $1 AND tenant_id = $2;
-                """,
-                log_uuid, uuid.UUID(str(tenant_id))
-            )
-            if not row:
-                raise HTTPException(status_code=404, detail="Audit record not found.")
+        row = await fetch_audit_log_detail_repo(
+            log_uuid=log_uuid,
+            tenant_id=tenant_id,
+            read_conn_factory=get_async_db_read_conn,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Audit record not found.")
 
-            before_val = _parse_json_field(row["before_state"])
-            after_val = _parse_json_field(row["after_state"])
-            details_val = _parse_json_field(row["details"]) or {}
-
-            return {
-                "id": str(row["id"]),
-                "created_at": row["created_at"].isoformat() if row["created_at"] else "",
-                "actor_id": row["actor_id"],
-                "actor_username": row["actor_username"] or "SYSTEM",
-                "actor_role": row["actor_role"],
-                "actor_ip": row["actor_ip"],
-                "actor_user_agent": row["actor_user_agent"],
-                "session_id": row["session_id"],
-                "action": row["action"],
-                "resource_type": row["resource_type"],
-                "resource_id": row["resource_id"],
-                "before_state": before_val,
-                "after_state": after_val,
-                "details": details_val
-            }
+        return {
+            "id": str(row["id"]),
+            "created_at": row["created_at"].isoformat() if row["created_at"] else "",
+            "actor_id": row["actor_id"],
+            "actor_username": row["actor_username"] or "SYSTEM",
+            "actor_role": row["actor_role"],
+            "actor_ip": row["actor_ip"],
+            "actor_user_agent": row["actor_user_agent"],
+            "session_id": row["session_id"],
+            "action": row["action"],
+            "resource_type": row["resource_type"],
+            "resource_id": row["resource_id"],
+            "before_state": _parse_json_field(row["before_state"]),
+            "after_state": _parse_json_field(row["after_state"]),
+            "details": _parse_json_field(row["details"]) or {},
+        }
     except HTTPException:
         raise
     except Exception:
@@ -444,19 +343,6 @@ async def get_audit_log_detail(
 
 
 # ── P2-3: Cryptographically Signed Examiner Packet & Time-Boxed Auditor Rooms ──
-
-from datetime import timedelta as _timedelta
-from fastapi import status as _status
-from pydantic import Field as _Field
-from database.postgres import get_async_db_conn
-from observability.logging import log_audit_event
-from observability.sanitizer import sanitize_text
-from services.examiner_packet import (
-    build_signed_examiner_packet,
-    generate_auditor_room_token,
-    parse_auditor_room_token,
-)
-
 
 class AuditorRoomCreateRequest(BaseModel):
     room_name: str = _Field(..., min_length=3, max_length=180)
@@ -478,16 +364,16 @@ async def export_signed_examiner_packet(
         raise HTTPException(status_code=400, detail="Invalid case ID.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        try:
-            zip_bytes, manifest, zip_sha256 = await build_signed_examiner_packet(
-                conn=conn,
-                tenant_id=tenant_id,
-                case_id=case_uuid,
-                generated_by=current_user.get("username", "mlro"),
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Case not found.")
+    try:
+        zip_bytes, manifest, zip_sha256 = await build_examiner_packet_repo(
+            tenant_id=tenant_id,
+            case_uuid=case_uuid,
+            generated_by=current_user.get("username", "mlro"),
+            build_packet_fn=build_signed_examiner_packet,
+            read_conn_factory=get_async_db_read_conn,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Case not found.")
 
     log_audit_event(
         event_type="EXAMINER_PACKET_EXPORTED",
@@ -520,7 +406,7 @@ async def create_auditor_room(
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=15, window=60)),
 ):
-    """Creates a time-boxed, revocable read-only Regulatory Auditor Room scoped to explicit tenant-owned case IDs."""
+    """Creates a time-boxed, revocable read-only Regulatory Auditor Room."""
     try:
         case_uuids = [uuid.UUID(cid) for cid in payload.allowed_case_ids]
     except ValueError:
@@ -532,52 +418,16 @@ async def create_auditor_room(
     safe_name = sanitize_text(payload.room_name)
     safe_org = sanitize_text(payload.examiner_org)
 
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        # Validate every requested case_id belongs to the caller's tenant
-        owned_rows = await conn.fetch(
-            "SELECT id FROM cases WHERE id = ANY($1::uuid[]) AND tenant_id = $2::uuid;",
-            case_uuids,
-            str(tenant_id),
-        )
-        owned_ids = {r["id"] for r in (owned_rows or [])}
-        missing_cases = [str(cid) for cid in case_uuids if cid not in owned_ids]
-        if missing_cases:
-            raise HTTPException(
-                status_code=_status.HTTP_404_NOT_FOUND,
-                detail="One or more allowed_case_ids do not exist in your tenant.",
-            )
-
-        room_id = await conn.fetchval(
-            """
-            INSERT INTO auditor_rooms (
-                tenant_id, room_name, examiner_org, token_hash, allowed_case_ids, expires_at, created_by
-            )
-            VALUES ($1::uuid, $2, $3, $4, $5::uuid[], $6, $7)
-            RETURNING id;
-            """,
-            str(tenant_id),
-            safe_name,
-            safe_org,
-            token_hash,
-            case_uuids,
-            expires_at,
-            current_user.get("username", "mlro"),
-        )
-        try:
-            from services.audit import record_audit_event_tx
-            await record_audit_event_tx(
-                conn=conn,
-                action="CREATE_AUDITOR_ROOM",
-                actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
-                actor_username=current_user.get("username", "mlro"),
-                actor_role=current_user.get("role", "MLRO"),
-                resource_type="AUDITOR_ROOM",
-                resource_id=str(room_id),
-                tenant_id=str(tenant_id),
-                details={"room_name": safe_name, "examiner_org": safe_org, "case_count": len(case_uuids)},
-            )
-        except Exception as audit_err:
-            logger.warning(f"Transactional audit write skipped in create_auditor_room: {audit_err}")
+    room_id = await create_auditor_room_atomic(
+        tenant_id=str(tenant_id),
+        safe_name=safe_name,
+        safe_org=safe_org,
+        token_hash=token_hash,
+        case_uuids=case_uuids,
+        expires_at=expires_at,
+        current_user=current_user,
+        conn_factory=get_async_db_conn,
+    )
 
     log_audit_event(
         event_type="AUDITOR_ROOM_CREATED",
@@ -607,18 +457,10 @@ async def list_auditor_rooms(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, room_name, examiner_org, allowed_case_ids, expires_at, revoked_at,
-                   access_count, last_accessed_at, created_by, created_at
-            FROM auditor_rooms
-            WHERE tenant_id = $1::uuid
-            ORDER BY created_at DESC
-            LIMIT 50;
-            """,
-            str(tenant_id),
-        )
+    rows = await list_auditor_rooms_repo(
+        tenant_id=str(tenant_id),
+        read_conn_factory=get_async_db_read_conn,
+    )
     return [
         {
             "room_id": str(r["id"]),
@@ -631,7 +473,7 @@ async def list_auditor_rooms(
             "last_accessed_at": r["last_accessed_at"].isoformat() if r["last_accessed_at"] else None,
             "created_by": r["created_by"],
         }
-        for r in (rows or [])
+        for r in rows
     ]
 
 
@@ -646,29 +488,12 @@ async def revoke_auditor_room(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid auditor room ID.")
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        revoked = await conn.fetchval(
-            "UPDATE auditor_rooms SET revoked_at = NOW() WHERE id = $1 AND tenant_id = $2::uuid AND revoked_at IS NULL RETURNING id;",
-            r_uuid,
-            str(tenant_id),
-        )
-        if not revoked:
-            raise HTTPException(status_code=404, detail="Active auditor room not found.")
-        try:
-            from services.audit import record_audit_event_tx
-            await record_audit_event_tx(
-                conn=conn,
-                action="REVOKE_AUDITOR_ROOM",
-                actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
-                actor_username=current_user.get("username", "mlro"),
-                actor_role=current_user.get("role", "MLRO"),
-                resource_type="AUDITOR_ROOM",
-                resource_id=room_id,
-                tenant_id=str(tenant_id),
-                details={"revoked": True},
-            )
-        except Exception as audit_err:
-            logger.warning(f"Transactional audit write skipped in revoke_auditor_room: {audit_err}")
+    await revoke_auditor_room_atomic(
+        room_uuid=r_uuid,
+        tenant_id=str(tenant_id),
+        current_user=current_user,
+        conn_factory=get_async_db_conn,
+    )
     return {"room_id": room_id, "status": "REVOKED"}
 
 
@@ -676,27 +501,12 @@ async def _validate_auditor_room_token(token: str):
     tenant_id, token_hash = parse_auditor_room_token(token)
     if not tenant_id:
         raise HTTPException(status_code=403, detail="Invalid auditor room access token.")
-
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        room = await conn.fetchrow(
-            "SELECT * FROM auditor_rooms WHERE token_hash = $1;",
-            token_hash,
-        )
-        if not room:
-            raise HTTPException(status_code=403, detail="Invalid auditor room access token.")
-        if room.get("revoked_at") is not None:
-            raise HTTPException(status_code=403, detail="Auditor room access has been revoked.")
-        exp = room["expires_at"]
-        if exp and exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        if exp and exp < datetime.now(timezone.utc):
-            raise HTTPException(status_code=_status.HTTP_410_GONE, detail="Auditor room access window has expired.")
-
-        await conn.execute(
-            "UPDATE auditor_rooms SET access_count = access_count + 1, last_accessed_at = NOW() WHERE id = $1;",
-            room["id"],
-        )
-        return tenant_id, dict(room)
+    room = await validate_and_touch_auditor_room_repo(
+        tenant_id=tenant_id,
+        token_hash=token_hash,
+        conn_factory=get_async_db_conn,
+    )
+    return tenant_id, room
 
 
 @router.get("/rooms/{token}/view")
@@ -711,18 +521,11 @@ async def view_auditor_room(
     tenant_id, room = await _validate_auditor_room_token(token)
     allowed_ids = [uuid.UUID(str(x)) for x in (room.get("allowed_case_ids") or [])]
 
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        cases_rows = await conn.fetch(
-            """
-            SELECT id, case_number, title, status, priority, created_at, closed_at
-            FROM cases
-            WHERE id = ANY($1::uuid[]) AND tenant_id = $2::uuid
-            ORDER BY created_at DESC;
-            """,
-            allowed_ids,
-            str(tenant_id),
-        )
-
+    cases_rows = await fetch_auditor_room_cases_repo(
+        tenant_id=tenant_id,
+        allowed_ids=allowed_ids,
+        read_conn_factory=get_async_db_read_conn,
+    )
     return {
         "room_name": room["room_name"],
         "examiner_org": room["examiner_org"],
@@ -737,7 +540,7 @@ async def view_auditor_room(
                 "priority": c["priority"],
                 "packet_download_url": f"/api/v1/audit/rooms/{token}/packet/{c['id']}",
             }
-            for c in (cases_rows or [])
+            for c in cases_rows
         ],
     }
 
@@ -759,16 +562,16 @@ async def download_auditor_room_packet(
     if str(case_uuid) not in allowed_strs:
         raise HTTPException(status_code=403, detail="Case is outside the authorized Auditor Room scope.")
 
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        try:
-            zip_bytes, manifest, zip_sha256 = await build_signed_examiner_packet(
-                conn=conn,
-                tenant_id=tenant_id,
-                case_id=case_uuid,
-                generated_by=f"EXAMINER:{room['examiner_org']}",
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Case not found.")
+    try:
+        zip_bytes, manifest, zip_sha256 = await build_examiner_packet_repo(
+            tenant_id=tenant_id,
+            case_uuid=case_uuid,
+            generated_by=f"EXAMINER:{room['examiner_org']}",
+            build_packet_fn=build_signed_examiner_packet,
+            read_conn_factory=get_async_db_read_conn,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Case not found.")
 
     safe_case_ref = _sanitize_download_filename(manifest.get("case_number") or case_id[:8], fallback=case_id[:8])
     fname = f"examiner_packet_{safe_case_ref}.zip"

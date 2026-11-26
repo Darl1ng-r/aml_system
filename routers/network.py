@@ -1,34 +1,47 @@
+"""
+Graph Network Analytics, Corporate UBO Ownership Tree & Cross-Entity MDM Router
+===============================================================================
+Thin HTTP controller for graph network analytics, N-hop node expansion,
+multi-layer corporate UBO tree resolution (>25%), and MDM link discovery.
+All PostgreSQL SQL lives in `repositories/analytics_repo.py`.
+"""
+
 import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel as _BaseModel, Field as _Field
+
+from observability.sanitizer import sanitize_text as _sanitize_text
+from repositories.analytics_repo import (
+    create_ubo_edge_repo,
+    expand_network_pg_fallback_repo,
+    find_cross_entity_mdm_links_repo,
+    list_corporate_ownership_edges_repo,
+)
 from services.auth import RoleChecker, enforce_tenant_data_scope
-from services.rate_limiter import RateLimiter
 from services.network_analysis import run_network_analysis
+from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/network", tags=["Network Analysis"])
+
 
 @router.get("/analysis")
 async def get_network_analysis(
     window_hours: int = Query(default=72, ge=1, le=720),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR", "MLRO"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Exposes graph network analytics for compliance dashboards.
-    Returns:
-    - Circular money flow cycles (Tarjan's SCC / Cypher directed cycles).
-    - Fan-In patterns (potential mules).
-    - Fan-Out patterns (potential layering).
-    - Intermediary middleman transit accounts (Brandes' Betweenness Centrality).
-    """
+    """Exposes graph network analytics (cycles, fan-in, fan-out, Brandes centrality)."""
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
         return await run_network_analysis(tenant_id=str(tenant_id) if tenant_id else None, window_hours=window_hours)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Graph network analysis failed: {e}", exc_info=True)
+        logger.error("Graph network analysis failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Graph network analysis failed.")
+
 
 def _parse_neo4j_node(node) -> dict | None:
     if not node:
@@ -68,19 +81,22 @@ def _parse_neo4j_records(records: list[dict]) -> dict:
             rel_id = f"{src_id}_{dst_id}"
             if rel_id not in edge_ids:
                 edge_ids.add(rel_id)
-                edges.append({
-                    "id": rel_id,
-                    "source": src_id,
-                    "target": dst_id,
-                    "type": rel.type,
-                    "properties": dict(rel)
-                })
+                edges.append(
+                    {
+                        "id": rel_id,
+                        "source": src_id,
+                        "target": dst_id,
+                        "type": rel.type,
+                        "properties": dict(rel),
+                    }
+                )
 
     return {"nodes": list(nodes.values()), "edges": edges}
 
 
 async def _expand_neo4j(entity_id: str, tenant_id: str | None, hops: int = 2) -> dict:
     from database.neo4j_db import get_async_neo4j_driver
+
     driver = await get_async_neo4j_driver()
     safe_hops = max(1, min(int(hops), 3))
     query = f"""
@@ -127,8 +143,8 @@ def _parse_pg_rows(rows: list) -> dict:
                     "account_number": row["sender_acc"],
                     "owner_name": row["sender_name"],
                     "risk": s_risk,
-                    "risk_score": float(row.get("sender_risk") or 0.0)
-                }
+                    "risk_score": float(row.get("sender_risk") or 0.0),
+                },
             }
         if r_id not in pg_nodes:
             r_risk = _derive_risk_label(row.get("receiver_risk"), row.get("receiver_status"))
@@ -140,96 +156,34 @@ def _parse_pg_rows(rows: list) -> dict:
                     "account_number": row["receiver_acc"],
                     "owner_name": row["receiver_name"],
                     "risk": r_risk,
-                    "risk_score": float(row.get("receiver_risk") or 0.0)
-                }
+                    "risk_score": float(row.get("receiver_risk") or 0.0),
+                },
             }
         tx_id = str(row["tx_id"])
         if tx_id not in seen_edges:
             seen_edges.add(tx_id)
-            pg_edges.append({
-                "id": tx_id,
-                "source": s_id,
-                "target": r_id,
-                "type": "TRANSFERS_TO",
-                "properties": {"amount": float(row["amount"]), "timestamp": str(row["timestamp"])}
-            })
+            pg_edges.append(
+                {
+                    "id": tx_id,
+                    "source": s_id,
+                    "target": r_id,
+                    "type": "TRANSFERS_TO",
+                    "properties": {"amount": float(row["amount"]), "timestamp": str(row["timestamp"])},
+                }
+            )
     return {"nodes": list(pg_nodes.values()), "edges": pg_edges}
 
 
 async def _expand_pg_fallback(entity_id: str, tenant_id: str | None, hops: int = 2) -> dict:
-    from database.postgres import get_async_db_read_conn
-    safe_hops = max(1, min(int(hops), 3))
-    target_entity = str(entity_id or "").strip()
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        if target_entity.lower() in ("", "auto", "default"):
-            seed_row = await conn.fetchrow(
-                """
-                SELECT a.account_number
-                FROM accounts a
-                JOIN transactions t
-                  ON t.sender_account_id = a.id OR t.receiver_account_id = a.id
-                WHERE ($1::text IS NULL OR t.tenant_id = $1::uuid)
-                GROUP BY a.id, a.account_number, a.risk_score
-                ORDER BY count(t.id) DESC, a.risk_score DESC NULLS LAST
-                LIMIT 1
-                """,
-                str(tenant_id) if tenant_id else None,
-            )
-            if not seed_row:
-                return {"nodes": [], "edges": [], "resolved_entity": None}
-            target_entity = seed_row["account_number"]
-
-        escaped_entity = target_entity.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        rows = await conn.fetch(
-            """
-            WITH RECURSIVE visited_accounts(acc_id, depth) AS (
-                SELECT id, 0
-                FROM accounts
-                WHERE (
-                    id::text = $1
-                    OR account_number ILIKE $4 ESCAPE '\\'
-                    OR owner_name ILIKE $4 ESCAPE '\\'
-                )
-                  AND ($2::text IS NULL OR tenant_id = $2::uuid)
-                UNION
-                SELECT CASE
-                           WHEN t.sender_account_id = v.acc_id THEN t.receiver_account_id
-                           ELSE t.sender_account_id
-                       END,
-                       v.depth + 1
-                FROM visited_accounts v
-                JOIN transactions t
-                  ON t.sender_account_id = v.acc_id OR t.receiver_account_id = v.acc_id
-                WHERE v.depth < $3
-                  AND ($2::text IS NULL OR t.tenant_id = $2::uuid)
-            )
-            SELECT DISTINCT
-                t.id as tx_id,
-                t.amount,
-                t.timestamp,
-                s.id as sender_id,
-                s.account_number as sender_acc,
-                s.owner_name as sender_name,
-                s.risk_score as sender_risk,
-                s.status as sender_status,
-                r.id as receiver_id,
-                r.account_number as receiver_acc,
-                r.owner_name as receiver_name,
-                r.risk_score as receiver_risk,
-                r.status as receiver_status
-            FROM transactions t
-            JOIN accounts s ON t.sender_account_id = s.id
-            JOIN accounts r ON t.receiver_account_id = r.id
-            WHERE (t.sender_account_id IN (SELECT acc_id FROM visited_accounts)
-               AND t.receiver_account_id IN (SELECT acc_id FROM visited_accounts))
-              AND ($2::text IS NULL OR t.tenant_id = $2::uuid)
-            ORDER BY t.timestamp DESC
-            LIMIT 75;
-            """,
-            target_entity, str(tenant_id) if tenant_id else None, safe_hops, escaped_entity
-        )
+    resolved_entity, rows = await expand_network_pg_fallback_repo(
+        entity_id=entity_id,
+        tenant_id=tenant_id,
+        hops=hops,
+    )
+    if resolved_entity is None:
+        return {"nodes": [], "edges": [], "resolved_entity": None}
     parsed = _parse_pg_rows(rows)
-    parsed["resolved_entity"] = target_entity
+    parsed["resolved_entity"] = resolved_entity
     return parsed
 
 
@@ -240,12 +194,9 @@ async def expand_graph_node(
     entity_id: str,
     hops: int = Query(default=2, ge=1, le=3, description="Traversal depth in hops (1-3)"),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR", "MLRO"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Dynamically expands a target graph node by fetching its N-hop connected sub-network from Neo4j,
-    automatically falling back to PostgreSQL when Neo4j is unavailable or returns no records.
-    """
+    """Dynamically expands a target graph node via Neo4j with automatic PostgreSQL fallback."""
     tenant_id = enforce_tenant_data_scope(current_user)
     neo_err = None
     if str(entity_id or "").strip().lower() not in ("", "auto", "default"):
@@ -255,25 +206,18 @@ async def expand_graph_node(
                 return neo_res
         except Exception as err:
             neo_err = err
-            logger.info(f"Neo4j expansion unavailable ({err}); executing in-engine PostgreSQL fallback...")
+            logger.info("Neo4j expansion unavailable (%s); executing in-engine PostgreSQL fallback...", err)
 
     try:
         return await _expand_pg_fallback(entity_id, tenant_id, hops=hops)
     except HTTPException:
         raise
     except Exception as pg_err:
-        logger.error(f"Graph node expansion failed on Neo4j ({neo_err}) and PostgreSQL ({pg_err})", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Graph node expansion failed."
-        )
+        logger.error("Graph node expansion failed on Neo4j (%s) and PostgreSQL (%s)", neo_err, pg_err, exc_info=True)
+        raise HTTPException(status_code=500, detail="Graph node expansion failed.")
 
 
 # ── P2-4: Multi-Layer Corporate UBO Ownership Tree (>25%) & Cross-Entity MDM ──
-
-from pydantic import BaseModel as _BaseModel, Field as _Field
-from observability.sanitizer import sanitize_text as _sanitize_text
-
 
 class UBOEdgeCreateRequest(_BaseModel):
     parent_entity_name: str = _Field(..., min_length=2, max_length=200)
@@ -292,32 +236,21 @@ async def create_ubo_ownership_edge(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Records a corporate ownership edge for recursive >25% indirect UBO resolution."""
-    from database.postgres import get_async_db_conn
-
     tenant_id = enforce_tenant_data_scope(current_user)
     safe_parent = _sanitize_text(payload.parent_entity_name)
     safe_child = _sanitize_text(payload.child_company_name)
     if not safe_parent or not safe_child:
         raise HTTPException(status_code=422, detail="Entity names cannot be empty after sanitization.")
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        edge_id = await conn.fetchval(
-            """
-            INSERT INTO corporate_ownership_edges (
-                tenant_id, parent_entity_name, parent_entity_type, child_company_name,
-                ownership_pct, jurisdiction, tax_id, verified_source
-            )
-            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id;
-            """,
-            str(tenant_id),
-            safe_parent,
-            payload.parent_entity_type,
-            safe_child,
-            payload.ownership_pct,
-            payload.jurisdiction.upper().strip(),
-            _sanitize_text(payload.tax_id) if payload.tax_id else None,
-            _sanitize_text(payload.verified_source),
-        )
+    edge_id = await create_ubo_edge_repo(
+        tenant_id=str(tenant_id),
+        safe_parent=safe_parent,
+        parent_entity_type=payload.parent_entity_type,
+        safe_child=safe_child,
+        ownership_pct=payload.ownership_pct,
+        jurisdiction=payload.jurisdiction.upper().strip(),
+        tax_id=_sanitize_text(payload.tax_id) if payload.tax_id else None,
+        verified_source=_sanitize_text(payload.verified_source),
+    )
     return {
         "edge_id": str(edge_id),
         "parent_entity_name": safe_parent,
@@ -334,22 +267,10 @@ async def get_ubo_ownership_tree(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Resolves multi-layer indirect equity ownership & split-ownership aggregation (>25% CDD threshold)."""
-    from database.postgres import get_async_db_read_conn
     from services.ubo_resolver import resolve_ubo_ownership_tree
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT parent_entity_name, parent_entity_type, child_company_name,
-                   ownership_pct, jurisdiction, tax_id
-            FROM corporate_ownership_edges
-            WHERE tenant_id = $1::uuid
-            LIMIT 2000;
-            """,
-            str(tenant_id),
-        )
-    edges = [dict(r) for r in (rows or [])]
+    edges = await list_corporate_ownership_edges_repo(tenant_id=str(tenant_id))
     return resolve_ubo_ownership_tree(edges, target_company=company_name, threshold_pct=threshold_pct)
 
 
@@ -360,9 +281,8 @@ async def get_cross_entity_mdm_links(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Uncovers hidden cross-entity MDM links sharing Tax IDs, device fingerprints, or beneficiary corridors."""
-    from database.postgres import get_async_db_read_conn
-    from services.ubo_resolver import find_cross_entity_mdm_links
-
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        return await find_cross_entity_mdm_links(conn=conn, account_number=account_number)
+    return await find_cross_entity_mdm_links_repo(
+        tenant_id=str(tenant_id),
+        account_number=account_number,
+    )

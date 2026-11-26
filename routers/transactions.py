@@ -402,17 +402,15 @@ async def ingest_transaction_async(
 
     try:
         from database.outbox import record_outbox_event
+        from repositories.transaction_repo import buffer_async_transaction_outbox_repo
 
-        async with get_async_db_conn(tenant_id=user_tenant_id) as conn:
-            await record_outbox_event(
-                conn=conn,
-                aggregate_type="TRANSACTION_BUFFER",
-                aggregate_id=tx_id,
-                event_type="aml.core.transaction.buffered.v1",
-                payload=buffer_payload,
-                tenant_id=tenant_str,
-                headers={"topic": "aml.transactions.raw"},
-            )
+        await buffer_async_transaction_outbox_repo(
+            tenant_id=user_tenant_id,
+            tx_id=tx_id,
+            buffer_payload=buffer_payload,
+            record_outbox_fn=record_outbox_event,
+            write_conn_factory=get_async_db_conn,
+        )
     except Exception as ex_buf:
         if scoped_idemp_key:
             await clear_idempotency_key(scoped_idemp_key, tenant_id=tenant_str)

@@ -435,11 +435,12 @@ async def update_legacy_rules_config(
     async def _execute_global_update():
         try:
             try:
+                from database.postgres import get_async_db_conn as _get_db
                 await persist_global_rules_config_atomic(
                     payload=payload,
                     current_user=current_user,
                     tenant_id=tenant_id,
-                    conn_factory=get_async_db_conn,
+                    conn_factory=_get_db,
                 )
             except Exception as dbe:
                 logger.warning("Failed to persist rules to PostgreSQL (falling back to disk): %s", dbe)
@@ -452,7 +453,8 @@ async def update_legacy_rules_config(
             RulesEngine.reload_config()
 
             try:
-                redis = await get_async_redis_client()
+                from database.redis_db import get_async_redis_client as _get_redis
+                redis = await _get_redis()
                 if redis:
                     await redis.publish("aml:rules:cache_invalidate", "reload")
             except Exception as re:

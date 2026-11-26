@@ -1,14 +1,15 @@
 """
 Core-Banking Outbound Webhooks Administration Router (P0-2)
 ===========================================================
-Allows compliance admins / MLROs to register, test, audit, and remove
-HMAC-SHA256 signed outbound webhooks for real-time payment interdiction.
+Thin HTTP controller for registering, testing, auditing, and removing
+HMAC-SHA256 signed outbound webhooks.
+All PostgreSQL SQL lives in `repositories/ops_repo.py`.
 """
 
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, HttpUrl
@@ -16,8 +17,15 @@ from pydantic import BaseModel, Field, HttpUrl
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 from observability.logging import log_audit_event
 from observability.sanitizer import sanitize_text
+from repositories.ops_repo import (
+    create_webhook_repo,
+    delete_webhook_atomic,
+    fetch_webhook_for_test_repo,
+    list_webhook_deliveries_repo,
+    list_webhooks_repo,
+)
 from services.auth import RoleChecker, enforce_tenant_data_scope
-from services.encryption import encrypt_pii, decrypt_pii
+from services.encryption import decrypt_pii, encrypt_pii
 from services.rate_limiter import RateLimiter
 from services.siem_forwarder import validate_siem_destination_url
 from services.webhooks import (
@@ -47,26 +55,22 @@ async def list_webhooks(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, name, url, subscribed_events, enabled, created_by, created_at, updated_at
-            FROM tenant_webhooks
-            ORDER BY created_at DESC;
-            """
-        )
-        return [
-            {
-                "id": str(r["id"]),
-                "name": r["name"],
-                "url": r["url"],
-                "subscribed_events": list(r["subscribed_events"] or []),
-                "enabled": bool(r["enabled"]),
-                "created_by": r["created_by"],
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            }
-            for r in rows
-        ]
+    rows = await list_webhooks_repo(
+        tenant_id=str(tenant_id),
+        read_conn_factory=get_async_db_read_conn,
+    )
+    return [
+        {
+            "id": str(r["id"]),
+            "name": r["name"],
+            "url": r["url"],
+            "subscribed_events": list(r["subscribed_events"] or []),
+            "enabled": bool(r["enabled"]),
+            "created_by": r["created_by"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in rows
+    ]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -93,23 +97,16 @@ async def create_webhook(
     encrypted_secret = encrypt_pii(signing_secret, tenant_id=str(tenant_id))
     safe_name = sanitize_text(payload.name)
 
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        hook_id = await conn.fetchval(
-            """
-            INSERT INTO tenant_webhooks (
-                tenant_id, name, url, signing_secret_enc, subscribed_events, enabled, created_by
-            )
-            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
-            RETURNING id;
-            """,
-            str(tenant_id),
-            safe_name,
-            safe_url,
-            encrypted_secret,
-            normalized_events,
-            payload.enabled,
-            current_user.get("username", "admin"),
-        )
+    hook_id = await create_webhook_repo(
+        tenant_id=str(tenant_id),
+        safe_name=safe_name,
+        safe_url=safe_url,
+        encrypted_secret=encrypted_secret,
+        normalized_events=normalized_events,
+        enabled=payload.enabled,
+        username=current_user.get("username", "admin"),
+        conn_factory=get_async_db_conn,
+    )
 
     log_audit_event(
         event_type="WEBHOOK_CREATED",
@@ -145,30 +142,12 @@ async def delete_webhook(
         raise HTTPException(status_code=400, detail="Invalid webhook ID format.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        deleted = await conn.fetchval(
-            "DELETE FROM tenant_webhooks WHERE id = $1 AND tenant_id = $2::uuid RETURNING id;",
-            hook_uuid,
-            str(tenant_id),
-        )
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Webhook not found.")
-        try:
-            from services.audit import record_audit_event_tx
-            await record_audit_event_tx(
-                conn=conn,
-                action="DELETE_WEBHOOK",
-                actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
-                actor_username=current_user.get("username", "admin"),
-                actor_role=current_user.get("role", "ADMIN"),
-                resource_type="WEBHOOK",
-                resource_id=webhook_id,
-                tenant_id=str(tenant_id),
-                details={"deleted": True},
-            )
-        except Exception as audit_err:
-            logger.warning(f"Transactional audit write skipped in delete_webhook: {audit_err}")
-
+    await delete_webhook_atomic(
+        hook_uuid=hook_uuid,
+        tenant_id=str(tenant_id),
+        current_user=current_user,
+        conn_factory=get_async_db_conn,
+    )
     return {"status": "DELETED", "id": webhook_id}
 
 
@@ -186,31 +165,25 @@ async def list_webhook_deliveries(
 
     tenant_id = enforce_tenant_data_scope(current_user)
     clamped = max(1, min(limit, 200))
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, event_type, status, http_status, attempts, last_error, delivered_at, created_at
-            FROM webhook_deliveries
-            WHERE webhook_id = $1
-            ORDER BY created_at DESC
-            LIMIT $2;
-            """,
-            hook_uuid,
-            clamped,
-        )
-        return [
-            {
-                "id": str(r["id"]),
-                "event_type": r["event_type"],
-                "status": r["status"],
-                "http_status": r["http_status"],
-                "attempts": r["attempts"],
-                "last_error": r["last_error"],
-                "delivered_at": r["delivered_at"].isoformat() if r["delivered_at"] else None,
-                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
-            }
-            for r in rows
-        ]
+    rows = await list_webhook_deliveries_repo(
+        hook_uuid=hook_uuid,
+        tenant_id=str(tenant_id),
+        limit=clamped,
+        read_conn_factory=get_async_db_read_conn,
+    )
+    return [
+        {
+            "id": str(r["id"]),
+            "event_type": r["event_type"],
+            "status": r["status"],
+            "http_status": r["http_status"],
+            "attempts": r["attempts"],
+            "last_error": r["last_error"],
+            "delivered_at": r["delivered_at"].isoformat() if r["delivered_at"] else None,
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+        for r in rows
+    ]
 
 
 @router.post("/{webhook_id}/test")
@@ -225,13 +198,13 @@ async def test_webhook_delivery(
         raise HTTPException(status_code=400, detail="Invalid webhook ID format.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_read_conn(tenant_id=tenant_id) as conn:
-        row = await conn.fetchrow(
-            "SELECT id, url, signing_secret_enc FROM tenant_webhooks WHERE id = $1;",
-            hook_uuid,
-        )
-        if not row:
-            raise HTTPException(status_code=404, detail="Webhook not found.")
+    row = await fetch_webhook_for_test_repo(
+        hook_uuid=hook_uuid,
+        tenant_id=str(tenant_id),
+        read_conn_factory=get_async_db_read_conn,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found.")
 
     secret_plain = decrypt_pii(row["signing_secret_enc"], tenant_id=str(tenant_id)) or ""
     envelope = {

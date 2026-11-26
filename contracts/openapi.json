@@ -1742,6 +1742,10 @@
                 "type": "number"
               },
               {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
                 "type": "null"
               }
             ],
@@ -2309,7 +2313,7 @@
         "type": "object"
       },
       "UserProvision": {
-        "description": "Admin-only payload to provision a new compliance team member.\n\nAllowed roles (5-tier RBAC model):\n  • L1_ANALYST      — Tier 1: Alert triage & false-positive dismissal\n  • L2_INVESTIGATOR — Tier 2: Full case investigation, SAR drafting, EDD requests\n  • MLRO            — Compliance Manager: SAR approval, team oversight, risk-appetite config\n  • ADMIN           — Rule Builder, User Manager, Integration Settings (tenant-scoped)\n  • AUDITOR         — Read-only access to audit vault, model reports, decision snapshots\n  • TENANT_ADMIN    — Cross-feature admin within a single tenant\n  • SUPER_ADMIN     — Platform-wide access (internal ops only)\n  • ANALYST         — Legacy alias for L2_INVESTIGATOR; retained for backward-compat",
+        "description": "Admin-only payload to provision a new compliance team member.",
         "properties": {
           "password": {
             "maxLength": 128,
@@ -3508,7 +3512,7 @@
         ]
       },
       "patch": {
-        "description": "Executes atomic batch operations for up to 100 alerts simultaneously in PostgreSQL:\n  - CLAIM / ASSIGN / CORRELATE_CASE: Permitted for L1_ANALYST and above\n  - CLOSE_SAR / CLOSE_FALSE_POSITIVE: Strictly restricted to L2_INVESTIGATOR / ANALYST / MLRO / ADMIN\nStrictly requires `Idempotency-Key` header on HTTP requests (400 if missing).",
+        "description": "Executes atomic batch operations for up to 100 alerts simultaneously (mandatory Idempotency-Key).",
         "operationId": "bulk_resolve_alerts_api_v1_alerts_patch",
         "parameters": [
           {
@@ -3571,7 +3575,7 @@
     },
     "/api/v1/alerts/bulk-action": {
       "post": {
-        "description": "Executes atomic batch operations for up to 100 alerts simultaneously in PostgreSQL:\n  - CLAIM / ASSIGN / CORRELATE_CASE: Permitted for L1_ANALYST and above\n  - CLOSE_SAR / CLOSE_FALSE_POSITIVE: Strictly restricted to L2_INVESTIGATOR / ANALYST / MLRO / ADMIN\nStrictly requires `Idempotency-Key` header on HTTP requests (400 if missing).",
+        "description": "Executes atomic batch operations for up to 100 alerts simultaneously (mandatory Idempotency-Key).",
         "operationId": "bulk_resolve_alerts_api_v1_alerts_bulk_action_post",
         "parameters": [
           {
@@ -3634,7 +3638,7 @@
     },
     "/api/v1/alerts/export/csv": {
       "get": {
-        "description": "Exports PostgreSQL compliance alerts audit ledger as downloadable CSV file.\nStreams records in chunked batches to eliminate memory spikes and OOM risks,\nwhile escaping formula characters against CWE-1236 CSV injection.",
+        "description": "Exports PostgreSQL compliance alerts audit ledger as streamed CSV (CWE-1236 safe).",
         "operationId": "export_alerts_csv_api_v1_alerts_export_csv_get",
         "parameters": [
           {
@@ -3687,7 +3691,7 @@
     },
     "/api/v1/alerts/export/pdf": {
       "get": {
-        "description": "Generates a printable audit report with FinCEN regulatory compliance layout.",
+        "description": "Generates a printable audit report off the asyncio event loop.",
         "operationId": "export_alerts_pdf_api_v1_alerts_export_pdf_get",
         "parameters": [
           {
@@ -3740,7 +3744,7 @@
     },
     "/api/v1/alerts/grouped-by-entity": {
       "get": {
-        "description": "Entity-Centric Alert Grouping (P1-1):\nClusters open/active alerts by subject account so investigators can triage\nan entire entity's exposure in one view and merge them into a single entity case.",
+        "description": "Entity-Centric Alert Grouping (P1-1).",
         "operationId": "list_alerts_grouped_by_entity_api_v1_alerts_grouped_by_entity_get",
         "parameters": [
           {
@@ -3805,7 +3809,7 @@
     },
     "/api/v1/alerts/{id}": {
       "get": {
-        "description": "Returns authentic, complete case details for the 3-Pane Cockpit:\n  - Core alert data & explainability SHAP attributes\n  - Complete transaction telemetry (channel, country, device)\n  - Sender account KYC snapshot & tenure from PostgreSQL\n  - Trailing 30-day transaction timeline for dynamic graph/timeline rendering\n  - Trailing 12-month prior alerts for the same account",
+        "description": "Returns complete case details for the 3-Pane Cockpit.",
         "operationId": "get_alert_details_api_v1_alerts__id__get",
         "parameters": [
           {
@@ -3865,7 +3869,7 @@
         ]
       },
       "patch": {
-        "description": "Canonical RESTful partial update for an alert resource.\nSupports status transitions (CLOSE_SAR, CLOSE_FALSE_POSITIVE, ESCALATED) and officer assignment.",
+        "description": "Canonical RESTful partial update for an alert resource.",
         "operationId": "patch_alert_api_v1_alerts__id__patch",
         "parameters": [
           {
@@ -4079,7 +4083,7 @@
     },
     "/api/v1/alerts/{id}/claim": {
       "post": {
-        "description": "Claims an alert for investigation, binding assigned_officer_id to current user\nand transitioning status to IN_REVIEW.\nEnforces atomic Compare-and-Swap (CAS) and mandatory `Idempotency-Key` on HTTP requests.",
+        "description": "Claims an alert for investigation with atomic CAS and mandatory Idempotency-Key.",
         "operationId": "claim_alert_api_v1_alerts__id__claim_post",
         "parameters": [
           {
@@ -4141,7 +4145,7 @@
     },
     "/api/v1/alerts/{id}/details": {
       "get": {
-        "description": "Returns authentic, complete case details for the 3-Pane Cockpit:\n  - Core alert data & explainability SHAP attributes\n  - Complete transaction telemetry (channel, country, device)\n  - Sender account KYC snapshot & tenure from PostgreSQL\n  - Trailing 30-day transaction timeline for dynamic graph/timeline rendering\n  - Trailing 12-month prior alerts for the same account",
+        "description": "Returns complete case details for the 3-Pane Cockpit.",
         "operationId": "get_alert_details_api_v1_alerts__id__details_get",
         "parameters": [
           {
@@ -4203,7 +4207,7 @@
     },
     "/api/v1/alerts/{id}/escalate": {
       "post": {
-        "description": "Escalates an alert to Senior Compliance Review Committee with persistence in PostgreSQL.\nStrictly requires `Idempotency-Key` header on HTTP requests (400 if missing).",
+        "description": "Escalates an alert to Senior Compliance Review Committee (mandatory Idempotency-Key).",
         "operationId": "escalate_alert_api_v1_alerts__id__escalate_post",
         "parameters": [
           {
@@ -4282,7 +4286,7 @@
     },
     "/api/v1/alerts/{id}/escalations": {
       "get": {
-        "description": "Returns the complete escalation audit chain for an alert (Tier 1 -> Tier 2 -> MLRO handoffs).",
+        "description": "Returns the complete escalation audit chain for an alert.",
         "operationId": "get_alert_escalations_api_v1_alerts__id__escalations_get",
         "parameters": [
           {
@@ -4405,7 +4409,7 @@
     },
     "/api/v1/alerts/{id}/narrative": {
       "get": {
-        "description": "Synthesizes and returns an industry-standard 5-part FinCEN SAR narrative text block\nfor regulatory filing preparation (Parts I through V).",
+        "description": "Synthesizes an industry-standard 5-part FinCEN SAR narrative text block.",
         "operationId": "get_alert_sar_narrative_api_v1_alerts__id__narrative_get",
         "parameters": [
           {
@@ -4467,7 +4471,7 @@
     },
     "/api/v1/alerts/{id}/workbench": {
       "get": {
-        "description": "Composite BFF endpoint returning full alert details, escalation history,\nlinked evidence count, and current pessimistic lock status in ONE round trip.\nSupports conditional `If-None-Match` -> `304 Not Modified`.",
+        "description": "Composite BFF endpoint returning full alert details, escalation history, evidence count, and lock status.",
         "operationId": "get_alert_workbench_api_v1_alerts__id__workbench_get",
         "parameters": [
           {
@@ -4982,7 +4986,7 @@
         ]
       },
       "post": {
-        "description": "Creates a time-boxed, revocable read-only Regulatory Auditor Room scoped to explicit tenant-owned case IDs.",
+        "description": "Creates a time-boxed, revocable read-only Regulatory Auditor Room.",
         "operationId": "create_auditor_room_api_v1_audit_rooms_post",
         "parameters": [
           {
@@ -5197,7 +5201,7 @@
     },
     "/api/v1/audit/verify-chain": {
       "get": {
-        "description": "Cryptographically verifies the immutable SHA-256 hash chain across audit records.\nGuarantees tamper-evidence and regulatory compliance (WORM storage).",
+        "description": "Cryptographically verifies the immutable SHA-256 hash chain across audit records.",
         "operationId": "verify_audit_hash_chain_api_v1_audit_verify_chain_get",
         "parameters": [
           {
@@ -5250,7 +5254,6 @@
     },
     "/api/v1/auth/check-username": {
       "get": {
-        "description": "Non-blocking endpoint for real-time username availability validation during sign-up.\nHARD-02: Strictly disabled in production or whenever public signup is disabled\nto eliminate unauthenticated cross-tenant username enumeration.",
         "operationId": "check_username_availability_api_v1_auth_check_username_get",
         "parameters": [
           {
@@ -5332,7 +5335,6 @@
     },
     "/api/v1/auth/logout": {
       "post": {
-        "description": "Revokes both the refresh token (SHA-256 keyed denylist) and active access token\n(JTI denylist for remaining TTL) in Redis, and clears HttpOnly authentication cookies.",
         "operationId": "logout_api_v1_auth_logout_post",
         "requestBody": {
           "content": {
@@ -5379,7 +5381,6 @@
     },
     "/api/v1/auth/me": {
       "get": {
-        "description": "Returns the currently authenticated user session identity with ETag / 304 support.\nResolves seamlessly via Authorization Bearer header or HttpOnly access_token cookie.",
         "operationId": "get_me_api_v1_auth_me_get",
         "parameters": [
           {
@@ -5558,7 +5559,6 @@
     },
     "/api/v1/auth/mfa/enable": {
       "post": {
-        "description": "Verifies the first 6-digit TOTP code against the pending setup secret and commits\nAES-256-GCM encrypted MFA secret and HMAC-hashed recovery codes to PostgreSQL.",
         "operationId": "mfa_enable_api_v1_auth_mfa_enable_post",
         "parameters": [
           {
@@ -5621,7 +5621,6 @@
     },
     "/api/v1/auth/mfa/setup": {
       "post": {
-        "description": "Generates a secure Base32 TOTP secret, otpauth QR URI, and 8 single-use recovery codes.\nAUTHN-03: If MFA is already enabled on the account, requires current password re-verification\n(and current TOTP code) to prevent session-hijack MFA overwrite. Fails closed when Redis is offline.",
         "operationId": "mfa_setup_api_v1_auth_mfa_setup_post",
         "parameters": [
           {
@@ -5691,7 +5690,6 @@
     },
     "/api/v1/auth/mfa/verify": {
       "post": {
-        "description": "Completes the two-factor authentication challenge using an mfa_ticket and either\na 6-digit TOTP code or a single-use backup recovery code.\nAUTHN-03: Enforces strict rate limiting, <=5 failed guesses per ticket, row-level FOR UPDATE\nlocking against recovery-code TOCTOU races, atomic ticket consumption, and full\ntoken_version + family_id session propagation.",
         "operationId": "mfa_verify_api_v1_auth_mfa_verify_post",
         "requestBody": {
           "content": {
@@ -5793,7 +5791,6 @@
     },
     "/api/v1/auth/refresh": {
       "post": {
-        "description": "Validates the refresh token, checks token_version & live DB role/active status,\natomically revokes the consumed refresh token in Redis (SHA-256 keyed), and issues\nboth a fresh access token and a rotated refresh token preserving token_version and family_id.",
         "operationId": "refresh_access_token_api_v1_auth_refresh_post",
         "requestBody": {
           "content": {
@@ -5879,7 +5876,6 @@
     },
     "/api/v1/auth/revoke-sessions": {
       "post": {
-        "description": "Increments token_version for the authenticated user, immediately\ninvalidating all active access tokens and refresh tokens across all devices.",
         "operationId": "revoke_sessions_api_v1_auth_revoke_sessions_post",
         "parameters": [
           {
@@ -5932,7 +5928,6 @@
     },
     "/api/v1/auth/session": {
       "delete": {
-        "description": "Revokes both the refresh token (SHA-256 keyed denylist) and active access token\n(JTI denylist for remaining TTL) in Redis, and clears HttpOnly authentication cookies.",
         "operationId": "logout_api_v1_auth_session_delete",
         "requestBody": {
           "content": {
@@ -5979,7 +5974,6 @@
     },
     "/api/v1/auth/sessions": {
       "delete": {
-        "description": "Increments token_version for the authenticated user, immediately\ninvalidating all active access tokens and refresh tokens across all devices.",
         "operationId": "revoke_sessions_api_v1_auth_sessions_delete",
         "parameters": [
           {
@@ -6032,7 +6026,6 @@
     },
     "/api/v1/auth/sessions/current": {
       "delete": {
-        "description": "Revokes both the refresh token (SHA-256 keyed denylist) and active access token\n(JTI denylist for remaining TTL) in Redis, and clears HttpOnly authentication cookies.",
         "operationId": "logout_api_v1_auth_sessions_current_delete",
         "requestBody": {
           "content": {
@@ -6079,7 +6072,6 @@
     },
     "/api/v1/auth/sessions/revoke-all": {
       "post": {
-        "description": "Increments token_version for the authenticated user, immediately\ninvalidating all active access tokens and refresh tokens across all devices.",
         "operationId": "revoke_sessions_api_v1_auth_sessions_revoke_all_post",
         "parameters": [
           {
@@ -6283,7 +6275,7 @@
     },
     "/api/v1/auth/sso/providers/public": {
       "get": {
-        "description": "Returns minimal public metadata (id + provider_name) so login.html can render active SSO buttons.",
+        "description": "Returns minimal public metadata (id + provider_name) for active SSO buttons.",
         "operationId": "list_public_sso_providers_api_v1_auth_sso_providers_public_get",
         "parameters": [
           {
@@ -6437,7 +6429,7 @@
     },
     "/api/v1/auth/sso/{provider_id}/callback": {
       "get": {
-        "description": "Completes OIDC PKCE callback:\n  - Verifies single-use state + browser-bound CSRF cookie (`sso_state_binding`)\n  - Fails closed if encrypted client_secret fails decryption\n  - Verifies ID token via JWKS + constant-time nonce\n  - Requires `email_verified == True` when using email\n  - Provisions / matches strictly by deterministic `(issuer, sub)` UUID scoped to `tenant_id`\n    (never collides with or overwrites local password-managed accounts!)",
+        "description": "Completes OIDC PKCE callback with browser state-binding CSRF check and deterministic JIT provisioning.",
         "operationId": "sso_callback_api_v1_auth_sso__provider_id__callback_get",
         "parameters": [
           {
@@ -6691,7 +6683,6 @@
     },
     "/api/v1/auth/users/me/sessions": {
       "delete": {
-        "description": "Increments token_version for the authenticated user, immediately\ninvalidating all active access tokens and refresh tokens across all devices.",
         "operationId": "revoke_sessions_api_v1_auth_users_me_sessions_delete",
         "parameters": [
           {
@@ -6744,7 +6735,6 @@
     },
     "/api/v1/auth/users/{user_id}/revoke-sessions": {
       "post": {
-        "description": "Increments token_version for the target user ID, immediately invalidating\nall active JWT access and refresh tokens across all pods and devices.",
         "operationId": "admin_revoke_target_user_sessions_api_v1_auth_users__user_id__revoke_sessions_post",
         "parameters": [
           {
@@ -6877,7 +6867,6 @@
     },
     "/api/v1/auth/users/{user_id}/sessions": {
       "delete": {
-        "description": "Increments token_version for the target user ID, immediately invalidating\nall active JWT access and refresh tokens across all pods and devices.",
         "operationId": "admin_revoke_target_user_sessions_api_v1_auth_users__user_id__sessions_delete",
         "parameters": [
           {
@@ -6939,7 +6928,6 @@
     },
     "/api/v1/auth/ws-ticket": {
       "post": {
-        "description": "Issues a 30-second single-use opaque ticket for authenticating `/ws/live-stream` without JWTs in URLs (AUTHN-05).",
         "operationId": "issue_ws_ticket_api_v1_auth_ws_ticket_post",
         "parameters": [
           {
@@ -7160,7 +7148,7 @@
     },
     "/api/v1/cases/correlate": {
       "post": {
-        "description": "Entity-Centric Case Auto-Correlation (P1-1):\nMerges related alerts sharing the same subject account within `window_days`\ninto unified entity cases instead of spawning duplicate per-alert cases.",
+        "description": "Entity-Centric Case Auto-Correlation (P1-1).",
         "operationId": "correlate_alerts_into_cases_api_v1_cases_correlate_post",
         "parameters": [
           {
@@ -7223,7 +7211,7 @@
     },
     "/api/v1/cases/{case_id}/evidence": {
       "get": {
-        "description": "List all evidence attachments registered to an AML case (accepts case UUID or linked alert UUID).",
+        "description": "List all evidence attachments registered to an AML case.",
         "operationId": "list_case_evidence_api_v1_cases__case_id__evidence_get",
         "parameters": [
           {
@@ -7361,7 +7349,7 @@
     },
     "/api/v1/cases/{case_id}/evidence/{evidence_id}": {
       "delete": {
-        "description": "Removes an evidence attachment from a case (authorized investigator/MLRO only).\nEnforces tenant storage jailing and WORM retention policies prior to database deletion.",
+        "description": "Removes an evidence attachment from a case (authorized investigator/MLRO only).",
         "operationId": "delete_case_evidence_api_v1_cases__case_id__evidence__evidence_id__delete",
         "parameters": [
           {
@@ -8196,7 +8184,7 @@
     },
     "/api/v1/customers/pkyc/rescreen-delta": {
       "post": {
-        "description": "Perpetual KYC (pKYC) Delta Rescreening (P1-5):\nRe-screens active customer accounts against OFAC/UN/EU sanctions & PEP watchlists\nand generates EDD alerts + MLRO notifications on material risk changes.",
+        "description": "Perpetual KYC (pKYC) Delta Rescreening (P1-5).",
         "operationId": "trigger_pkyc_delta_rescreen_api_v1_customers_pkyc_rescreen_delta_post",
         "parameters": [
           {
@@ -8326,7 +8314,7 @@
     },
     "/api/v1/customers/{id}/dossier": {
       "get": {
-        "description": "Retrieves full Customer 360 dossier:\n- Identity profile & CIP verification\n- Dynamic risk factors & breakdown gauge\n- Sanctions / PEP status\n- Beneficial Ownership (UBO) Neo4j graph\n- 12-Month transaction monthly volume & recent transfers\n- Historical alerts & EDD request records",
+        "description": "Retrieves full Customer 360 dossier.",
         "operationId": "get_customer_dossier_api_v1_customers__id__dossier_get",
         "parameters": [
           {
@@ -8587,7 +8575,7 @@
     },
     "/api/v1/fincen/deadlines": {
       "get": {
-        "description": "Returns BSA 31 CFR § 1020.320 statutory 30-day filing deadlines (approaching/overdue)\nand 90-day Continuing Activity SAR review trackers.",
+        "description": "Returns BSA 31 CFR § 1020.320 statutory 30-day filing deadlines and 90-day reviews.",
         "operationId": "get_sar_statutory_deadlines_api_v1_fincen_deadlines_get",
         "parameters": [
           {
@@ -8640,7 +8628,7 @@
     },
     "/api/v1/fincen/sar/copilot": {
       "post": {
-        "description": "P2-2 Grounded SAR Narrative Co-Pilot:\nSynthesizes a 5-part FinCEN narrative grounded strictly in verified PostgreSQL\ntransactions, case notes, and SHA-256 evidence artifacts with inline citations,\nreversible PII tokenization, and numerical hallucination checks.",
+        "description": "P2-2 Grounded SAR Narrative Co-Pilot.",
         "operationId": "generate_sar_copilot_endpoint_api_v1_fincen_sar_copilot_post",
         "parameters": [
           {
@@ -8769,7 +8757,7 @@
         ]
       },
       "post": {
-        "description": "Creates a new SAR draft for an alert or case, awaiting MLRO 4-eyes review.\nStrictly requires `Idempotency-Key` header on HTTP requests (400 if missing).",
+        "description": "Creates a new SAR draft awaiting MLRO 4-eyes review (mandatory Idempotency-Key).",
         "operationId": "create_sar_draft_api_v1_fincen_sar_drafts_post",
         "parameters": [
           {
@@ -8892,7 +8880,7 @@
         ]
       },
       "patch": {
-        "description": "Updates narrative or xml_payload of an open or rejected SAR draft.\nEnforces optimistic concurrency via `If-Match` header (HTTP 412 on stale write).",
+        "description": "Updates narrative or xml_payload of an open or rejected SAR draft with If-Match check.",
         "operationId": "update_sar_draft_api_v1_fincen_sar_drafts__id__patch",
         "parameters": [
           {
@@ -9036,7 +9024,7 @@
     },
     "/api/v1/fincen/sar/drafts/{id}/review": {
       "post": {
-        "description": "MLRO Four-Eyes Review on a SAR draft. Enforces Segregation of Duties (SOD)\nand mandatory `Idempotency-Key` on HTTP requests (400 if missing).",
+        "description": "MLRO Four-Eyes Review on a SAR draft (enforces SoD & mandatory Idempotency-Key).",
         "operationId": "review_sar_draft_api_v1_fincen_sar_drafts__id__review_post",
         "parameters": [
           {
@@ -9108,7 +9096,7 @@
     },
     "/api/v1/fincen/sar/generate-narrative": {
       "post": {
-        "description": "AI/NLP assisted SAR Narrative Generator (FinCEN Guidance FIN-2003-2 compliant).\nSynthesizes a structured 5-part regulatory narrative from case evidence,\ncounterparty topologies, and rule anomaly attributions.",
+        "description": "AI/NLP assisted SAR Narrative Generator (FinCEN Guidance FIN-2003-2 compliant).",
         "operationId": "generate_sar_narrative_api_v1_fincen_sar_generate_narrative_post",
         "parameters": [
           {
@@ -9296,7 +9284,7 @@
     },
     "/api/v1/fincen/sar/submit": {
       "post": {
-        "description": "Submits a Suspicious Activity Report XML electronically to the U.S. FinCEN BSA E-Filing Gateway.\nEnforces idempotency, pre-flight duplicate submission guards, fail-closed Four-Eyes SoD, and atomic filing status tracking.",
+        "description": "Submits a Suspicious Activity Report XML electronically to FinCEN BSA E-Filing.",
         "operationId": "submit_sar_to_fincen_api_v1_fincen_sar_submit_post",
         "parameters": [
           {
@@ -9359,7 +9347,7 @@
     },
     "/api/v1/fincen/sars": {
       "post": {
-        "description": "Submits a Suspicious Activity Report XML electronically to the U.S. FinCEN BSA E-Filing Gateway.\nEnforces idempotency, pre-flight duplicate submission guards, fail-closed Four-Eyes SoD, and atomic filing status tracking.",
+        "description": "Submits a Suspicious Activity Report XML electronically to FinCEN BSA E-Filing.",
         "operationId": "submit_sar_to_fincen_api_v1_fincen_sars_post",
         "parameters": [
           {
@@ -9546,7 +9534,7 @@
     },
     "/api/v1/health/system": {
       "get": {
-        "description": "Exposes institutional component health, pool utilization, and latencies\nfor the Admin System Health command center without leaking raw driver exceptions.",
+        "description": "Exposes institutional component health, pool utilization, and latencies.",
         "operationId": "get_system_topology_health_api_v1_health_system_get",
         "parameters": [
           {
@@ -9923,7 +9911,7 @@
     },
     "/api/v1/metrics/dashboard": {
       "get": {
-        "description": "Computes dynamic, non-hardcoded dashboard metrics directly from PostgreSQL:\n  - Active cases & critical pending counts\n  - 7-day daily alert frequency trend\n  - Alert category distribution breakdown\n  - Live analyst workload leaderboard",
+        "description": "Computes dynamic dashboard KPIs, 7-day trends, category breakdown, and analyst leaderboard.",
         "operationId": "get_dashboard_metrics_api_v1_metrics_dashboard_get",
         "parameters": [
           {
@@ -9976,7 +9964,7 @@
     },
     "/api/v1/metrics/executive": {
       "get": {
-        "description": "Computes executive compliance KPIs, SLA breach trackers, SAR filing throughput,\nand institutional efficiency metrics for MLRO & Compliance Leadership.\nBacked by a 30s tenant-scoped Redis cache + ETag/304 conditional revalidation.",
+        "description": "Computes executive compliance KPIs, SLA breach trackers, and SAR throughput (30s Redis cached).",
         "operationId": "get_executive_metrics_api_v1_metrics_executive_get",
         "parameters": [
           {
@@ -10029,7 +10017,7 @@
     },
     "/api/v1/ml/explain/{alert_id}": {
       "get": {
-        "description": "Retrieves SHAP waterfall feature attributions and explainability breakdown\nfor an alert, conforming to EU AI Act transparency and SR 11-7 model risk requirements.",
+        "description": "Retrieves SHAP waterfall feature attributions for an alert (EU AI Act / SR 11-7).",
         "operationId": "get_alert_explainability_api_v1_ml_explain__alert_id__get",
         "parameters": [
           {
@@ -10091,7 +10079,7 @@
     },
     "/api/v1/ml/feedback-stats": {
       "get": {
-        "description": "Retrieves tenant-scoped feedback loop metrics, false positive counts, and model retraining health.",
+        "description": "Retrieves tenant-scoped feedback loop metrics and false positive reduction rate.",
         "operationId": "get_feedback_stats_api_v1_ml_feedback_stats_get",
         "parameters": [
           {
@@ -10197,7 +10185,7 @@
     },
     "/api/v1/ml/reports": {
       "get": {
-        "description": "Generates Model Validation & Governance Report compliant with\nFederal Reserve SR 11-7 Model Risk Management Guidance using real evaluation artifacts.",
+        "description": "Generates Federal Reserve SR 11-7 Model Validation & Governance Report.",
         "operationId": "get_model_validation_reports_api_v1_ml_reports_get",
         "parameters": [
           {
@@ -10250,7 +10238,7 @@
     },
     "/api/v1/ml/retrain": {
       "post": {
-        "description": "Triggers an active online retraining cycle using human-validated analyst feedback asynchronously.\nReturns 202 Accepted immediately to prevent blocking the HTTP response.",
+        "description": "Triggers an active online retraining cycle asynchronously (202 Accepted).",
         "operationId": "retrain_model_now_api_v1_ml_retrain_post",
         "parameters": [
           {
@@ -10303,7 +10291,7 @@
     },
     "/api/v1/network/analysis": {
       "get": {
-        "description": "Exposes graph network analytics for compliance dashboards.\nReturns:\n- Circular money flow cycles (Tarjan's SCC / Cypher directed cycles).\n- Fan-In patterns (potential mules).\n- Fan-Out patterns (potential layering).\n- Intermediary middleman transit accounts (Brandes' Betweenness Centrality).",
+        "description": "Exposes graph network analytics (cycles, fan-in, fan-out, Brandes centrality).",
         "operationId": "get_network_analysis_api_v1_network_analysis_get",
         "parameters": [
           {
@@ -10368,7 +10356,7 @@
     },
     "/api/v1/network/entities/{entity_id}/network": {
       "get": {
-        "description": "Dynamically expands a target graph node by fetching its N-hop connected sub-network from Neo4j,\nautomatically falling back to PostgreSQL when Neo4j is unavailable or returns no records.",
+        "description": "Dynamically expands a target graph node via Neo4j with automatic PostgreSQL fallback.",
         "operationId": "expand_graph_node_api_v1_network_entities__entity_id__network_get",
         "parameters": [
           {
@@ -10444,7 +10432,7 @@
     },
     "/api/v1/network/expand/{entity_id}": {
       "get": {
-        "description": "Dynamically expands a target graph node by fetching its N-hop connected sub-network from Neo4j,\nautomatically falling back to PostgreSQL when Neo4j is unavailable or returns no records.",
+        "description": "Dynamically expands a target graph node via Neo4j with automatic PostgreSQL fallback.",
         "operationId": "expand_graph_node_api_v1_network_expand__entity_id__get",
         "parameters": [
           {
@@ -10582,7 +10570,7 @@
     },
     "/api/v1/network/nodes/{entity_id}/neighbors": {
       "get": {
-        "description": "Dynamically expands a target graph node by fetching its N-hop connected sub-network from Neo4j,\nautomatically falling back to PostgreSQL when Neo4j is unavailable or returns no records.",
+        "description": "Dynamically expands a target graph node via Neo4j with automatic PostgreSQL fallback.",
         "operationId": "expand_graph_node_api_v1_network_nodes__entity_id__neighbors_get",
         "parameters": [
           {
@@ -11437,7 +11425,7 @@
     },
     "/api/v1/privacy/dsar/export/{account_number}": {
       "get": {
-        "description": "Exports customer-facing GDPR Article 15 / CCPA Data Subject Access Request (DSAR).\n\nCOMPLIANCE SAFEGUARD (31 U.S.C. § 5318(g)(2)):\nThis export NEVER includes `legal_holds_active`, SAR filings, AML risk scores,\nor internal alert flags to prevent unlawful tipping-off.",
+        "description": "Exports customer-facing GDPR Article 15 / CCPA DSAR (strictly anti-tipping-off sanitized).",
         "operationId": "export_data_subject_dossier_api_v1_privacy_dsar_export__account_number__get",
         "parameters": [
           {
@@ -11523,7 +11511,7 @@
     },
     "/api/v1/privacy/erasure": {
       "post": {
-        "description": "Executes GDPR Article 17 Right to Erasure with mandatory statutory safeguards:\n  1. Blocks immediately (409) if any active legal hold exists on the account.\n  2. Defers (409) if account or latest transaction is within the mandatory\n     5-year BSA statutory retention window (31 CFR § 1010.430).\n  3. When eligible, irreversibly pseudonymizes PII while preserving anonymized\n     ledger rows and recording an immutable audit event.",
+        "description": "Executes GDPR Article 17 Right to Erasure honoring legal holds and 5-year BSA retention.",
         "operationId": "execute_gdpr_erasure_api_v1_privacy_erasure_post",
         "parameters": [
           {
@@ -11939,7 +11927,7 @@
     },
     "/api/v1/qa/{review_id}/review": {
       "post": {
-        "description": "Completes an independent QA review.\nEnforces Segregation of Duties (original dismissing analyst cannot QA their own closure).\nOn FAILED_REOPENED, transitions the alert back to OPEN and emits a QA_REOPEN notification.",
+        "description": "Completes an independent QA review enforcing Segregation of Duties.",
         "operationId": "submit_qa_review_api_v1_qa__review_id__review_post",
         "parameters": [
           {
@@ -12365,7 +12353,7 @@
     },
     "/api/v1/rfi/public/{token}": {
       "get": {
-        "description": "Unauthenticated token-gated RFI metadata endpoint.\nStrictly customer-safe: NEVER leaks internal case titles, risk scores, or SAR/AML metadata.",
+        "description": "Unauthenticated token-gated RFI metadata endpoint (strictly customer-safe).",
         "operationId": "get_public_rfi_prompt_api_v1_rfi_public__token__get",
         "parameters": [
           {
@@ -12410,7 +12398,7 @@
     },
     "/api/v1/rfi/public/{token}/submit": {
       "post": {
-        "description": "Accepts external Customer/RM RFI response + optional document upload:\n  - Enforces token validity, expiry, and single-use submission (`410` on replay/expired)\n  - Malware-scans uploaded document (`422` on EICAR/ClamAV hit)\n  - Persists file via P0-3 EvidenceStorageBackend with SHA-256 chain of custody\n  - Automatically resumes the case SLA clock and notifies the investigator",
+        "description": "Accepts external Customer/RM RFI response + optional malware-scanned document upload.",
         "operationId": "submit_public_rfi_response_api_v1_rfi_public__token__submit_post",
         "parameters": [
           {
@@ -12530,7 +12518,7 @@
     },
     "/api/v1/rules": {
       "get": {
-        "description": "Lists all detection rules configured for the current tenant, including\nactive parameters, version number, per-rule ETag, and toggle status.\nSupports conditional `If-None-Match` -> `304 Not Modified`.",
+        "description": "Lists all detection rules configured for the current tenant with per-rule ETags.",
         "operationId": "list_rules_api_v1_rules_get",
         "parameters": [
           {
@@ -12704,7 +12692,7 @@
     },
     "/api/v1/rules/test": {
       "post": {
-        "description": "Rule Testing Harness: Evaluates a synthetic transaction against the current\nrule definitions without committing transactions or firing production alerts.",
+        "description": "Evaluates a synthetic transaction against current rule definitions without side effects.",
         "operationId": "test_rule_simulation_api_v1_rules_test_post",
         "parameters": [
           {
@@ -12767,7 +12755,7 @@
     },
     "/api/v1/rules/{rule_name}": {
       "patch": {
-        "description": "Updates rule thresholds, parameters, and/or enabled state.\nEnforces optimistic concurrency via `If-Match` header or `expected_version` (HTTP 412 on stale write).\nIncrements version, logs historical audit record, and invalidates Redis cache.",
+        "description": "Updates rule thresholds, parameters, and/or enabled state with optimistic concurrency.",
         "operationId": "patch_rule_api_v1_rules__rule_name__patch",
         "parameters": [
           {
@@ -12839,7 +12827,7 @@
     },
     "/api/v1/rules/{rule_name}/backtest": {
       "post": {
-        "description": "Read-only Historical Rule Backtesting (P1-2):\nReplays a candidate threshold configuration against historical transactions\non the read replica to project alert volume delta & false-positive impact.",
+        "description": "Read-only Historical Rule Backtesting (P1-2).",
         "operationId": "backtest_rule_endpoint_api_v1_rules__rule_name__backtest_post",
         "parameters": [
           {
@@ -13129,7 +13117,7 @@
     },
     "/api/v1/screening/adverse-media/live": {
       "post": {
-        "description": "P2-5 Live Adverse Media NLP Screening & Entity Disambiguation:\nQueries GDELT 2.0 global OSINT news feed (6h Redis cached) with sentence-window\npredicate proximity scoring and namesake false-positive suppression.",
+        "description": "P2-5 Live Adverse Media NLP Screening & Entity Disambiguation.",
         "operationId": "screen_live_adverse_media_endpoint_api_v1_screening_adverse_media_live_post",
         "parameters": [
           {
@@ -13284,7 +13272,7 @@
         ]
       },
       "post": {
-        "description": "Multi-tiered identity screening querying both:\n  1. Global Sanctions Blocklists (OFAC, UN, EU) -> Mandatory Immediate Freeze\n  2. Politically Exposed Persons (PEP) Tiering Database -> Enhanced Due Diligence (EDD)",
+        "description": "Multi-tiered identity screening querying Global Sanctions + PEP databases.",
         "operationId": "search_sanctions_and_pep_api_v1_screening_search_post",
         "parameters": [
           {
@@ -14580,7 +14568,7 @@
     },
     "/api/v1/watchlist/rescreen": {
       "post": {
-        "description": "Triggers an immediate CDD re-screening cycle across all active tenant accounts\nagainst the indexed OFAC, UN, EU, and PEP databases.",
+        "description": "Triggers an immediate CDD re-screening cycle across all active tenant accounts.",
         "operationId": "trigger_cdd_rescreen_api_v1_watchlist_rescreen_post",
         "parameters": [
           {
@@ -14633,7 +14621,7 @@
     },
     "/api/v1/watchlist/status": {
       "get": {
-        "description": "Returns live watchlist provider statuses and real dataset record statistics\nfrom PostgreSQL (pep_entities) and Elasticsearch (sanctions_list / pep_entities).",
+        "description": "Returns live watchlist provider statuses and real dataset record statistics.",
         "operationId": "get_watchlist_status_api_v1_watchlist_status_get",
         "parameters": [
           {
@@ -14686,7 +14674,7 @@
     },
     "/api/v1/watchlist/sync": {
       "post": {
-        "description": "Triggers an on-demand synchronization cycle across OFAC, Refinitiv World-Check, and Dow Jones Watchlists.",
+        "description": "Triggers an on-demand synchronization cycle across global watchlists.",
         "operationId": "sync_watchlists_api_v1_watchlist_sync_post",
         "parameters": [
           {
@@ -14739,7 +14727,7 @@
     },
     "/api/v1/watchlist/sync-jobs": {
       "post": {
-        "description": "Triggers an on-demand synchronization cycle across OFAC, Refinitiv World-Check, and Dow Jones Watchlists.",
+        "description": "Triggers an on-demand synchronization cycle across global watchlists.",
         "operationId": "sync_watchlists_api_v1_watchlist_sync_jobs_post",
         "parameters": [
           {
@@ -15088,7 +15076,7 @@
     },
     "/health/ready": {
       "get": {
-        "description": "Decoupled readiness probe for Kubernetes.\nFails fast (503) on asyncio event-loop saturation (>=500ms lag), then checks\nPostgreSQL (2s acquire timeout) and Tier-1 Redis (1.5s timeout in hardened envs).\nNever exposes internal pool/driver details.",
+        "description": "Decoupled readiness probe failing fast (503) on event-loop saturation or DB/Redis outage.",
         "operationId": "readiness_probe_health_ready_get",
         "responses": {
           "200": {

@@ -1,24 +1,40 @@
+"""
+Customer & Corporate Account Onboarding Router
+==============================================
+Thin HTTP controller for individual and corporate KYC/sanctions onboarding
+with fail-closed screening and compensating Neo4j rollback.
+All PostgreSQL SQL lives in `repositories/customer_privacy_repo.py`.
+"""
+
 import logging
-from datetime import date as _date
-from fastapi import APIRouter, HTTPException, Depends, Response, status, Query
-from pydantic import BaseModel
 import uuid
-from database.postgres import get_async_db_conn
-from database.neo4j_db import get_async_neo4j_driver
+from datetime import date as _date
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel, Field, field_validator
+
 from database.elasticsearch_db import get_async_elasticsearch_client
+from database.neo4j_db import get_async_neo4j_driver
+from database.postgres import get_async_db_conn
+from observability.sanitizer import sanitize_text
+from repositories.customer_privacy_repo import (
+    compensating_delete_account_repo,
+    get_onboarded_account_by_id_repo,
+    list_onboarded_accounts_repo,
+    onboard_corporate_account_repo,
+    onboard_individual_account_repo,
+)
 from routers.screening import perform_sanctions_search
-from services.auth import get_current_user, RoleChecker, enforce_tenant_data_scope
+from services.auth import RoleChecker, enforce_tenant_data_scope, get_current_user
 from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/onboard", tags=["Onboarding"])
 
-
-from pydantic import BaseModel, Field, field_validator
-from observability.sanitizer import sanitize_text
-
 IDENTIFIER_REGEX = r"^[A-Za-z0-9_-]+$"
+
 
 class IndividualOnboard(BaseModel):
     tenant_id: str = Field(..., min_length=1, max_length=50)
@@ -32,6 +48,7 @@ class IndividualOnboard(BaseModel):
     def sanitize_individual_fields(cls, v: str) -> str:
         return sanitize_text(v)
 
+
 class UboDetail(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     tax_id: str = Field(..., min_length=3, max_length=50, pattern=IDENTIFIER_REGEX)
@@ -41,6 +58,7 @@ class UboDetail(BaseModel):
     @classmethod
     def sanitize_ubo_fields(cls, v: str) -> str:
         return sanitize_text(v)
+
 
 class CorporateOnboard(BaseModel):
     tenant_id: str = Field(..., min_length=1, max_length=50)
@@ -55,6 +73,7 @@ class CorporateOnboard(BaseModel):
     def sanitize_corporate_fields(cls, v: str) -> str:
         return sanitize_text(v)
 
+
 @router.post("/accounts/individual", status_code=status.HTTP_201_CREATED)
 @router.post("/individual", status_code=status.HTTP_201_CREATED)
 async def onboard_individual(
@@ -63,55 +82,43 @@ async def onboard_individual(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
-    # Enforce Data-Level RBAC tenant scoping
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
 
     screening_failed = False
     try:
         es = await get_async_elasticsearch_client()
         screen_res = await perform_sanctions_search(payload.name, 0.80, es)
-        # If high risk sanctions hit, default to a high risk score
         risk_score = 0.95 if screen_res["match_found"] else 0.10
     except Exception:
-        # CHAOS-01 Fail-Closed: Never fail open (risk 0.20) if sanctions screening dependency is offline!
         logger.exception("Sanctions screening offline/timed out during onboarding")
         risk_score = 1.0
         screening_failed = True
 
-    # Step 2: Save to PostgreSQL
+    dob_val = None
+    if payload.date_of_birth:
+        try:
+            dob_val = _date.fromisoformat(payload.date_of_birth)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid date_of_birth; expected YYYY-MM-DD.")
+
     try:
-        async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
-            # Check if tenant exists
-            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", authorized_tenant_id)
-            if not tenant:
-                raise HTTPException(status_code=400, detail="Invalid tenant_id")
+        account_id = await onboard_individual_account_repo(
+            authorized_tenant_id=authorized_tenant_id,
+            account_number=payload.account_number,
+            swift_bic=payload.swift_bic,
+            owner_name=payload.name,
+            risk_score=risk_score,
+            dob_val=dob_val,
+            conn_factory=get_async_db_conn,
+        )
+        if response is not None:
+            response.headers["Location"] = f"/api/v1/onboard/accounts/{account_id}"
 
-            # Parse optional ISO date_of_birth so it is preserved instead of dropped (V-08)
-            dob_val = None
-            if payload.date_of_birth:
-                try:
-                    dob_val = _date.fromisoformat(payload.date_of_birth)
-                except ValueError:
-                    raise HTTPException(status_code=422, detail="Invalid date_of_birth; expected YYYY-MM-DD.")
-
-            # Create Account
-            account_id = await conn.fetchval(
-                """
-                INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score, date_of_birth)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING id;
-                """,
-                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.name, risk_score, dob_val
-            )
-            
-            if response is not None:
-                response.headers["Location"] = f"/api/v1/onboard/accounts/{account_id}"
-
-            return {
-                "account_id": str(account_id),
-                "status": "APPROVED" if (risk_score < 0.8 and not screening_failed) else "HELD_FOR_REVIEW",
-                "risk_score": risk_score
-            }
+        return {
+            "account_id": str(account_id),
+            "status": "APPROVED" if (risk_score < 0.8 and not screening_failed) else "HELD_FOR_REVIEW",
+            "risk_score": risk_score,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -119,8 +126,6 @@ async def onboard_individual(
         if "unique constraint" in str(e).lower():
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Account number already exists")
         raise HTTPException(status_code=500, detail="Onboarding failed due to an internal error.")
-
-from typing import Any
 
 
 async def _screen_corporate_and_ubos(company_name: str, ubos: list[UboDetail]) -> tuple[float, bool]:
@@ -137,7 +142,7 @@ async def _screen_corporate_and_ubos(company_name: str, ubos: list[UboDetail]) -
                 corp_risk_score = 0.95
                 break
     except Exception as ex_es:
-        logger.warning(f"Sanctions screening failed during corporate onboarding: {ex_es}")
+        logger.warning("Sanctions screening failed during corporate onboarding: %s", ex_es)
         corp_risk_score = 1.0
         corp_screening_failed = True
     return corp_risk_score, corp_screening_failed
@@ -147,26 +152,20 @@ async def _persist_corporate_account(
     authorized_tenant_id: Any,
     payload: CorporateOnboard,
     corp_risk_score: float,
-    response: Response | None
+    response: Response | None,
 ) -> Any:
     try:
-        async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
-            tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", authorized_tenant_id)
-            if not tenant:
-                raise HTTPException(status_code=400, detail="Invalid tenant_id")
-
-            account_id = await conn.fetchval(
-                """
-                INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING id;
-                """,
-                authorized_tenant_id, payload.account_number, payload.swift_bic, payload.company_name, corp_risk_score
-            )
-
-            if response is not None:
-                response.headers["Location"] = f"/api/v1/onboard/accounts/{account_id}"
-            return account_id
+        account_id = await onboard_corporate_account_repo(
+            authorized_tenant_id=authorized_tenant_id,
+            account_number=payload.account_number,
+            swift_bic=payload.swift_bic,
+            company_name=payload.company_name,
+            corp_risk_score=corp_risk_score,
+            conn_factory=get_async_db_conn,
+        )
+        if response is not None:
+            response.headers["Location"] = f"/api/v1/onboard/accounts/{account_id}"
+        return account_id
     except HTTPException:
         raise
     except Exception as e:
@@ -194,7 +193,7 @@ async def _persist_neo4j_corporate_graph(
             reg_num=payload.registration_number,
             tenant_id=tid,
             name=payload.company_name,
-            id=str(account_id)
+            id=str(account_id),
         )
 
         await session.run(
@@ -208,7 +207,7 @@ async def _persist_neo4j_corporate_graph(
             id=str(account_id),
             tenant_id=tid,
             acc_num=payload.account_number,
-            reg_num=payload.registration_number
+            reg_num=payload.registration_number,
         )
 
         for ubo in payload.ubos:
@@ -224,7 +223,7 @@ async def _persist_neo4j_corporate_graph(
                 tenant_id=tid,
                 name=ubo.name,
                 reg_num=payload.registration_number,
-                percentage=ubo.ownership_percentage
+                percentage=ubo.ownership_percentage,
             )
 
 
@@ -237,16 +236,10 @@ async def onboard_corporate(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
-    # Enforce Data-Level RBAC tenant scoping
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
-
-    # Step 0: Sanctions screening for corporate entity and beneficial owners
     corp_risk_score, corp_screening_failed = await _screen_corporate_and_ubos(payload.company_name, payload.ubos)
-
-    # Step 1: Save to PostgreSQL (relational profile)
     account_id = await _persist_corporate_account(authorized_tenant_id, payload, corp_risk_score, response)
 
-    # Step 2: Save tenant-scoped corporate structures & UBO tracing to Neo4j
     try:
         await _persist_neo4j_corporate_graph(neo4j_driver, account_id, payload, tenant_id=str(authorized_tenant_id))
         corp_status = "APPROVED" if (corp_risk_score < 0.8 and not corp_screening_failed) else "HELD_FOR_REVIEW"
@@ -254,16 +247,18 @@ async def onboard_corporate(
             "account_id": str(account_id),
             "status": corp_status,
             "risk_score": corp_risk_score,
-            "ubo_count": len(payload.ubos)
+            "ubo_count": len(payload.ubos),
         }
     except HTTPException:
         raise
     except Exception:
         logger.exception("Neo4j corporate onboarding failed")
-        # STATE-03 Compensating rollback: delete incomplete Postgres account on Neo4j failure
         try:
-            async with get_async_db_conn(tenant_id=authorized_tenant_id) as conn:
-                await conn.execute("DELETE FROM accounts WHERE id = $1;", account_id)
+            await compensating_delete_account_repo(
+                authorized_tenant_id=authorized_tenant_id,
+                account_id=account_id,
+                conn_factory=get_async_db_conn,
+            )
         except Exception:
             logger.exception("Compensating Postgres rollback failed")
         raise HTTPException(status_code=500, detail="Corporate graph registration failed due to an internal error.")
@@ -273,11 +268,9 @@ async def onboard_corporate(
 async def get_account_by_id(
     id: str,
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
-    """
-    Retrieves an onboarded account KYC and risk profile by its UUID.
-    """
+    """Retrieves an onboarded account KYC and risk profile by its UUID."""
     try:
         acc_uuid = uuid.UUID(id)
     except ValueError:
@@ -285,29 +278,25 @@ async def get_account_by_id(
 
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT id, account_number, swift_bic, owner_name, risk_score, risk_category, date_of_birth, created_at
-                FROM accounts
-                WHERE id = $1 AND tenant_id = $2;
-                """,
-                acc_uuid, tenant_id
-            )
-            if not row:
-                raise HTTPException(status_code=404, detail="Account not found")
+        row = await get_onboarded_account_by_id_repo(
+            acc_uuid=acc_uuid,
+            tenant_id=tenant_id,
+            conn_factory=get_async_db_conn,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Account not found")
 
-            dob_raw = row.get("date_of_birth") if hasattr(row, "get") else None
-            return {
-                "account_id": str(row["id"]),
-                "account_number": row["account_number"],
-                "swift_bic": row["swift_bic"],
-                "owner_name": row["owner_name"],
-                "date_of_birth": dob_raw.isoformat() if hasattr(dob_raw, "isoformat") else dob_raw,
-                "risk_score": float(row["risk_score"]) if row["risk_score"] else 0.0,
-                "risk_tier": row["risk_category"] or "STANDARD",
-                "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"])
-            }
+        dob_raw = row.get("date_of_birth") if hasattr(row, "get") else None
+        return {
+            "account_id": str(row["id"]),
+            "account_number": row["account_number"],
+            "swift_bic": row["swift_bic"],
+            "owner_name": row["owner_name"],
+            "date_of_birth": dob_raw.isoformat() if hasattr(dob_raw, "isoformat") else dob_raw,
+            "risk_score": float(row["risk_score"]) if row["risk_score"] else 0.0,
+            "risk_tier": row["risk_category"] or "STANDARD",
+            "created_at": row["created_at"].isoformat() if hasattr(row["created_at"], "isoformat") else str(row["created_at"]),
+        }
     except HTTPException:
         raise
     except Exception:
@@ -321,45 +310,33 @@ async def list_accounts(
     page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=100),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
-    """
-    Retrieves a paginated list of accounts within the caller's tenant boundary.
-    """
+    """Retrieves a paginated list of accounts within the caller's tenant boundary."""
     tenant_id = enforce_tenant_data_scope(current_user)
     offset = (page - 1) * limit
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            total_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM accounts WHERE tenant_id = $1;",
-                tenant_id
-            )
-            rows = await conn.fetch(
-                """
-                SELECT id, account_number, swift_bic, owner_name, risk_score, risk_category, created_at
-                FROM accounts
-                WHERE tenant_id = $1
-                ORDER BY created_at DESC
-                LIMIT $2 OFFSET $3;
-                """,
-                tenant_id, limit, offset
-            )
-
-            accounts = []
-            for r in rows:
-                accounts.append({
-                    "account_id": str(r["id"]),
-                    "account_number": r["account_number"],
-                    "swift_bic": r["swift_bic"],
-                    "owner_name": r["owner_name"],
-                    "risk_score": float(r["risk_score"]) if r["risk_score"] else 0.0,
-                    "risk_tier": r["risk_category"] or "STANDARD",
-                    "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"])
-                })
-
-            response.headers["X-Total-Count"] = str(total_count or 0)
-            response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
-            return accounts
+        total_count, rows = await list_onboarded_accounts_repo(
+            tenant_id=tenant_id,
+            limit=limit,
+            offset=offset,
+            conn_factory=get_async_db_conn,
+        )
+        accounts = [
+            {
+                "account_id": str(r["id"]),
+                "account_number": r["account_number"],
+                "swift_bic": r["swift_bic"],
+                "owner_name": r["owner_name"],
+                "risk_score": float(r["risk_score"]) if r["risk_score"] else 0.0,
+                "risk_tier": r["risk_category"] or "STANDARD",
+                "created_at": r["created_at"].isoformat() if hasattr(r["created_at"], "isoformat") else str(r["created_at"]),
+            }
+            for r in rows
+        ]
+        response.headers["X-Total-Count"] = str(total_count)
+        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+        return accounts
     except HTTPException:
         raise
     except Exception:

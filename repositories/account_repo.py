@@ -107,8 +107,10 @@ async def freeze_account_atomic(
     freezing_order_ref: Optional[str],
     current_user: Mapping[str, Any],
     conn_factory: Any = None,
+    audit_fn: Any = None,
 ) -> dict[str, Any]:
     factory = conn_factory or get_async_db_conn
+    audit_writer = audit_fn or record_audit_event_tx
     acc_id_str = str(acc_uuid)
     tenant_uuid = uuid.UUID(str(tenant_id))
 
@@ -136,7 +138,7 @@ async def freeze_account_atomic(
         )
 
         try:
-            await record_audit_event_tx(
+            await audit_writer(
                 conn=conn,
                 action="ACCOUNT_FROZEN",
                 actor_id=str(current_user.get("id", "system")),

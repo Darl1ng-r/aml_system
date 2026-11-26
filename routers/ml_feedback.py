@@ -1,21 +1,25 @@
 """
-Machine Learning Active Learning & Online Retraining Router
-============================================================
-Provides API endpoints for active learning feedback stats and model retraining:
-
-  - POST /api/v1/ml/retrain:
-      Executes an online retraining cycle of the Isolation Forest anomaly detector
-      and scoring weights using human analyst feedback labels.
-
-  - GET /api/v1/ml/feedback-stats:
-      Queries active learning feedback statistics (total labeled samples, false
-      positive reduction rate, and retrain history).
+Machine Learning Active Learning, Explainability & Model Inventory Router
+=========================================================================
+Thin HTTP controller for online model retraining, active learning metrics,
+SHAP waterfall explainability, and SR 11-7 model validation reports.
+All PostgreSQL SQL lives in `repositories/analytics_repo.py`.
 """
 
+import json
 import logging
+import os
+import uuid
+from datetime import datetime, timezone
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+
 from database.postgres import get_async_db_conn
+from repositories.analytics_repo import (
+    fetch_alert_explainability_row_repo,
+    fetch_ml_feedback_stats_repo,
+)
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.feedback_loop import feedback_service
 from services.rate_limiter import RateLimiter
@@ -29,12 +33,9 @@ router = APIRouter(prefix="/api/v1/ml", tags=["Machine Learning & Feedback Loop"
 async def retrain_model_now(
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "SUPER_ADMIN"])),
-    _rate_limit=Depends(RateLimiter(limit=5, window=60))
+    _rate_limit=Depends(RateLimiter(limit=5, window=60)),
 ):
-    """
-    Triggers an active online retraining cycle using human-validated analyst feedback asynchronously.
-    Returns 202 Accepted immediately to prevent blocking the HTTP response.
-    """
+    """Triggers an active online retraining cycle asynchronously (202 Accepted)."""
     tenant_id = enforce_tenant_data_scope(current_user)
 
     async def _async_retrain_and_broadcast():
@@ -42,6 +43,7 @@ async def retrain_model_now(
             result = await feedback_service.retrain_model_with_feedback(tenant_id=str(tenant_id))
             if result.get("status") == "RETRAINED":
                 from routers.metrics import ws_manager
+
                 await ws_manager.broadcast(
                     {
                         "event": "ML_MODEL_RETRAINED",
@@ -59,43 +61,30 @@ async def retrain_model_now(
     return {
         "status": "QUEUED",
         "message": "Model retraining task successfully dispatched in background.",
-        "triggered_by": current_user["username"]
+        "triggered_by": current_user["username"],
     }
 
 
 @router.get("/feedback-stats")
 async def get_feedback_stats(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR", "MLRO"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """
-    Retrieves tenant-scoped feedback loop metrics, false positive counts, and model retraining health.
-    """
+    """Retrieves tenant-scoped feedback loop metrics and false positive reduction rate."""
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            total_samples = await conn.fetchval(
-                "SELECT COUNT(*) FROM ml_feedback_samples WHERE tenant_id = $1::uuid;",
-                str(tenant_id),
-            )
-            fp_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM ml_feedback_samples WHERE tenant_id = $1::uuid AND label = 0;",
-                str(tenant_id),
-            )
-            sar_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM ml_feedback_samples WHERE tenant_id = $1::uuid AND label = 1;",
-                str(tenant_id),
-            )
-
-            fp_reduction_rate = round((fp_count / total_samples * 100), 1) if total_samples and total_samples > 0 else 0.0
-
-            return {
-                "total_labeled_samples": total_samples or 0,
-                "false_positives_learned": fp_count or 0,
-                "true_sars_learned": sar_count or 0,
-                "false_positive_reduction_rate": f"{fp_reduction_rate}%",
-                "active_learning_status": "ACTIVE_ONLINE_RETRAINING"
-            }
+        total_samples, fp_count, sar_count = await fetch_ml_feedback_stats_repo(
+            tenant_id=str(tenant_id),
+            conn_factory=get_async_db_conn,
+        )
+        fp_reduction_rate = round((fp_count / total_samples * 100), 1) if total_samples > 0 else 0.0
+        return {
+            "total_labeled_samples": total_samples,
+            "false_positives_learned": fp_count,
+            "true_sars_learned": sar_count,
+            "false_positive_reduction_rate": f"{fp_reduction_rate}%",
+            "active_learning_status": "ACTIVE_ONLINE_RETRAINING",
+        }
     except Exception:
         logger.exception("Failed to query feedback stats")
         raise HTTPException(status_code=500, detail="Failed to fetch feedback stats.")
@@ -111,7 +100,7 @@ def _resolve_attributions(parsed: dict, row: Any) -> dict:
             "amount_magnitude": amt_push,
             "jurisdiction_deviation": 0.18,
             "counterparty_network_risk": 0.14,
-            "historical_tenure_mitigation": -0.07
+            "historical_tenure_mitigation": -0.07,
         }
     return attributions
 
@@ -122,19 +111,21 @@ def _build_waterfall_steps(attributions: dict, base_value: float) -> tuple[list,
     for feat, val in attributions.items():
         if isinstance(val, (int, float)):
             v = float(val)
-            waterfall_steps.append({
-                "feature": feat.replace("_", " ").title(),
-                "impact": round(v, 3),
-                "direction": "RISK_ELEVATION" if v > 0 else "RISK_MITIGATION",
-                "start_value": round(cumulative, 3),
-                "end_value": round(cumulative + v, 3)
-            })
+            waterfall_steps.append(
+                {
+                    "feature": feat.replace("_", " ").title(),
+                    "impact": round(v, 3),
+                    "direction": "RISK_ELEVATION" if v > 0 else "RISK_MITIGATION",
+                    "start_value": round(cumulative, 3),
+                    "end_value": round(cumulative + v, 3),
+                }
+            )
             cumulative += v
 
     top_driver = max(
         waterfall_steps,
         key=lambda s: s["impact"],
-        default={"feature": "Transaction Velocity", "impact": 0.28}
+        default={"feature": "Transaction Velocity", "impact": 0.28},
     )
     return waterfall_steps, top_driver
 
@@ -143,14 +134,9 @@ def _build_waterfall_steps(attributions: dict, base_value: float) -> tuple[list,
 async def get_alert_explainability(
     alert_id: str,
     current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=60, window=60))
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
-    """
-    Retrieves SHAP waterfall feature attributions and explainability breakdown
-    for an alert, conforming to EU AI Act transparency and SR 11-7 model risk requirements.
-    """
-    import uuid
-    import json
+    """Retrieves SHAP waterfall feature attributions for an alert (EU AI Act / SR 11-7)."""
     try:
         a_uuid = uuid.UUID(alert_id)
     except ValueError:
@@ -158,19 +144,11 @@ async def get_alert_explainability(
 
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score,
-                       a.explainability_payload, t.amount, t.currency
-                FROM alerts a
-                LEFT JOIN transactions t ON a.transaction_id = t.id
-                WHERE a.id = $1 AND a.tenant_id = $2::uuid;
-                """,
-                a_uuid,
-                str(tenant_id),
-            )
-
+        row = await fetch_alert_explainability_row_repo(
+            a_uuid=a_uuid,
+            tenant_id=str(tenant_id),
+            conn_factory=get_async_db_conn,
+        )
         if not row:
             raise HTTPException(status_code=404, detail="Alert not found.")
 
@@ -201,7 +179,7 @@ async def get_alert_explainability(
                 f"Base risk score began at {base_value:.2f}. Primary risk elevation was driven by "
                 f"{top_driver['feature']} (+{top_driver['impact']:.2f}), resulting in a final composite "
                 f"risk probability of {score:.2f}."
-            )
+            ),
         }
     except HTTPException:
         raise
@@ -211,27 +189,21 @@ async def get_alert_explainability(
 
 
 def _load_model_report_artifact() -> dict:
-    """Loads real model evaluation metrics from models/model_report.json on disk."""
-    import json
-    import os
     report_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "model_report.json")
     try:
         with open(report_path, "r", encoding="utf-8") as fh:
             return json.load(fh)
     except Exception as e:
-        logger.warning(f"Could not read models/model_report.json: {e}")
+        logger.warning("Could not read models/model_report.json: %s", e)
         return {}
 
 
 @router.get("/models")
 async def get_model_inventory(
     current_user: dict = Depends(RoleChecker(["ADMIN", "MLRO", "AUDITOR", "ANALYST"])),
-    _rate_limit=Depends(RateLimiter(limit=30, window=60))
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     """Returns inventory of active AML machine learning models grounded in live artifacts."""
-    import os
-    from datetime import datetime, timezone
-
     report = _load_model_report_artifact()
     model_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "aml_model.joblib")
     model_exists = os.path.exists(model_file)
@@ -252,7 +224,7 @@ async def get_model_inventory(
                 "n_trees": 60,
                 "learning_mode": "ACTIVE_ONLINE_RETRAINING",
                 "last_evaluated": last_eval,
-                "accuracy": round(float(report.get("cv_roc_auc_mean", 0.0)), 4)
+                "accuracy": round(float(report.get("cv_roc_auc_mean", 0.0)), 4),
             },
             {
                 "id": "ml-xgb-002",
@@ -263,7 +235,7 @@ async def get_model_inventory(
                 "recommended_threshold": report.get("recommended_threshold"),
                 "learning_mode": "PERIODIC_BATCH",
                 "last_evaluated": last_eval,
-                "accuracy": round(xgb_auc, 4)
+                "accuracy": round(xgb_auc, 4),
             },
             {
                 "id": "ml-dynamic-003",
@@ -272,25 +244,20 @@ async def get_model_inventory(
                 "status": "ACTIVE",
                 "learning_mode": "DETERMINISTIC",
                 "last_evaluated": last_eval,
-                "accuracy": round(float(report.get("test_roc_auc", 0.0)), 4)
-            }
+                "accuracy": round(float(report.get("test_roc_auc", 0.0)), 4),
+            },
         ],
         "system_status": "HEALTHY" if model_exists else "DEGRADED",
-        "governance_standard": "SR 11-7 / EU AI Act"
+        "governance_standard": "SR 11-7 / EU AI Act",
     }
 
 
 @router.get("/reports")
 async def get_model_validation_reports(
     current_user: dict = Depends(RoleChecker(["ADMIN", "MLRO", "AUDITOR"])),
-    _rate_limit=Depends(RateLimiter(limit=20, window=60))
+    _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ):
-    """
-    Generates Model Validation & Governance Report compliant with
-    Federal Reserve SR 11-7 Model Risk Management Guidance using real evaluation artifacts.
-    """
-    from datetime import datetime, timezone
-
+    """Generates Federal Reserve SR 11-7 Model Validation & Governance Report."""
     report = _load_model_report_artifact()
     rec_thresh = float(report.get("recommended_threshold", 0.9))
     calib_rows = report.get("threshold_calibration", [])
@@ -333,19 +300,19 @@ async def get_model_validation_reports(
             "recall": round(tpr, 4),
             "f1_score": round(f1_score, 4),
             "auc_roc": round(float(report.get("test_roc_auc", 0.0)), 4),
-            "pr_auc": round(float(report.get("test_pr_auc", 0.0)), 4)
+            "pr_auc": round(float(report.get("test_pr_auc", 0.0)), 4),
         },
         "confusion_matrix": {
             "true_negatives": tn,
             "false_positives": fp,
             "false_negatives": fn,
-            "true_positives": tp
+            "true_positives": tp,
         },
         "drift_analysis": {
             "psi_score": round(float(report.get("cv_roc_auc_std", 0.0)), 4),
             "status": "STABLE_NO_DRIFT" if float(report.get("cv_roc_auc_std", 0.0)) < 0.10 else "DRIFT_DETECTED",
             "threshold": 0.10,
-            "last_drift_test": datetime.now(timezone.utc).isoformat()
+            "last_drift_test": datetime.now(timezone.utc).isoformat(),
         },
-        "feature_importance_ranking": feature_ranking
+        "feature_importance_ranking": feature_ranking,
     }

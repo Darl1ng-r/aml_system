@@ -931,3 +931,28 @@ async def list_transactions_page_repo(
             offset,
         )
         return rows, total_count
+
+
+async def buffer_async_transaction_outbox_repo(
+    *,
+    tenant_id: Any,
+    tx_id: str,
+    buffer_payload: dict[str, Any],
+    record_outbox_fn: Any = None,
+    write_conn_factory: Any = None,
+) -> None:
+    """Persists an async-ingested transaction into PostgreSQL transactional_outbox."""
+    from database.outbox import record_outbox_event
+
+    writer = record_outbox_fn or record_outbox_event
+    conn_factory = write_conn_factory or get_async_db_conn
+    async with conn_factory(tenant_id=tenant_id) as conn:
+        await writer(
+            conn=conn,
+            aggregate_type="TRANSACTION_BUFFER",
+            aggregate_id=tx_id,
+            event_type="aml.core.transaction.buffered.v1",
+            payload=buffer_payload,
+            tenant_id=str(tenant_id),
+            headers={"topic": "aml.transactions.raw"},
+        )
