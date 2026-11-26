@@ -740,7 +740,7 @@ async def test_t05_str_batch_uses_skip_locked_usd_sum_and_returns_409_on_duplica
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://test",
-            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}"},
+            headers={"X-CSRF-Protection": "1", "Authorization": f"Bearer {token}", "Idempotency-Key": str(uuid.uuid4())},
         ) as ac:
             resp = await ac.post("/api/v1/str/batch/STR-BATCH-ALREADY-SENT/transmit")
             assert resp.status_code == 409

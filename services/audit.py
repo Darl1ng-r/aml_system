@@ -63,7 +63,20 @@ async def record_audit_event_tx(
     Guarantees zero dropped audit records on process crash or container SIGTERM eviction (AUDIT-01).
     """
     session_id: Optional[str] = kwargs.get("session_id")
-    details: Optional[Dict[str, Any]] = kwargs.get("details")
+    raw_details: Optional[Dict[str, Any]] = kwargs.get("details")
+    enriched_details: Dict[str, Any] = dict(raw_details) if isinstance(raw_details, dict) else {}
+    try:
+        from observability.middleware import correlation_id_var, get_current_trace_id
+
+        cid = correlation_id_var.get("")
+        if cid and not enriched_details.get("correlation_id"):
+            enriched_details["correlation_id"] = cid
+        tid = get_current_trace_id()
+        if tid and not enriched_details.get("trace_id"):
+            enriched_details["trace_id"] = tid
+    except Exception:
+        pass
+    details = enriched_details
     t_uuid = None
     if tenant_id:
         try:

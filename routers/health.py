@@ -87,10 +87,25 @@ async def liveness():
 async def readiness_probe():
     """
     Decoupled readiness probe for Kubernetes.
-    Checks PostgreSQL (with 2s acquire timeout) and, in hardened environments,
-    Tier-1 Redis (1.5s timeout). Never exposes internal pool/driver details.
+    Fails fast (503) on asyncio event-loop saturation (>=500ms lag), then checks
+    PostgreSQL (2s acquire timeout) and Tier-1 Redis (1.5s timeout in hardened envs).
+    Never exposes internal pool/driver details.
     """
     try:
+        from observability.event_loop_monitor import (
+            is_event_loop_saturated,
+            probe_event_loop_lag_seconds,
+        )
+
+        if is_event_loop_saturated(max_lag_seconds=0.5):
+            logger.warning("Readiness probe failed fast: asyncio event loop saturated.")
+            return JSONResponse(content={"status": "not_ready"}, status_code=503)
+
+        live_lag = await probe_event_loop_lag_seconds()
+        if live_lag >= 0.5:
+            logger.warning("Readiness probe failed fast: event loop tick lag %.1fms >= 500ms.", live_lag * 1000.0)
+            return JSONResponse(content={"status": "not_ready"}, status_code=503)
+
         from database.postgres import db_pool
         if db_pool is None:
             return JSONResponse(content={"status": "not_ready"}, status_code=503)
@@ -120,6 +135,21 @@ async def _run_deep_health_checks() -> tuple[bool, dict[str, dict[str, Any]]]:
 
     checks: dict[str, dict[str, Any]] = {}
     all_healthy = True
+
+    # ── AsyncIO Event-Loop Health ─────────────────────────────────────────
+    try:
+        from observability.event_loop_monitor import get_event_loop_health, is_event_loop_saturated
+
+        loop_diag = get_event_loop_health()
+        saturated = is_event_loop_saturated(max_lag_seconds=0.5)
+        checks["event_loop"] = {
+            "status": "degraded" if saturated else "ok",
+            **loop_diag,
+        }
+        if saturated:
+            all_healthy = False
+    except Exception:
+        pass
 
     # ── PostgreSQL ────────────────────────────────────────────────────────
     try:

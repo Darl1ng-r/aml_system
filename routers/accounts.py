@@ -9,7 +9,7 @@ import logging
 import uuid
 from typing import Optional, List
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
@@ -85,6 +85,7 @@ class EDDDecisionRequest(BaseModel):
 async def verify_account_cip(
     id: str,
     payload: CIPVerifyRequest,
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60))
 ):
@@ -94,66 +95,79 @@ async def verify_account_cip(
         raise HTTPException(status_code=400, detail=INVALID_ACCOUNT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        acc = await conn.fetchrow(
-            "SELECT id, status FROM accounts WHERE id = $1 AND tenant_id = $2;",
-            acc_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not acc:
-            raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
-        if str(acc["status"] or "").upper() != "CIP_PENDING":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Account is in '{acc['status']}' state; CIP verification is only permitted for CIP_PENDING accounts."
+    async def _execute_cip():
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            acc = await conn.fetchrow(
+                "SELECT id, status FROM accounts WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
+                acc_uuid, uuid.UUID(str(tenant_id))
+            )
+            if not acc:
+                raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
+
+            if str(acc["status"] or "").upper() != "CIP_PENDING":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Account is in '{acc['status']}' state; CIP verification is only permitted for CIP_PENDING accounts."
+                )
+
+            updated_id = await conn.fetchval(
+                """
+                UPDATE accounts
+                SET status = 'ACTIVE'
+                WHERE id = $1 AND tenant_id = $2 AND status = 'CIP_PENDING'
+                RETURNING id;
+                """,
+                acc_uuid, uuid.UUID(str(tenant_id))
+            )
+            if not updated_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Account state changed concurrently; CIP verification aborted."
+                )
+
+            masked_doc = _mask_document_number(payload.document_number)
+
+            # Synchronous in-transaction audit persistence (AUDIT-01)
+            try:
+                await record_audit_event_tx(
+                    conn=conn,
+                    action="ACCOUNT_CIP_VERIFIED",
+                    actor_id=str(current_user.get("id", "system")),
+                    actor_role=current_user.get("role", "ANALYST"),
+                    resource_type="ACCOUNT",
+                    resource_id=id,
+                    tenant_id=str(tenant_id),
+                    actor_username=current_user.get("username"),
+                    before_state={"status": acc["status"]},
+                    after_state={"status": "ACTIVE"},
+                    details={"document_type": payload.document_type, "document_number_masked": masked_doc}
+                )
+            except Exception as audit_err:
+                logger.warning(f"Audit log writing failed in verify_account_cip: {audit_err}")
+
+            logger.info(
+                f"CIP verified for account {id} by '{current_user.get('username')}' "
+                f"using {payload.document_type} ({masked_doc})"
             )
 
-        updated_id = await conn.fetchval(
-            """
-            UPDATE accounts
-            SET status = 'ACTIVE'
-            WHERE id = $1 AND tenant_id = $2 AND status = 'CIP_PENDING'
-            RETURNING id;
-            """,
-            acc_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not updated_id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Account state changed concurrently; CIP verification aborted."
-            )
+            return {
+                "account_id": id,
+                "status": "ACTIVE",
+                "cip_verified": True,
+                "message": "Customer Identification Program (CIP) verification completed. Account is now ACTIVE."
+            }
 
-        masked_doc = _mask_document_number(payload.document_number)
-
-        # Synchronous in-transaction audit persistence (AUDIT-01)
-        try:
-            await record_audit_event_tx(
-                conn=conn,
-                action="ACCOUNT_CIP_VERIFIED",
-                actor_id=str(current_user.get("id", "system")),
-                actor_role=current_user.get("role", "ANALYST"),
-                resource_type="ACCOUNT",
-                resource_id=id,
-                tenant_id=str(tenant_id),
-                actor_username=current_user.get("username"),
-                before_state={"status": acc["status"]},
-                after_state={"status": "ACTIVE"},
-                details={"document_type": payload.document_type, "document_number_masked": masked_doc}
-            )
-        except Exception as audit_err:
-            logger.warning(f"Audit log writing failed in verify_account_cip: {audit_err}")
-
-        logger.info(
-            f"CIP verified for account {id} by '{current_user.get('username')}' "
-            f"using {payload.document_type} ({masked_doc})"
-        )
-
-        return {
-            "account_id": id,
-            "status": "ACTIVE",
-            "cip_verified": True,
-            "message": "Customer Identification Program (CIP) verification completed. Account is now ACTIVE."
-        }
+    from services.idempotency import run_idempotent_operation
+    return await run_idempotent_operation(
+        request=request,
+        tenant_id=str(tenant_id),
+        scope=f"account_cip:{acc_uuid}",
+        body=payload.model_dump(mode="json"),
+        handler=_execute_cip,
+        success_status_code=status.HTTP_200_OK,
+        required=True,
+    )
 
 
 # ── Immediate Account Freezing (GAP-7) ─────────────────────────────────────────
@@ -162,6 +176,7 @@ async def verify_account_cip(
 async def freeze_account(
     id: str,
     payload: AccountFreezeRequest,
+    request: Request = None,
     current_user: dict = Depends(PermissionChecker("accounts:freeze")),
     _rate_limit=Depends(RateLimiter(limit=20, window=60))
 ):
@@ -171,78 +186,92 @@ async def freeze_account(
         raise HTTPException(status_code=400, detail=INVALID_ACCOUNT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        acc = await conn.fetchrow(
-            "SELECT id, status, account_number FROM accounts WHERE id = $1 AND tenant_id = $2;",
-            acc_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not acc:
-            raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
-        await conn.execute(
-            """
-            UPDATE accounts
-            SET status = 'FROZEN',
-                frozen_reason = $1,
-                freezing_order_ref = $2,
-                frozen_at = NOW()
-            WHERE id = $3;
-            """,
-            payload.reason, payload.freezing_order_ref, acc_uuid
-        )
-
-        # Synchronous in-transaction audit persistence (AUDIT-01)
-        try:
-            await record_audit_event_tx(
-                conn=conn,
-                action="ACCOUNT_FROZEN",
-                actor_id=str(current_user.get("id", "system")),
-                actor_role=current_user.get("role", "MLRO"),
-                resource_type="ACCOUNT",
-                resource_id=id,
-                tenant_id=str(tenant_id),
-                actor_username=current_user.get("username"),
-                before_state={"status": acc["status"]},
-                after_state={"status": "FROZEN", "reason": payload.reason, "ref": payload.freezing_order_ref},
-                details={"account_number": acc["account_number"]}
+    async def _execute_freeze():
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            acc = await conn.fetchrow(
+                "SELECT id, status, account_number FROM accounts WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
+                acc_uuid, uuid.UUID(str(tenant_id))
             )
-        except Exception as audit_err:
-            logger.warning(f"Audit log writing failed in freeze_account: {audit_err}")
+            if not acc:
+                raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
-        logger.warning(
-            f"REGULATORY ACTION: Account {id} ({acc['account_number']}) FROZEN by {current_user.get('username')}. "
-            f"Reason: {payload.reason} | Ref: {payload.freezing_order_ref}"
-        )
+            await conn.execute(
+                """
+                UPDATE accounts
+                SET status = 'FROZEN',
+                    frozen_reason = $1,
+                    freezing_order_ref = $2,
+                    frozen_at = NOW()
+                WHERE id = $3;
+                """,
+                payload.reason, payload.freezing_order_ref, acc_uuid
+            )
 
-        # P0-2: Atomically enqueue signed outbound core-banking webhook via transactional outbox
-        from services.webhooks import enqueue_webhook_event_tx
-        await enqueue_webhook_event_tx(
-            conn=conn,
-            tenant_id=str(tenant_id),
-            event_type="ACCOUNT_FROZEN",
-            aggregate_id=id,
-            payload={
+            # Synchronous in-transaction audit persistence (AUDIT-01)
+            try:
+                await record_audit_event_tx(
+                    conn=conn,
+                    action="ACCOUNT_FROZEN",
+                    actor_id=str(current_user.get("id", "system")),
+                    actor_role=current_user.get("role", "MLRO"),
+                    resource_type="ACCOUNT",
+                    resource_id=id,
+                    tenant_id=str(tenant_id),
+                    actor_username=current_user.get("username"),
+                    before_state={"status": acc["status"]},
+                    after_state={"status": "FROZEN", "reason": payload.reason, "ref": payload.freezing_order_ref},
+                    details={"account_number": acc["account_number"]}
+                )
+            except Exception as audit_err:
+                logger.warning(f"Audit log writing failed in freeze_account: {audit_err}")
+
+            logger.warning(
+                f"REGULATORY ACTION: Account {id} ({acc['account_number']}) FROZEN by {current_user.get('username')}. "
+                f"Reason: {payload.reason} | Ref: {payload.freezing_order_ref}"
+            )
+
+            # P0-2: Atomically enqueue signed outbound core-banking webhook via transactional outbox
+            from services.webhooks import enqueue_webhook_event_tx
+            await enqueue_webhook_event_tx(
+                conn=conn,
+                tenant_id=str(tenant_id),
+                event_type="ACCOUNT_FROZEN",
+                aggregate_id=id,
+                payload={
+                    "account_id": id,
+                    "account_number": acc["account_number"],
+                    "status": "FROZEN",
+                    "reason": payload.reason,
+                    "freezing_order_ref": payload.freezing_order_ref,
+                    "actor": current_user.get("username"),
+                },
+            )
+
+            return {
                 "account_id": id,
-                "account_number": acc["account_number"],
                 "status": "FROZEN",
-                "reason": payload.reason,
+                "frozen_reason": payload.reason,
                 "freezing_order_ref": payload.freezing_order_ref,
-                "actor": current_user.get("username"),
-            },
-        )
+                "message": "Account has been immediately frozen under regulatory mandate. All transactions blocked."
+            }
 
-        return {
-            "account_id": id,
-            "status": "FROZEN",
-            "frozen_reason": payload.reason,
-            "freezing_order_ref": payload.freezing_order_ref,
-            "message": "Account has been immediately frozen under regulatory mandate. All transactions blocked."
-        }
+    from services.idempotency import run_idempotent_operation
+    return await run_idempotent_operation(
+        request=request,
+        tenant_id=str(tenant_id),
+        scope=f"account_freeze:{acc_uuid}",
+        body=payload.model_dump(mode="json"),
+        handler=_execute_freeze,
+        success_status_code=status.HTTP_200_OK,
+        required=True,
+    )
 
 
 @router.post("/{id}/unfreeze")
 async def unfreeze_account(
     id: str,
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60))
 ):
@@ -252,63 +281,76 @@ async def unfreeze_account(
         raise HTTPException(status_code=400, detail=INVALID_ACCOUNT_ID)
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        acc = await conn.fetchrow(
-            "SELECT id, status FROM accounts WHERE id = $1 AND tenant_id = $2;",
-            acc_uuid, uuid.UUID(str(tenant_id))
-        )
-        if not acc:
-            raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
-        await conn.execute(
-            """
-            UPDATE accounts
-            SET status = 'ACTIVE',
-                frozen_reason = NULL,
-                freezing_order_ref = NULL,
-                frozen_at = NULL
-            WHERE id = $1;
-            """,
-            acc_uuid
-        )
-
-        # Synchronous in-transaction audit persistence (AUDIT-01)
-        try:
-            await record_audit_event_tx(
-                conn=conn,
-                action="ACCOUNT_UNFROZEN",
-                actor_id=str(current_user.get("id", "system")),
-                actor_role=current_user.get("role", "MLRO"),
-                resource_type="ACCOUNT",
-                resource_id=id,
-                tenant_id=str(tenant_id),
-                actor_username=current_user.get("username"),
-                before_state={"status": acc["status"]},
-                after_state={"status": "ACTIVE"},
-                details={"account_id": id}
+    async def _execute_unfreeze():
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            acc = await conn.fetchrow(
+                "SELECT id, status FROM accounts WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
+                acc_uuid, uuid.UUID(str(tenant_id))
             )
-        except Exception as audit_err:
-            logger.warning(f"Audit log writing failed in unfreeze_account: {audit_err}")
+            if not acc:
+                raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
 
-        # P0-2: Atomically enqueue ACCOUNT_UNFROZEN core-banking webhook
-        from services.webhooks import enqueue_webhook_event_tx
-        await enqueue_webhook_event_tx(
-            conn=conn,
-            tenant_id=str(tenant_id),
-            event_type="ACCOUNT_UNFROZEN",
-            aggregate_id=id,
-            payload={
+            await conn.execute(
+                """
+                UPDATE accounts
+                SET status = 'ACTIVE',
+                    frozen_reason = NULL,
+                    freezing_order_ref = NULL,
+                    frozen_at = NULL
+                WHERE id = $1;
+                """,
+                acc_uuid
+            )
+
+            # Synchronous in-transaction audit persistence (AUDIT-01)
+            try:
+                await record_audit_event_tx(
+                    conn=conn,
+                    action="ACCOUNT_UNFROZEN",
+                    actor_id=str(current_user.get("id", "system")),
+                    actor_role=current_user.get("role", "MLRO"),
+                    resource_type="ACCOUNT",
+                    resource_id=id,
+                    tenant_id=str(tenant_id),
+                    actor_username=current_user.get("username"),
+                    before_state={"status": acc["status"]},
+                    after_state={"status": "ACTIVE"},
+                    details={"account_id": id}
+                )
+            except Exception as audit_err:
+                logger.warning(f"Audit log writing failed in unfreeze_account: {audit_err}")
+
+            # P0-2: Atomically enqueue ACCOUNT_UNFROZEN core-banking webhook
+            from services.webhooks import enqueue_webhook_event_tx
+            await enqueue_webhook_event_tx(
+                conn=conn,
+                tenant_id=str(tenant_id),
+                event_type="ACCOUNT_UNFROZEN",
+                aggregate_id=id,
+                payload={
+                    "account_id": id,
+                    "status": "ACTIVE",
+                    "actor": current_user.get("username"),
+                },
+            )
+
+            return {
                 "account_id": id,
                 "status": "ACTIVE",
-                "actor": current_user.get("username"),
-            },
-        )
+                "message": "Account unfreezing completed. Account restored to ACTIVE status."
+            }
 
-        return {
-            "account_id": id,
-            "status": "ACTIVE",
-            "message": "Account unfreezing completed. Account restored to ACTIVE status."
-        }
+    from services.idempotency import run_idempotent_operation
+    return await run_idempotent_operation(
+        request=request,
+        tenant_id=str(tenant_id),
+        scope=f"account_unfreeze:{acc_uuid}",
+        body={"account_id": id},
+        handler=_execute_unfreeze,
+        success_status_code=status.HTTP_200_OK,
+        required=True,
+    )
 
 
 # ── Enhanced Due Diligence (EDD) Workflow (GAP-2) ──────────────────────────────

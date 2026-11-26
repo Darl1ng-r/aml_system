@@ -75,78 +75,107 @@ async def create_case_rfi(
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ) -> Dict[str, Any]:
-    """Issues a tokenized external RFI link and automatically pauses the case SLA clock."""
+    """Issues a tokenized external RFI link, pauses SLA, and commits WORM audit inside one ACID tx."""
     try:
         case_uuid = uuid.UUID(case_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid case ID.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
-    raw_token, token_hash = generate_rfi_token(tenant_id)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=payload.expires_in_hours)
-    safe_docs = [sanitize_text(d) for d in payload.requested_docs if str(d).strip()]
 
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        case_row = await conn.fetchrow(
-            "SELECT id, subject_account_id, status FROM cases WHERE id = $1;",
-            case_uuid,
-        )
-        if not case_row:
-            raise HTTPException(status_code=404, detail="Case not found.")
+    async def _execute_create():
+        raw_token, token_hash = generate_rfi_token(tenant_id)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=payload.expires_in_hours)
+        safe_docs = [sanitize_text(d) for d in payload.requested_docs if str(d).strip()]
 
-        rfi_id = await conn.fetchval(
-            """
-            INSERT INTO rfi_requests (
-                tenant_id, case_id, account_id, token_hash, recipient_email,
-                recipient_role, prompt_message, requested_docs, status, expires_at, created_by
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            case_row = await conn.fetchrow(
+                "SELECT id, subject_account_id, status FROM cases WHERE id = $1 FOR UPDATE;",
+                case_uuid,
             )
-            VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::text[], 'OPEN', $9, $10)
-            RETURNING id;
-            """,
-            str(tenant_id),
-            case_uuid,
-            case_row.get("subject_account_id"),
-            token_hash,
-            payload.recipient_email.strip(),
-            payload.recipient_role,
-            payload.prompt_message,
-            safe_docs,
-            expires_at,
-            current_user.get("username", "investigator"),
+            if not case_row:
+                raise HTTPException(status_code=404, detail="Case not found.")
+
+            rfi_id = await conn.fetchval(
+                """
+                INSERT INTO rfi_requests (
+                    tenant_id, case_id, account_id, token_hash, recipient_email,
+                    recipient_role, prompt_message, requested_docs, status, expires_at, created_by
+                )
+                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::text[], 'OPEN', $9, $10)
+                RETURNING id;
+                """,
+                str(tenant_id),
+                case_uuid,
+                case_row.get("subject_account_id"),
+                token_hash,
+                payload.recipient_email.strip(),
+                payload.recipient_role,
+                payload.prompt_message,
+                safe_docs,
+                expires_at,
+                current_user.get("username", "investigator"),
+            )
+            await pause_case_sla_for_rfi(conn, case_uuid)
+            try:
+                from services.audit import record_audit_event_tx
+
+                await record_audit_event_tx(
+                    conn=conn,
+                    action="ISSUE_RFI",
+                    actor_id=str(current_user.get("id") or current_user.get("username") or ""),
+                    actor_username=current_user.get("username", "investigator"),
+                    actor_role=current_user.get("role", "ANALYST"),
+                    resource_type="CASE",
+                    resource_id=case_id,
+                    tenant_id=str(tenant_id),
+                    details={"rfi_id": str(rfi_id), "recipient_role": payload.recipient_role, "expires_at": expires_at.isoformat()},
+                )
+            except Exception as audit_err:
+                logger.warning("Transactional audit write skipped in create_case_rfi: %s", audit_err)
+
+        log_audit_event(
+            event_type="RFI_ISSUED_SLA_PAUSED",
+            actor_id=str(current_user.get("id", "")),
+            actor_role=current_user.get("role", "ANALYST"),
+            action="ISSUE_RFI",
+            resource_type="CASE",
+            resource_id=case_id,
+            tenant_id=str(tenant_id),
+            details={"rfi_id": str(rfi_id), "recipient_role": payload.recipient_role, "expires_at": expires_at.isoformat()},
         )
-        await pause_case_sla_for_rfi(conn, case_uuid)
 
-    log_audit_event(
-        event_type="RFI_ISSUED_SLA_PAUSED",
-        actor_id=str(current_user.get("id", "")),
-        actor_role=current_user.get("role", "ANALYST"),
-        action="ISSUE_RFI",
-        resource_type="CASE",
-        resource_id=case_id,
+        # P2-09: Pin portal_url to canonical PUBLIC_BASE_URL (prevents Host-header poisoning)
+        from config import settings
+        configured_base = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
+        if configured_base:
+            base_url = configured_base
+        elif getattr(settings, "is_hardened", settings.is_production):
+            first_origin = next((o.strip().rstrip("/") for o in settings.allowed_origins.split(",") if o.strip()), "")
+            base_url = first_origin or str(request.base_url).rstrip("/")
+        else:
+            base_url = str(request.base_url).rstrip("/")
+        return {
+            "rfi_id": str(rfi_id),
+            "case_id": case_id,
+            "status": "OPEN",
+            "sla_clock_paused": True,
+            "expires_at": expires_at.isoformat(),
+            "rfi_token": raw_token,
+            "portal_url": f"{base_url}/rfi/{raw_token}",
+            "note": "Share this one-time link securely with the Customer or RM; the token is not retrievable again.",
+        }
+
+    from services.idempotency import run_idempotent_operation
+    return await run_idempotent_operation(
+        request=request,
         tenant_id=str(tenant_id),
-        details={"rfi_id": str(rfi_id), "recipient_role": payload.recipient_role, "expires_at": expires_at.isoformat()},
+        scope=f"rfi_create:{case_uuid}",
+        body=payload.model_dump(mode="json"),
+        handler=_execute_create,
+        success_status_code=status.HTTP_201_CREATED,
+        required=True,
     )
-
-    # P2-09: Pin portal_url to canonical PUBLIC_BASE_URL (prevents Host-header poisoning)
-    from config import settings
-    configured_base = (getattr(settings, "public_base_url", "") or "").strip().rstrip("/")
-    if configured_base:
-        base_url = configured_base
-    elif getattr(settings, "is_hardened", settings.is_production):
-        first_origin = next((o.strip().rstrip("/") for o in settings.allowed_origins.split(",") if o.strip()), "")
-        base_url = first_origin or str(request.base_url).rstrip("/")
-    else:
-        base_url = str(request.base_url).rstrip("/")
-    return {
-        "rfi_id": str(rfi_id),
-        "case_id": case_id,
-        "status": "OPEN",
-        "sla_clock_paused": True,
-        "expires_at": expires_at.isoformat(),
-        "rfi_token": raw_token,
-        "portal_url": f"{base_url}/rfi/{raw_token}",
-        "note": "Share this one-time link securely with the Customer or RM; the token is not retrievable again.",
-    }
 
 
 @router.get("/cases/{case_id}")
@@ -194,6 +223,7 @@ async def list_case_rfis(
 @router.post("/{rfi_id}/cancel")
 async def cancel_rfi(
     rfi_id: str,
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=20, window=60)),
 ) -> Dict[str, Any]:
@@ -202,30 +232,49 @@ async def cancel_rfi(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid RFI ID.")
     tenant_id = enforce_tenant_data_scope(current_user)
-    async with get_async_db_conn(tenant_id=tenant_id) as conn:
-        row = await conn.fetchrow(
-            "UPDATE rfi_requests SET status = 'CANCELLED' WHERE id = $1 AND tenant_id = $2::uuid AND status = 'OPEN' RETURNING case_id;",
-            rfi_uuid, str(tenant_id),
-        )
-        if not row:
-            raise HTTPException(status_code=404, detail="Open RFI not found.")
-        resumed_secs = await resume_case_sla_after_rfi(conn, row["case_id"])
-        try:
-            from services.audit import record_audit_event_tx
-            await record_audit_event_tx(
-                conn=conn,
-                action="CANCEL_RFI",
-                actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
-                actor_username=current_user.get("username", "investigator"),
-                actor_role=current_user.get("role", "L2_INVESTIGATOR"),
-                resource_type="RFI",
-                resource_id=rfi_id,
-                tenant_id=str(tenant_id),
-                details={"case_id": str(row["case_id"]), "sla_paused_seconds_added": resumed_secs},
+
+    async def _execute_cancel():
+        async with get_async_db_conn(tenant_id=tenant_id) as conn:
+            existing = await conn.fetchrow(
+                "SELECT id, case_id, status FROM rfi_requests WHERE id = $1 AND tenant_id = $2::uuid FOR UPDATE;",
+                rfi_uuid, str(tenant_id),
             )
-        except Exception as audit_err:
-            logger.warning(f"Transactional audit write skipped in cancel_rfi: {audit_err}")
-    return {"rfi_id": rfi_id, "status": "CANCELLED", "sla_paused_seconds_added": resumed_secs}
+            if not existing:
+                raise HTTPException(status_code=404, detail="Open RFI not found.")
+            from services.state_machine import validate_rfi_transition
+            validate_rfi_transition(str(existing["status"]), "CANCELLED")
+            await conn.execute(
+                "UPDATE rfi_requests SET status = 'CANCELLED' WHERE id = $1 AND tenant_id = $2::uuid;",
+                rfi_uuid, str(tenant_id),
+            )
+            resumed_secs = await resume_case_sla_after_rfi(conn, existing["case_id"])
+            try:
+                from services.audit import record_audit_event_tx
+                await record_audit_event_tx(
+                    conn=conn,
+                    action="CANCEL_RFI",
+                    actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
+                    actor_username=current_user.get("username", "investigator"),
+                    actor_role=current_user.get("role", "L2_INVESTIGATOR"),
+                    resource_type="RFI",
+                    resource_id=rfi_id,
+                    tenant_id=str(tenant_id),
+                    details={"case_id": str(existing["case_id"]), "sla_paused_seconds_added": resumed_secs},
+                )
+            except Exception as audit_err:
+                logger.warning(f"Transactional audit write skipped in cancel_rfi: {audit_err}")
+        return {"rfi_id": rfi_id, "status": "CANCELLED", "sla_paused_seconds_added": resumed_secs}
+
+    from services.idempotency import run_idempotent_operation
+    return await run_idempotent_operation(
+        request=request,
+        tenant_id=str(tenant_id),
+        scope=f"rfi_cancel:{rfi_uuid}",
+        body={"rfi_id": rfi_id},
+        handler=_execute_cancel,
+        success_status_code=status.HTTP_200_OK,
+        required=True,
+    )
 
 
 @router.get("/public/{token}")

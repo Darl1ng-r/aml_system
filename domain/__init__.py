@@ -38,6 +38,8 @@ from domain.rules_core import (
     evaluate_travel_rule_pure,
     is_high_risk_geo_bic,
 )
+from domain.scoring_core import compute_dynamic_risk_pure
+from domain.ubo_core import resolve_ubo_ownership_tree_pure
 from domain.state_machine import (
     ALERT_TRANSITIONS,
     AlertStatus,
@@ -88,6 +90,7 @@ __all__ = [
     "TRAVEL_RULE_THRESHOLD_USD",
     "TransactionInput",
     "classify_transaction_decision",
+    "compute_dynamic_risk_pure",
     "compute_ruleset_hash",
     "convert_money",
     "evaluate_all_rules_pure",
@@ -100,6 +103,7 @@ __all__ = [
     "normalize_currency",
     "parse_decimal_amount",
     "quantize_amount",
+    "resolve_ubo_ownership_tree_pure",
     "to_decimal",
     "validate_alert_transition_pure",
     "validate_case_transition_pure",

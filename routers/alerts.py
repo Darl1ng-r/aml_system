@@ -1801,17 +1801,19 @@ async def export_alerts_pdf(
                 """
             )
 
-            import html as _html
-            table_rows_html = ""
-            for r in rows:
-                score = f"{round(float(r['ai_risk_score'] or 0) * 100)}%"
-                safe_id = _html.escape(str(r['id'])[:8])
-                safe_threat = _html.escape(str(r['threat_level'] or ''))
-                safe_rule = _html.escape(str(r['rule_name'] or ''))
-                safe_curr = _html.escape(str(r['currency'] or ''))
-                safe_status = _html.escape(str(r['status'] or ''))
-                safe_assignee = _html.escape(str(r['assignee'] or ''))
-                table_rows_html += f"""
+            def _render_pdf_html() -> str:
+                import html as _html
+
+                table_rows_html = ""
+                for r in rows:
+                    score = f"{round(float(r['ai_risk_score'] or 0) * 100)}%"
+                    safe_id = _html.escape(str(r['id'])[:8])
+                    safe_threat = _html.escape(str(r['threat_level'] or ''))
+                    safe_rule = _html.escape(str(r['rule_name'] or ''))
+                    safe_curr = _html.escape(str(r['currency'] or ''))
+                    safe_status = _html.escape(str(r['status'] or ''))
+                    safe_assignee = _html.escape(str(r['assignee'] or ''))
+                    table_rows_html += f"""
                 <tr>
                     <td style="padding: 6px; border-bottom: 1px solid #ddd; font-family: monospace;">{safe_id}...</td>
                     <td style="padding: 6px; border-bottom: 1px solid #ddd;"><strong>{safe_threat}</strong></td>
@@ -1823,9 +1825,9 @@ async def export_alerts_pdf(
                 </tr>
                 """
 
-            safe_officer = _html.escape(str(current_user.get('username', '')))
-            safe_role = _html.escape(str(current_user.get('role', '')))
-            html_content = f"""
+                safe_officer = _html.escape(str(current_user.get('username', '')))
+                safe_role = _html.escape(str(current_user.get('role', '')))
+                return f"""
             <!DOCTYPE html>
             <html>
             <head>
@@ -1864,6 +1866,9 @@ async def export_alerts_pdf(
             </body>
             </html>
             """
+
+            from services.compute_executor import run_analytics_compute
+            html_content = await run_analytics_compute(_render_pdf_html, timeout=10.0)
             return HTMLResponse(content=html_content)
     except HTTPException:
         raise

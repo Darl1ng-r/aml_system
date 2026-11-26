@@ -15,6 +15,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, field_validator
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -92,10 +93,21 @@ class SARPreviewRequest(BaseModel):
     alert_id: str | None = Field(None, max_length=64)
     narrative: str = Field(..., min_length=5, max_length=10000)
     format: str = Field("FINCEN", pattern=r"^(FINCEN|GOAML)$")
-    amount: float | None = Field(None, ge=0, le=1_000_000_000_000.0)
+    amount: Decimal | None = Field(None, ge=Decimal("0"), le=Decimal("1000000000000"))
     currency: str | None = Field("USD", max_length=8)
     sender_name: str | None = Field(None, max_length=200)
     receiver_name: str | None = Field(None, max_length=200)
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def validate_preview_amount(cls, v: Any) -> Decimal | None:
+        if v is None:
+            return None
+        from domain.money import InvalidMoneyError, parse_decimal_amount
+        try:
+            return parse_decimal_amount(v, allow_zero=True)
+        except InvalidMoneyError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("narrative", "sender_name", "receiver_name", mode="before")
     @classmethod

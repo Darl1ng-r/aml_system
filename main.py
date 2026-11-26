@@ -534,7 +534,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from observability.middleware import correlation_id_var
+from observability.middleware import correlation_id_var, get_current_trace_id
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -556,13 +556,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         )
     friendly_msg = "; ".join(messages) if messages else "Invalid request data."
     correlation_id = correlation_id_var.get("")
+    trace_id = get_current_trace_id()
+    resp_headers = {"X-Trace-ID": trace_id} if trace_id else None
     return JSONResponse(
         status_code=422,
         content={
             "detail": friendly_msg,
             "errors": jsonable_encoder(sanitized_errors),
             "correlation_id": correlation_id,
+            "trace_id": trace_id,
         },
+        headers=resp_headers,
     )
 
 @app.exception_handler(StarletteHTTPException)
@@ -571,33 +575,48 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     if exc.status_code == 404 and MIME_TEXT_HTML in accept and os.path.exists("static/404.html"):
         return FileResponse("static/404.html", status_code=404)
     correlation_id = correlation_id_var.get("")
+    trace_id = get_current_trace_id()
+    merged_headers = dict(getattr(exc, "headers", None) or {})
+    if trace_id:
+        merged_headers["X-Trace-ID"] = trace_id
     return JSONResponse(
         status_code=exc.status_code,
-        content={"detail": exc.detail, "correlation_id": correlation_id},
-        headers=getattr(exc, "headers", None),
+        content={
+            "detail": exc.detail,
+            "correlation_id": correlation_id,
+            "trace_id": trace_id,
+        },
+        headers=merged_headers or None,
     )
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     correlation_id = correlation_id_var.get("")
+    trace_id = get_current_trace_id()
     logger.error(
         f"Unhandled application exception: {exc}",
         exc_info=exc,
-        extra={"correlation_id": correlation_id}
+        extra={"correlation_id": correlation_id, "trace_id": trace_id}
     )
     accept = request.headers.get("accept", "")
     if MIME_TEXT_HTML in accept and os.path.exists("static/500.html"):
+        err_headers = {"X-Correlation-ID": correlation_id}
+        if trace_id:
+            err_headers["X-Trace-ID"] = trace_id
         return FileResponse(
             "static/500.html",
             status_code=500,
-            headers={"X-Correlation-ID": correlation_id}
+            headers=err_headers,
         )
+    resp_headers = {"X-Trace-ID": trace_id} if trace_id else None
     return JSONResponse(
         status_code=500,
         content={
             "detail": "An internal server error occurred.",
-            "correlation_id": correlation_id
-        }
+            "correlation_id": correlation_id,
+            "trace_id": trace_id,
+        },
+        headers=resp_headers,
     )
 
 @app.get("/robots.txt", response_class=FileResponse)

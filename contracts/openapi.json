@@ -1277,18 +1277,34 @@
       "RiskAppetiteConfig": {
         "properties": {
           "cash_structuring_threshold": {
-            "default": 10000.0,
-            "maximum": 10000000.0,
-            "minimum": 1000.0,
-            "title": "Cash Structuring Threshold",
-            "type": "number"
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 1000.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "10000.00",
+            "title": "Cash Structuring Threshold"
           },
           "crypto_travel_rule_threshold": {
-            "default": 1000.0,
-            "maximum": 10000000.0,
-            "minimum": 100.0,
-            "title": "Crypto Travel Rule Threshold",
-            "type": "number"
+            "anyOf": [
+              {
+                "maximum": 10000000.0,
+                "minimum": 100.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "default": "1000.00",
+            "title": "Crypto Travel Rule Threshold"
           },
           "edd_mandatory_score_threshold": {
             "default": 0.85,
@@ -1458,10 +1474,18 @@
       "RuleTestPayload": {
         "properties": {
           "amount": {
-            "exclusiveMinimum": 0.0,
-            "maximum": 1000000000000.0,
-            "title": "Amount",
-            "type": "number"
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1000000000000.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "title": "Amount"
           },
           "receiver_bic": {
             "anyOf": [
@@ -1836,6 +1860,10 @@
                 "maximum": 1000000000000.0,
                 "minimum": 0.0,
                 "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
               },
               {
                 "type": "null"
@@ -12261,7 +12289,7 @@
         ]
       },
       "post": {
-        "description": "Issues a tokenized external RFI link and automatically pauses the case SLA clock.",
+        "description": "Issues a tokenized external RFI link, pauses SLA, and commits WORM audit inside one ACID tx.",
         "operationId": "create_case_rfi_api_v1_rfi_cases__case_id__post",
         "parameters": [
           {
@@ -13450,7 +13478,7 @@
         ]
       },
       "put": {
-        "description": "Updates institutional risk appetite thresholds in PostgreSQL.\nAudited with before/after state diff under FFIEC regulatory mandate.",
+        "description": "Updates institutional risk appetite thresholds in PostgreSQL atomically with\nWORM `audit_log` and mandatory `Idempotency-Key` enforcement.",
         "operationId": "update_risk_appetite_settings_api_v1_settings_risk_appetite_put",
         "parameters": [
           {
@@ -13564,7 +13592,7 @@
         ]
       },
       "put": {
-        "description": "Updates institutional risk appetite thresholds in PostgreSQL.\nAudited with before/after state diff under FFIEC regulatory mandate.",
+        "description": "Updates institutional risk appetite thresholds in PostgreSQL atomically with\nWORM `audit_log` and mandatory `Idempotency-Key` enforcement.",
         "operationId": "update_risk_appetite_settings_api_v1_settings_risk_appetite__put",
         "parameters": [
           {
@@ -13755,7 +13783,7 @@
     },
     "/api/v1/str/batch/batches/{batch_id}": {
       "get": {
-        "description": "Streams the XML batch container for filing uploading (tenant-scoped).",
+        "description": "Streams the XML batch container for filing upload (tenant-scoped).",
         "operationId": "download_str_batch_api_v1_str_batch_batches__batch_id__get",
         "parameters": [
           {
@@ -13815,7 +13843,7 @@
         ]
       },
       "patch": {
-        "description": "Electronically transmits the full compiled STR batch package to the regulatory gateway\nusing a 3-phase Saga (T-05):\n  1. Short DB tx atomically claims `status = 'TRANSMITTING'` (returns 409 Conflict if already claimed/filed).\n  2. External FinCEN gateway transmission executes OUTSIDE any PostgreSQL transaction.\n  3. Short DB tx commits final receipt status + cryptographic WORM audit_log (or marks FAILED on error).",
+        "description": "Electronically transmits the full compiled STR batch package via a 3-phase Saga (T-05)\nunder mandatory `Idempotency-Key` enforcement.",
         "operationId": "transmit_str_batch_api_v1_str_batch_batches__batch_id__patch",
         "parameters": [
           {
@@ -13877,7 +13905,7 @@
     },
     "/api/v1/str/batch/batches/{batch_id}/file": {
       "get": {
-        "description": "Streams the XML batch container for filing uploading (tenant-scoped).",
+        "description": "Streams the XML batch container for filing upload (tenant-scoped).",
         "operationId": "download_str_batch_api_v1_str_batch_batches__batch_id__file_get",
         "parameters": [
           {
@@ -13939,7 +13967,7 @@
     },
     "/api/v1/str/batch/batches/{batch_id}/transmissions": {
       "post": {
-        "description": "Electronically transmits the full compiled STR batch package to the regulatory gateway\nusing a 3-phase Saga (T-05):\n  1. Short DB tx atomically claims `status = 'TRANSMITTING'` (returns 409 Conflict if already claimed/filed).\n  2. External FinCEN gateway transmission executes OUTSIDE any PostgreSQL transaction.\n  3. Short DB tx commits final receipt status + cryptographic WORM audit_log (or marks FAILED on error).",
+        "description": "Electronically transmits the full compiled STR batch package via a 3-phase Saga (T-05)\nunder mandatory `Idempotency-Key` enforcement.",
         "operationId": "transmit_str_batch_api_v1_str_batch_batches__batch_id__transmissions_post",
         "parameters": [
           {
@@ -14131,7 +14159,7 @@
     },
     "/api/v1/str/batch/{batch_id}/download": {
       "get": {
-        "description": "Streams the XML batch container for filing uploading (tenant-scoped).",
+        "description": "Streams the XML batch container for filing upload (tenant-scoped).",
         "operationId": "download_str_batch_api_v1_str_batch__batch_id__download_get",
         "parameters": [
           {
@@ -14193,7 +14221,7 @@
     },
     "/api/v1/str/batch/{batch_id}/transmit": {
       "post": {
-        "description": "Electronically transmits the full compiled STR batch package to the regulatory gateway\nusing a 3-phase Saga (T-05):\n  1. Short DB tx atomically claims `status = 'TRANSMITTING'` (returns 409 Conflict if already claimed/filed).\n  2. External FinCEN gateway transmission executes OUTSIDE any PostgreSQL transaction.\n  3. Short DB tx commits final receipt status + cryptographic WORM audit_log (or marks FAILED on error).",
+        "description": "Electronically transmits the full compiled STR batch package via a 3-phase Saga (T-05)\nunder mandatory `Idempotency-Key` enforcement.",
         "operationId": "transmit_str_batch_api_v1_str_batch__batch_id__transmit_post",
         "parameters": [
           {
@@ -15060,7 +15088,7 @@
     },
     "/health/ready": {
       "get": {
-        "description": "Decoupled readiness probe for Kubernetes.\nChecks PostgreSQL (with 2s acquire timeout) and, in hardened environments,\nTier-1 Redis (1.5s timeout). Never exposes internal pool/driver details.",
+        "description": "Decoupled readiness probe for Kubernetes.\nFails fast (503) on asyncio event-loop saturation (>=500ms lag), then checks\nPostgreSQL (2s acquire timeout) and Tier-1 Redis (1.5s timeout in hardened envs).\nNever exposes internal pool/driver details.",
         "operationId": "readiness_probe_health_ready_get",
         "responses": {
           "200": {

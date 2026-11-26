@@ -201,8 +201,8 @@ export interface Schemas {
     refresh_token?: string | null;
   };
   RiskAppetiteConfig: {
-    cash_structuring_threshold?: number;
-    crypto_travel_rule_threshold?: number;
+    cash_structuring_threshold?: number | string;
+    crypto_travel_rule_threshold?: number | string;
     edd_mandatory_score_threshold?: number;
     high_risk_jurisdictions?: string[];
     jurisdiction_risk_multiplier?: number;
@@ -225,7 +225,7 @@ export interface Schemas {
     shadow_config?: Record<string, unknown> | null;
   };
   RuleTestPayload: {
-    amount: number;
+    amount: number | string;
     receiver_bic?: string | null;
     receiver_id?: string;
     receiver_name?: string | null;
@@ -267,7 +267,7 @@ export interface Schemas {
   };
   SARPreviewRequest: {
     alert_id?: string | null;
-    amount?: number | null;
+    amount?: number | string | null;
     currency?: string | null;
     format?: string;
     narrative: string;

@@ -15,8 +15,10 @@ import uuid
 import logging
 import asyncio
 from datetime import datetime, timezone
+from decimal import Decimal
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.http_cache import build_conditional_json_response, build_version_etag, check_if_match
+from services.idempotency import run_idempotent_operation
 from services.rate_limiter import RateLimiter
 from database.postgres import get_async_db_conn
 from database.redis_db import get_async_redis_client
@@ -57,11 +59,20 @@ class RuleBacktestPayload(BaseModel):
 class RuleTestPayload(BaseModel):
     sender_id: str = Field("ACC-SENDER-TEST", min_length=1, max_length=100)
     receiver_id: str = Field("ACC-RCVR-TEST", min_length=1, max_length=100)
-    amount: float = Field(..., gt=0, le=1_000_000_000_000.0)
+    amount: Decimal = Field(..., gt=Decimal("0"), le=Decimal("1000000000000"))
     sender_name: Optional[str] = Field("John Doe", max_length=200)
     sender_bic: Optional[str] = Field("DEUTDEDD", max_length=20)
     receiver_name: Optional[str] = Field("Jane Smith", max_length=200)
     receiver_bic: Optional[str] = Field("CHASUS33", max_length=20)
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def validate_rule_test_amount(cls, v: Any) -> Decimal:
+        from domain.money import InvalidMoneyError, parse_decimal_amount
+        try:
+            return parse_decimal_amount(v, allow_zero=False)
+        except InvalidMoneyError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("sender_id", "receiver_id", "sender_name", "sender_bic", "receiver_name", "receiver_bic", mode="before")
     @classmethod
@@ -214,142 +225,154 @@ async def patch_rule(
     user_uuid = _parse_user_uuid(user_id)
     username = current_user.get("username", "Admin")
 
-    try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            # 1. Fetch & lock existing rule row for atomic optimistic concurrency check
-            current_row = await conn.fetchrow(
-                """
-                SELECT id, enabled, mode, config, shadow_config, version
-                FROM rule_configs
-                WHERE tenant_id = $1 AND rule_name = $2
-                FOR UPDATE;
-                """,
-                tenant_uuid, rule_name
-            )
-
-            current_version = (
-                int(current_row["version"])
-                if (current_row and "version" in current_row and current_row["version"] is not None)
-                else 0
-            )
-            current_etag = build_version_etag("rule", current_version)
-            check_if_match(request, current_etag, resource_label=f"rule '{rule_name}'")
-            if payload.expected_version is not None and payload.expected_version != current_version:
-                raise HTTPException(
-                    status_code=status.HTTP_412_PRECONDITION_FAILED,
-                    detail=(
-                        f"Precondition Failed: rule '{rule_name}' is at version {current_version}, "
-                        f"not {payload.expected_version}. Reload the latest configuration and retry."
-                    ),
-                    headers={"ETag": current_etag},
+    async def _execute_patch():
+        try:
+            async with get_async_db_conn(tenant_id=tenant_id) as conn:
+                # 1. Fetch & lock existing rule row for atomic optimistic concurrency check
+                current_row = await conn.fetchrow(
+                    """
+                    SELECT id, enabled, mode, config, shadow_config, version
+                    FROM rule_configs
+                    WHERE tenant_id = $1 AND rule_name = $2
+                    FOR UPDATE;
+                    """,
+                    tenant_uuid, rule_name
                 )
 
-            new_enabled, new_config, new_version = _compute_rule_updates(current_row, payload)
-            existing_mode = (current_row["mode"] if current_row and "mode" in current_row else "ACTIVE") or "ACTIVE"
-            new_mode = payload.mode or ("DISABLED" if payload.enabled is False else existing_mode)
-            if payload.mode == "DISABLED":
-                new_enabled = False
-            elif payload.mode in ("ACTIVE", "SHADOW") and payload.enabled is None:
-                new_enabled = True
-
-            existing_shadow = current_row["shadow_config"] if (current_row and "shadow_config" in current_row) else None
-            new_shadow = payload.shadow_config if payload.shadow_config is not None else existing_shadow
-            new_shadow_json = json.dumps(new_shadow) if isinstance(new_shadow, dict) else new_shadow
-
-            # 2. Upsert into rule_configs
-            saved_id = await conn.fetchval(
-                """
-                INSERT INTO rule_configs (
-                    tenant_id, rule_name, enabled, mode, config, shadow_config, version,
-                    updated_by, updated_by_name, updated_at
+                current_version = (
+                    int(current_row["version"])
+                    if (current_row and "version" in current_row and current_row["version"] is not None)
+                    else 0
                 )
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, NOW())
-                ON CONFLICT (tenant_id, rule_name) DO UPDATE
-                SET enabled = EXCLUDED.enabled,
-                    mode = EXCLUDED.mode,
-                    config = EXCLUDED.config,
-                    shadow_config = EXCLUDED.shadow_config,
-                    version = EXCLUDED.version,
-                    updated_by = EXCLUDED.updated_by,
-                    updated_by_name = EXCLUDED.updated_by_name,
-                    updated_at = NOW()
-                RETURNING id;
-                """,
-                tenant_uuid, rule_name, new_enabled, new_mode, json.dumps(new_config),
-                new_shadow_json, new_version, user_uuid, username
+                current_etag = build_version_etag("rule", current_version)
+                check_if_match(request, current_etag, resource_label=f"rule '{rule_name}'")
+                if payload.expected_version is not None and payload.expected_version != current_version:
+                    raise HTTPException(
+                        status_code=status.HTTP_412_PRECONDITION_FAILED,
+                        detail=(
+                            f"Precondition Failed: rule '{rule_name}' is at version {current_version}, "
+                            f"not {payload.expected_version}. Reload the latest configuration and retry."
+                        ),
+                        headers={"ETag": current_etag},
+                    )
+
+                new_enabled, new_config, new_version = _compute_rule_updates(current_row, payload)
+                existing_mode = (current_row["mode"] if current_row and "mode" in current_row else "ACTIVE") or "ACTIVE"
+                new_mode = payload.mode or ("DISABLED" if payload.enabled is False else existing_mode)
+                if payload.mode == "DISABLED":
+                    new_enabled = False
+                elif payload.mode in ("ACTIVE", "SHADOW") and payload.enabled is None:
+                    new_enabled = True
+
+                existing_shadow = current_row["shadow_config"] if (current_row and "shadow_config" in current_row) else None
+                new_shadow = payload.shadow_config if payload.shadow_config is not None else existing_shadow
+                new_shadow_json = json.dumps(new_shadow) if isinstance(new_shadow, dict) else new_shadow
+
+                # 2. Upsert into rule_configs
+                saved_id = await conn.fetchval(
+                    """
+                    INSERT INTO rule_configs (
+                        tenant_id, rule_name, enabled, mode, config, shadow_config, version,
+                        updated_by, updated_by_name, updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, NOW())
+                    ON CONFLICT (tenant_id, rule_name) DO UPDATE
+                    SET enabled = EXCLUDED.enabled,
+                        mode = EXCLUDED.mode,
+                        config = EXCLUDED.config,
+                        shadow_config = EXCLUDED.shadow_config,
+                        version = EXCLUDED.version,
+                        updated_by = EXCLUDED.updated_by,
+                        updated_by_name = EXCLUDED.updated_by_name,
+                        updated_at = NOW()
+                    RETURNING id;
+                    """,
+                    tenant_uuid, rule_name, new_enabled, new_mode, json.dumps(new_config),
+                    new_shadow_json, new_version, user_uuid, username
+                )
+
+                # 3. Insert audit snapshot into rule_config_history
+                await conn.execute(
+                    """
+                    INSERT INTO rule_config_history (
+                        rule_config_id, tenant_id, rule_name, enabled, config,
+                        version, changed_by, changed_by_name, change_reason
+                    )
+                    VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9);
+                    """,
+                    saved_id, tenant_uuid, rule_name, new_enabled,
+                    json.dumps(new_config), new_version, user_uuid, username,
+                    payload.change_reason or "Rule adjusted"
+                )
+
+                # 3b. Transactional WORM audit record
+                try:
+                    from services.audit import record_audit_event_tx
+                    await record_audit_event_tx(
+                        conn=conn,
+                        action="UPDATE_RULE",
+                        actor_id=str(user_id or username),
+                        actor_username=username,
+                        actor_role=current_user.get("role", "ADMIN"),
+                        resource_type="RULE",
+                        resource_id=rule_name,
+                        tenant_id=str(tenant_id),
+                        details={"rule_name": rule_name, "version": new_version, "enabled": new_enabled, "mode": new_mode},
+                    )
+                except Exception as audit_err:
+                    logger.warning(f"Transactional audit write skipped in patch_rule: {audit_err}")
+
+            # 4. Invalidate memory cache and broadcast to Redis
+            await _broadcast_rule_invalidation(rule_name)
+
+            # 5. Log audit event
+            log_audit_event(
+                event_type="RULE_CONFIG_UPDATED",
+                actor_id=str(user_id),
+                actor_role=current_user.get("role", "ADMIN"),
+                action="UPDATE_RULE",
+                resource_type="RULE",
+                resource_id=rule_name,
+                tenant_id=tenant_id,
+                details={
+                    "rule_name": rule_name,
+                    "version": new_version,
+                    "enabled": new_enabled,
+                    "config": new_config,
+                    "reason": payload.change_reason
+                }
             )
 
-            # 3. Insert audit snapshot into rule_config_history
-            await conn.execute(
-                """
-                INSERT INTO rule_config_history (
-                    rule_config_id, tenant_id, rule_name, enabled, config,
-                    version, changed_by, changed_by_name, change_reason
-                )
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9);
-                """,
-                saved_id, tenant_uuid, rule_name, new_enabled,
-                json.dumps(new_config), new_version, user_uuid, username,
-                payload.change_reason or "Rule adjusted"
-            )
-
-            # 3b. Transactional WORM audit record
-            try:
-                from services.audit import record_audit_event_tx
-                await record_audit_event_tx(
-                    conn=conn,
-                    action="UPDATE_RULE",
-                    actor_id=str(user_id or username),
-                    actor_username=username,
-                    actor_role=current_user.get("role", "ADMIN"),
-                    resource_type="RULE",
-                    resource_id=rule_name,
-                    tenant_id=str(tenant_id),
-                    details={"rule_name": rule_name, "version": new_version, "enabled": new_enabled, "mode": new_mode},
-                )
-            except Exception as audit_err:
-                logger.warning(f"Transactional audit write skipped in patch_rule: {audit_err}")
-
-        # 4. Invalidate memory cache and broadcast to Redis
-        await _broadcast_rule_invalidation(rule_name)
-
-        # 5. Log audit event
-        log_audit_event(
-            event_type="RULE_CONFIG_UPDATED",
-            actor_id=str(user_id),
-            actor_role=current_user.get("role", "ADMIN"),
-            action="UPDATE_RULE",
-            resource_type="RULE",
-            resource_id=rule_name,
-            tenant_id=tenant_id,
-            details={
+            new_etag = build_version_etag("rule", new_version)
+            body = {
+                "status": "UPDATED",
                 "rule_name": rule_name,
                 "version": new_version,
+                "etag": new_etag,
                 "enabled": new_enabled,
+                "mode": new_mode,
                 "config": new_config,
-                "reason": payload.change_reason
+                "shadow_config": new_shadow if isinstance(new_shadow, dict) else (json.loads(new_shadow) if new_shadow else None),
             }
-        )
+            from fastapi.responses import JSONResponse
+            if response is not None:
+                response.headers["ETag"] = new_etag
+            return JSONResponse(content=body, status_code=status.HTTP_200_OK, headers={"ETag": new_etag})
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to update rule %s", rule_name)
+            raise HTTPException(status_code=500, detail="Failed to update rule configuration.")
 
-        new_etag = build_version_etag("rule", new_version)
-        if response is not None:
-            response.headers["ETag"] = new_etag
-
-        return {
-            "status": "UPDATED",
-            "rule_name": rule_name,
-            "version": new_version,
-            "etag": new_etag,
-            "enabled": new_enabled,
-            "mode": new_mode,
-            "config": new_config,
-            "shadow_config": new_shadow if isinstance(new_shadow, dict) else (json.loads(new_shadow) if new_shadow else None),
-        }
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Failed to update rule %s", rule_name)
-        raise HTTPException(status_code=500, detail="Failed to update rule configuration.")
+    return await run_idempotent_operation(
+        request=request,
+        tenant_id=str(tenant_id),
+        scope=f"rule_patch:{rule_name}",
+        body=payload.model_dump(mode="json"),
+        handler=_execute_patch,
+        success_status_code=status.HTTP_200_OK,
+        required=True,
+    )
 
 
 @router.post("/{rule_name}/backtest")
@@ -502,63 +525,77 @@ async def get_legacy_rules_config(
 @router.put("/config")
 async def update_legacy_rules_config(
     payload_model: LegacyRulesConfigPayload,
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60)),
 ):
     """Global rules defaults update (SUPER_ADMIN only) writing to DB, local file, and Redis."""
     payload = payload_model.model_dump()
-    try:
-        # 1. Persist to PostgreSQL if available
+    tenant_id = str(current_user.get("tenant_id")) if current_user.get("tenant_id") else None
+
+    async def _execute_global_update():
         try:
-            from database.postgres import get_async_db_conn as _get_db
-            async with _get_db() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO rules_configuration (rules_json, updated_by)
-                    VALUES ($1, $2);
-                    """,
-                    json.dumps(payload),
-                    current_user.get("username", "SUPER_ADMIN")
-                )
-                try:
-                    from services.audit import record_audit_event_tx
-                    await record_audit_event_tx(
-                        conn=conn,
-                        action="UPDATE_GLOBAL_RULES_CONFIG",
-                        actor_id=str(current_user.get("id") or current_user.get("username") or "super_admin"),
-                        actor_username=current_user.get("username", "SUPER_ADMIN"),
-                        actor_role=current_user.get("role", "SUPER_ADMIN"),
-                        resource_type="GLOBAL_RULES_CONFIG",
-                        resource_id="rules_config.json",
-                        tenant_id=str(current_user.get("tenant_id")) if current_user.get("tenant_id") else None,
-                        details={"rule_keys": list((payload.get("rules") or {}).keys())},
+            # 1. Persist to PostgreSQL if available
+            try:
+                from database.postgres import get_async_db_conn as _get_db
+                async with _get_db() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO rules_configuration (rules_json, updated_by)
+                        VALUES ($1, $2);
+                        """,
+                        json.dumps(payload),
+                        current_user.get("username", "SUPER_ADMIN")
                     )
-                except Exception:
-                    pass
-        except Exception as dbe:
-            logger.warning(f"Failed to persist rules to PostgreSQL (falling back to disk): {dbe}")
+                    try:
+                        from services.audit import record_audit_event_tx
+                        await record_audit_event_tx(
+                            conn=conn,
+                            action="UPDATE_GLOBAL_RULES_CONFIG",
+                            actor_id=str(current_user.get("id") or current_user.get("username") or "super_admin"),
+                            actor_username=current_user.get("username", "SUPER_ADMIN"),
+                            actor_role=current_user.get("role", "SUPER_ADMIN"),
+                            resource_type="GLOBAL_RULES_CONFIG",
+                            resource_id="rules_config.json",
+                            tenant_id=tenant_id,
+                            details={"rule_keys": list((payload.get("rules") or {}).keys())},
+                        )
+                    except Exception:
+                        pass
+            except Exception as dbe:
+                logger.warning(f"Failed to persist rules to PostgreSQL (falling back to disk): {dbe}")
 
-        # 2. Persist to local disk file for node cache / offline mode
-        try:
-            await asyncio.to_thread(_write_config_sync, CONFIG_PATH, payload)
-        except Exception as fe:
-            logger.warning(f"Failed to write local rules file: {fe}")
+            # 2. Persist to local disk file for node cache / offline mode
+            try:
+                await asyncio.to_thread(_write_config_sync, CONFIG_PATH, payload)
+            except Exception as fe:
+                logger.warning(f"Failed to write local rules file: {fe}")
 
-        # 3. Trigger reload in rules engine memory cache
-        RulesEngine.reload_config()
+            # 3. Trigger reload in rules engine memory cache
+            RulesEngine.reload_config()
 
-        # 4. Broadcast Redis cache invalidation event
-        try:
-            from database.redis_db import get_async_redis_client as _get_redis
-            redis = await _get_redis()
-            if redis:
-                await redis.publish("aml:rules:cache_invalidate", "reload")
-        except Exception as re:
-            logger.warning(f"Failed to publish rules invalidation to Redis: {re}")
+            # 4. Broadcast Redis cache invalidation event
+            try:
+                from database.redis_db import get_async_redis_client as _get_redis
+                redis = await _get_redis()
+                if redis:
+                    await redis.publish("aml:rules:cache_invalidate", "reload")
+            except Exception as re:
+                logger.warning(f"Failed to publish rules invalidation to Redis: {re}")
 
-        return {"status": "SUCCESS", "message": "Rules configuration updated successfully"}
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Failed to update global rules configuration")
-        raise HTTPException(status_code=500, detail="Failed to update rules configuration.")
+            return {"status": "SUCCESS", "message": "Rules configuration updated successfully"}
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Failed to update global rules configuration")
+            raise HTTPException(status_code=500, detail="Failed to update rules configuration.")
+
+    return await run_idempotent_operation(
+        request=request,
+        tenant_id=tenant_id,
+        scope="global_rules_config_put",
+        body=payload,
+        handler=_execute_global_update,
+        success_status_code=status.HTTP_200_OK,
+        required=True,
+    )

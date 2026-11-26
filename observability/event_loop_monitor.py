@@ -92,3 +92,20 @@ event_loop_monitor = EventLoopLagMonitor()
 def get_event_loop_health() -> dict[str, Any]:
     """Returns current event-loop lag diagnostics for readiness/observability checks."""
     return event_loop_monitor.snapshot()
+
+
+def is_event_loop_saturated(max_lag_seconds: float = 0.5) -> bool:
+    """Returns True if the background lag monitor recently observed lag >= max_lag_seconds."""
+    return (
+        event_loop_monitor._task is not None
+        and not event_loop_monitor._task.done()
+        and event_loop_monitor.last_lag_seconds >= max_lag_seconds
+    )
+
+
+async def probe_event_loop_lag_seconds() -> float:
+    """Performs an immediate 1-tick monotonic scheduling probe on the running event loop."""
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await asyncio.sleep(0)
+    return max(0.0, loop.time() - t0)

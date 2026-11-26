@@ -57,6 +57,21 @@ def sanitize_correlation_id(raw: str | None) -> str:
     return str(uuid.uuid4())
 
 
+def get_current_trace_id() -> str:
+    """Returns the active OpenTelemetry 32-hex trace_id if a valid span is active, else empty string."""
+    try:
+        from opentelemetry import trace
+
+        span = trace.get_current_span()
+        if span is not None:
+            ctx = span.get_span_context()
+            if ctx is not None and getattr(ctx, "is_valid", False) and ctx.trace_id:
+                return f"{ctx.trace_id:032x}"
+    except Exception:
+        pass
+    return ""
+
+
 def _normalize_scope_path(scope: Scope) -> str:
     route = scope.get("route")
     if route and hasattr(route, "path"):
@@ -211,21 +226,26 @@ class RequestTimeoutMiddleware:
             if response_started:
                 return
             cid = correlation_id_var.get("") or str(uuid.uuid4())
+            tid = get_current_trace_id()
             payload = json.dumps(
                 {
                     "detail": f"Request exceeded server deadline ({deadline:.0f}s).",
                     "correlation_id": cid,
+                    "trace_id": tid,
                 }
             ).encode("utf-8")
+            resp_headers = [
+                (b"content-type", b"application/json"),
+                (b"x-correlation-id", cid.encode("latin-1")),
+                (b"content-length", str(len(payload)).encode("ascii")),
+            ]
+            if tid:
+                resp_headers.append((b"x-trace-id", tid.encode("latin-1")))
             await send(
                 {
                     "type": "http.response.start",
                     "status": 504,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"x-correlation-id", cid.encode("latin-1")),
-                        (b"content-length", str(len(payload)).encode("ascii")),
-                    ],
+                    "headers": resp_headers,
                 }
             )
             await send({"type": "http.response.body", "body": payload})

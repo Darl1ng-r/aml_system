@@ -253,7 +253,7 @@ async def test_optimistic_concurrency_if_match_returns_412_across_rules_cases_an
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             r_rule = await ac.patch(
                 "/api/v1/rules/LARGE_TRANSACTION",
-                headers={**headers, "If-Match": '"rule-v2"'},
+                headers={**headers, "If-Match": '"rule-v2"', "Idempotency-Key": str(uuid.uuid4())},
                 json={"config": {"threshold": 15000}},
             )
             assert r_rule.status_code == 412
@@ -261,7 +261,7 @@ async def test_optimistic_concurrency_if_match_returns_412_across_rules_cases_an
 
             r_rule_ver = await ac.patch(
                 "/api/v1/rules/LARGE_TRANSACTION",
-                headers=headers,
+                headers={**headers, "Idempotency-Key": str(uuid.uuid4())},
                 json={"config": {"threshold": 15000}, "expected_version": 2},
             )
             assert r_rule_ver.status_code == 412

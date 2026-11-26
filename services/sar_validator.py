@@ -160,3 +160,13 @@ def validate_regulatory_xml(xml_str: str, fiu_format: str | None = None) -> Tupl
         errors.extend(_try_optional_xsd_validation(xml_str, resolved_format))
 
     return len(errors) == 0, errors
+
+
+async def validate_sar_xml_async(
+    xml_payload: str,
+    fiu_format: str | None = None,
+) -> Tuple[bool, List[str]]:
+    """Non-blocking wrapper offloading XML/XSD parsing onto the bounded analytics compute pool."""
+    from services.compute_executor import run_analytics_compute
+
+    return await run_analytics_compute(validate_sar_xml, xml_payload, fiu_format, timeout=5.0)

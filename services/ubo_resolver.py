@@ -12,9 +12,10 @@ Multi-Layer Corporate UBO Ownership Tree (>25% Indirect Equity) & Cross-Entity M
 """
 
 import logging
-from collections import defaultdict
 from decimal import Decimal
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List
+
+from domain.ubo_core import resolve_ubo_ownership_tree_pure
 
 logger = logging.getLogger("aml.ubo_resolver")
 
@@ -22,139 +23,19 @@ logger = logging.getLogger("aml.ubo_resolver")
 def resolve_ubo_ownership_tree(
     edges: List[Dict[str, Any]],
     target_company: str,
-    threshold_pct: float = 25.0,
+    threshold_pct: float | Decimal = 25.0,
     max_depth: int = 10,
 ) -> Dict[str, Any]:
     """
-    Computes multi-layer indirect equity ownership tree for `target_company`.
-    Each edge dict expects:
-      `parent_entity_name`, `parent_entity_type` ('PERSON' | 'COMPANY'),
-      `child_company_name`, `ownership_pct` (0..100), optional `jurisdiction`, `tax_id`.
+    Delegates multi-layer indirect equity ownership tree resolution to the pure
+    zero-I/O domain engine (`domain/ubo_core.py`).
     """
-    target_norm = (target_company or "").strip()
-    if not target_norm:
-        return {
-            "target_company": "",
-            "threshold_pct": threshold_pct,
-            "ultimate_beneficial_owners": [],
-            "nodes": [],
-            "edges": [],
-            "cycles_detected": False,
-        }
-
-    # Index parents by normalized child company name (case-insensitive)
-    parents_by_child: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    canonical_name: Dict[str, str] = {target_norm.lower(): target_norm}
-
-    for edge in edges:
-        child = str(edge.get("child_company_name") or "").strip()
-        parent = str(edge.get("parent_entity_name") or "").strip()
-        pct = min(max(float(edge.get("ownership_pct") or 0.0), 0.0), 100.0)
-        if not child or not parent or pct <= 0.0:
-            continue
-        canonical_name.setdefault(child.lower(), child)
-        canonical_name.setdefault(parent.lower(), parent)
-        parents_by_child[child.lower()].append({
-            "parent_name": parent,
-            "parent_key": parent.lower(),
-            "parent_type": str(edge.get("parent_entity_type") or "PERSON").upper(),
-            "child_name": child,
-            "child_key": child.lower(),
-            "ownership_pct": pct,
-            "jurisdiction": edge.get("jurisdiction") or "US",
-            "tax_id": edge.get("tax_id"),
-        })
-
-    effective_stakes: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
-    entity_types: Dict[str, str] = {target_norm.lower(): "COMPANY"}
-    entity_jurisdictions: Dict[str, str] = {}
-    ownership_paths: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    visited_nodes: Set[str] = {target_norm.lower()}
-    tree_edges: List[Dict[str, Any]] = []
-    seen_edge_keys: Set[Tuple[str, str, float]] = set()
-    cycles_detected = False
-
-    def _dfs(current_key: str, cumulative_factor: Decimal, path_keys: List[str], depth: int) -> None:
-        nonlocal cycles_detected
-        if depth >= max_depth:
-            return
-        parent_edges = parents_by_child.get(current_key, [])
-        for pe in parent_edges:
-            pkey = pe["parent_key"]
-            pct = pe["ownership_pct"]
-            ek = (pkey, current_key, pct)
-            if ek not in seen_edge_keys:
-                seen_edge_keys.add(ek)
-                tree_edges.append({
-                    "parent": pe["parent_name"],
-                    "parent_type": pe["parent_type"],
-                    "child": canonical_name.get(current_key, pe["child_name"]),
-                    "ownership_pct": round(pct, 2),
-                    "jurisdiction": pe["jurisdiction"],
-                })
-            entity_types[pkey] = pe["parent_type"]
-            entity_jurisdictions[pkey] = pe["jurisdiction"]
-            visited_nodes.add(pkey)
-
-            if pkey in path_keys:
-                cycles_detected = True
-                continue
-
-            next_factor = cumulative_factor * (Decimal(str(pct)) / Decimal("100"))
-            next_path = path_keys + [pkey]
-
-            # If this parent is a natural person OR a leaf holding company with no parents above it,
-            # record its effective ownership contribution along this chain.
-            is_leaf_owner = pe["parent_type"] == "PERSON" or not parents_by_child.get(pkey)
-            if is_leaf_owner:
-                effective_pct = next_factor * Decimal("100")
-                effective_stakes[pkey] += effective_pct
-                ownership_paths[pkey].append({
-                    "chain": [canonical_name.get(k, k) for k in reversed(next_path)],
-                    "effective_pct": round(float(effective_pct), 2),
-                })
-            else:
-                _dfs(pkey, next_factor, next_path, depth + 1)
-
-    _dfs(target_norm.lower(), Decimal("1"), [target_norm.lower()], 0)
-
-    ubos: List[Dict[str, Any]] = []
-    for entity_key, total_pct in sorted(effective_stakes.items(), key=lambda kv: kv[1], reverse=True):
-        rounded = round(float(total_pct), 2)
-        ubos.append({
-            "entity_name": canonical_name.get(entity_key, entity_key),
-            "entity_type": entity_types.get(entity_key, "PERSON"),
-            "jurisdiction": entity_jurisdictions.get(entity_key, "US"),
-            "effective_ownership_pct": rounded,
-            "exceeds_threshold": rounded >= threshold_pct,
-            "is_split_ownership": len(ownership_paths[entity_key]) > 1,
-            "paths": ownership_paths[entity_key],
-        })
-
-    nodes = [
-        {
-            "id": k,
-            "label": canonical_name.get(k, k),
-            "type": entity_types.get(k, "COMPANY"),
-            "jurisdiction": entity_jurisdictions.get(k, "US"),
-            "effective_ownership_pct": round(float(effective_stakes[k]), 2) if k in effective_stakes else None,
-        }
-        for k in sorted(visited_nodes)
-    ]
-
-    total_attributed = sum(effective_stakes.values(), Decimal("0"))
-    unattributed_pct = round(max(0.0, float(Decimal("100") - total_attributed)), 2)
-
-    return {
-        "target_company": canonical_name.get(target_norm.lower(), target_norm),
-        "threshold_pct": threshold_pct,
-        "ubo_count_above_threshold": sum(1 for u in ubos if u["exceeds_threshold"]),
-        "unattributed_ownership_pct": unattributed_pct,
-        "ultimate_beneficial_owners": ubos,
-        "nodes": nodes,
-        "edges": tree_edges,
-        "cycles_detected": cycles_detected,
-    }
+    return resolve_ubo_ownership_tree_pure(
+        edges=edges,
+        target_company=target_company,
+        threshold_pct=threshold_pct,
+        max_depth=max_depth,
+    )
 
 
 async def find_cross_entity_mdm_links(

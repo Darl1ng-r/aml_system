@@ -50,6 +50,7 @@ async def list_ctr_filings(
             "account_number": r["account_number"],
             "owner_name": r["owner_name"],
             "amount": float(r["amount"]),
+            "amount_str": str(r["amount"]),
             "currency": r["currency"],
             "cash_direction": r["cash_in_out"],
             "status": r["status"],

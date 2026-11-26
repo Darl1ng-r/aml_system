@@ -817,7 +817,7 @@ async def test_authz05_06_09_10_rbac_and_workflow_gates():
             r_cip = await ac.post(
                 f"/api/v1/accounts/{frozen_acc_id}/verify-cip",
                 json={"document_type": "PASSPORT", "document_number": "P1234567"},
-                headers={"Authorization": f"Bearer {l1_tok}", "X-CSRF-Protection": "1"},
+                headers={"Authorization": f"Bearer {l1_tok}", "X-CSRF-Protection": "1", "Idempotency-Key": str(uuid.uuid4())},
             )
             assert r_cip.status_code == 409
 
