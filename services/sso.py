@@ -140,54 +140,49 @@ _jwk_clients_cache: Dict[str, PyJWKClient] = {}
 
 
 async def fetch_oidc_discovery(issuer_url: str) -> Dict[str, Any]:
-    """Fetches & caches an IdP's OpenID Connect Discovery metadata (HTTPS + anti-SSRF + pooled HTTP)."""
+    """Fetches & caches an IdP's OpenID Connect Discovery metadata (HTTPS + anti-SSRF + Cache Redis)."""
+    from services.cache_aside import cache_aside
+
     clean_issuer = validate_siem_destination_url(issuer_url).rstrip("/")
     discovery_url = f"{clean_issuer}/.well-known/openid-configuration"
-    cache_key = f"sso:discovery:{hashlib.sha256(clean_issuer.encode('utf-8')).hexdigest()[:16]}"
+    issuer_hash = hashlib.sha256(clean_issuer.encode("utf-8")).hexdigest()[:16]
 
-    redis = None
-    try:
-        redis = await get_async_redis_client()
-        if redis:
-            cached = await redis.get(cache_key)
-            if cached:
-                return json.loads(cached)
-    except Exception:
-        redis = None
+    async def _load_discovery() -> Dict[str, Any]:
+        resp = await request_with_resilience(
+            "GET",
+            discovery_url,
+            target="oidc_discovery",
+            timeout=httpx.Timeout(connect=2.0, read=5.0, write=3.0, pool=2.0),
+            follow_redirects=False,
+            retries=1,
+        )
+        if resp.status_code != 200:
+            raise ValueError(f"OIDC discovery failed for '{discovery_url}' (HTTP {resp.status_code}).")
+        doc = resp.json()
 
-    resp = await request_with_resilience(
-        "GET",
-        discovery_url,
-        target="oidc_discovery",
-        timeout=httpx.Timeout(connect=2.0, read=5.0, write=3.0, pool=2.0),
-        follow_redirects=False,
-        retries=1,
+        for req_field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+            if not doc.get(req_field):
+                raise ValueError(f"OIDC discovery document missing mandatory field '{req_field}'.")
+            # AUTHN-07: Validate every nested OIDC discovery URL against SSRF / non-HTTPS / metadata IPs
+            doc[req_field] = validate_siem_destination_url(str(doc[req_field]))
+        return doc
+
+    return await cache_aside.get_or_load(
+        namespace="sso_discovery",
+        tenant_id="global",
+        key=issuer_hash,
+        loader=_load_discovery,
+        base_ttl=DISCOVERY_CACHE_TTL_SECONDS,
     )
-    if resp.status_code != 200:
-        raise ValueError(f"OIDC discovery failed for '{discovery_url}' (HTTP {resp.status_code}).")
-    doc = resp.json()
-
-    for req_field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
-        if not doc.get(req_field):
-            raise ValueError(f"OIDC discovery document missing mandatory field '{req_field}'.")
-        # AUTHN-07: Validate every nested OIDC discovery URL against SSRF / non-HTTPS / metadata IPs
-        doc[req_field] = validate_siem_destination_url(str(doc[req_field]))
-
-    if redis:
-        try:
-            await redis.set(cache_key, json.dumps(doc), ex=DISCOVERY_CACHE_TTL_SECONDS)
-        except Exception:
-            pass
-
-    return doc
 
 
 async def _fetch_oidc_jwks_async(jwks_uri: str, force_refresh: bool = False) -> Dict[str, Any]:
     """
     P1-12: Fetches OIDC JWKS asynchronously via pooled httpx with follow_redirects=False
-    (eliminating event-loop blocking urllib calls and redirect-based SSRF bypasses)
-    with in-memory + Redis caching.
+    with L1 in-memory + L2 Cache Redis caching (jittered TTL + single-flight stampede defense).
     """
+    from services.cache_aside import build_cache_key, cache_aside
+
     safe_jwks_uri = validate_siem_destination_url(jwks_uri)
     now = _time.monotonic()
     if not force_refresh:
@@ -195,42 +190,38 @@ async def _fetch_oidc_jwks_async(jwks_uri: str, force_refresh: bool = False) -> 
         if mem and (now - mem[0]) < _JWKS_CACHE_TTL_SECONDS:
             return mem[1]
 
-    cache_key = f"sso:jwks:{hashlib.sha256(safe_jwks_uri.encode('utf-8')).hexdigest()[:16]}"
-    redis = None
-    if not force_refresh:
-        try:
-            redis = await get_async_redis_client()
-            if redis:
-                cached = await redis.get(cache_key)
-                if cached:
-                    doc = json.loads(cached)
-                    _jwks_doc_cache[safe_jwks_uri] = (now, doc)
-                    return doc
-        except Exception:
-            redis = None
+    jwks_hash = hashlib.sha256(safe_jwks_uri.encode("utf-8")).hexdigest()[:16]
 
-    resp = await request_with_resilience(
-        "GET",
-        safe_jwks_uri,
-        target="oidc_jwks",
-        timeout=httpx.Timeout(connect=2.0, read=5.0, write=3.0, pool=2.0),
-        follow_redirects=False,
-        retries=1,
+    async def _load_jwks() -> Dict[str, Any]:
+        resp = await request_with_resilience(
+            "GET",
+            safe_jwks_uri,
+            target="oidc_jwks",
+            timeout=httpx.Timeout(connect=2.0, read=5.0, write=3.0, pool=2.0),
+            follow_redirects=False,
+            retries=1,
+        )
+        if resp.status_code != 200:
+            raise jwt.InvalidTokenError(f"Failed to retrieve IdP JWKS (HTTP {resp.status_code}).")
+        doc = resp.json()
+        if not isinstance(doc, dict) or not isinstance(doc.get("keys"), list):
+            raise jwt.InvalidTokenError("Malformed IdP JWKS payload.")
+        return doc
+
+    if force_refresh:
+        await cache_aside.invalidate_keys(
+            [build_cache_key("sso_jwks", "global", jwks_hash)],
+            namespace="sso_jwks",
+        )
+
+    doc = await cache_aside.get_or_load(
+        namespace="sso_jwks",
+        tenant_id="global",
+        key=jwks_hash,
+        loader=_load_jwks,
+        base_ttl=_JWKS_CACHE_TTL_SECONDS,
     )
-    if resp.status_code != 200:
-        raise jwt.InvalidTokenError(f"Failed to retrieve IdP JWKS (HTTP {resp.status_code}).")
-    doc = resp.json()
-    if not isinstance(doc, dict) or not isinstance(doc.get("keys"), list):
-        raise jwt.InvalidTokenError("Malformed IdP JWKS payload.")
-
     _jwks_doc_cache[safe_jwks_uri] = (now, doc)
-    try:
-        if redis is None:
-            redis = await get_async_redis_client()
-        if redis:
-            await redis.set(cache_key, json.dumps(doc), ex=_JWKS_CACHE_TTL_SECONDS)
-    except Exception:
-        pass
     return doc
 
 

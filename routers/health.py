@@ -244,6 +244,7 @@ async def get_system_topology_health(
             await asyncio.wait_for(redis_client.ping(), timeout=1.5)
             services["redis"] = {
                 "status": "UP",
+                "role": "state_noeviction",
                 "latency_ms": round((time.monotonic() - t0) * 1000, 1),
                 "cluster_mode": False,
             }
@@ -252,6 +253,24 @@ async def get_system_topology_health(
     except Exception as e:
         logger.warning("System topology Redis probe failed: %s", e)
         services["redis"] = {"status": "DOWN", "error": "Service check failed"}
+
+    try:
+        from database.redis_db import get_async_cache_redis_client
+
+        t0 = time.monotonic()
+        cache_client = await get_async_cache_redis_client()
+        if cache_client:
+            await asyncio.wait_for(cache_client.ping(), timeout=0.5)
+            services["redis_cache"] = {
+                "status": "UP",
+                "role": "cache_allkeys_lfu",
+                "latency_ms": round((time.monotonic() - t0) * 1000, 1),
+            }
+        else:
+            services["redis_cache"] = {"status": "DEGRADED", "detail": "Fail-open to PostgreSQL"}
+    except Exception as e:
+        logger.warning("System topology Cache Redis probe failed: %s", e)
+        services["redis_cache"] = {"status": "DEGRADED", "detail": "Fail-open to PostgreSQL"}
 
     if getattr(settings, "enable_elasticsearch", False):
         try:
@@ -324,11 +343,20 @@ async def get_system_topology_health(
             rp_err["bootstrap_servers"] = KAFKA_BOOTSTRAP_SERVERS
         services["redpanda"] = rp_err
 
-    all_up = all(s.get("status") in {"UP", "DISABLED"} for s in services.values())
+    from observability.storage_monitor import get_storage_health_snapshot
+
+    storage_snap = get_storage_health_snapshot()
+    # redis_cache is intentionally fail-open; core system health depends on primary DB/state/enabled services
+    all_up = all(
+        s.get("status") in {"UP", "DISABLED"}
+        for name, s in services.items()
+        if name != "redis_cache"
+    )
     return {
         "system_status": "OPERATIONAL" if all_up else "DEGRADED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "services": services,
+        "storage_telemetry": storage_snap,
     }
 
 

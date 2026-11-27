@@ -89,13 +89,35 @@ async def list_audit_logs_repo(
     resource_type: Optional[str],
     date_from: Optional[str],
     date_to: Optional[str],
+    cursor: Optional[str] = None,
     read_conn_factory: Any = None,
 ) -> tuple[int, list[Any]]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
     where_clause, params, p_idx = build_audit_filter_clause(
         tenant_id, actor, action, resource_type, date_from, date_to
     )
     factory = _read_factory(read_conn_factory)
     async with factory(tenant_id=tenant_id) as conn:
+        if cursor:
+            c_ts, c_id = decode_keyset_cursor(cursor)
+            where_clause = f"{where_clause} AND (created_at, id) < (${p_idx}, ${p_idx + 1})"
+            params.extend([c_ts, c_id])
+            p_idx += 2
+            data_query = f"""
+                SELECT id, created_at, actor_id, actor_username, actor_role,
+                       actor_ip, actor_user_agent, session_id,
+                       action, resource_type, resource_id,
+                       before_state, after_state, details
+                FROM audit_log
+                WHERE {where_clause}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ${p_idx};
+            """
+            rows = await conn.fetch(data_query, *params, limit + 1)
+            return -1, list(rows or [])
+
+        safe_offset = validate_legacy_offset(offset)
         total_count = await conn.fetchval(f"SELECT COUNT(*) FROM audit_log WHERE {where_clause};", *params)
         data_query = f"""
             SELECT id, created_at, actor_id, actor_username, actor_role,
@@ -104,10 +126,10 @@ async def list_audit_logs_repo(
                    before_state, after_state, details
             FROM audit_log
             WHERE {where_clause}
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ${p_idx} OFFSET ${p_idx + 1};
         """
-        rows = await conn.fetch(data_query, *params, limit, offset)
+        rows = await conn.fetch(data_query, *params, limit, safe_offset)
     return int(total_count or 0), list(rows or [])
 
 

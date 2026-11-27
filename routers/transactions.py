@@ -536,12 +536,15 @@ async def list_transactions(
     response: Response,
     page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=512),
     cursor_timestamp: datetime | None = Query(default=None),
     cursor_id: uuid.UUID | None = Query(default=None),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Retrieves a paginated list of transactions within the caller's tenant boundary."""
+    from database.pagination import encode_keyset_cursor
+
     tenant_id = enforce_tenant_data_scope(current_user)
     offset = (page - 1) * limit
     try:
@@ -551,19 +554,33 @@ async def list_transactions(
             cursor_id=cursor_id,
             limit=limit,
             offset=offset,
+            cursor=cursor,
             read_conn_factory=get_async_db_read_conn,
         )
+        if cursor:
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+        elif total_count is not None:
+            has_more = (offset + len(rows)) < total_count
+        else:
+            has_more = len(rows) == limit
+
         transactions = [_serialize_tx_row(r) for r in rows]
 
+        response.headers["X-Has-More"] = "true" if has_more else "false"
         if rows:
             last_r = rows[-1]
             ts_val = last_r["timestamp"]
             response.headers["X-Next-Cursor-Timestamp"] = ts_val.isoformat() if hasattr(ts_val, "isoformat") else str(ts_val)
             response.headers["X-Next-Cursor-ID"] = str(last_r["id"])
+            if has_more:
+                response.headers["X-Next-Cursor"] = encode_keyset_cursor(ts_val, str(last_r["id"]))
 
         if total_count is not None:
             response.headers["X-Total-Count"] = str(total_count)
-        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Next-Cursor-Timestamp, X-Next-Cursor-ID"
+        response.headers["Access-Control-Expose-Headers"] = (
+            "X-Total-Count, X-Next-Cursor, X-Has-More, X-Next-Cursor-Timestamp, X-Next-Cursor-ID"
+        )
         return transactions
     except HTTPException:
         raise

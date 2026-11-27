@@ -189,30 +189,38 @@ async def get_fx_rate_with_provenance(
     if src == dst:
         return Decimal("1"), "SAME_CURRENCY", quoted_at
 
-    cache_key = f"fx:rates:{dst}"
-    redis = None
-    try:
-        redis = await get_async_redis_client()
-        if redis:
-            cached_raw = await redis.get(cache_key)
-            if cached_raw:
-                rates_map = json.loads(cached_raw)
-                if src in rates_map:
-                    rate_dec = to_decimal(rates_map[src], allow_negative=False, allow_zero=False, field_name="fx_rate")
-                    return rate_dec.quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN), "REDIS_CACHE", quoted_at
-    except Exception:
-        redis = None
+    from database.redis_db import get_async_cache_redis_client
+    from database.redis_db import get_async_redis_client as _orig_state_redis
+    from services.cache_aside import CacheAsideClient
 
-    live_map = await _fetch_live_rates_map(dst)
-    if live_map:
-        if redis:
-            try:
-                await redis.set(cache_key, json.dumps(live_map), ex=FX_CACHE_TTL_SECONDS)
-            except Exception:
-                pass
-        if src in live_map:
-            rate_dec = to_decimal(live_map[src], allow_negative=False, allow_zero=False, field_name="fx_rate")
-            return rate_dec.quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN), "ECB_LIVE", quoted_at
+    async def _resolve_fx_redis():
+        # Preserve test monkeypatches targeting `services.fx_rates.get_async_redis_client`
+        if get_async_redis_client is not _orig_state_redis:
+            return await get_async_redis_client()
+        return await get_async_cache_redis_client()
+
+    source_holder = {"from_live": False}
+
+    async def _load_fx_rates_map():
+        live = await _fetch_live_rates_map(dst)
+        if live:
+            source_holder["from_live"] = True
+            return live
+        return None
+
+    fx_cache = CacheAsideClient(redis_factory=_resolve_fx_redis)
+    rates_map = await fx_cache.get_or_load(
+        namespace="fx_rates",
+        tenant_id="global",
+        key=dst,
+        loader=_load_fx_rates_map,
+        base_ttl=FX_CACHE_TTL_SECONDS,
+        cache_none=False,
+    )
+    if isinstance(rates_map, dict) and src in rates_map:
+        rate_dec = to_decimal(rates_map[src], allow_negative=False, allow_zero=False, field_name="fx_rate")
+        source = "ECB_LIVE" if source_holder["from_live"] else "REDIS_CACHE"
+        return rate_dec.quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN), source, quoted_at
 
     return get_fallback_fx_rate_decimal(src, dst), "ISO_FALLBACK", quoted_at
 

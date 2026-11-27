@@ -88,20 +88,30 @@ async def generate_str_batch(
 @router.get("/batches")
 @router.get("/list")
 async def list_str_batches(
+    response: Response,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=100000),
+    cursor: str | None = Query(default=None, max_length=512),
     current_user: dict = Depends(RoleChecker(["ADMIN", "MLRO", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     """Lists all compiled regulatory STR batches with status and record counts (tenant-scoped)."""
+    from database.pagination import extract_next_cursor
+
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
         rows = await list_str_batches_repo(
             str(tenant_id),
             limit,
             offset,
+            cursor=cursor,
             conn_factory=get_async_db_conn,
         )
+        if cursor:
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+        else:
+            has_more = len(rows) == limit
         batches = [
             {
                 "batch_id": r["id"],
@@ -114,6 +124,11 @@ async def list_str_batches(
             }
             for r in rows
         ]
+        next_cursor = extract_next_cursor(batches, has_more=has_more, ts_field="created_at", id_field="batch_id")
+        response.headers["X-Has-More"] = "true" if has_more else "false"
+        if next_cursor:
+            response.headers["X-Next-Cursor"] = next_cursor
+        response.headers["Access-Control-Expose-Headers"] = "X-Next-Cursor, X-Has-More"
         return {"batches": batches}
     except HTTPException:
         raise

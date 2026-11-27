@@ -92,7 +92,7 @@ class STRBatchEngine:
                 JOIN accounts s ON t.sender_account_id = s.id
                 JOIN accounts r ON t.receiver_account_id = r.id
                 WHERE a.status = 'CLOSED_SAR' AND a.str_batch_id IS NULL
-                ORDER BY a.created_at ASC
+                ORDER BY a.id ASC
                 FOR UPDATE OF a SKIP LOCKED;
                 """
             )

@@ -881,8 +881,14 @@ async def list_transactions_page_repo(
     limit: int,
     offset: int,
     *,
+    cursor: str | None = None,
     read_conn_factory: Any = None,
 ) -> tuple[list, int | None]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
+    if cursor:
+        cursor_timestamp, cursor_id = decode_keyset_cursor(cursor)
+
     conn_factory = read_conn_factory or get_async_db_read_conn
     async with conn_factory(tenant_id=tenant_id) as conn:
         if cursor_timestamp:
@@ -897,17 +903,18 @@ async def list_transactions_page_repo(
                 FROM transactions t
                 JOIN accounts s ON t.sender_account_id = s.id
                 JOIN accounts r ON t.receiver_account_id = r.id
-                WHERE t.tenant_id = $1 AND (t.timestamp < $2 OR (t.timestamp = $2 AND t.id < $3))
+                WHERE t.tenant_id = $1 AND (t.timestamp, t.id) < ($2, $3)
                 ORDER BY t.timestamp DESC, t.id DESC
                 LIMIT $4;
                 """,
                 tenant_id,
                 cursor_timestamp,
                 cid,
-                limit,
+                limit + 1 if cursor else limit,
             )
             return rows, None
 
+        safe_offset = validate_legacy_offset(offset)
         total_count = await conn.fetchval(
             "SELECT COUNT(*) FROM transactions WHERE tenant_id = $1;",
             tenant_id,
@@ -928,7 +935,7 @@ async def list_transactions_page_repo(
             """,
             tenant_id,
             limit,
-            offset,
+            safe_offset,
         )
         return rows, total_count
 

@@ -12,8 +12,9 @@ import logging
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
+from database.pagination import encode_keyset_cursor
 from domain.state_machine import CorruptedDomainStateError, DomainStateTransitionError
 from repositories.ctr_repo import list_ctr_filings_repo, submit_ctr_filing_atomic
 from services.auth import RoleChecker, enforce_tenant_data_scope
@@ -27,8 +28,10 @@ router = APIRouter(prefix="/api/v1/ctr", tags=["Currency Transaction Reports (CT
 
 @router.get("/filings")
 async def list_ctr_filings(
+    response: Response,
     page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None, max_length=512),
     status_filter: Optional[str] = None,
     current_user: dict = Depends(RoleChecker(["ANALYST", "L1_ANALYST", "L2_INVESTIGATOR", "MLRO", "ADMIN", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
@@ -40,7 +43,18 @@ async def list_ctr_filings(
         limit=limit,
         offset=offset,
         status_filter=status_filter,
+        cursor=cursor,
     )
+    if cursor:
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+    else:
+        has_more = len(rows) == limit
+
+    response.headers["X-Has-More"] = "true" if has_more else "false"
+    if rows and has_more and rows[-1].get("created_at") and rows[-1].get("id"):
+        response.headers["X-Next-Cursor"] = encode_keyset_cursor(rows[-1]["created_at"], str(rows[-1]["id"]))
+    response.headers["Access-Control-Expose-Headers"] = "X-Next-Cursor, X-Has-More"
 
     return [
         {

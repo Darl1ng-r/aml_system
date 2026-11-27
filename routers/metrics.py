@@ -190,34 +190,29 @@ async def get_executive_metrics(
     current_user: dict = Depends(RoleChecker(["ANALYST", "AUDITOR", "MLRO", "ADMIN", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
-    """Computes executive compliance KPIs, SLA breach trackers, and SAR throughput (30s Redis cached)."""
+    """Computes executive compliance KPIs, SLA breach trackers, and SAR throughput (Cache Redis + PER/single-flight)."""
+    from services.cache_aside import cache_aside
+
     tenant_id = enforce_tenant_data_scope(current_user)
-    cache_key = f"metrics:executive:{tenant_id}"
-    redis = None
-    try:
-        from database.redis_db import get_async_redis_client
 
-        redis = await get_async_redis_client()
-        if redis:
-            cached = await redis.get(cache_key)
-            if cached:
-                return build_conditional_json_response(request, json.loads(cached))
-    except Exception:
-        redis = None
-
-    try:
-        payload = await fetch_executive_metrics_repo(
+    async def _load_executive_payload():
+        return await fetch_executive_metrics_repo(
             tenant_id=tenant_id,
             counts_fn=_fetch_executive_counts,
             sla_fn=_fetch_executive_sla_breaches,
             analytics_fn=_fetch_executive_analytics,
             read_conn_factory=get_async_db_read_conn,
         )
-        if redis:
-            try:
-                await redis.set(cache_key, json.dumps(payload), ex=30)
-            except Exception:
-                pass
+
+    try:
+        payload = await cache_aside.get_or_load(
+            namespace="metrics_exec",
+            tenant_id=str(tenant_id),
+            key="summary",
+            loader=_load_executive_payload,
+            base_ttl=30,
+            enable_per=True,
+        )
         return build_conditional_json_response(request, payload)
     except Exception:
         logger.exception("Failed to calculate executive compliance metrics")

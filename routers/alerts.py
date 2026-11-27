@@ -114,6 +114,7 @@ async def list_alerts(
     response: Response,
     page: Annotated[int, Query(ge=1, le=1000)] = 1,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(max_length=512)] = None,
     search: Annotated[str | None, Query(max_length=200)] = None,
     severity: Annotated[str | None, Query(max_length=32)] = None,
     status_filter: Annotated[str | None, Query(max_length=64)] = None,
@@ -121,6 +122,8 @@ async def list_alerts(
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR", "MLRO"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
+    from database.pagination import encode_keyset_cursor
+
     try:
         tenant_id = enforce_tenant_data_scope(current_user)
         include_explainability = (fields or "").strip().lower() != "summary"
@@ -132,11 +135,23 @@ async def list_alerts(
             severity=severity,
             status_filter=status_filter,
             include_explainability=include_explainability,
+            cursor=cursor,
             read_conn_factory=get_async_db_read_conn,
         )
+        if cursor:
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+        else:
+            has_more = ((page - 1) * limit + len(rows)) < total_count
         alerts = [_serialize_alert_row(row, include_explainability=include_explainability) for row in rows]
-        response.headers["X-Total-Count"] = str(total_count)
-        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+        if total_count >= 0:
+            response.headers["X-Total-Count"] = str(total_count)
+        response.headers["X-Has-More"] = "true" if has_more else "false"
+        if alerts and has_more:
+            last_row = rows[-1]
+            if last_row[6] is not None and last_row[0] is not None:
+                response.headers["X-Next-Cursor"] = encode_keyset_cursor(last_row[6], str(last_row[0]))
+        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Next-Cursor, X-Has-More"
         return alerts
     except HTTPException:
         raise

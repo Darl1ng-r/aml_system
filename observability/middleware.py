@@ -249,3 +249,80 @@ class RequestTimeoutMiddleware:
                 }
             )
             await send({"type": "http.response.body", "body": payload})
+
+
+class ReadAfterWriteStickinessMiddleware:
+    """
+    Pure-ASGI middleware enforcing Read-Your-Own-Writes consistency when read
+    replicas are active:
+      - On GET/HEAD requests, checks `X-Read-Consistency: strong` or an active
+        5-second State Redis stickiness marker for the caller and sets
+        `force_primary_read_var = True`.
+      - On successful (2xx) mutating requests (`POST`, `PUT`, `PATCH`, `DELETE`),
+        records the caller's stickiness marker and emits `X-Read-Consistency-Window`.
+    """
+
+    _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        from config import settings
+        from database.read_after_write import (
+            compute_caller_stickiness_id,
+            force_primary_read_var,
+            has_active_write_stickiness,
+            mark_write_stickiness,
+            read_routing_reason_var,
+        )
+
+        method = str(scope.get("method", "GET")).upper()
+        auth_hdr = _extract_header_from_scope(scope, b"authorization")
+        cookie_hdr = _extract_header_from_scope(scope, b"cookie")
+        consistency_hdr = (_extract_header_from_scope(scope, b"x-read-consistency") or "").strip().lower()
+        caller_fp = compute_caller_stickiness_id(
+            authorization_header=auth_hdr,
+            cookie_header=cookie_hdr,
+        )
+
+        force_primary = False
+        reason = "replica"
+        if consistency_hdr == "strong":
+            force_primary = True
+            reason = "primary_header_strong"
+        elif method in ("GET", "HEAD") and caller_fp:
+            if await has_active_write_stickiness(caller_fp):
+                force_primary = True
+                reason = "primary_raw_stickiness"
+
+        tok_force = force_primary_read_var.set(force_primary)
+        tok_reason = read_routing_reason_var.set(reason)
+        window_seconds = max(1, int(getattr(settings, "read_after_write_window_seconds", 5)))
+        status_code = 500
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message.get("status", 200))
+                if method in self._MUTATING_METHODS and 200 <= status_code < 300:
+                    headers = MutableHeaders(scope=message)
+                    headers["X-Read-Consistency-Window"] = str(window_seconds)
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+            if method in self._MUTATING_METHODS and 200 <= status_code < 300:
+                effective_fp = caller_fp or compute_caller_stickiness_id(
+                    tenant_id=tenant_id_var.get(""),
+                    user_id=user_id_var.get(""),
+                )
+                if effective_fp:
+                    await mark_write_stickiness(effective_fp, ttl_seconds=window_seconds)
+        finally:
+            force_primary_read_var.reset(tok_force)
+            read_routing_reason_var.reset(tok_reason)

@@ -112,7 +112,7 @@ async def fetch_pending_outbox_events(
                    headers->>'leased_at' IS NULL 
                    OR (headers->>'leased_at')::timestamptz < NOW() - INTERVAL '300 seconds'
                ))
-            ORDER BY created_at ASC
+            ORDER BY created_at ASC, id ASC
             LIMIT $1
             FOR UPDATE SKIP LOCKED
         )
@@ -278,6 +278,12 @@ class OutboxRelayEngine:
             if event.get("aggregate_type") == "SIEM_DISPATCH":
                 from services.siem_forwarder import dispatch_siem_outbox_event
                 ok, err = await dispatch_siem_outbox_event(event)
+                return event_id, ok, err
+
+            # Storage Pillar: Crash-safe post-commit Cache Redis invalidation
+            if event.get("aggregate_type") == "CACHE_INVALIDATION":
+                from services.cache_aside import dispatch_cache_invalidation_outbox_event
+                ok, err = await dispatch_cache_invalidation_outbox_event(event)
                 return event_id, ok, err
 
             payload = event["payload"]

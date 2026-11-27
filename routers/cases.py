@@ -185,23 +185,38 @@ async def create_case(
 
 @router.get("")
 async def list_cases(
+    response: Response,
     page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None, max_length=512),
     status_filter: Optional[str] = None,
     priority_filter: Optional[str] = None,
     current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
+    from database.pagination import encode_keyset_cursor
+
     tenant_id = enforce_tenant_data_scope(current_user)
     offset = (page - 1) * limit
-    return await list_cases_repo(
+    items = await list_cases_repo(
         tenant_id=str(tenant_id),
         limit=limit,
         offset=offset,
         status_filter=status_filter,
         priority_filter=priority_filter,
+        cursor=cursor,
         read_conn_factory=get_async_db_read_conn,
     )
+    if cursor:
+        has_more = len(items) > limit
+        items = items[:limit]
+    else:
+        has_more = len(items) == limit
+    response.headers["X-Has-More"] = "true" if has_more else "false"
+    if items and has_more and items[-1].get("created_at") and items[-1].get("case_id"):
+        response.headers["X-Next-Cursor"] = encode_keyset_cursor(items[-1]["created_at"], items[-1]["case_id"])
+    response.headers["Access-Control-Expose-Headers"] = "X-Next-Cursor, X-Has-More"
+    return items
 
 
 @router.get("/{id}")

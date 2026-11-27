@@ -209,73 +209,77 @@ async def screen_live_adverse_media(
 
     country_norm = (country or "").lower()
     raw_cache_str = f"{clean_name.lower()}:{country_norm}"
-    cache_key = f"osint:adverse:{hashlib.sha256(raw_cache_str.encode('utf-8')).hexdigest()[:16]}"
-    if articles_override is None:
-        try:
-            redis = await get_async_redis_client()
-            if redis:
-                cached = await redis.get(cache_key)
-                if cached:
-                    return json.loads(cached)
-        except Exception:
-            pass
+    cache_hash = hashlib.sha256(raw_cache_str.encode("utf-8")).hexdigest()[:16]
+
+    def _score_articles(articles: list[dict[str, Any]], fetch_had_error: bool) -> dict[str, Any]:
+        source_label = (
+            "GDELT_2_0_UNAVAILABLE"
+            if fetch_had_error
+            else ("GDELT_2_0_LIVE" if articles else "GDELT_2_0_LIVE_NO_HITS")
+        )
+        adverse_hits: List[Dict[str, Any]] = []
+        suppressed_count = 0
+        highest_risk = 0.0
+
+        for art in articles:
+            title = str(art.get("title") or "")
+            snippet = str(art.get("snippet") or art.get("seendate") or "")
+            combined_text = f"{title}. {snippet}".strip()
+            scored = disambiguate_adverse_hit(clean_name, combined_text, country=country, entity_type=entity_type)
+            if scored.get("false_positive_suppressed"):
+                suppressed_count += 1
+            if scored.get("match_found"):
+                highest_risk = max(highest_risk, float(scored["risk_score"]))
+                adverse_hits.append({
+                    "title": title,
+                    "url": art.get("url") or "",
+                    "domain": art.get("domain") or "",
+                    "published_at": art.get("seendate") or art.get("published_at") or "",
+                    "matched_categories": scored["matched_categories"],
+                    "risk_score": scored["risk_score"],
+                    "disambiguation_confidence": scored["disambiguation_confidence"],
+                    "same_sentence_match": scored["same_sentence_match"],
+                    "excerpt": scored.get("excerpt") or title,
+                })
+
+        adverse_hits.sort(key=lambda x: (x["risk_score"], x["disambiguation_confidence"]), reverse=True)
+        return {
+            "subject_name": clean_name,
+            "country": country,
+            "source": source_label,
+            "screened_at": datetime.now(timezone.utc).isoformat(),
+            "total_articles_scanned": len(articles),
+            "adverse_hits_count": len(adverse_hits),
+            "false_positives_suppressed": suppressed_count,
+            "highest_risk_score": round(highest_risk, 2),
+            "edd_recommended": highest_risk >= 0.60,
+            "adverse_hits": adverse_hits,
+        }
 
     if articles_override is not None:
-        articles, fetch_had_error = articles_override, False
-    else:
+        return _score_articles(articles_override, False)
+
+    from services.cache_aside import cache_aside
+
+    fallback_holder: dict[str, Any] = {}
+
+    async def _load_live_osint() -> dict[str, Any] | None:
         articles, fetch_had_error = await _fetch_gdelt_articles(clean_name, max_articles)
-    source_label = (
-        "GDELT_2_0_UNAVAILABLE"
-        if fetch_had_error
-        else ("GDELT_2_0_LIVE" if articles else "GDELT_2_0_LIVE_NO_HITS")
+        res = _score_articles(articles, fetch_had_error)
+        # Never cache 6h when live GDELT call errored/timed out
+        if fetch_had_error:
+            fallback_holder["result"] = res
+            return None
+        return res
+
+    cached_or_live = await cache_aside.get_or_load(
+        namespace="osint_adverse",
+        tenant_id="global",
+        key=cache_hash,
+        loader=_load_live_osint,
+        base_ttl=OSINT_CACHE_TTL_SECONDS,
+        cache_none=False,
     )
-
-    adverse_hits: List[Dict[str, Any]] = []
-    suppressed_count = 0
-    highest_risk = 0.0
-
-    for art in articles:
-        title = str(art.get("title") or "")
-        snippet = str(art.get("snippet") or art.get("seendate") or "")
-        combined_text = f"{title}. {snippet}".strip()
-        scored = disambiguate_adverse_hit(clean_name, combined_text, country=country, entity_type=entity_type)
-        if scored.get("false_positive_suppressed"):
-            suppressed_count += 1
-        if scored.get("match_found"):
-            highest_risk = max(highest_risk, float(scored["risk_score"]))
-            adverse_hits.append({
-                "title": title,
-                "url": art.get("url") or "",
-                "domain": art.get("domain") or "",
-                "published_at": art.get("seendate") or art.get("published_at") or "",
-                "matched_categories": scored["matched_categories"],
-                "risk_score": scored["risk_score"],
-                "disambiguation_confidence": scored["disambiguation_confidence"],
-                "same_sentence_match": scored["same_sentence_match"],
-                "excerpt": scored.get("excerpt") or title,
-            })
-
-    adverse_hits.sort(key=lambda x: (x["risk_score"], x["disambiguation_confidence"]), reverse=True)
-    result = {
-        "subject_name": clean_name,
-        "country": country,
-        "source": source_label,
-        "screened_at": datetime.now(timezone.utc).isoformat(),
-        "total_articles_scanned": len(articles),
-        "adverse_hits_count": len(adverse_hits),
-        "false_positives_suppressed": suppressed_count,
-        "highest_risk_score": round(highest_risk, 2),
-        "edd_recommended": highest_risk >= 0.60,
-        "adverse_hits": adverse_hits,
-    }
-
-    # Never negative-cache 6h when live GDELT call errored/timed out
-    if articles_override is None and not fetch_had_error:
-        try:
-            redis = await get_async_redis_client()
-            if redis:
-                await redis.set(cache_key, json.dumps(result), ex=OSINT_CACHE_TTL_SECONDS)
-        except Exception:
-            pass
-
-    return result
+    if cached_or_live is None and "result" in fallback_holder:
+        return fallback_holder["result"]
+    return cached_or_live

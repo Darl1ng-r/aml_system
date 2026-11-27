@@ -161,6 +161,27 @@ async def patch_rule_config_atomic(
         except Exception as audit_err:
             logger.warning("Transactional audit write skipped in patch_rule: %s", audit_err)
 
+        from services.cache_aside import build_cache_key, record_cache_invalidation_outbox
+
+        invalidation_keys = [
+            build_cache_key("metrics_exec", str(tenant_id), "summary"),
+            build_cache_key("rules_config", str(tenant_id), rule_name),
+        ]
+        try:
+            await record_cache_invalidation_outbox(
+                conn,
+                keys=invalidation_keys,
+                tenant_id=str(tenant_id),
+                namespace="rules_config",
+            )
+        except Exception as inv_err:
+            logger.debug("Outbox cache invalidation skipped in patch_rule: %s", inv_err)
+
+    # Strictly POST-COMMIT cache invalidation (never before COMMIT!)
+    from services.cache_aside import invalidate_cache_keys_after_commit
+
+    await invalidate_cache_keys_after_commit(invalidation_keys, namespace="rules_config")
+
     return {
         "new_enabled": new_enabled,
         "new_mode": new_mode,

@@ -309,10 +309,13 @@ async def list_accounts(
     response: Response,
     page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=512),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Retrieves a paginated list of accounts within the caller's tenant boundary."""
+    from database.pagination import encode_keyset_cursor
+
     tenant_id = enforce_tenant_data_scope(current_user)
     offset = (page - 1) * limit
     try:
@@ -320,8 +323,14 @@ async def list_accounts(
             tenant_id=tenant_id,
             limit=limit,
             offset=offset,
+            cursor=cursor,
             conn_factory=get_async_db_conn,
         )
+        if cursor:
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+        else:
+            has_more = (offset + len(rows)) < total_count
         accounts = [
             {
                 "account_id": str(r["id"]),
@@ -334,8 +343,12 @@ async def list_accounts(
             }
             for r in rows
         ]
-        response.headers["X-Total-Count"] = str(total_count)
-        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+        if total_count >= 0:
+            response.headers["X-Total-Count"] = str(total_count)
+        response.headers["X-Has-More"] = "true" if has_more else "false"
+        if accounts and has_more:
+            response.headers["X-Next-Cursor"] = encode_keyset_cursor(rows[-1]["created_at"], str(rows[-1]["id"]))
+        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Next-Cursor, X-Has-More"
         return accounts
     except HTTPException:
         raise

@@ -26,9 +26,46 @@ async def list_ctr_filings_repo(
     limit: int,
     offset: int,
     status_filter: Optional[str] = None,
+    cursor: Optional[str] = None,
 ) -> list[Any]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
     tenant_uuid = uuid.UUID(str(tenant_id))
     async with get_async_db_read_conn(tenant_id=str(tenant_uuid)) as conn:
+        if cursor:
+            c_ts, c_id = decode_keyset_cursor(cursor)
+            if status_filter:
+                return await conn.fetch(
+                    """
+                    SELECT c.*, a.account_number, a.owner_name
+                    FROM ctr_filings c
+                    JOIN accounts a ON c.account_id = a.id
+                    WHERE c.tenant_id = $1 AND c.status = $2 AND (c.created_at, c.id) < ($3, $4)
+                    ORDER BY c.created_at DESC, c.id DESC
+                    LIMIT $5;
+                    """,
+                    tenant_uuid,
+                    status_filter.upper(),
+                    c_ts,
+                    c_id,
+                    limit + 1,
+                )
+            return await conn.fetch(
+                """
+                SELECT c.*, a.account_number, a.owner_name
+                FROM ctr_filings c
+                JOIN accounts a ON c.account_id = a.id
+                WHERE c.tenant_id = $1 AND (c.created_at, c.id) < ($2, $3)
+                ORDER BY c.created_at DESC, c.id DESC
+                LIMIT $4;
+                """,
+                tenant_uuid,
+                c_ts,
+                c_id,
+                limit + 1,
+            )
+
+        safe_offset = validate_legacy_offset(offset)
         if status_filter:
             return await conn.fetch(
                 """
@@ -36,13 +73,13 @@ async def list_ctr_filings_repo(
                 FROM ctr_filings c
                 JOIN accounts a ON c.account_id = a.id
                 WHERE c.tenant_id = $1 AND c.status = $2
-                ORDER BY c.due_date ASC
+                ORDER BY c.due_date ASC, c.id ASC
                 LIMIT $3 OFFSET $4;
                 """,
                 tenant_uuid,
                 status_filter.upper(),
                 limit,
-                offset,
+                safe_offset,
             )
         return await conn.fetch(
             """
@@ -50,12 +87,12 @@ async def list_ctr_filings_repo(
             FROM ctr_filings c
             JOIN accounts a ON c.account_id = a.id
             WHERE c.tenant_id = $1
-            ORDER BY c.due_date ASC
+            ORDER BY c.due_date ASC, c.id ASC
             LIMIT $2 OFFSET $3;
             """,
             tenant_uuid,
             limit,
-            offset,
+            safe_offset,
         )
 
 

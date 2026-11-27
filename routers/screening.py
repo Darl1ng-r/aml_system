@@ -207,63 +207,55 @@ def _eval_baseline_sanctions(name: str) -> tuple[float, str, str]:
 
 
 async def perform_sanctions_search(name: str, threshold: float, es=None, tenant_id: str | None = None) -> dict:
-    best_similarity = 0.0
-    best_source_list = UNKNOWN_LIST
-    best_matched_name = ""
+    from services.cache_aside import cache_aside
 
     norm_name = normalize_screening_name(name)
-    cache_key = f"screening:sanctions:{tenant_id or 'global'}:{norm_name}:{threshold:.2f}"
 
-    redis = None
-    try:
-        redis = await get_async_redis_client()
-        if redis:
-            cached = await redis.get(cache_key)
-            if cached:
-                return json.loads(cached)
-    except Exception:
-        redis = None
+    async def _compute_sanctions() -> dict:
+        best_similarity = 0.0
+        best_source_list = UNKNOWN_LIST
+        best_matched_name = ""
 
-    es_succeeded = False
-    if es is not None:
-        try:
-            hits = await _search_es_sanctions_hits(es, name, norm_name)
-            es_succeeded = True
-            es_sim, es_src, es_match = _eval_es_sanctions_hits(hits, name)
-            if es_sim > best_similarity:
-                best_similarity, best_source_list, best_matched_name = es_sim, es_src, es_match
-        except Exception as es_err:
-            logger.warning("Elasticsearch sanctions search offline/bypass (%s); falling back to PostgreSQL...", es_err)
+        es_succeeded = False
+        if es is not None:
+            try:
+                hits = await _search_es_sanctions_hits(es, name, norm_name)
+                es_succeeded = True
+                es_sim, es_src, es_match = _eval_es_sanctions_hits(hits, name)
+                if es_sim > best_similarity:
+                    best_similarity, best_source_list, best_matched_name = es_sim, es_src, es_match
+            except Exception as es_err:
+                logger.warning("Elasticsearch sanctions search offline/bypass (%s); falling back to PostgreSQL...", es_err)
 
-    if not es_succeeded:
-        pg_sim, pg_src, pg_match = await _eval_pg_sanctions(name, tenant_id)
-        if pg_sim > best_similarity:
-            best_similarity, best_source_list, best_matched_name = pg_sim, pg_src, pg_match
+        if not es_succeeded:
+            pg_sim, pg_src, pg_match = await _eval_pg_sanctions(name, tenant_id)
+            if pg_sim > best_similarity:
+                best_similarity, best_source_list, best_matched_name = pg_sim, pg_src, pg_match
 
-    base_sim, base_src, base_match = _eval_baseline_sanctions(name)
-    if base_sim > best_similarity:
-        best_similarity, best_source_list, best_matched_name = base_sim, base_src, base_match
+        base_sim, base_src, base_match = _eval_baseline_sanctions(name)
+        if base_sim > best_similarity:
+            best_similarity, best_source_list, best_matched_name = base_sim, base_src, base_match
 
-    match_found = best_similarity >= threshold
-    result = {
-        "match_found": match_found,
-        "score": round(best_similarity, 2),
-        "source_list": best_source_list if best_similarity > 0.0 else None,
-        "matched_entry": {
-            "name": best_matched_name,
-            "reason": f"Fuzzy similarity match of {int(best_similarity * 100)}%",
+        match_found = best_similarity >= threshold
+        return {
+            "match_found": match_found,
+            "score": round(best_similarity, 2),
+            "source_list": best_source_list if best_similarity > 0.0 else None,
+            "matched_entry": {
+                "name": best_matched_name,
+                "reason": f"Fuzzy similarity match of {int(best_similarity * 100)}%",
+            }
+            if best_similarity > 0.0
+            else None,
         }
-        if best_similarity > 0.0
-        else None,
-    }
 
-    if redis:
-        try:
-            await redis.set(cache_key, json.dumps(result), ex=300)
-        except Exception:
-            pass
-
-    return result
+    return await cache_aside.get_or_load(
+        namespace="screening_sanctions",
+        tenant_id=tenant_id or "global",
+        key=f"{norm_name}:{threshold:.2f}",
+        loader=_compute_sanctions,
+        base_ttl=300,
+    )
 
 
 def _build_pep_dict(candidate_name: str, source: dict, sim: float, threshold: float) -> dict:
@@ -402,18 +394,11 @@ async def search_sanctions_and_pep(
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
     """Multi-tiered identity screening querying Global Sanctions + PEP databases."""
-    tenant_id = enforce_tenant_data_scope(current_user)
-    cache_key = f"screening:combined:{tenant_id}:{payload.name.lower().strip()}:{payload.threshold}"
-    try:
-        redis_client = await get_async_redis_client()
-        cached_result = await redis_client.get(cache_key)
-        if cached_result:
-            return json.loads(cached_result)
-    except Exception as e:
-        logger.warning("Failed to query Redis cache: %s", e)
-        redis_client = None
+    from services.cache_aside import cache_aside
 
-    try:
+    tenant_id = enforce_tenant_data_scope(current_user)
+
+    async def _compute_combined() -> dict:
         sanctions_res = await perform_sanctions_search(payload.name, payload.threshold, es, tenant_id=tenant_id)
         pep_res = await perform_pep_search(payload.name, payload.threshold, es, tenant_id=tenant_id)
 
@@ -427,7 +412,7 @@ async def search_sanctions_and_pep(
         else:
             source_list_val = "Clean"
 
-        result = {
+        return {
             "query_name": payload.name,
             "threshold": payload.threshold,
             "match_found": has_sanctions_hit or has_pep_hit,
@@ -438,13 +423,14 @@ async def search_sanctions_and_pep(
             "matched_entry": sanctions_res.get("matched_entry") or pep_res.get("matched_entry"),
         }
 
-        if redis_client:
-            try:
-                await redis_client.setex(cache_key, 3600, json.dumps(result))
-            except Exception as e:
-                logger.warning("Failed to save result to Redis cache: %s", e)
-
-        return result
+    try:
+        return await cache_aside.get_or_load(
+            namespace="screening_combined",
+            tenant_id=str(tenant_id),
+            key=f"{payload.name.lower().strip()}:{payload.threshold}",
+            loader=_compute_combined,
+            base_ttl=3600,
+        )
     except HTTPException:
         raise
     except Exception:

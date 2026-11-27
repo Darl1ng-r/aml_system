@@ -90,6 +90,27 @@ async def upsert_risk_appetite_atomic(
             after_state=updated_data,
             details={"sla_hours": sla_hours, "edd_threshold": edd_threshold},
         )
+
+        from services.cache_aside import build_cache_key, record_cache_invalidation_outbox
+
+        invalidation_keys = [
+            build_cache_key("metrics_exec", str(tenant_uuid), "summary"),
+            build_cache_key("risk_appetite", str(tenant_uuid), "config"),
+        ]
+        try:
+            await record_cache_invalidation_outbox(
+                conn,
+                keys=invalidation_keys,
+                tenant_id=str(tenant_uuid),
+                namespace="risk_appetite",
+            )
+        except Exception as inv_err:
+            logger.debug("Outbox cache invalidation skipped in risk_appetite: %s", inv_err)
+
+    # Strictly POST-COMMIT cache invalidation
+    from services.cache_aside import invalidate_cache_keys_after_commit
+
+    await invalidate_cache_keys_after_commit(invalidation_keys, namespace="risk_appetite")
     return before_state
 
 
@@ -100,21 +121,41 @@ async def list_str_batches_repo(
     limit: int,
     offset: int,
     *,
+    cursor: Optional[str] = None,
     conn_factory: Any = None,
 ) -> list[Any]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
     factory = conn_factory or get_async_db_conn
     async with factory(tenant_id=tenant_id) as conn:
+        if cursor:
+            c_ts, c_id = decode_keyset_cursor(cursor, require_uuid=False)
+            return await conn.fetch(
+                """
+                SELECT id, record_count, total_amount, checksum, status, created_at
+                FROM str_batches
+                WHERE tenant_id = $1::uuid AND (created_at, id) < ($2, $3)
+                ORDER BY created_at DESC, id DESC
+                LIMIT $4;
+                """,
+                str(tenant_id),
+                c_ts,
+                str(c_id),
+                limit + 1,
+            )
+
+        safe_offset = validate_legacy_offset(offset)
         return await conn.fetch(
             """
             SELECT id, record_count, total_amount, checksum, status, created_at
             FROM str_batches
             WHERE tenant_id = $1::uuid
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT $2 OFFSET $3;
             """,
             str(tenant_id),
             limit,
-            offset,
+            safe_offset,
         )
 
 

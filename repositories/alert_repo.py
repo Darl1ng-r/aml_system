@@ -87,13 +87,43 @@ async def list_alerts_page_repo(
     severity: Optional[str],
     status_filter: Optional[str],
     include_explainability: bool,
+    cursor: Optional[str] = None,
     read_conn_factory: Any = None,
 ) -> tuple[int, list[Any]]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
     factory = read_conn_factory or get_async_db_read_conn
     async with factory(tenant_id=tenant_id) as conn:
         where_sql, params, param_idx = build_alert_filter_clauses(
             tenant_id, severity, status_filter, search
         )
+        if cursor:
+            cursor_ts, cursor_id = decode_keyset_cursor(cursor)
+            where_sql = f"{where_sql} AND (a.created_at, a.id) < (${param_idx}, ${param_idx + 1})"
+            params.extend([cursor_ts, cursor_id])
+            param_idx += 2
+            query = f"""
+                SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score,
+                       {'a.explainability_payload' if include_explainability else 'NULL as explainability_payload'},
+                       a.status, a.created_at,
+                       t.amount, t.currency, t.timestamp,
+                       s.account_number as sender, r.account_number as receiver,
+                       COALESCE(u.username, 'Unassigned') as assignee,
+                       s.owner_name as sender_name, r.owner_name as receiver_name,
+                       s.risk_category as sender_risk_tier, s.created_at as account_created_at,
+                       t.channel, t.country
+                FROM alerts a
+                LEFT JOIN transactions t ON a.transaction_id = t.id
+                LEFT JOIN accounts s ON t.sender_account_id = s.id
+                LEFT JOIN accounts r ON t.receiver_account_id = r.id
+                LEFT JOIN users u ON a.assigned_officer_id = u.id
+                WHERE {where_sql}
+                ORDER BY a.created_at DESC, a.id DESC
+                LIMIT ${param_idx};
+            """
+            rows = await conn.fetch(query, *params, limit + 1)
+            return -1, list(rows or [])
+
         count_query = f"""
             SELECT COUNT(*)
             FROM alerts a
@@ -103,7 +133,7 @@ async def list_alerts_page_repo(
             WHERE {where_sql};
         """
         total_count = await conn.fetchval(count_query, *params)
-        offset = (page - 1) * limit
+        offset = validate_legacy_offset((page - 1) * limit)
         query = f"""
             SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score,
                    {'a.explainability_payload' if include_explainability else 'NULL as explainability_payload'},
@@ -120,7 +150,7 @@ async def list_alerts_page_repo(
             LEFT JOIN accounts r ON t.receiver_account_id = r.id
             LEFT JOIN users u ON a.assigned_officer_id = u.id
             WHERE {where_sql}
-            ORDER BY (a.transaction_id IS NULL) ASC, a.created_at DESC
+            ORDER BY (a.transaction_id IS NULL) ASC, a.created_at DESC, a.id DESC
             LIMIT ${param_idx} OFFSET ${param_idx + 1};
         """
         rows = await conn.fetch(query, *params, limit, offset)
@@ -811,32 +841,55 @@ async def iter_alert_export_chunks_repo(
     chunk_size: int = 1000,
     read_conn_factory: Any = None,
 ):
+    """Streams alert exports using O(log N) deterministic keyset pagination (zero deep OFFSET)."""
     factory = read_conn_factory or get_async_db_read_conn
     async with factory(tenant_id=tenant_id) as conn:
-        offset = 0
+        last_ts = None
+        last_id = None
         while True:
-            rows = await conn.fetch(
-                """
-                SELECT a.id, a.threat_level, a.ai_risk_score, a.rule_name, a.status, a.created_at,
-                       t.amount, t.currency, s.account_number AS sender, r.account_number AS receiver,
-                       COALESCE(u.username, 'Unassigned') AS assignee
-                FROM alerts a
-                JOIN transactions t ON a.transaction_id = t.id
-                JOIN accounts s ON t.sender_account_id = s.id
-                JOIN accounts r ON t.receiver_account_id = r.id
-                LEFT JOIN users u ON a.assigned_officer_id = u.id
-                ORDER BY a.created_at DESC
-                LIMIT $1 OFFSET $2;
-                """,
-                chunk_size,
-                offset,
-            )
+            if last_ts is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT a.id, a.threat_level, a.ai_risk_score, a.rule_name, a.status, a.created_at,
+                           t.amount, t.currency, s.account_number AS sender, r.account_number AS receiver,
+                           COALESCE(u.username, 'Unassigned') AS assignee
+                    FROM alerts a
+                    JOIN transactions t ON a.transaction_id = t.id
+                    JOIN accounts s ON t.sender_account_id = s.id
+                    JOIN accounts r ON t.receiver_account_id = r.id
+                    LEFT JOIN users u ON a.assigned_officer_id = u.id
+                    ORDER BY a.created_at DESC, a.id DESC
+                    LIMIT $1;
+                    """,
+                    chunk_size,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT a.id, a.threat_level, a.ai_risk_score, a.rule_name, a.status, a.created_at,
+                           t.amount, t.currency, s.account_number AS sender, r.account_number AS receiver,
+                           COALESCE(u.username, 'Unassigned') AS assignee
+                    FROM alerts a
+                    JOIN transactions t ON a.transaction_id = t.id
+                    JOIN accounts s ON t.sender_account_id = s.id
+                    JOIN accounts r ON t.receiver_account_id = r.id
+                    LEFT JOIN users u ON a.assigned_officer_id = u.id
+                    WHERE (a.created_at, a.id) < ($1, $2)
+                    ORDER BY a.created_at DESC, a.id DESC
+                    LIMIT $3;
+                    """,
+                    last_ts,
+                    last_id,
+                    chunk_size,
+                )
             if not rows:
                 break
             yield rows
-            offset += len(rows)
             if len(rows) < chunk_size:
                 break
+            tail = rows[-1]
+            last_ts = tail["created_at"]
+            last_id = tail["id"]
 
 
 async def fetch_alerts_for_pdf_export_repo(

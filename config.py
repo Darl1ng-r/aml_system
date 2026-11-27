@@ -16,15 +16,30 @@ class Settings(BaseSettings):
     postgres_user: str = "aml_app"
     postgres_password: str = ""
     aml_app_password: str = ""
+    postgres_pool_min_size: int = 2
+    postgres_pool_max_size: int = 15
+    postgres_replica_pool_max_size: int = 4
+    postgres_acquire_timeout_seconds: float = 5.0
+    replica_max_lag_seconds: float = 2.0
+    read_after_write_window_seconds: int = 5
     run_migrations_on_startup: bool = False
     
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
     neo4j_password: str = ""
     
+    # State Redis (noeviction: locks, idempotency, token revocations, rate limits)
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_password: str = ""
+
+    # Dedicated Cache Redis (allkeys-lfu: volatile read caches; empty host falls back to redis_host DB 1 in single-node dev)
+    redis_cache_host: str = ""
+    redis_cache_port: int = 6380
+    redis_cache_password: str = ""
+    redis_cache_db: int = 1
+    redis_cache_socket_timeout_seconds: float = 0.20
+    redis_cache_connect_timeout_seconds: float = 0.15
     metrics_secret: str = ""
     
     kafka_bootstrap_servers: str = "localhost:9092"
@@ -281,10 +296,14 @@ NEO4J_URI = settings.neo4j_uri
 NEO4J_USER = settings.neo4j_user
 NEO4J_PASSWORD = settings.neo4j_password
 
-# Redis Config
+# Redis Config (State vs. Dedicated Cache)
 REDIS_HOST = settings.redis_host
 REDIS_PORT = settings.redis_port
 REDIS_PASSWORD = settings.redis_password
+REDIS_CACHE_HOST = settings.redis_cache_host
+REDIS_CACHE_PORT = settings.redis_cache_port
+REDIS_CACHE_PASSWORD = settings.redis_cache_password
+REDIS_CACHE_DB = settings.redis_cache_db
 
 # Redpanda/Kafka Config
 KAFKA_BOOTSTRAP_SERVERS = settings.kafka_bootstrap_servers

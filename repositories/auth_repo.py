@@ -211,21 +211,42 @@ async def list_tenant_users_repo(
     tenant_id: str,
     limit: int,
     offset: int,
+    cursor: Optional[str] = None,
     conn_factory: Any = None,
 ) -> list[Any]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
     factory = _write_factory(conn_factory)
     async with factory(tenant_id=tenant_id) as conn:
+        if cursor:
+            c_ts, c_id = decode_keyset_cursor(cursor)
+            rows = await conn.fetch(
+                """
+                SELECT id, username, role, tenant_id, mfa_enabled, created_at
+                FROM users
+                WHERE tenant_id = $1 AND (created_at, id) < ($2, $3)
+                ORDER BY created_at DESC, id DESC
+                LIMIT $4;
+                """,
+                uuid.UUID(str(tenant_id)),
+                c_ts,
+                c_id,
+                limit + 1,
+            )
+            return list(rows or [])
+
+        safe_offset = validate_legacy_offset(offset)
         rows = await conn.fetch(
             """
             SELECT id, username, role, tenant_id, mfa_enabled, created_at
             FROM users
             WHERE tenant_id = $1
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT $2 OFFSET $3;
             """,
             uuid.UUID(str(tenant_id)),
             limit,
-            offset,
+            safe_offset,
         )
     return list(rows or [])
 

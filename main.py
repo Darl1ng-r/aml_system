@@ -11,7 +11,11 @@ from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, 
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
-from observability.middleware import CorrelationIdMiddleware, RequestTimeoutMiddleware
+from observability.middleware import (
+    CorrelationIdMiddleware,
+    ReadAfterWriteStickinessMiddleware,
+    RequestTimeoutMiddleware,
+)
 from observability.event_loop_monitor import event_loop_monitor
 from services.trusted_proxy import TrustedProxyMiddleware
 from services.csrf import CSRFProtectionMiddleware
@@ -113,15 +117,25 @@ async def _init_postgres_and_migrations(allow_offline: bool) -> bool:
 
 
 async def _init_redis(allow_offline: bool) -> None:
-    from database.redis_db import get_redis_client, get_async_redis_client
+    from database.redis_db import (
+        get_async_cache_redis_client,
+        get_async_redis_client,
+        get_redis_client,
+    )
     try:
         get_redis_client()
         await get_async_redis_client()
     except Exception as e:
         logger.critical(f"CRITICAL: Could not connect to Redis: {e}")
         if not allow_offline:
-            raise RuntimeError("Redis cache is required for startup") from e
+            raise RuntimeError("Redis state store is required for startup") from e
         logger.warning("ALLOW_OFFLINE_DEV active: Continuing without Redis connection.")
+
+    # Fail-open warmup of dedicated Cache Redis (allkeys-lfu, <= 200ms timeout)
+    try:
+        await get_async_cache_redis_client()
+    except Exception as e:
+        logger.warning("Dedicated Cache Redis warmup skipped (failing open to DB): %s", e)
 
 
 async def startup_db_clients(app_instance: FastAPI):
@@ -309,15 +323,28 @@ async def lifespan(app_instance: FastAPI):
     else:
         logger.info("RUN_EMBEDDED_WORKER=false; skipping embedded Outbox Relay (handled by dedicated worker).")
 
-    # Start AsyncIO Event-Loop Lag Watchdog (skip under pytest unless explicitly invoked)
+    # Start AsyncIO Event-Loop Lag Watchdog & Storage Telemetry Sampler (skip under pytest)
     import sys as _sys
+    _storage_monitor_task = None
     if "pytest" not in _sys.modules and not os.getenv("PYTEST_CURRENT_TEST"):
         event_loop_monitor.start()
         logger.info("AsyncIO event-loop lag monitor started (100ms sampling interval).")
+        from observability.storage_monitor import start_storage_monitor
+
+        _storage_monitor_task = asyncio.create_task(
+            start_storage_monitor(interval_seconds=15.0, shutdown_event=_worker_shutdown_event),
+            name="storage-observability-monitor",
+        )
 
     yield
 
-    # Stop Event-Loop Lag Watchdog and shut down compute bulkhead executors cleanly
+    # Stop Event-Loop Lag Watchdog, Storage Monitor & compute bulkhead executors cleanly
+    if _storage_monitor_task is not None and not _storage_monitor_task.done():
+        _storage_monitor_task.cancel()
+        try:
+            await _storage_monitor_task
+        except (asyncio.CancelledError, Exception):
+            pass
     try:
         await event_loop_monitor.stop()
     except Exception:
@@ -401,6 +428,7 @@ app.add_middleware(
         "X-Idempotency-Key",
         "If-Match",
         "If-None-Match",
+        "X-Read-Consistency",
         "X-Client-Mode",
         "X-API-Key",
         "Accept",
@@ -413,12 +441,19 @@ app.add_middleware(
         "X-RateLimit-Remaining",
         "X-RateLimit-Reset",
         "Retry-After",
+        "X-Total-Count",
+        "X-Next-Cursor",
+        "X-Has-More",
+        "X-Read-Consistency-Window",
     ],
 )
 
 # 4. Browser security hardening headers (CSP, X-Frame-Options, nosniff, Cache-Control: no-store)
 from services.security_headers import SecurityHeadersMiddleware
 app.add_middleware(SecurityHeadersMiddleware)
+
+# 3c. Pure-ASGI Read-After-Write Primary stickiness guard (prevents stale replica reads after mutations)
+app.add_middleware(ReadAfterWriteStickinessMiddleware)
 
 # 3b. Pure-ASGI bounded request deadline guard (20s default; 60s for exports/packets/network)
 app.add_middleware(RequestTimeoutMiddleware, default_timeout_seconds=20.0, extended_timeout_seconds=60.0)

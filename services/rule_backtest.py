@@ -375,6 +375,10 @@ async def evaluate_shadow_rules(
         tx_uuid = uuid.UUID(str(transaction_id))
         sender_uuid = uuid.UUID(str(sender_account_id)) if sender_account_id else None
 
+        hit_rule_names: list[str] = []
+        hit_rule_versions: list[int] = []
+        hit_reasons: list[str] = []
+
         for r in rows:
             raw_cfg = r["shadow_config"] if r["shadow_config"] is not None else r["config"]
             cfg = raw_cfg if isinstance(raw_cfg, dict) else json.loads(raw_cfg or "{}")
@@ -382,22 +386,29 @@ async def evaluate_shadow_rules(
             hit, reason = evaluate_rule_on_tx_row(r["rule_name"], cfg, tx_row)
             if hit:
                 matched_shadow_rules.append(r["rule_name"])
-                await conn.execute(
-                    """
-                    INSERT INTO rule_shadow_hits (
-                        tenant_id, rule_name, transaction_id, sender_account_id,
-                        amount_base_usd, rule_version, matched_reason
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7);
-                    """,
-                    tenant_uuid,
-                    r["rule_name"],
-                    tx_uuid,
-                    sender_uuid,
-                    round(float(amt_dec), 2),
-                    int(r["version"] or 1),
-                    reason,
+                hit_rule_names.append(str(r["rule_name"]))
+                hit_rule_versions.append(int(r["version"] or 1))
+                hit_reasons.append(str(reason))
+
+        if hit_rule_names:
+            await conn.execute(
+                """
+                INSERT INTO rule_shadow_hits (
+                    tenant_id, rule_name, transaction_id, sender_account_id,
+                    amount_base_usd, rule_version, matched_reason
                 )
+                SELECT $1, v.rule_name, $2, $3, $4, v.rule_version, v.matched_reason
+                FROM unnest($5::text[], $6::integer[], $7::text[])
+                     AS v(rule_name, rule_version, matched_reason);
+                """,
+                tenant_uuid,
+                tx_uuid,
+                sender_uuid,
+                amt_dec,
+                hit_rule_names,
+                hit_rule_versions,
+                hit_reasons,
+            )
     except Exception as exc:
         logger.debug("Shadow rule evaluation skipped: %s", exc)
 

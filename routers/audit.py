@@ -80,6 +80,7 @@ async def list_audit_logs(
     response: Response,
     page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=50, ge=1, le=200),
+    cursor: Optional[str] = Query(None, max_length=512, description="Opaque keyset pagination cursor"),
     actor: Optional[str] = Query(None, description="Username or Actor ID filter"),
     action: Optional[str] = Query(None, description="Action filter (e.g. UPDATE_RULE, ACCOUNT_FROZEN)"),
     resource_type: Optional[str] = Query(None, description="Target resource type (e.g. ALERT, CASE, RULE, ACCOUNT)"),
@@ -89,6 +90,8 @@ async def list_audit_logs(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Queries paginated audit logs with dynamic filtering within tenant boundaries."""
+    from database.pagination import extract_next_cursor
+
     tenant_id = enforce_tenant_data_scope(current_user)
     offset = (page - 1) * limit
     try:
@@ -101,12 +104,32 @@ async def list_audit_logs(
             resource_type=resource_type,
             date_from=date_from,
             date_to=date_to,
+            cursor=cursor,
             read_conn_factory=get_async_db_read_conn,
         )
+        if cursor:
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+        else:
+            has_more = (offset + len(rows)) < total_count
         items = [_serialize_audit_row(r) for r in rows]
-        response.headers["X-Total-Count"] = str(total_count)
-        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
-        return {"items": items, "total": total_count, "page": page, "limit": limit}
+        next_cursor = extract_next_cursor(items, has_more=has_more, ts_field="timestamp", id_field="id")
+        if total_count >= 0:
+            response.headers["X-Total-Count"] = str(total_count)
+        if next_cursor:
+            response.headers["X-Next-Cursor"] = next_cursor
+        response.headers["X-Has-More"] = "true" if has_more else "false"
+        response.headers["Access-Control-Expose-Headers"] = "X-Total-Count, X-Next-Cursor, X-Has-More"
+        return {
+            "items": items,
+            "total": total_count if total_count >= 0 else None,
+            "page": page,
+            "limit": limit,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
+        }
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Failed to query audit logs")
         raise HTTPException(status_code=500, detail="Audit query failed.")

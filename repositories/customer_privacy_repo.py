@@ -43,8 +43,11 @@ async def list_customers_repo(
     search: Optional[str] = None,
     risk_tier: Optional[str] = None,
     account_status: Optional[str] = None,
+    cursor: Optional[str] = None,
     read_conn_factory: Any = None,
 ) -> tuple[int, list[Any]]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
     conditions = ["tenant_id = $1"]
     params: list[Any] = [uuid.UUID(str(tenant_id))]
     p_idx = 2
@@ -67,19 +70,37 @@ async def list_customers_repo(
         params.append(account_status.upper())
         p_idx += 1
 
-    where_clause = " AND ".join(conditions)
     factory = _read_factory(read_conn_factory)
     async with factory(tenant_id=tenant_id) as conn:
+        if cursor:
+            c_ts, c_id = decode_keyset_cursor(cursor)
+            conditions.append(f"(created_at, id) < (${p_idx}, ${p_idx + 1})")
+            params.extend([c_ts, c_id])
+            p_idx += 2
+            where_clause = " AND ".join(conditions)
+            query = f"""
+                SELECT id, account_number, swift_bic, owner_name, status,
+                       risk_score, risk_category, created_at, frozen_reason
+                FROM accounts
+                WHERE {where_clause}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ${p_idx};
+            """
+            rows = await conn.fetch(query, *params, limit + 1)
+            return -1, list(rows or [])
+
+        safe_offset = validate_legacy_offset(offset)
+        where_clause = " AND ".join(conditions)
         total = await conn.fetchval(f"SELECT COUNT(*) FROM accounts WHERE {where_clause};", *params)
         query = f"""
             SELECT id, account_number, swift_bic, owner_name, status,
                    risk_score, risk_category, created_at, frozen_reason
             FROM accounts
             WHERE {where_clause}
-            ORDER BY risk_score DESC, created_at DESC
+            ORDER BY risk_score DESC, created_at DESC, id DESC
             LIMIT ${p_idx} OFFSET ${p_idx + 1};
         """
-        rows = await conn.fetch(query, *params, limit, offset)
+        rows = await conn.fetch(query, *params, limit, safe_offset)
     return int(total or 0), list(rows or [])
 
 
@@ -363,10 +384,31 @@ async def list_onboarded_accounts_repo(
     tenant_id: Any,
     limit: int,
     offset: int,
+    cursor: Optional[str] = None,
     conn_factory: Any = None,
 ) -> tuple[int, list[Any]]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
     factory = _write_factory(conn_factory)
     async with factory(tenant_id=tenant_id) as conn:
+        if cursor:
+            c_ts, c_id = decode_keyset_cursor(cursor)
+            rows = await conn.fetch(
+                """
+                SELECT id, account_number, swift_bic, owner_name, risk_score, risk_category, created_at
+                FROM accounts
+                WHERE tenant_id = $1 AND (created_at, id) < ($2, $3)
+                ORDER BY created_at DESC, id DESC
+                LIMIT $4;
+                """,
+                tenant_id,
+                c_ts,
+                c_id,
+                limit + 1,
+            )
+            return -1, list(rows or [])
+
+        safe_offset = validate_legacy_offset(offset)
         total_count = await conn.fetchval(
             "SELECT COUNT(*) FROM accounts WHERE tenant_id = $1;",
             tenant_id,
@@ -376,12 +418,12 @@ async def list_onboarded_accounts_repo(
             SELECT id, account_number, swift_bic, owner_name, risk_score, risk_category, created_at
             FROM accounts
             WHERE tenant_id = $1
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT $2 OFFSET $3;
             """,
             tenant_id,
             limit,
-            offset,
+            safe_offset,
         )
     return int(total_count or 0), list(rows or [])
 
@@ -394,8 +436,11 @@ async def fetch_dsar_export_repo(
     tenant_id: str,
     page_limit: int,
     offset: int,
+    cursor: Optional[str] = None,
     read_conn_factory: Any = None,
 ) -> dict[str, Any]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
     factory = _read_factory(read_conn_factory)
     async with factory(tenant_id=tenant_id) as conn:
         acc = await conn.fetchrow(
@@ -411,6 +456,25 @@ async def fetch_dsar_export_repo(
             raise HTTPException(status_code=404, detail="Account not found.")
 
         acc_id = acc["id"]
+        if cursor:
+            c_ts, c_id = decode_keyset_cursor(cursor)
+            txs = await conn.fetch(
+                """
+                SELECT id, amount, currency, status, timestamp, country, channel
+                FROM transactions
+                WHERE (sender_account_id = $1 OR receiver_account_id = $1)
+                  AND (timestamp, id) < ($2, $3)
+                ORDER BY timestamp DESC, id DESC
+                LIMIT $4;
+                """,
+                acc_id,
+                c_ts,
+                c_id,
+                page_limit + 1,
+            )
+            return {"acc": acc, "total_tx": -1, "txs": list(txs or [])}
+
+        safe_offset = validate_legacy_offset(offset)
         total_tx = await conn.fetchval(
             """
             SELECT COUNT(*)
@@ -424,12 +488,12 @@ async def fetch_dsar_export_repo(
             SELECT id, amount, currency, status, timestamp, country, channel
             FROM transactions
             WHERE (sender_account_id = $1 OR receiver_account_id = $1)
-            ORDER BY timestamp DESC
+            ORDER BY timestamp DESC, id DESC
             LIMIT $2 OFFSET $3;
             """,
             acc_id,
             page_limit,
-            offset,
+            safe_offset,
         )
     return {"acc": acc, "total_tx": int(total_tx or 0), "txs": list(txs or [])}
 

@@ -48,10 +48,13 @@ async def export_data_subject_dossier(
     account_number: str,
     page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=200, ge=1, le=500),
+    cursor: Optional[str] = Query(default=None, max_length=512),
     current_user: dict = Depends(RoleChecker(["AUDITOR", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60)),
 ):
     """Exports customer-facing GDPR Article 15 / CCPA DSAR (strictly anti-tipping-off sanitized)."""
+    from database.pagination import extract_next_cursor
+
     tenant_id = enforce_tenant_data_scope(current_user)
     page_num = page if isinstance(page, int) else 1
     page_limit = limit if isinstance(limit, int) else 200
@@ -62,11 +65,30 @@ async def export_data_subject_dossier(
         tenant_id=str(tenant_id),
         page_limit=page_limit,
         offset=offset,
+        cursor=cursor if isinstance(cursor, str) else None,
         read_conn_factory=get_async_db_read_conn,
     )
     acc = data["acc"]
     txs = data["txs"]
     total_tx = data["total_tx"]
+    if isinstance(cursor, str) and cursor:
+        has_more = len(txs) > page_limit
+        txs = txs[:page_limit]
+    else:
+        has_more = (offset + len(txs)) < total_tx
+
+    tx_items = [
+        {
+            "tx_id": str(t["id"]),
+            "amount": float(t["amount"]),
+            "amount_str": str(t["amount"]),
+            "currency": t["currency"],
+            "status": t["status"],
+            "timestamp": t["timestamp"].isoformat() if t["timestamp"] else None,
+        }
+        for t in txs
+    ]
+    next_cursor = extract_next_cursor(tx_items, has_more=has_more, ts_field="timestamp", id_field="tx_id")
 
     return {
         "dossier_type": "GDPR_ARTICLE_15_DSAR_EXPORT",
@@ -81,21 +103,12 @@ async def export_data_subject_dossier(
         "pagination": {
             "page": page_num,
             "limit": page_limit,
-            "total_transactions": total_tx,
-            "has_more": (offset + len(txs)) < total_tx,
+            "total_transactions": total_tx if total_tx >= 0 else None,
+            "has_more": has_more,
+            "next_cursor": next_cursor,
         },
-        "transaction_history_count": len(txs),
-        "transactions": [
-            {
-                "tx_id": str(t["id"]),
-                "amount": float(t["amount"]),
-                "amount_str": str(t["amount"]),
-                "currency": t["currency"],
-                "status": t["status"],
-                "timestamp": t["timestamp"].isoformat() if t["timestamp"] else None,
-            }
-            for t in txs
-        ],
+        "transaction_history_count": len(tx_items),
+        "transactions": tx_items,
     }
 
 

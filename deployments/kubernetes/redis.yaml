@@ -139,3 +139,132 @@ spec:
     targetPort: 6379
   selector:
     app: aml-redis
+---
+# ════════════════════════════════════════════════════════════════════════════
+# Dedicated Volatile Cache Redis Deployment (allkeys-lfu, Zero Persistence)
+# Physically isolated from State Redis (noeviction) so volatile read caching
+# can never evict distributed locks, idempotency records, or auth revocations.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aml-redis-cache
+  namespace: aml-system
+  labels:
+    app: aml-redis-cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aml-redis-cache
+  template:
+    metadata:
+      labels:
+        app: aml-redis-cache
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: redis-cache
+        image: redis:7-alpine
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: REDIS_PASSWORD } }
+        - name: REDISCLI_AUTH
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: REDIS_PASSWORD } }
+        command:
+        - sh
+        - -eu
+        - -c
+        - |
+          umask 077
+          printf 'requirepass %s\n' "$REDIS_PASSWORD" > /tmp/redis-cache-auth.conf
+          exec redis-server \
+            --include /tmp/redis-cache-auth.conf \
+            --port 0 \
+            --tls-port 6379 \
+            --tls-cert-file /etc/redis/certs/tls.crt \
+            --tls-key-file /etc/redis/certs/tls.key \
+            --tls-ca-cert-file /etc/redis/certs/ca.crt \
+            --tls-auth-clients yes \
+            --save "" \
+            --appendonly no \
+            --maxmemory 256mb \
+            --maxmemory-policy allkeys-lfu
+        ports:
+        - containerPort: 6379
+          name: rediscacheport
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - --tls
+            - --cacert
+            - /etc/redis/certs/ca.crt
+            - --cert
+            - /etc/redis/certs/tls.crt
+            - --key
+            - /etc/redis/certs/tls.key
+            - ping
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - --tls
+            - --cacert
+            - /etc/redis/certs/ca.crt
+            - --cert
+            - /etc/redis/certs/tls.crt
+            - --key
+            - /etc/redis/certs/tls.key
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+            ephemeral-storage: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "384Mi"
+            ephemeral-storage: "128Mi"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: tls-certs
+          mountPath: /etc/redis/certs
+          readOnly: true
+      volumes:
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aml-redis-cache-service
+  namespace: aml-system
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: aml-redis-cache

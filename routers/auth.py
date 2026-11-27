@@ -702,11 +702,15 @@ class UserRoleUpdate(BaseModel):
 
 @router.get("/users", summary="List users within current tenant (Admin only)")
 async def list_users(
+    response: Response,
     limit: int = 50,
     offset: int = 0,
+    cursor: Optional[str] = Query(default=None, max_length=512),
     current_user: dict = Depends(RoleChecker(["SUPER_ADMIN", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
+    from database.pagination import encode_keyset_cursor
+
     tenant_id = enforce_tenant_data_scope(current_user)
     clamped_limit = max(1, min(limit, 200))
     clamped_offset = max(0, offset)
@@ -715,7 +719,17 @@ async def list_users(
             tenant_id=str(tenant_id),
             limit=clamped_limit,
             offset=clamped_offset,
+            cursor=cursor,
         )
+        if cursor:
+            has_more = len(rows) > clamped_limit
+            rows = rows[:clamped_limit]
+        else:
+            has_more = len(rows) == clamped_limit
+        response.headers["X-Has-More"] = "true" if has_more else "false"
+        if rows and has_more and rows[-1].get("created_at") and rows[-1].get("id"):
+            response.headers["X-Next-Cursor"] = encode_keyset_cursor(rows[-1]["created_at"], str(rows[-1]["id"]))
+        response.headers["Access-Control-Expose-Headers"] = "X-Next-Cursor, X-Has-More"
         return [
             {
                 "id": str(r["id"]),
@@ -727,6 +741,8 @@ async def list_users(
             }
             for r in rows
         ]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("Error listing users: %s", e)
         return []

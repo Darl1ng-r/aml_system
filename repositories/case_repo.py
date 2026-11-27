@@ -111,15 +111,15 @@ async def create_case_atomic(
             narrative,
         )
 
-        for alert_uuid in validated_alert_uuids:
+        if validated_alert_uuids:
             await conn.execute(
                 """
                 INSERT INTO case_alerts (case_id, alert_id)
-                VALUES ($1, $2)
+                SELECT $1, unnest($2::uuid[])
                 ON CONFLICT DO NOTHING;
                 """,
                 case_id,
-                alert_uuid,
+                validated_alert_uuids,
             )
 
     return {
@@ -139,40 +139,63 @@ async def list_cases_repo(
     offset: int,
     status_filter: Optional[str] = None,
     priority_filter: Optional[str] = None,
+    cursor: Optional[str] = None,
     read_conn_factory: Any = None,
 ) -> list[dict[str, Any]]:
+    from database.pagination import decode_keyset_cursor, validate_legacy_offset
+
     factory = read_conn_factory or get_async_db_read_conn
     tenant_uuid = uuid.UUID(str(tenant_id))
 
     async with factory(tenant_id=tenant_id) as conn:
-        where_clauses = ["tenant_id = $1"]
+        where_clauses = ["c.tenant_id = $1"]
         params: list[Any] = [tenant_uuid]
         p_idx = 2
 
         if status_filter and status_filter.upper() != "ALL":
-            where_clauses.append(f"status = ${p_idx}")
+            where_clauses.append(f"c.status = ${p_idx}")
             params.append(status_filter.upper())
             p_idx += 1
 
         if priority_filter and priority_filter.upper() != "ALL":
-            where_clauses.append(f"priority = ${p_idx}")
+            where_clauses.append(f"c.priority = ${p_idx}")
             params.append(priority_filter.upper())
             p_idx += 1
 
-        where_sql = " AND ".join(where_clauses)
-        params_page = params + [limit, offset]
-
-        rows = await conn.fetch(
-            f"""
-            SELECT c.*,
-                   (SELECT COUNT(*) FROM case_alerts ca WHERE ca.case_id = c.id) AS alert_count
-            FROM cases c
-            WHERE {where_sql}
-            ORDER BY c.created_at DESC
-            LIMIT ${p_idx} OFFSET ${p_idx + 1};
-            """,
-            *params_page,
-        )
+        if cursor:
+            c_ts, c_id = decode_keyset_cursor(cursor)
+            where_clauses.append(f"(c.created_at, c.id) < (${p_idx}, ${p_idx + 1})")
+            params.extend([c_ts, c_id])
+            p_idx += 2
+            where_sql = " AND ".join(where_clauses)
+            rows = await conn.fetch(
+                f"""
+                SELECT c.*,
+                       (SELECT COUNT(*) FROM case_alerts ca WHERE ca.case_id = c.id) AS alert_count
+                FROM cases c
+                WHERE {where_sql}
+                ORDER BY c.created_at DESC, c.id DESC
+                LIMIT ${p_idx};
+                """,
+                *params,
+                limit + 1,
+            )
+        else:
+            safe_offset = validate_legacy_offset(offset)
+            where_sql = " AND ".join(where_clauses)
+            rows = await conn.fetch(
+                f"""
+                SELECT c.*,
+                       (SELECT COUNT(*) FROM case_alerts ca WHERE ca.case_id = c.id) AS alert_count
+                FROM cases c
+                WHERE {where_sql}
+                ORDER BY c.created_at DESC, c.id DESC
+                LIMIT ${p_idx} OFFSET ${p_idx + 1};
+                """,
+                *params,
+                limit,
+                safe_offset,
+            )
 
     return [
         {

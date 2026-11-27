@@ -39,6 +39,7 @@ def _escape_ilike(val: str) -> str:
 async def list_customers(
     page: int = Query(default=1, ge=1, le=1000),
     limit: int = Query(default=25, ge=1, le=100),
+    cursor: Optional[str] = Query(None, max_length=512, description="Opaque keyset pagination cursor"),
     search: Optional[str] = Query(None, max_length=200, description="Search by name, account number, or BIC"),
     risk_tier: Optional[str] = Query(None, max_length=32, description="Filter by risk tier (LOW, MEDIUM, HIGH, CRITICAL)"),
     status: Optional[str] = Query(None, max_length=32, description="Account status (ACTIVE, FROZEN, EDD_REQUIRED)"),
@@ -46,6 +47,8 @@ async def list_customers(
     _rate_limit=Depends(RateLimiter(limit=60, window=60)),
 ):
     """Lists customer accounts with aggregated risk status and search."""
+    from database.pagination import extract_next_cursor
+
     tenant_id = enforce_tenant_data_scope(current_user)
     offset = (page - 1) * limit
     total, rows = await list_customers_repo(
@@ -55,8 +58,14 @@ async def list_customers(
         search=search,
         risk_tier=risk_tier,
         account_status=status,
+        cursor=cursor,
         read_conn_factory=get_async_db_read_conn,
     )
+    if cursor:
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+    else:
+        has_more = (offset + len(rows)) < total
 
     items = [
         {
@@ -73,7 +82,15 @@ async def list_customers(
         }
         for r in rows
     ]
-    return {"items": items, "total": total, "page": page, "limit": limit}
+    next_cursor = extract_next_cursor(items, has_more=has_more, ts_field="created_at", id_field="id")
+    return {
+        "items": items,
+        "total": total if total >= 0 else None,
+        "page": page,
+        "limit": limit,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    }
 
 
 @router.post("/pkyc/rescreen-delta")

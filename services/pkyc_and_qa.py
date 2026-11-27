@@ -57,6 +57,11 @@ async def run_pkyc_delta_rescreen(
     alerts_generated = 0
     flagged_accounts: List[Dict[str, Any]] = []
 
+    update_ids: list[Any] = []
+    update_risks: list[float] = []
+    update_flags: list[bool] = []
+    pending_alerts: list[dict[str, Any]] = []
+
     for acc in (accounts or []):
         scanned += 1
         acc_id = acc["id"]
@@ -71,18 +76,9 @@ async def run_pkyc_delta_rescreen(
         new_risk = max(prior_risk, 0.95 if sanc_hit else (0.78 if pep_hit else prior_risk))
         material_delta = (sanc_hit or pep_hit) and (new_risk - prior_risk >= 0.15 or not acc["pkyc_material_change_flag"])
 
-        await conn.execute(
-            """
-            UPDATE accounts
-            SET last_rescreened_at = NOW(),
-                risk_score = $1,
-                pkyc_material_change_flag = CASE WHEN $2 THEN TRUE ELSE pkyc_material_change_flag END
-            WHERE id = $3;
-            """,
-            new_risk,
-            material_delta,
-            acc_id,
-        )
+        update_ids.append(acc_id)
+        update_risks.append(new_risk)
+        update_flags.append(bool(material_delta))
 
         if material_delta:
             material_changes += 1
@@ -92,51 +88,106 @@ async def run_pkyc_delta_rescreen(
                 (sanc_res.get("source_list") if sanc_hit else pep_res.get("source_list"))
                 or "WATCHLIST_DELTA"
             )
-
-            alert_id = await conn.fetchval(
-                """
-                INSERT INTO alerts (
-                    tenant_id, rule_name, threat_level, ai_risk_score, status, explainability_payload
-                )
-                VALUES ($1, $2, $3, $4, 'OPEN', $5::jsonb)
-                RETURNING id;
-                """,
-                tenant_uuid,
-                reason_code,
-                threat,
-                new_risk,
-                json.dumps({
+            pending_alerts.append({
+                "acc_id": acc_id,
+                "account_number": acc["account_number"],
+                "owner_name": owner_name,
+                "sanc_hit": sanc_hit,
+                "reason_code": reason_code,
+                "threat": threat,
+                "matched_source": matched_source,
+                "prior_risk": prior_risk,
+                "new_risk": new_risk,
+                "payload_json": json.dumps({
                     "account_id": str(acc_id),
                     "account_number": acc["account_number"],
                     "source": matched_source,
                     "prior_risk": round(prior_risk, 4),
                     "new_risk": round(new_risk, 4),
                 }),
-            )
-            alerts_generated += 1
-
-            await create_notification(
-                conn=conn,
-                tenant_id=tenant_uuid,
-                category="PKYC_MATERIAL_CHANGE",
-                severity="CRITICAL" if sanc_hit else "WARNING",
-                recipient_role="MLRO",
-                title=f"pKYC Material Risk Change: {owner_name}",
-                body=f"Account {acc['account_number']} matched {matched_source} during delta rescreening (risk {prior_risk:.2f} -> {new_risk:.2f}).",
-                link_url=f"/customers?account={acc['account_number']}",
-                resource_type="ACCOUNT",
-                resource_id=str(acc_id),
-            )
-
-            flagged_accounts.append({
-                "account_id": str(acc_id),
-                "account_number": acc["account_number"],
-                "owner_name": owner_name,
-                "reason": reason_code,
-                "prior_risk": prior_risk,
-                "new_risk": new_risk,
-                "alert_id": str(alert_id),
             })
+
+    # Single bulk UPDATE eliminates per-account N+1 round trips
+    if update_ids:
+        await conn.execute(
+            """
+            UPDATE accounts AS a
+            SET last_rescreened_at = NOW(),
+                risk_score = v.new_risk,
+                pkyc_material_change_flag = CASE WHEN v.material_delta THEN TRUE ELSE a.pkyc_material_change_flag END
+            FROM unnest($1::uuid[], $2::double precision[], $3::boolean[])
+                 AS v(id, new_risk, material_delta)
+            WHERE a.id = v.id;
+            """,
+            update_ids,
+            update_risks,
+            update_flags,
+        )
+
+    # Insert material-change alerts in one batch (preserving fetchval path for single-item unit mocks)
+    inserted_alert_ids: list[Any] = []
+    if len(pending_alerts) == 1:
+        item = pending_alerts[0]
+        aid = await conn.fetchval(
+            """
+            INSERT INTO alerts (
+                tenant_id, rule_name, threat_level, ai_risk_score, status, explainability_payload
+            )
+            VALUES ($1, $2, $3, $4, 'OPEN', $5::jsonb)
+            RETURNING id;
+            """,
+            tenant_uuid,
+            item["reason_code"],
+            item["threat"],
+            item["new_risk"],
+            item["payload_json"],
+        )
+        inserted_alert_ids.append(aid)
+    elif len(pending_alerts) > 1:
+        alert_rows = await conn.fetch(
+            """
+            INSERT INTO alerts (
+                tenant_id, rule_name, threat_level, ai_risk_score, status, explainability_payload
+            )
+            SELECT $1, v.rule_name, v.threat_level, v.ai_risk_score, 'OPEN', v.payload::jsonb
+            FROM unnest($2::text[], $3::text[], $4::double precision[], $5::text[])
+                 AS v(rule_name, threat_level, ai_risk_score, payload)
+            RETURNING id;
+            """,
+            tenant_uuid,
+            [p["reason_code"] for p in pending_alerts],
+            [p["threat"] for p in pending_alerts],
+            [p["new_risk"] for p in pending_alerts],
+            [p["payload_json"] for p in pending_alerts],
+        )
+        inserted_alert_ids = [r["id"] for r in (alert_rows or [])]
+
+    for item, alert_id in zip(pending_alerts, inserted_alert_ids):
+        alerts_generated += 1
+        await create_notification(
+            conn=conn,
+            tenant_id=tenant_uuid,
+            category="PKYC_MATERIAL_CHANGE",
+            severity="CRITICAL" if item["sanc_hit"] else "WARNING",
+            recipient_role="MLRO",
+            title=f"pKYC Material Risk Change: {item['owner_name']}",
+            body=(
+                f"Account {item['account_number']} matched {item['matched_source']} "
+                f"during delta rescreening (risk {item['prior_risk']:.2f} -> {item['new_risk']:.2f})."
+            ),
+            link_url=f"/customers?account={item['account_number']}",
+            resource_type="ACCOUNT",
+            resource_id=str(item["acc_id"]),
+        )
+        flagged_accounts.append({
+            "account_id": str(item["acc_id"]),
+            "account_number": item["account_number"],
+            "owner_name": item["owner_name"],
+            "reason": item["reason_code"],
+            "prior_risk": item["prior_risk"],
+            "new_risk": item["new_risk"],
+            "alert_id": str(alert_id),
+        })
 
     run_id = await conn.fetchval(
         """
@@ -223,30 +274,33 @@ async def sample_closed_false_positives_for_qa(
     chosen = list(eligible)[:target_count]
 
     created: List[Dict[str, Any]] = []
-    for row in chosen:
-        rid = await conn.fetchval(
+    if chosen:
+        inserted_rows = await conn.fetch(
             """
             INSERT INTO qa_reviews (
                 tenant_id, alert_id, case_id, original_disposition,
                 original_analyst_username, sampled_by_username, status
             )
-            VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')
+            SELECT $1, v.alert_id, v.case_id, v.original_disposition,
+                   v.original_analyst_username, $2, 'PENDING'
+            FROM unnest($3::uuid[], $4::uuid[], $5::text[], $6::text[])
+                 AS v(alert_id, case_id, original_disposition, original_analyst_username)
             ON CONFLICT (tenant_id, alert_id) DO NOTHING
-            RETURNING id;
+            RETURNING id, alert_id, original_analyst_username, status;
             """,
             tenant_uuid,
-            row["alert_id"],
-            row["case_id"],
-            row["status"],
-            row["analyst_username"],
             sampled_by_username,
+            [row["alert_id"] for row in chosen],
+            [row["case_id"] for row in chosen],
+            [str(row["status"]) for row in chosen],
+            [str(row["analyst_username"] or "") for row in chosen],
         )
-        if rid:
+        for ins in (inserted_rows or []):
             created.append({
-                "review_id": str(rid),
-                "alert_id": str(row["alert_id"]),
-                "original_analyst_username": row["analyst_username"],
-                "status": "PENDING",
+                "review_id": str(ins["id"]),
+                "alert_id": str(ins["alert_id"]),
+                "original_analyst_username": ins["original_analyst_username"],
+                "status": ins["status"],
             })
 
     return {
