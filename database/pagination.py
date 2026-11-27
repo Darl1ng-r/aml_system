@@ -48,11 +48,19 @@ def encode_keyset_cursor(sort_ts: datetime | str, row_id: str | uuid.UUID) -> st
 
 
 def decode_keyset_cursor(
-    cursor: str, *, require_uuid: bool = True
-) -> tuple[datetime, uuid.UUID | str]:
-    """Decodes and strictly validates an opaque keyset cursor, raising HTTP 400 if malformed."""
+    cursor: str,
+    *,
+    require_uuid: bool = True,
+    id_type: str | None = None,
+) -> tuple[datetime, uuid.UUID | int | str]:
+    """
+    Decodes and strictly validates an opaque keyset cursor, raising HTTP 400 if malformed.
+    Supports `id_type` of `"uuid"` (default when `require_uuid=True`), `"int"` (`BIGINT`
+    primary keys like `audit_log.id`), or `"str"` (`VARCHAR` primary keys like `str_batches.id`).
+    """
     if not cursor or not isinstance(cursor, str) or len(cursor) > 512:
         raise HTTPException(status_code=400, detail="Malformed pagination cursor.")
+    effective_type = id_type or ("uuid" if require_uuid else "str")
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         raw = base64.urlsafe_b64decode(padded.encode("ascii"))
@@ -68,7 +76,13 @@ def decode_keyset_cursor(
         raw_id = str(data["i"]).strip()
         if not raw_id:
             raise ValueError("Empty cursor id")
-        row_id: uuid.UUID | str = uuid.UUID(raw_id) if require_uuid else raw_id
+        row_id: uuid.UUID | int | str
+        if effective_type == "uuid":
+            row_id = uuid.UUID(raw_id)
+        elif effective_type == "int":
+            row_id = int(raw_id)
+        else:
+            row_id = raw_id
         return sort_ts, row_id
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid or corrupted pagination cursor.")

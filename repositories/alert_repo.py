@@ -736,11 +736,17 @@ async def bulk_claim_or_assign_alerts_atomic(
 
         updated_rows = await conn.fetch(
             """
+            WITH locked AS (
+                SELECT id FROM alerts
+                WHERE id = ANY($2::uuid[])
+                  AND status NOT IN ('CLOSED_SAR', 'CLOSED_FALSE_POSITIVE', 'CLOSED')
+                ORDER BY id ASC
+                FOR UPDATE
+            )
             UPDATE alerts
             SET assigned_officer_id = $1,
                 status = CASE WHEN status = 'OPEN' THEN 'IN_REVIEW' ELSE status END
-            WHERE id = ANY($2::uuid[])
-              AND status NOT IN ('CLOSED_SAR', 'CLOSED_FALSE_POSITIVE', 'CLOSED')
+            WHERE id IN (SELECT id FROM locked)
             RETURNING id;
             """,
             target_user_id,

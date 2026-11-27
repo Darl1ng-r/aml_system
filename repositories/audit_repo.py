@@ -100,7 +100,7 @@ async def list_audit_logs_repo(
     factory = _read_factory(read_conn_factory)
     async with factory(tenant_id=tenant_id) as conn:
         if cursor:
-            c_ts, c_id = decode_keyset_cursor(cursor)
+            c_ts, c_id = decode_keyset_cursor(cursor, id_type="int")
             where_clause = f"{where_clause} AND (created_at, id) < (${p_idx}, ${p_idx + 1})"
             params.extend([c_ts, c_id])
             p_idx += 2
