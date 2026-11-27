@@ -130,6 +130,12 @@ export interface Schemas {
     uploaded_by?: string | null;
     uploaded_by_name: string;
   };
+  EvidencePresignUploadRequest: {
+    content_type?: string | null;
+    expires_in?: number;
+    file_size: number;
+    filename: string;
+  };
   FinCENSubmissionRequest: {
     alert_id: string;
     draft_id?: string | null;
@@ -427,8 +433,10 @@ export type ApiEndpoints = {
   "/api/v1/cases": "GET" | "POST";
   "/api/v1/cases/correlate": "POST";
   "/api/v1/cases/{case_id}/evidence": "GET" | "POST";
+  "/api/v1/cases/{case_id}/evidence/presign-upload": "POST";
   "/api/v1/cases/{case_id}/evidence/{evidence_id}": "DELETE";
   "/api/v1/cases/{case_id}/evidence/{evidence_id}/download": "GET";
+  "/api/v1/cases/{case_id}/evidence/{evidence_id}/presign-download": "GET";
   "/api/v1/cases/{id}": "GET" | "PATCH";
   "/api/v1/cases/{id}/close": "POST";
   "/api/v1/cases/{id}/notes": "POST";

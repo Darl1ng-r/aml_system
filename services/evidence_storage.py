@@ -17,13 +17,18 @@ import logging
 import os
 import struct
 from datetime import datetime, timedelta, timezone
-from typing import Protocol, Tuple
+from typing import Any, Protocol, Tuple
 from urllib.parse import quote, urlparse
 
 import httpx
 from config import settings
 
 logger = logging.getLogger("aml.evidence_storage")
+
+# Pre-signed S3 URL expiry bounds (1 minute min, 15 minutes max)
+PRESIGN_MIN_EXPIRY_SECONDS = 60
+PRESIGN_MAX_EXPIRY_SECONDS = 900
+PRESIGN_DEFAULT_EXPIRY_SECONDS = 300
 
 # Standard AV industry EICAR test string (safe non-malicious detection verifier)
 EICAR_SIGNATURE = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
@@ -178,18 +183,8 @@ class S3EvidenceBackend:
             worm_enabled if worm_enabled is not None else bool(getattr(settings, "evidence_worm_enabled", False))
         )
 
-    def _build_url_and_headers(
-        self,
-        method: str,
-        s3_key: str,
-        payload: bytes = b"",
-        extra_headers: dict[str, str] | None = None,
-    ) -> tuple[str, dict[str, str]]:
-        now = datetime.now(timezone.utc)
-        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
-        date_stamp = now.strftime("%Y%m%d")
+    def _resolve_object_url_parts(self, s3_key: str) -> tuple[str, str, str]:
         encoded_key = quote(s3_key.lstrip("/"), safe="/-_.~")
-
         if self.endpoint:
             base = self.endpoint
             url = f"{base}/{self.bucket}/{encoded_key}"
@@ -200,6 +195,19 @@ class S3EvidenceBackend:
             host = f"{self.bucket}.s3.{self.region}.amazonaws.com"
             canonical_uri = f"/{encoded_key}"
             url = f"https://{host}{canonical_uri}"
+        return url, host, canonical_uri
+
+    def _build_url_and_headers(
+        self,
+        method: str,
+        s3_key: str,
+        payload: bytes = b"",
+        extra_headers: dict[str, str] | None = None,
+    ) -> tuple[str, dict[str, str]]:
+        now = datetime.now(timezone.utc)
+        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+        date_stamp = now.strftime("%Y%m%d")
+        url, host, canonical_uri = self._resolve_object_url_parts(s3_key)
 
         payload_hash = hashlib.sha256(payload).hexdigest()
         headers: dict[str, str] = {
@@ -230,6 +238,138 @@ class S3EvidenceBackend:
             f"SignedHeaders={signed_headers}, Signature={signature}"
         )
         return url, out_headers
+
+    def _generate_presigned_url(
+        self,
+        method: str,
+        s3_key: str,
+        *,
+        expires_in: int = PRESIGN_DEFAULT_EXPIRY_SECONDS,
+        signed_headers_map: dict[str, str] | None = None,
+        extra_query_params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Generates a pure-Python AWS Signature V4 query-string pre-signed URL (S3 / MinIO / GCS interop)."""
+        if not self.bucket:
+            raise ValueError("S3 evidence bucket is not configured.")
+        if not self.access_key or not self.secret_key:
+            raise ValueError("S3 evidence credentials are required to mint pre-signed URLs.")
+
+        ttl = max(PRESIGN_MIN_EXPIRY_SECONDS, min(PRESIGN_MAX_EXPIRY_SECONDS, int(expires_in)))
+        now = datetime.now(timezone.utc)
+        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+        date_stamp = now.strftime("%Y%m%d")
+        credential_scope = f"{date_stamp}/{self.region}/s3/aws4_request"
+
+        base_url, host, canonical_uri = self._resolve_object_url_parts(s3_key)
+        headers_to_sign: dict[str, str] = {"host": host}
+        if signed_headers_map:
+            for k, v in signed_headers_map.items():
+                headers_to_sign[k.lower().strip()] = str(v).strip()
+
+        sorted_header_keys = sorted(headers_to_sign.keys())
+        canonical_headers = "".join(f"{k}:{headers_to_sign[k]}\n" for k in sorted_header_keys)
+        signed_headers = ";".join(sorted_header_keys)
+
+        query_params: dict[str, str] = {
+            "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+            "X-Amz-Credential": f"{self.access_key}/{credential_scope}",
+            "X-Amz-Date": amz_date,
+            "X-Amz-Expires": str(ttl),
+            "X-Amz-SignedHeaders": signed_headers,
+        }
+        if extra_query_params:
+            for k, v in extra_query_params.items():
+                query_params[str(k)] = str(v)
+
+        canonical_querystring = "&".join(
+            f"{quote(k, safe='-_.~')}={quote(query_params[k], safe='-_.~')}"
+            for k in sorted(query_params.keys())
+        )
+        canonical_request = (
+            f"{method}\n{canonical_uri}\n{canonical_querystring}\n"
+            f"{canonical_headers}\n{signed_headers}\nUNSIGNED-PAYLOAD"
+        )
+        string_to_sign = (
+            f"AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n"
+            f"{hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()}"
+        )
+        signing_key = _sigv4_signing_key(self.secret_key, date_stamp, self.region, "s3")
+        signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        signed_url = f"{base_url}?{canonical_querystring}&X-Amz-Signature={signature}"
+        return {
+            "url": signed_url,
+            "method": method,
+            "storage_key": f"s3://{self.bucket}/{s3_key}",
+            "object_key": s3_key,
+            "expires_in": ttl,
+            "expires_at": (now + timedelta(seconds=ttl)).isoformat(),
+            "required_headers": {k: v for k, v in headers_to_sign.items() if k != "host"},
+        }
+
+    def generate_presigned_put_url(
+        self,
+        tenant_id: str,
+        object_key: str,
+        content_type: str,
+        *,
+        expires_in: int = PRESIGN_DEFAULT_EXPIRY_SECONDS,
+    ) -> dict[str, Any]:
+        """Mints a short-lived SigV4 pre-signed PUT URL scoped strictly to the tenant namespace with SSE enforcement."""
+        clean_tenant = str(tenant_id or "").strip()
+        clean_obj = str(object_key or "").strip()
+        if not clean_tenant or "/" in clean_tenant or "\\" in clean_tenant or ".." in clean_tenant:
+            raise ValueError("Invalid tenant_id for pre-signed S3 evidence upload.")
+        if not clean_obj or "/" in clean_obj or "\\" in clean_obj or ".." in clean_obj or "\x00" in clean_obj:
+            raise ValueError("Invalid object_key for pre-signed S3 evidence upload.")
+
+        s3_key = f"evidence/{clean_tenant}/{clean_obj}"
+        signed_headers_map: dict[str, str] = {"content-type": content_type}
+        if self.kms_key_id:
+            signed_headers_map["x-amz-server-side-encryption"] = "aws:kms"
+            signed_headers_map["x-amz-server-side-encryption-aws-kms-key-id"] = self.kms_key_id
+        else:
+            signed_headers_map["x-amz-server-side-encryption"] = "AES256"
+
+        return self._generate_presigned_url(
+            "PUT",
+            s3_key,
+            expires_in=expires_in,
+            signed_headers_map=signed_headers_map,
+        )
+
+    def generate_presigned_get_url(
+        self,
+        tenant_id: str,
+        storage_key: str,
+        *,
+        expires_in: int = PRESIGN_DEFAULT_EXPIRY_SECONDS,
+        download_filename: str | None = None,
+    ) -> dict[str, Any]:
+        """Mints a short-lived SigV4 pre-signed GET URL after verifying strict tenant & bucket boundaries."""
+        clean_tenant = str(tenant_id or "").strip()
+        if not clean_tenant:
+            raise ValueError("Invalid tenant_id for pre-signed S3 evidence download.")
+
+        prefix = f"s3://{self.bucket}/"
+        if str(storage_key).startswith("s3://") and not str(storage_key).startswith(prefix):
+            raise ValueError("S3 evidence key targets a different bucket.")
+        s3_key = str(storage_key).replace(prefix, "", 1)
+        if not s3_key.startswith(f"evidence/{clean_tenant}/") or ".." in s3_key or "\x00" in s3_key:
+            raise ValueError("S3 evidence key escapes tenant namespace.")
+
+        extra_query: dict[str, str] | None = None
+        if download_filename:
+            safe_name = os.path.basename(download_filename).replace('"', "").replace("\r", "").replace("\n", "")
+            if safe_name:
+                extra_query = {"response-content-disposition": f'attachment; filename="{safe_name}"'}
+
+        return self._generate_presigned_url(
+            "GET",
+            s3_key,
+            expires_in=expires_in,
+            extra_query_params=extra_query,
+        )
 
     async def put_object(self, tenant_id: str, object_key: str, data: bytes, content_type: str) -> str:
         s3_key = f"evidence/{tenant_id}/{object_key}"
@@ -310,7 +450,14 @@ DEFAULT_LOCAL_EVIDENCE_DIR = os.path.abspath(
 
 
 def get_evidence_storage_backend(local_base_dir: str | None = None) -> EvidenceStorageBackend:
-    mode = str(getattr(settings, "evidence_storage_backend", "local")).lower()
-    if mode == "s3" and getattr(settings, "evidence_s3_bucket", ""):
+    mode = str(getattr(settings, "evidence_storage_backend", "local")).strip().lower()
+    bucket = str(getattr(settings, "evidence_s3_bucket", "") or "").strip()
+    if mode == "s3" and bucket:
         return S3EvidenceBackend()
+    if getattr(settings, "is_hardened", settings.is_production):
+        raise RuntimeError(
+            "CRITICAL: Local pod filesystem evidence storage is forbidden in hardened environments "
+            "(production/staging). Configure EVIDENCE_STORAGE_BACKEND=s3 and EVIDENCE_S3_BUCKET "
+            "to keep the application tier 100% stateless."
+        )
     return LocalEvidenceBackend(local_base_dir or DEFAULT_LOCAL_EVIDENCE_DIR)

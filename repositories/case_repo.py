@@ -584,6 +584,42 @@ async def insert_case_evidence_atomic(
         return resolved_case_uuid
 
 
+async def verify_case_exists_for_evidence_repo(
+    *,
+    raw_uuid: uuid.UUID,
+    tenant_id: str,
+    current_user: Mapping[str, Any],
+    conn_factory: Any = None,
+) -> uuid.UUID:
+    """Verifies a case (or linked alert's case) exists within the caller's tenant before minting pre-signed URLs."""
+    factory = conn_factory or get_async_db_read_conn
+    tenant_uuid = uuid.UUID(str(tenant_id))
+    async with factory(tenant_id=tenant_id) as conn:
+        existing_case = await conn.fetchval(
+            "SELECT id FROM cases WHERE id = $1 AND tenant_id = $2;",
+            raw_uuid,
+            tenant_uuid,
+        )
+        if isinstance(existing_case, uuid.UUID):
+            return existing_case
+
+        linked_case = await conn.fetchval(
+            """
+            SELECT ca.case_id
+            FROM case_alerts ca
+            JOIN cases c ON c.id = ca.case_id
+            WHERE ca.alert_id = $1 AND c.tenant_id = $2
+            LIMIT 1;
+            """,
+            raw_uuid,
+            tenant_uuid,
+        )
+        if isinstance(linked_case, uuid.UUID):
+            return linked_case
+
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=CASE_NOT_FOUND)
+
+
 async def fetch_case_evidence_for_download_repo(
     *,
     raw_uuid: uuid.UUID,

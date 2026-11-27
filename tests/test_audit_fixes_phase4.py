@@ -112,4 +112,4 @@ def test_kubernetes_manifests_validity():
         pdb = yaml.safe_load(f)
     assert pdb["kind"] == "PodDisruptionBudget"
     assert pdb["metadata"]["name"] == "aml-fastapi-pdb"
-    assert pdb["spec"]["minAvailable"] == 1
+    assert pdb["spec"]["minAvailable"] == "50%"

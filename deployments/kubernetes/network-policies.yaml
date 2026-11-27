@@ -156,6 +156,26 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: allow-apps-to-redis-cache
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aml-redis-cache
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector: { matchLabels: { app: aml-fastapi-app } }
+    - podSelector: { matchLabels: { app: aml-scoring-worker } }
+    - podSelector: { matchLabels: { app: aml-outbox-relay } }
+    - podSelector: { matchLabels: { app: aml-sync-worker } }
+    ports:
+    - { protocol: TCP, port: 6379 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: allow-apps-to-elasticsearch
   namespace: aml-system
 spec:
@@ -242,6 +262,8 @@ spec:
     ports: [{ protocol: TCP, port: 7687 }, { protocol: TCP, port: 7474 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
     ports: [{ protocol: TCP, port: 6379 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis-cache } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
   - to: [{ podSelector: { matchLabels: { app: aml-elasticsearch } } }]
     ports: [{ protocol: TCP, port: 9200 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
@@ -290,6 +312,8 @@ spec:
     ports: [{ protocol: TCP, port: 5432 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
     ports: [{ protocol: TCP, port: 6379 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis-cache } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
     ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]
   - to:
@@ -335,6 +359,8 @@ spec:
     ports: [{ protocol: TCP, port: 7687 }, { protocol: TCP, port: 7474 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
     ports: [{ protocol: TCP, port: 6379 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis-cache } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
     ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]
   - to:
@@ -366,6 +392,8 @@ spec:
   - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
     ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis-cache } } }]
     ports: [{ protocol: TCP, port: 6379 }]
   - to:
     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }

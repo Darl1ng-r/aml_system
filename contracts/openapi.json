@@ -822,6 +822,48 @@
         "title": "EvidenceMetadata",
         "type": "object"
       },
+      "EvidencePresignUploadRequest": {
+        "properties": {
+          "content_type": {
+            "anyOf": [
+              {
+                "maxLength": 150,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "application/octet-stream",
+            "title": "Content Type"
+          },
+          "expires_in": {
+            "default": 300,
+            "maximum": 900.0,
+            "minimum": 60.0,
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "file_size": {
+            "maximum": 26214400.0,
+            "minimum": 1.0,
+            "title": "File Size",
+            "type": "integer"
+          },
+          "filename": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename",
+          "file_size"
+        ],
+        "title": "EvidencePresignUploadRequest",
+        "type": "object"
+      },
       "FinCENSubmissionRequest": {
         "properties": {
           "alert_id": {
@@ -7417,6 +7459,78 @@
         ]
       }
     },
+    "/api/v1/cases/{case_id}/evidence/presign-upload": {
+      "post": {
+        "description": "Mints a short-lived SigV4 pre-signed S3 PUT URL for direct browser/client upload,\noffloading large evidence binary transfers from stateless FastAPI pods.",
+        "operationId": "presign_evidence_upload_api_v1_cases__case_id__evidence_presign_upload_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvidencePresignUploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Presign Evidence Upload",
+        "tags": [
+          "Case Evidence Locker"
+        ]
+      }
+    },
     "/api/v1/cases/{case_id}/evidence/{evidence_id}": {
       "delete": {
         "description": "Removes an evidence attachment from a case (authorized investigator/MLRO only).",
@@ -7554,6 +7668,89 @@
           }
         ],
         "summary": "Download Case Evidence",
+        "tags": [
+          "Case Evidence Locker"
+        ]
+      }
+    },
+    "/api/v1/cases/{case_id}/evidence/{evidence_id}/presign-download": {
+      "get": {
+        "description": "Mints a short-lived SigV4 pre-signed S3 GET URL for direct object-store downloads,\nkeeping stateless FastAPI pods out of the large-file data plane.",
+        "operationId": "presign_evidence_download_api_v1_cases__case_id__evidence__evidence_id__presign_download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "title": "Case Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "evidence_id",
+            "required": true,
+            "schema": {
+              "title": "Evidence Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expires_in",
+            "required": false,
+            "schema": {
+              "default": 300,
+              "maximum": 900,
+              "minimum": 60,
+              "title": "Expires In",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Presign Evidence Download",
         "tags": [
           "Case Evidence Locker"
         ]
@@ -15286,7 +15483,7 @@
     },
     "/health/ready": {
       "get": {
-        "description": "Decoupled readiness probe failing fast (503) on event-loop saturation or DB/Redis outage.",
+        "description": "Decoupled readiness probe failing fast (503) during graceful drain, event-loop saturation, or DB/Redis outage.",
         "operationId": "readiness_probe_health_ready_get",
         "responses": {
           "200": {

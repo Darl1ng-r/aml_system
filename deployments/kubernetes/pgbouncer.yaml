@@ -28,6 +28,7 @@ spec:
         app: aml-pgbouncer
     spec:
       automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 35
       securityContext:
         runAsNonRoot: true
         runAsUser: 1001
@@ -79,6 +80,10 @@ spec:
           limits:
             cpu: "500m"
             memory: "256Mi"
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 8"]
         readinessProbe:
           tcpSocket:
             port: 6432

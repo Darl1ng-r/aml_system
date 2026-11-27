@@ -46,6 +46,7 @@ from services.rate_limiter import RateLimiter
 from services.siem_forwarder import validate_siem_destination_url
 from services.sso import (
     ALLOWED_SSO_ROLES,
+    SSOStateStoreUnavailableError,
     consume_sso_state,
     fetch_oidc_discovery,
     generate_pkce_pair,
@@ -253,17 +254,23 @@ async def sso_authorize(
     redirect_uri = _resolve_sso_redirect_uri(request, provider_id)
     state_binding = _sso_state_cookie_digest(state)
 
-    await store_sso_state(
-        state,
-        {
-            "provider_id": str(provider["id"]),
-            "tenant_id": str(provider["tenant_id"]),
-            "nonce": nonce,
-            "code_verifier": code_verifier,
-            "redirect_uri": redirect_uri,
-            "state_binding": state_binding,
-        },
-    )
+    try:
+        await store_sso_state(
+            state,
+            {
+                "provider_id": str(provider["id"]),
+                "tenant_id": str(provider["tenant_id"]),
+                "nonce": nonce,
+                "code_verifier": code_verifier,
+                "redirect_uri": redirect_uri,
+                "state_binding": state_binding,
+            },
+        )
+    except SSOStateStoreUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SSO authentication state store is temporarily unavailable.",
+        )
 
     params = urlencode(
         {
@@ -315,7 +322,13 @@ async def sso_callback(
     _rate_limit=Depends(RateLimiter(limit=30, window=60, ip_only=True)),
 ):
     """Completes OIDC PKCE callback with browser state-binding CSRF check and deterministic JIT provisioning."""
-    state_data = await consume_sso_state(state)
+    try:
+        state_data = await consume_sso_state(state)
+    except SSOStateStoreUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="SSO authentication state store is temporarily unavailable.",
+        )
     if not state_data or state_data.get("provider_id") != str(provider_id):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired SSO state token.")
 

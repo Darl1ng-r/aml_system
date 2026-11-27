@@ -307,6 +307,7 @@ _outbox_relay_task: Optional[asyncio.Task] = None
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     global _outbox_relay_task
+    health.reset_server_draining()
     await startup_db_clients(app_instance)
 
     # P2-21: Consistent single source of truth via settings.run_embedded_worker
@@ -337,6 +338,11 @@ async def lifespan(app_instance: FastAPI):
         )
 
     yield
+
+    # Immediately flip /health/ready -> 503 {"status": "draining"} while keeping /health/live -> 200
+    # so ingress/Service endpoints deregister this pod cleanly before resources close.
+    health.mark_server_draining()
+    logger.info("Server entering graceful drain mode (/health/ready -> 503).")
 
     # Stop Event-Loop Lag Watchdog, Storage Monitor & compute bulkhead executors cleanly
     if _storage_monitor_task is not None and not _storage_monitor_task.done():

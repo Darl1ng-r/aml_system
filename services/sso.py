@@ -87,14 +87,36 @@ def resolve_role_from_groups(
     return best_role or fallback
 
 
+class SSOStateStoreUnavailableError(RuntimeError):
+    """Raised in hardened environments when distributed State Redis is unavailable for OIDC PKCE state."""
+
+
 async def store_sso_state(state_token: str, payload: Dict[str, Any]) -> None:
-    """Persists single-use PKCE + nonce state in Redis (300s TTL) with bounded local fallback."""
+    """
+    Persists single-use PKCE + nonce state in distributed State Redis (300s TTL).
+    In hardened environments (production/staging), fails closed instead of writing
+    to single-pod in-process memory so multi-replica OIDC callbacks never split-brain.
+    """
+    from config import settings
+
+    is_hardened = bool(getattr(settings, "is_hardened", settings.is_production))
     try:
         redis = await get_async_redis_client()
         if redis:
             await redis.set(f"sso:state:{state_token}", json.dumps(payload), ex=SSO_STATE_TTL_SECONDS)
             return
+        if is_hardened:
+            raise SSOStateStoreUnavailableError(
+                "Distributed State Redis unavailable; refusing in-process OIDC state fallback in hardened mode."
+            )
+    except SSOStateStoreUnavailableError:
+        raise
     except Exception as exc:
+        if is_hardened:
+            logger.error("Fail-closed: Redis SSO state write failed in hardened mode: %s", exc)
+            raise SSOStateStoreUnavailableError(
+                "Distributed State Redis unavailable; cannot persist OIDC state in hardened mode."
+            ) from exc
         logger.debug(f"Redis SSO state write fallback: {exc}")
 
     _local_sso_states[state_token] = (time.monotonic() + SSO_STATE_TTL_SECONDS, payload)
@@ -104,13 +126,23 @@ async def store_sso_state(state_token: str, payload: Dict[str, Any]) -> None:
 
 
 async def consume_sso_state(state_token: str) -> Optional[Dict[str, Any]]:
-    """Atomically consumes a single-use SSO state entry (prevents CSRF & replay attacks)."""
+    """
+    Atomically consumes a single-use SSO state entry (prevents CSRF & replay attacks).
+    In hardened environments (production/staging), never consults process-local memory
+    and fails closed when State Redis is unreachable.
+    """
     if not state_token:
         return None
 
-    # Always pop local fallback first so a split-brain Redis timeout-after-write can NEVER allow replay
-    local_entry = _local_sso_states.pop(state_token, None)
-    local_payload = local_entry[1] if (local_entry and local_entry[0] >= time.monotonic()) else None
+    from config import settings
+
+    is_hardened = bool(getattr(settings, "is_hardened", settings.is_production))
+
+    local_payload: Optional[Dict[str, Any]] = None
+    if not is_hardened:
+        # Always pop local fallback first so a split-brain Redis timeout-after-write can NEVER allow replay
+        local_entry = _local_sso_states.pop(state_token, None)
+        local_payload = local_entry[1] if (local_entry and local_entry[0] >= time.monotonic()) else None
 
     try:
         redis = await get_async_redis_client()
@@ -124,7 +156,19 @@ async def consume_sso_state(state_token: str) -> Optional[Dict[str, Any]]:
                     await redis.delete(key)
             if raw:
                 return json.loads(raw)
+            return None if is_hardened else local_payload
+        if is_hardened:
+            raise SSOStateStoreUnavailableError(
+                "Distributed State Redis unavailable; refusing in-process OIDC state lookup in hardened mode."
+            )
+    except SSOStateStoreUnavailableError:
+        raise
     except Exception as exc:
+        if is_hardened:
+            logger.error("Fail-closed: Redis SSO state consume failed in hardened mode: %s", exc)
+            raise SSOStateStoreUnavailableError(
+                "Distributed State Redis unavailable; cannot validate OIDC state in hardened mode."
+            ) from exc
         logger.debug(f"Redis SSO state consume fallback: {exc}")
 
     return local_payload

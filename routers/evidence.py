@@ -12,7 +12,7 @@ import re
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from pydantic import BaseModel, Field
 
 from database.postgres import get_async_db_conn
@@ -24,6 +24,7 @@ from repositories.case_repo import (
     insert_case_evidence_atomic,
     list_case_evidence_repo,
     resolve_case_uuid_tx as _resolve_case_uuid,
+    verify_case_exists_for_evidence_repo,
 )
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.rate_limiter import RateLimiter
@@ -137,6 +138,13 @@ class EvidenceCreatePayload(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     tags: Optional[List[str]] = []
     content_type: Optional[str] = DEFAULT_CONTENT_TYPE
+
+
+class EvidencePresignUploadRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=255)
+    content_type: Optional[str] = Field(default=DEFAULT_CONTENT_TYPE, max_length=150)
+    file_size: int = Field(..., ge=1, le=MAX_EVIDENCE_BYTES)
+    expires_in: int = Field(default=300, ge=60, le=900)
 
 
 @router.get("", response_model=List[EvidenceMetadata])
@@ -318,6 +326,171 @@ async def upload_case_evidence(
             pass
         logger.exception("Failed to record evidence metadata")
         raise HTTPException(status_code=500, detail="Failed to record evidence.")
+
+
+@router.post("/presign-upload", status_code=status.HTTP_200_OK)
+async def presign_evidence_upload(
+    case_id: str,
+    payload: EvidencePresignUploadRequest,
+    current_user: dict = Depends(RoleChecker(["L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN"])),
+    _rate_limit=Depends(RateLimiter(limit=30, window=60)),
+):
+    """
+    Mints a short-lived SigV4 pre-signed S3 PUT URL for direct browser/client upload,
+    offloading large evidence binary transfers from stateless FastAPI pods.
+    """
+    try:
+        case_uuid = uuid.UUID(case_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid case ID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    safe_filename = _sanitize_evidence_filename(payload.filename)
+    safe_content_type = _validate_content_type(payload.content_type)
+
+    resolved_case_uuid = await verify_case_exists_for_evidence_repo(
+        raw_uuid=case_uuid,
+        tenant_id=str(tenant_id),
+        current_user=current_user,
+    )
+
+    from services.evidence_storage import S3EvidenceBackend, get_evidence_storage_backend
+
+    try:
+        backend = get_evidence_storage_backend(_ensure_local_evidence_dir())
+    except RuntimeError as err:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+
+    if getattr(backend, "backend_name", "") != "s3" or not callable(
+        getattr(backend, "generate_presigned_put_url", None)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Direct pre-signed uploads require S3-compatible object storage (EVIDENCE_STORAGE_BACKEND=s3).",
+        )
+
+    evidence_id = uuid.uuid4()
+    object_key = f"{evidence_id}_{safe_filename}"
+    try:
+        signed = backend.generate_presigned_put_url(
+            str(tenant_id),
+            object_key,
+            safe_content_type,
+            expires_in=payload.expires_in,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+
+    log_audit_event(
+        event_type="CASE_EVIDENCE_PRESIGN_UPLOAD",
+        actor_id=str(current_user.get("id", "")),
+        actor_role=current_user.get("role", "ANALYST"),
+        action="PRESIGN_UPLOAD_EVIDENCE",
+        resource_type="CASE",
+        resource_id=str(resolved_case_uuid),
+        tenant_id=tenant_id,
+        details={
+            "evidence_id": str(evidence_id),
+            "filename": safe_filename,
+            "content_type": safe_content_type,
+            "declared_size": payload.file_size,
+            "expires_in": signed["expires_in"],
+        },
+    )
+
+    return {
+        "evidence_id": str(evidence_id),
+        "case_id": str(resolved_case_uuid),
+        "filename": safe_filename,
+        "upload_url": signed["url"],
+        "method": signed["method"],
+        "storage_key": signed["storage_key"],
+        "object_key": signed["object_key"],
+        "required_headers": signed["required_headers"],
+        "expires_in": signed["expires_in"],
+        "expires_at": signed["expires_at"],
+        "max_bytes": MAX_EVIDENCE_BYTES,
+    }
+
+
+@router.get("/{evidence_id}/presign-download", status_code=status.HTTP_200_OK)
+async def presign_evidence_download(
+    case_id: str,
+    evidence_id: str,
+    expires_in: int = Query(default=300, ge=60, le=900),
+    current_user: dict = Depends(RoleChecker(["L1_ANALYST", "L2_INVESTIGATOR", "ANALYST", "MLRO", "ADMIN", "AUDITOR"])),
+    _rate_limit=Depends(RateLimiter(limit=60, window=60)),
+):
+    """
+    Mints a short-lived SigV4 pre-signed S3 GET URL for direct object-store downloads,
+    keeping stateless FastAPI pods out of the large-file data plane.
+    """
+    try:
+        raw_uuid = uuid.UUID(case_id)
+        ev_uuid = uuid.UUID(evidence_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format")
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    row = await fetch_case_evidence_for_download_repo(
+        raw_uuid=raw_uuid,
+        ev_uuid=ev_uuid,
+        tenant_id=str(tenant_id),
+        current_user=current_user,
+        conn_factory=get_async_db_conn,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Evidence not found")
+
+    storage_key = row["storage_key"]
+    backend_type = (row.get("storage_backend") if hasattr(row, "get") else None) or (
+        "s3" if str(storage_key).startswith("s3://") else "local"
+    )
+    if backend_type != "s3":
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Pre-signed downloads are only available for S3-backed evidence artifacts.",
+        )
+
+    from services.evidence_storage import S3EvidenceBackend
+
+    safe_download_name = _sanitize_evidence_filename(row["filename"])
+    try:
+        backend = S3EvidenceBackend()
+        signed = backend.generate_presigned_get_url(
+            str(tenant_id),
+            storage_key,
+            expires_in=expires_in,
+            download_filename=safe_download_name,
+        )
+    except ValueError as err:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(err))
+
+    log_audit_event(
+        event_type="CASE_EVIDENCE_PRESIGN_DOWNLOAD",
+        actor_id=str(current_user.get("id", "")),
+        actor_role=current_user.get("role", "ANALYST"),
+        action="PRESIGN_DOWNLOAD_EVIDENCE",
+        resource_type="CASE",
+        resource_id=case_id,
+        tenant_id=tenant_id,
+        details={
+            "evidence_id": evidence_id,
+            "filename": safe_download_name,
+            "expires_in": signed["expires_in"],
+        },
+    )
+
+    return {
+        "evidence_id": evidence_id,
+        "case_id": case_id,
+        "filename": safe_download_name,
+        "download_url": signed["url"],
+        "method": signed["method"],
+        "sha256_digest": row.get("sha256_digest") if hasattr(row, "get") else None,
+        "expires_in": signed["expires_in"],
+        "expires_at": signed["expires_at"],
+    }
 
 
 @router.get("/{evidence_id}/download")

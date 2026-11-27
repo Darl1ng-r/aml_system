@@ -29,6 +29,24 @@ router = APIRouter(tags=["Health"])
 _HEALTH_CACHE_TTL_SECONDS = 5.0
 _health_cache_ts: float = 0.0
 _health_cache_result: Optional[tuple[bool, dict[str, dict[str, Any]]]] = None
+_server_draining: bool = False
+
+
+def mark_server_draining() -> None:
+    """Marks the worker as draining so /health/ready immediately returns 503 during graceful shutdown."""
+    global _server_draining
+    _server_draining = True
+
+
+def reset_server_draining() -> None:
+    """Clears the draining flag on startup (and between test runs)."""
+    global _server_draining
+    _server_draining = False
+
+
+def is_server_draining() -> bool:
+    """Returns True once SIGTERM / lifespan shutdown has initiated graceful draining."""
+    return _server_draining
 
 
 async def is_authenticated_health_request(
@@ -73,7 +91,10 @@ async def liveness():
 
 @router.get("/health/ready")
 async def readiness_probe():
-    """Decoupled readiness probe failing fast (503) on event-loop saturation or DB/Redis outage."""
+    """Decoupled readiness probe failing fast (503) during graceful drain, event-loop saturation, or DB/Redis outage."""
+    if _server_draining:
+        return JSONResponse(content={"status": "draining"}, status_code=503)
+
     try:
         from observability.event_loop_monitor import (
             is_event_loop_saturated,
