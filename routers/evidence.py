@@ -358,8 +358,12 @@ async def presign_evidence_upload(
 
     try:
         backend = get_evidence_storage_backend(_ensure_local_evidence_dir())
-    except RuntimeError as err:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(err))
+    except RuntimeError:
+        logger.exception("Evidence storage backend initialization failed during presign request")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Evidence storage service is temporarily unavailable.",
+        )
 
     if getattr(backend, "backend_name", "") != "s3" or not callable(
         getattr(backend, "generate_presigned_put_url", None)

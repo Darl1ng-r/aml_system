@@ -1,0 +1,97 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Prometheus Multi-Window SLO Burn-Rate & Resilience Alerting Rules
+# ════════════════════════════════════════════════════════════════════════════
+# Enforces 99.95% availability SLO (error budget: 0.05%) on critical AML APIs,
+# p99 scoring latency SLO, circuit-breaker health, adaptive load shedding,
+# PostgreSQL streaming replica lag, and Transactional Outbox backlog.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: aml-platform-slo-alerts
+  namespace: aml-system
+  labels:
+    app.kubernetes.io/name: aml-platform
+    role: alert-rules
+spec:
+  groups:
+  - name: aml.slo.availability
+    interval: 30s
+    rules:
+    - alert: AMLHighErrorBurnRateFast
+      expr: |
+        (
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_requests_total[5m])), 1)
+        ) > (14.4 * 0.0005)
+        and
+        (
+          sum(rate(http_requests_total{status=~"5.."}[1h]))
+          /
+          clamp_min(sum(rate(http_requests_total[1h])), 1)
+        ) > (14.4 * 0.0005)
+      for: 2m
+      labels:
+        severity: critical
+        slo: availability-99.95
+      annotations:
+        summary: "AML API fast error-budget burn (>14.4x on 99.95% SLO)"
+        description: "HTTP 5xx error ratio exceeded 14.4x burn rate across 5m and 1h windows."
+
+    - alert: AMLScoreLatencyP99Breach
+      expr: |
+        histogram_quantile(
+          0.99,
+          sum by (le) (rate(http_request_duration_seconds_bucket{path="/api/v1/transactions/score"}[5m]))
+        ) > 0.5
+      for: 5m
+      labels:
+        severity: warning
+        slo: latency-p99-500ms
+      annotations:
+        summary: "Transaction scoring p99 latency exceeded 500ms"
+        description: "p99 latency on POST /api/v1/transactions/score has exceeded 500ms for 5 minutes."
+
+  - name: aml.resilience.dependencies
+    interval: 30s
+    rules:
+    - alert: AMLCircuitBreakerOpen
+      expr: max by (target) (aml_outbound_circuit_breaker_state) >= 2
+      for: 2m
+      labels:
+        severity: critical
+        component: outbound-http
+      annotations:
+        summary: "Outbound HTTP circuit breaker OPEN for {{ $labels.target }}"
+        description: "Circuit breaker for target {{ $labels.target }} has remained OPEN for >2 minutes."
+
+    - alert: AMLAdaptiveLoadSheddingActive
+      expr: sum(rate(aml_load_shed_total[5m])) > 0.5
+      for: 2m
+      labels:
+        severity: warning
+        component: load-shedding
+      annotations:
+        summary: "Adaptive load shedding actively rejecting low-priority traffic"
+        description: "FastAPI pods are shedding P2/P3 traffic due to concurrency, event-loop lag, or DB pool pressure."
+
+    - alert: AMLReadReplicaLagHigh
+      expr: max(aml_db_replica_replay_lag_seconds) > 1.5
+      for: 2m
+      labels:
+        severity: warning
+        component: postgres-replica
+      annotations:
+        summary: "PostgreSQL Read Replica lag approaching failover threshold (>1.5s)"
+        description: "Streaming replication lag exceeded 1.5s; automatic failover to Primary occurs at 2.0s."
+
+    - alert: AMLOutboxBacklogGrowing
+      expr: sum(aml_outbox_pending_events) > 500
+      for: 5m
+      labels:
+        severity: warning
+        component: outbox-relay
+      annotations:
+        summary: "Transactional Outbox pending events > 500"
+        description: "Outbox relay lag is elevated; verify KEDA scaling and Redpanda broker health."

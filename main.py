@@ -799,6 +799,20 @@ def _serve_authenticated_page(
     }
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+
+    # Stamp per-request cryptographic CSP nonce onto <script> tags so SecurityHeadersMiddleware
+    # enforces `script-src-elem 'self' 'nonce-...'` without breaking cached template composition.
+    csp_nonce = getattr(request.state, "csp_nonce", None)
+    if csp_nonce:
+        import re as _re
+        rendered_html = _re.sub(
+            r"<script\b(?![^>]*\bnonce=)",
+            f'<script nonce="{csp_nonce}"',
+            rendered_html,
+            flags=_re.IGNORECASE,
+        )
+        request.state.csp_nonce_applied = True
+
     return HTMLResponse(content=rendered_html, headers=headers)
 
 

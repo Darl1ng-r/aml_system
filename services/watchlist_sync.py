@@ -121,9 +121,9 @@ async def _fetch_feed_content(url: str, client=None) -> bytes | None:
     from urllib.parse import urljoin
     from services.http_client import (
         _ORIGINAL_ASYNC_CLIENT,
-        get_http_client,
         is_httpx_patched,
         is_outbound_egress_allowed,
+        request_with_resilience,
     )
 
     is_mock_client = client is not None and not isinstance(client, _ORIGINAL_ASYNC_CLIENT)
@@ -131,16 +131,27 @@ async def _fetch_feed_content(url: str, client=None) -> bytes | None:
         logger.debug("Watchlist live feed download skipped (OUTBOUND_EGRESS_ENABLED=false).")
         return None
 
-    http_client = client or get_http_client()
+    feed_timeout = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=3.0)
     current_url = url
     for _hop in range(5):
         if not _is_allowed_feed_host(current_url):
             raise ValueError(f"Watchlist redirect/host not on official government allowlist: {current_url}")
-        res = await http_client.get(
-            current_url,
-            timeout=httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=3.0),
-            follow_redirects=False,
-        )
+        if is_mock_client:
+            res = await client.get(
+                current_url,
+                timeout=feed_timeout,
+                follow_redirects=False,
+            )
+        else:
+            res = await request_with_resilience(
+                "GET",
+                current_url,
+                target="watchlist_feed",
+                timeout=feed_timeout,
+                follow_redirects=False,
+                retries=2,
+                client=client,
+            )
         if res.status_code in (301, 302, 303, 307, 308):
             location = res.headers.get("location")
             if not location:
@@ -453,15 +464,10 @@ class WatchlistSyncEngine:
         return {"status": "INITIALIZED", "sanctions_count": s_count, "pep_count": p_count}
 
     async def _fetch_all_records(self) -> tuple[list, list, list, list, list]:
-        if httpx is not None:
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                ofac = await self.fetch_ofac_sdn_feed(client=http_client)
-                un = await self.fetch_un_sanctions_feed(client=http_client)
-                eu = await self.fetch_eu_sanctions_feed(client=http_client)
-        else:
-            ofac = await self.fetch_ofac_sdn_feed()
-            un = await self.fetch_un_sanctions_feed()
-            eu = await self.fetch_eu_sanctions_feed()
+        # Reuse the shared pooled httpx client + circuit breaker via request_with_resilience
+        ofac = await self.fetch_ofac_sdn_feed()
+        un = await self.fetch_un_sanctions_feed()
+        eu = await self.fetch_eu_sanctions_feed()
         worldcheck = await self.fetch_worldcheck_feed()
         dowjones = await self.fetch_dowjones_feed()
         return ofac, un, eu, worldcheck, dowjones

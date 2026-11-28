@@ -9,8 +9,7 @@ spoofing and IP-based denial-of-service vectors.
 import ipaddress
 import logging
 import os
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Receive, Scope, Send
 from fastapi import Request
 
 logger = logging.getLogger(__name__)
@@ -128,11 +127,21 @@ def get_trusted_client_ip(request: Request, trusted_networks=None) -> str:
     return peer_ip
 
 
-class TrustedProxyMiddleware(BaseHTTPMiddleware):
+class TrustedProxyMiddleware:
+    """Pure-ASGI trusted-proxy CIDR resolution middleware (zero BaseHTTPMiddleware overhead)."""
+
     def __init__(self, app: ASGIApp, trusted_networks=None):
-        super().__init__(app)
+        self.app = app
         self.trusted_networks = trusted_networks
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") in {"http", "websocket"}:
+            request = Request(scope)
+            state = scope.setdefault("state", {})
+            state["client_ip"] = get_trusted_client_ip(request, self.trusted_networks)
+        await self.app(scope, receive, send)
+
     async def dispatch(self, request: Request, call_next):
+        """Backwards-compatible helper for direct unit tests invoking dispatch()."""
         request.state.client_ip = get_trusted_client_ip(request, self.trusted_networks)
         return await call_next(request)

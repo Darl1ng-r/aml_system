@@ -197,14 +197,14 @@ services:
       - discovery.type=single-node
       - xpack.security.enabled=true
       - xpack.security.http.ssl.enabled=false   # TLS termination handled by ingress in prod
-      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme_in_production}
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-dev_elastic_local_only}
       - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
       - "127.0.0.1:9200:9200"   # Bind to loopback only — not exposed to LAN
     volumes:
       - elasticsearch_data:/usr/share/elasticsearch/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -s -u elastic:${ELASTIC_PASSWORD:-changeme_in_production} http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      test: ["CMD-SHELL", "printf 'user = \"elastic:%s\"\n' \"$${ELASTIC_PASSWORD:-dev_elastic_local_only}\" | curl -s -K - http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
       interval: 10s
       timeout: 10s
       retries: 5

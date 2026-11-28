@@ -127,6 +127,20 @@ spec:
       tls: enable
 ---
 apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: aml-prometheus-trigger-auth
+  namespace: aml-system
+spec:
+  secretTargetRef:
+  - parameter: bearerToken
+    name: aml-secrets
+    key: METRICS_SECRET
+  - parameter: ca
+    name: aml-internal-services-tls-secret
+    key: ca.crt
+---
+apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
   name: aml-outbox-relay-scaler
@@ -144,8 +158,11 @@ spec:
   maxReplicaCount: 8
   triggers:
   - type: prometheus
+    authenticationRef:
+      name: aml-prometheus-trigger-auth
     metadata:
-      serverAddress: http://prometheus-operated.monitoring.svc.cluster.local:9090
+      serverAddress: https://prometheus-operated.monitoring.svc.cluster.local:9090
+      authModes: "bearer"
       query: sum(aml_outbox_pending_events)
       threshold: "100"
       activationThreshold: "20"

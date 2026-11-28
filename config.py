@@ -269,6 +269,18 @@ class Settings(BaseSettings):
                     f"CRITICAL: Insecure ALLOWED_ORIGINS entry '{origin}' is forbidden in production! Must be explicit HTTPS domain."
                 )
 
+        # Enforce HTTPS & forbid loopback on PUBLIC_BASE_URL when configured in hardened envs
+        pub_url = (self.public_base_url or "").strip().lower()
+        if pub_url:
+            if (
+                not pub_url.startswith("https://")
+                or "localhost" in pub_url
+                or "127.0.0.1" in pub_url
+            ):
+                raise ValueError(
+                    f"CRITICAL: Insecure PUBLIC_BASE_URL '{self.public_base_url}' is forbidden in hardened environments! Must be explicit HTTPS domain."
+                )
+
     @model_validator(mode="after")
     def validate_production_settings(self):
         if not self.is_hardened:
@@ -276,6 +288,12 @@ class Settings(BaseSettings):
 
         self._check_insecure_passwords()
         self._check_production_origins_and_metrics()
+
+        # Enforce in-transit TLS in production: reject explicit ENABLE_TLS=false, fail-secure True when omitted
+        if self.is_production:
+            if "enable_tls" in self.model_fields_set and not self.enable_tls:
+                raise ValueError("CRITICAL: ENABLE_TLS=false is forbidden in production environment!")
+            self.enable_tls = True
 
         # Fail-Closed: Production & staging must NEVER run in offline development mode or allow public signup
         self.allow_offline_dev = False

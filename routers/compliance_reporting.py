@@ -2,12 +2,14 @@
 Regulatory Compliance Reporting Router (GAP-12)
 ================================================
 Thin HTTP controller for audit and examiner summary dashboards.
+Supports strong ETag / 304 Not Modified conditional revalidation while preserving
+`Cache-Control: no-store` & `CDN-Cache-Control: no-store` on all sensitive reports.
 All PostgreSQL SQL lives in `repositories/analytics_repo.py`.
 """
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from database.postgres import get_async_db_read_conn
 from database.read_after_write import force_primary_read_var
@@ -19,6 +21,7 @@ from repositories.analytics_repo import (
 )
 from services.auth import RoleChecker, enforce_tenant_data_scope
 from services.cache_aside import cache_aside
+from services.http_cache import build_conditional_json_response
 from services.rate_limiter import RateLimiter
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,7 @@ async def _cached_report(tenant_id: str, report_key: str, loader):
 
 @router.get("/sar-summary")
 async def get_sar_summary(
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["AUDITOR", "MLRO", "ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
@@ -60,11 +64,17 @@ async def get_sar_summary(
             "rejected_sar_drafts": int(stats["rejected_drafts"] or 0),
         }
 
-    return await _cached_report(str(tenant_id), "sar_summary", _load)
+    payload = await _cached_report(str(tenant_id), "sar_summary", _load)
+    return build_conditional_json_response(
+        request,
+        payload,
+        extra_headers={"CDN-Cache-Control": "no-store"},
+    )
 
 
 @router.get("/ctr-summary")
 async def get_ctr_summary(
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["AUDITOR", "MLRO", "ADMIN", "ANALYST"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
@@ -84,11 +94,17 @@ async def get_ctr_summary(
             "total_cash_volume_str": str(stats["total_cash_volume"] if stats["total_cash_volume"] is not None else "0.0000"),
         }
 
-    return await _cached_report(str(tenant_id), "ctr_summary", _load)
+    payload = await _cached_report(str(tenant_id), "ctr_summary", _load)
+    return build_conditional_json_response(
+        request,
+        payload,
+        extra_headers={"CDN-Cache-Control": "no-store"},
+    )
 
 
 @router.get("/conversion-rates")
 async def get_conversion_rates(
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["AUDITOR", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
@@ -109,11 +125,17 @@ async def get_conversion_rates(
             "case_to_sar_conversion_pct": case_to_sar_ratio,
         }
 
-    return await _cached_report(str(tenant_id), "conversion_rates", _load)
+    payload = await _cached_report(str(tenant_id), "conversion_rates", _load)
+    return build_conditional_json_response(
+        request,
+        payload,
+        extra_headers={"CDN-Cache-Control": "no-store"},
+    )
 
 
 @router.get("/kyc-status")
 async def get_kyc_status(
+    request: Request = None,
     current_user: dict = Depends(RoleChecker(["AUDITOR", "MLRO", "ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=30, window=60)),
 ):
@@ -130,4 +152,9 @@ async def get_kyc_status(
             "completed_kyc_reviews": int(stats["completed_reviews"] or 0),
         }
 
-    return await _cached_report(str(tenant_id), "kyc_status", _load)
+    payload = await _cached_report(str(tenant_id), "kyc_status", _load)
+    return build_conditional_json_response(
+        request,
+        payload,
+        extra_headers={"CDN-Cache-Control": "no-store"},
+    )

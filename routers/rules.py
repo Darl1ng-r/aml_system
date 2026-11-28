@@ -62,11 +62,54 @@ class RulePatchPayload(BaseModel):
     def sanitize_change_reason(cls, v: Optional[str]) -> Optional[str]:
         return sanitize_text(v) if v else v
 
+    @field_validator("config", "shadow_config")
+    @classmethod
+    def validate_config_bounds(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if v is None:
+            return v
+        return _validate_bounded_rule_dict(v, max_keys=100, max_depth=4, max_bytes=64 * 1024, label="rule config")
+
+
+def _validate_bounded_rule_dict(
+    value: Dict[str, Any],
+    *,
+    max_keys: int = 100,
+    max_depth: int = 4,
+    max_bytes: int = 64 * 1024,
+    label: str = "config",
+) -> Dict[str, Any]:
+    if len(value) > max_keys:
+        raise ValueError(f"{label} cannot exceed {max_keys} top-level entries.")
+
+    def _walk(obj: Any, depth: int) -> None:
+        if depth > max_depth:
+            raise ValueError(f"{label} nesting depth cannot exceed {max_depth}.")
+        if isinstance(obj, dict):
+            if len(obj) > max_keys:
+                raise ValueError(f"{label} nested object cannot exceed {max_keys} keys.")
+            for item in obj.values():
+                _walk(item, depth + 1)
+        elif isinstance(obj, list):
+            if len(obj) > max_keys:
+                raise ValueError(f"{label} array cannot exceed {max_keys} items.")
+            for item in obj:
+                _walk(item, depth + 1)
+
+    _walk(value, 1)
+    if len(json.dumps(value, default=str).encode("utf-8")) > max_bytes:
+        raise ValueError(f"Serialized {label} exceeds {max_bytes // 1024} KB limit.")
+    return value
+
 
 class RuleBacktestPayload(BaseModel):
     candidate_config: Dict[str, Any] = Field(default_factory=dict)
     lookback_days: int = Field(default=30, ge=1, le=180)
     sample_limit: int = Field(default=2000, ge=10, le=5000)
+
+    @field_validator("candidate_config")
+    @classmethod
+    def validate_candidate_config_bounds(cls, v: Dict[str, Any]) -> Dict[str, Any]:
+        return _validate_bounded_rule_dict(v, max_keys=100, max_depth=4, max_bytes=64 * 1024, label="candidate_config")
 
 
 class RuleTestPayload(BaseModel):
@@ -102,11 +145,7 @@ class LegacyRulesConfigPayload(BaseModel):
     @field_validator("rules")
     @classmethod
     def validate_rules_bounds(cls, v: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        if len(v) > 100:
-            raise ValueError("rules map cannot exceed 100 entries.")
-        serialized = json.dumps(v)
-        if len(serialized) > 256 * 1024:
-            raise ValueError("Serialized rules payload exceeds 256 KB limit.")
+        _validate_bounded_rule_dict(v, max_keys=100, max_depth=4, max_bytes=256 * 1024, label="rules")
         return v
 
 

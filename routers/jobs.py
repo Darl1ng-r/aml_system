@@ -9,12 +9,14 @@ All PostgreSQL SQL lives in `repositories/jobs_repo.py`.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 from observability.logging import log_audit_event
@@ -33,9 +35,74 @@ logger = logging.getLogger("aml.jobs.router")
 router = APIRouter(prefix="/api/v1/jobs", tags=["Async Jobs & Exports"])
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_MAX_JOB_PAYLOAD_KEYS = 32
+_MAX_JOB_PAYLOAD_DEPTH = 4
+_MAX_JOB_PAYLOAD_BYTES = 32 * 1024
+
+
+def _validate_job_payload_bounds(payload: Dict[str, Any]) -> None:
+    if len(payload) > _MAX_JOB_PAYLOAD_KEYS:
+        raise ValueError(f"Job payload cannot exceed {_MAX_JOB_PAYLOAD_KEYS} top-level keys.")
+
+    def _walk(obj: Any, depth: int) -> None:
+        if depth > _MAX_JOB_PAYLOAD_DEPTH:
+            raise ValueError(f"Job payload nesting depth cannot exceed {_MAX_JOB_PAYLOAD_DEPTH}.")
+        if isinstance(obj, dict):
+            if len(obj) > _MAX_JOB_PAYLOAD_KEYS:
+                raise ValueError(f"Nested payload object cannot exceed {_MAX_JOB_PAYLOAD_KEYS} keys.")
+            for v in obj.values():
+                _walk(v, depth + 1)
+        elif isinstance(obj, list):
+            if len(obj) > _MAX_JOB_PAYLOAD_KEYS:
+                raise ValueError(f"Nested payload array cannot exceed {_MAX_JOB_PAYLOAD_KEYS} items.")
+            for item in obj:
+                _walk(item, depth + 1)
+
+    _walk(payload, 1)
+    if len(json.dumps(payload, default=str).encode("utf-8")) > _MAX_JOB_PAYLOAD_BYTES:
+        raise ValueError(f"Serialized job payload exceeds {_MAX_JOB_PAYLOAD_BYTES // 1024} KB limit.")
+
+
 class AsyncJobCreateRequest(BaseModel):
     job_type: str = Field(..., min_length=3, max_length=64)
     payload: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_typed_payload(self) -> "AsyncJobCreateRequest":
+        _validate_job_payload_bounds(self.payload)
+        jt = self.job_type.upper().strip()
+
+        if jt == "EMAIL_NOTIFICATION":
+            recipient = str(self.payload.get("recipient") or "").strip()
+            if not recipient or not _EMAIL_RE.match(recipient) or len(recipient) > 254:
+                raise ValueError("EMAIL_NOTIFICATION payload requires a valid 'recipient' email address.")
+            subject = self.payload.get("subject")
+            if subject is not None and (not isinstance(subject, str) or len(subject) > 256):
+                raise ValueError("EMAIL_NOTIFICATION 'subject' must be a string <= 256 characters.")
+        elif jt == "EXAMINER_PACKET_ZIP":
+            case_id = str(self.payload.get("case_id") or "").strip()
+            if not case_id:
+                raise ValueError("EXAMINER_PACKET_ZIP payload requires a valid UUID 'case_id'.")
+            try:
+                uuid.UUID(case_id)
+            except ValueError as exc:
+                raise ValueError("EXAMINER_PACKET_ZIP 'case_id' must be a valid UUID.") from exc
+        elif jt == "RULE_BACKTEST_ANALYTICS":
+            rule_id = str(self.payload.get("rule_id") or "").strip()
+            if not rule_id or len(rule_id) > 128:
+                raise ValueError("RULE_BACKTEST_ANALYTICS payload requires a non-empty 'rule_id' (<= 128 chars).")
+            if "lookback_days" in self.payload:
+                lb = self.payload["lookback_days"]
+                if not isinstance(lb, int) or isinstance(lb, bool) or not (1 <= lb <= 180):
+                    raise ValueError("RULE_BACKTEST_ANALYTICS 'lookback_days' must be an integer between 1 and 180.")
+        elif jt == "ALERT_PDF_EXPORT":
+            if "limit" in self.payload:
+                lim = self.payload["limit"]
+                if not isinstance(lim, int) or isinstance(lim, bool) or not (1 <= lim <= 5000):
+                    raise ValueError("ALERT_PDF_EXPORT 'limit' must be an integer between 1 and 5000.")
+
+        return self
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)

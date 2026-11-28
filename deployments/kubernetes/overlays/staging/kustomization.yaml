@@ -31,3 +31,16 @@ patches:
     - op: replace
       path: /data/OUTBOUND_EGRESS_ENABLED
       value: "false"
+    - op: replace
+      path: /data/EVIDENCE_S3_BUCKET
+      value: "aml-compliance-evidence-staging"
+    - op: replace
+      path: /data/EVIDENCE_WORM_ENABLED
+      value: "false"
+- target:
+    kind: ExternalSecret
+    name: aml-secrets
+  patch: |-
+    - op: replace
+      path: /spec/secretStoreRef/name
+      value: "vault-backend-staging"

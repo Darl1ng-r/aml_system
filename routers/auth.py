@@ -17,7 +17,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-import aiohttp
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm

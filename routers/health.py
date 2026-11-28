@@ -364,9 +364,11 @@ async def get_system_topology_health(
             rp_err["bootstrap_servers"] = KAFKA_BOOTSTRAP_SERVERS
         services["redpanda"] = rp_err
 
+    from observability.load_shedding import get_load_shedding_snapshot
     from observability.storage_monitor import get_storage_health_snapshot
 
     storage_snap = get_storage_health_snapshot()
+    load_shedding_snap = get_load_shedding_snapshot()
     # redis_cache is intentionally fail-open; core system health depends on primary DB/state/enabled services
     all_up = all(
         s.get("status") in {"UP", "DISABLED"}
@@ -376,8 +378,11 @@ async def get_system_topology_health(
     return {
         "system_status": "OPERATIONAL" if all_up else "DEGRADED",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "deployment_cell_id": getattr(settings, "deployment_cell_id", "cell-us-east-1"),
+        "deployment_region": getattr(settings, "deployment_region", "us-east-1"),
         "services": services,
         "storage_telemetry": storage_snap,
+        "load_shedding": load_shedding_snap,
     }
 
 

@@ -33,7 +33,14 @@ class _PayloadTooLargeError(Exception):
 
 
 async def _send_json_error(send: Send, status_code: int, detail: str) -> None:
-    body = json.dumps({"detail": detail}).encode("utf-8")
+    from observability.middleware import correlation_id_var, get_current_trace_id
+
+    payload = {
+        "detail": detail,
+        "correlation_id": correlation_id_var.get("") or None,
+        "trace_id": get_current_trace_id(),
+    }
+    body = json.dumps(payload).encode("utf-8")
     await send(
         {
             "type": "http.response.start",
