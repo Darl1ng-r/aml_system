@@ -101,6 +101,8 @@ spec:
     - podSelector: { matchLabels: { app: aml-outbox-relay } }
     - podSelector: { matchLabels: { app: aml-job-worker } }
     - podSelector: { matchLabels: { job: aml-db-migrations } }
+    - podSelector: { matchLabels: { app: aml-partition-maintenance } }
+    - podSelector: { matchLabels: { app: aml-pitr-restore-drill } }
     - podSelector: { matchLabels: { app: aml-postgres } }
     - podSelector: { matchLabels: { app: aml-postgres-replica } }
     ports:
@@ -137,6 +139,8 @@ spec:
     - podSelector: { matchLabels: { app: aml-sync-worker } }
     - podSelector: { matchLabels: { app: aml-outbox-relay } }
     - podSelector: { matchLabels: { app: aml-job-worker } }
+    - podSelector: { matchLabels: { app: aml-pitr-backup } }
+    - podSelector: { matchLabels: { app: aml-pitr-restore-drill } }
     ports:
     - { protocol: TCP, port: 5432 }
   egress:
@@ -604,3 +608,44 @@ spec:
     - { protocol: TCP, port: 53 }
   - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
     ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]
+---
+# Stage 3: Partition Maintenance & PITR DR CronJobs egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dr-and-partition-jobs-egress
+  namespace: aml-system
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - aml-partition-maintenance
+      - aml-pitr-backup
+      - aml-pitr-restore-drill
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
+    ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres-replica } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
+    ports: [{ protocol: TCP, port: 8200 }]
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+    ports: [{ protocol: TCP, port: 443 }]

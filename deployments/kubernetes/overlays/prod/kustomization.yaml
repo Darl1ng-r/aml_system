@@ -21,3 +21,5 @@ resources:
 - ../../workers-pdb.yaml
 - ../../ingress-tls.yaml
 - ../../secret-rotation-job.yaml
+- ../../partition-maintenance-cronjob.yaml
+- ../../pitr-backup-cronjob.yaml

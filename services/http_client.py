@@ -52,10 +52,16 @@ try:
         "Total outbound HTTP retries by target",
         ["target"],
     )
+    OUTBOUND_RETRY_BUDGET_REJECTED = _get_or_create_counter(
+        "aml_outbound_retry_budget_rejected_total",
+        "Outbound retries suppressed because the rolling retry budget was exhausted",
+        ["target"],
+    )
 except Exception:  # pragma: no cover
     OUTBOUND_REQUEST_DURATION = None
     CIRCUIT_BREAKER_STATE_GAUGE = None
     OUTBOUND_RETRY_COUNTER = None
+    OUTBOUND_RETRY_BUDGET_REJECTED = None
 
 
 DEFAULT_HTTP_TIMEOUT = httpx.Timeout(connect=2.0, read=10.0, write=10.0, pool=2.0)
@@ -161,8 +167,97 @@ class CircuitBreaker:
         self._emit_state()
 
 
+@dataclass
+class RetryBudget:
+    """
+    Rolling-window fleet retry budget preventing retry storms from amplifying
+    degraded downstream dependencies into metastable collapse (Stage 3).
+    Allows retries up to `max_retry_ratio` (default 20%) of total requests in
+    `window_seconds`, with a small `min_retries_per_window` floor for low-QPS targets.
+    """
+
+    target: str
+    window_seconds: float = 10.0
+    max_retry_ratio: float = 0.20
+    min_retries_per_window: int = 3
+    _requests: Deque[float] = field(default_factory=deque, init=False)
+    _retries: Deque[float] = field(default_factory=deque, init=False)
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window_seconds
+        while self._requests and self._requests[0] < cutoff:
+            self._requests.popleft()
+        while self._retries and self._retries[0] < cutoff:
+            self._retries.popleft()
+
+    def record_request(self) -> None:
+        now = time.monotonic()
+        self._prune(now)
+        self._requests.append(now)
+
+    def allow_retry(self) -> bool:
+        now = time.monotonic()
+        self._prune(now)
+        budget_limit = max(
+            self.min_retries_per_window,
+            int(len(self._requests) * self.max_retry_ratio),
+        )
+        if len(self._retries) >= budget_limit:
+            if OUTBOUND_RETRY_BUDGET_REJECTED is not None:
+                try:
+                    OUTBOUND_RETRY_BUDGET_REJECTED.labels(target=self.target).inc()
+                except Exception:
+                    pass
+            return False
+        self._retries.append(now)
+        return True
+
+    def snapshot(self) -> Dict[str, Any]:
+        now = time.monotonic()
+        self._prune(now)
+        req_count = len(self._requests)
+        retry_count = len(self._retries)
+        return {
+            "target": self.target,
+            "requests_in_window": req_count,
+            "retries_in_window": retry_count,
+            "max_retry_ratio": self.max_retry_ratio,
+            "budget_limit": max(self.min_retries_per_window, int(req_count * self.max_retry_ratio)),
+        }
+
+
 _breakers: Dict[str, CircuitBreaker] = {}
+_retry_budgets: Dict[str, RetryBudget] = {}
 _MAX_BREAKERS = 512
+
+
+def get_retry_budget(
+    target: str,
+    *,
+    window_seconds: float = 10.0,
+    max_retry_ratio: float = 0.20,
+    min_retries_per_window: int = 3,
+) -> RetryBudget:
+    """Returns or creates a bounded per-target RetryBudget instance."""
+    key = (target or "unknown").strip().lower()[:128]
+    rb = _retry_budgets.get(key)
+    if rb is None:
+        if len(_retry_budgets) >= _MAX_BREAKERS:
+            oldest = next(iter(_retry_budgets))
+            _retry_budgets.pop(oldest, None)
+        rb = RetryBudget(
+            target=key,
+            window_seconds=window_seconds,
+            max_retry_ratio=max_retry_ratio,
+            min_retries_per_window=min_retries_per_window,
+        )
+        _retry_budgets[key] = rb
+    return rb
+
+
+def reset_all_retry_budgets() -> None:
+    """Clears all retry budget state (intended for tests)."""
+    _retry_budgets.clear()
 
 
 def get_circuit_breaker(
@@ -191,8 +286,9 @@ def get_circuit_breaker(
 
 
 def reset_all_circuit_breakers() -> None:
-    """Clears all circuit breaker state (intended for tests)."""
+    """Clears all circuit breaker and retry budget state (intended for tests)."""
     _breakers.clear()
+    _retry_budgets.clear()
 
 
 # ── Shared Pooled httpx.AsyncClient ──────────────────────────────────────────
@@ -379,9 +475,12 @@ async def request_with_resilience(
     """
     logical_target = target or target_from_url(url)
     cb = get_circuit_breaker(logical_target) if use_circuit_breaker else None
+    budget = get_retry_budget(logical_target)
 
     if cb is not None and not cb.allow_request():
         raise CircuitOpenError(logical_target, cb.retry_after_seconds())
+
+    budget.record_request()
 
     req_timeout = (
         httpx.Timeout(connect=min(2.0, float(timeout)), read=float(timeout), write=float(timeout), pool=2.0)
@@ -416,7 +515,7 @@ async def request_with_resilience(
             if resp.status_code in retry_statuses:
                 if cb is not None:
                     cb.record_failure()
-                if attempt + 1 < attempts:
+                if attempt + 1 < attempts and budget.allow_retry():
                     if OUTBOUND_RETRY_COUNTER is not None:
                         try:
                             OUTBOUND_RETRY_COUNTER.labels(target=logical_target).inc()
@@ -424,6 +523,12 @@ async def request_with_resilience(
                             pass
                     await asyncio.sleep(full_jitter_backoff(retry_base, attempt, cap=5.0))
                     continue
+                if attempt + 1 < attempts:
+                    logger.warning(
+                        "Outbound retry suppressed by retry budget for target '%s' (HTTP %d).",
+                        logical_target,
+                        resp.status_code,
+                    )
                 return resp
 
             if resp.status_code >= 500:
@@ -443,7 +548,7 @@ async def request_with_resilience(
             if cb is not None:
                 cb.record_failure()
             last_exc = exc
-            if attempt + 1 < attempts:
+            if attempt + 1 < attempts and budget.allow_retry():
                 if OUTBOUND_RETRY_COUNTER is not None:
                     try:
                         OUTBOUND_RETRY_COUNTER.labels(target=logical_target).inc()
@@ -451,6 +556,12 @@ async def request_with_resilience(
                         pass
                 await asyncio.sleep(full_jitter_backoff(retry_base, attempt, cap=5.0))
                 continue
+            if attempt + 1 < attempts:
+                logger.warning(
+                    "Outbound retry suppressed by retry budget for target '%s' (%s).",
+                    logical_target,
+                    type(exc).__name__,
+                )
             raise
 
     assert last_exc is not None

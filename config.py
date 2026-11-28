@@ -25,6 +25,17 @@ class Settings(BaseSettings):
     replica_max_lag_seconds: float = 2.0
     read_after_write_window_seconds: int = 5
     run_migrations_on_startup: bool = False
+
+    # Stage 3: Adaptive Load Shedding & Multi-Region Cell Routing Seam
+    load_shedding_enabled: bool = True
+    load_shedding_max_concurrency: int = 200
+    load_shedding_p3_lag_seconds: float = 0.12
+    load_shedding_p2_lag_seconds: float = 0.25
+    load_shedding_p3_pool_ratio: float = 0.85
+    load_shedding_p2_pool_ratio: float = 0.92
+    deployment_cell_id: str = "cell-us-east-1"
+    deployment_region: str = "us-east-1"
+    tenant_cell_routing_json: str = ""
     
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"

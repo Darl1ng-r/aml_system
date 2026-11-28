@@ -127,7 +127,7 @@ async def test_authz01_live_postgres_forced_rls_on_all_tenant_tables():
                    (SELECT COUNT(*) FROM pg_policy p WHERE p.polrelid = c.oid) AS pol_count
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public' AND c.relkind = 'r'
+            WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
               AND c.relname = ANY($1::text[]);
             """,
             list(required_tables),

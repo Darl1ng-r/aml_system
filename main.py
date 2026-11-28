@@ -451,12 +451,18 @@ app.add_middleware(
         "X-Next-Cursor",
         "X-Has-More",
         "X-Read-Consistency-Window",
+        "X-Load-Shed-Tier",
+        "X-Load-Shed-Reason",
     ],
 )
 
 # 4. Browser security hardening headers (CSP, X-Frame-Options, nosniff, Cache-Control: no-store)
 from services.security_headers import SecurityHeadersMiddleware
 app.add_middleware(SecurityHeadersMiddleware)
+
+# 3d. Pure-ASGI Priority-Tiered Adaptive Load Shedding (protects P0 auth/writes from overload collapse)
+from observability.load_shedding import AdaptiveLoadSheddingMiddleware
+app.add_middleware(AdaptiveLoadSheddingMiddleware)
 
 # 3c. Pure-ASGI Read-After-Write Primary stickiness guard (prevents stale replica reads after mutations)
 app.add_middleware(ReadAfterWriteStickinessMiddleware)

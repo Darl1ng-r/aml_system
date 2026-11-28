@@ -58,22 +58,45 @@ kubectl exec -n aml-system aml-redpanda-0 -- rpk topic describe aml.transactions
 
 ---
 
-## 2. PostgreSQL Primary Failover Procedure
+## 2. PostgreSQL Primary Failover Procedure (Option A Multi-Replica Topology)
 
-1. Verify replication lag on `aml-postgres-1` before promoting:
+1. Verify replication lag on streaming standbys (`aml-postgres-replica-0` and `aml-postgres-replica-1`) before promoting the furthest-ahead standby:
    ```bash
-   kubectl exec -n aml-system aml-postgres-1 -- psql -U postgres -d aml_db -c "SELECT pg_is_in_recovery(), pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn();"
+   kubectl exec -n aml-system aml-postgres-replica-0 -- psql -U postgres -d aml_db -c "SELECT pg_is_in_recovery(), pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn();"
+   kubectl exec -n aml-system aml-postgres-replica-1 -- psql -U postgres -d aml_db -c "SELECT pg_is_in_recovery(), pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn();"
    ```
-2. Promote standby `aml-postgres-1` to primary if `aml-postgres-0` is unrecoverable:
+2. Promote the winning standby (e.g., `aml-postgres-replica-0`) to primary if `aml-postgres-0` is unrecoverable:
    ```bash
-   kubectl exec -n aml-system aml-postgres-1 -- pg_ctl promote -D /var/lib/postgresql/data/pgdata
+   kubectl exec -n aml-system aml-postgres-replica-0 -- pg_ctl promote -D /var/lib/postgresql/data/pgdata
    ```
-3. Patch `aml-postgres-primary` Service selector to `aml-postgres-1` and restart PgBouncer (`kubectl rollout restart deployment/aml-pgbouncer -n aml-system`).
-4. **Long-Term HA:** Migrate `aml-postgres` StatefulSet to CloudNativePG or Patroni for automated leader election.
+   *(Its `pg_is_in_recovery()` readiness probe will immediately remove it from the read-only `aml-postgres-replica` Service while `aml-postgres-replica-1` continues serving reads.)*
+3. Patch `aml-postgres-primary` Service selector to `statefulset.kubernetes.io/pod-name: aml-postgres-replica-0` and restart PgBouncer (`kubectl rollout restart deployment/aml-pgbouncer -n aml-system`).
+4. Run the automated post-failover DR verification script:
+   ```bash
+   python scripts/dr_failover_drill.py
+   ```
+5. **Long-Term HA:** Migrate `aml-postgres` StatefulSet to CloudNativePG or Patroni for automated leader election.
 
 ---
 
-## 3. Redis Outage Recovery
+## 3. Time-Range Partition Maintenance (`transactional_outbox` & `audit_log`)
+
+- Weekly `aml-partition-maintenance` CronJob runs `scripts/maintain_partitions.py` (`ensure_outbox_weekly_partitions(2, 8)`, `ensure_audit_monthly_partitions(2, 12)`, `drop_expired_outbox_partitions(2)`).
+- Manual emergency partition pre-creation:
+  ```bash
+  kubectl exec -n aml-system aml-postgres-0 -- psql -U postgres -d aml_db -c "SELECT ensure_outbox_weekly_partitions(2, 8), ensure_audit_monthly_partitions(2, 12);"
+  ```
+
+---
+
+## 4. Adaptive Load Shedding & Retry Budget Telemetry
+
+- Under extreme traffic surges, `AdaptiveLoadSheddingMiddleware` sheds `P3_SHEDDABLE` (reports/exports/backtests) and `P2_NORMAL` traffic with `HTTP 503` + `Retry-After` + `X-Load-Shed-Tier` while keeping `P0_CRITICAL` (health, auth, transaction ingestion, CTR) online.
+- Inspect live counters via Prometheus: `aml_load_shed_total`, `aml_http_in_flight_requests`, `aml_outbound_circuit_breaker_state`, and `aml_outbound_retry_budget_rejected_total`.
+
+---
+
+## 5. Redis Outage Recovery
 
 - **Expected Behavior:**
   - `RateLimiter(fail_closed=True)` returns `HTTP 503` in `production` (no silent bypass).

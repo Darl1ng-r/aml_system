@@ -223,10 +223,14 @@ def test_migrations_from_038_enforce_concurrent_indexes_and_not_valid_checks():
             continue
         checked += 1
         src = py_file.read_text(encoding="utf-8")
-        # Every CREATE INDEX in upgrade must be CONCURRENTLY
-        for match in re.finditer(r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?!CONCURRENTLY)", src, re.IGNORECASE):
+        # Every CREATE INDEX in upgrade must be CONCURRENTLY, EXCEPT PostgreSQL partitioned parent
+        # metadata shells created on brand-new zero-row partitioned tables (PG forbids CONCURRENTLY on relkind='p').
+        for match in re.finditer(r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?!CONCURRENTLY)[^\n]+", src, re.IGNORECASE):
+            line_text = match.group(0)
+            if "-- partitioned-parent-zero-rows" in line_text or "ON ONLY " in line_text.upper():
+                continue
             raise AssertionError(
-                f"Blocking non-CONCURRENTLY CREATE INDEX found in {py_file.name} at pos {match.start()}"
+                f"Blocking non-CONCURRENTLY CREATE INDEX found in {py_file.name} at pos {match.start()}: {line_text}"
             )
         # Every ADD CONSTRAINT ... CHECK on existing tables must use NOT VALID
         for match in re.finditer(r"ADD\s+CONSTRAINT\s+\w+\s+CHECK\s*\([^;]+;", src, re.IGNORECASE | re.DOTALL):

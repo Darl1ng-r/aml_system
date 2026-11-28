@@ -1,0 +1,91 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Weekly PostgreSQL Time-Range Partition Maintenance CronJob (Scale Stage 3)
+# ════════════════════════════════════════════════════════════════════════════
+# Pre-creates weekly `transactional_outbox` and monthly `audit_log` partitions
+# ahead of time and instantaneously drops empty expired outbox partitions.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: aml-partition-maintenance
+  namespace: aml-system
+  labels:
+    app: aml-partition-maintenance
+spec:
+  schedule: "0 2 * * 0"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app: aml-partition-maintenance
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app: aml-partition-maintenance
+        spec:
+          serviceAccountName: aml-fastapi-sa
+          automountServiceAccountToken: true
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: partition-maintainer
+            image: ghcr.io/aml-sentinel/aml-fastapi-app:${IMAGE_TAG}
+            imagePullPolicy: Always
+            command: ["python", "scripts/maintain_partitions.py"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                - ALL
+            envFrom:
+            - configMapRef:
+                name: aml-config
+            env:
+            - name: POSTGRES_HOST
+              value: "aml-postgres-primary"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: PGBOUNCER_ENABLED
+              value: "false"
+            - name: POSTGRES_USER
+              value: "postgres"
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: aml-secrets, key: POSTGRES_PASSWORD } }
+            - name: OUTBOX_PARTITIONS_WEEKS_AHEAD
+              value: "8"
+            - name: AUDIT_PARTITIONS_MONTHS_AHEAD
+              value: "12"
+            - name: OUTBOX_PARTITION_RETENTION_WEEKS
+              value: "2"
+            resources:
+              requests:
+                cpu: "50m"
+                memory: "128Mi"
+              limits:
+                cpu: "250m"
+                memory: "256Mi"
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: tls-certs
+              mountPath: /var/run/secrets/tls
+              readOnly: true
+          volumes:
+          - name: tmp
+            emptyDir:
+              sizeLimit: 32Mi
+          - name: tls-certs
+            secret:
+              secretName: aml-internal-services-tls-secret

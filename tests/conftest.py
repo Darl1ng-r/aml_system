@@ -18,11 +18,14 @@ def pytest_configure(config):
 
 @pytest.fixture(autouse=True)
 def _reset_http_circuit_breakers():
+    from observability.load_shedding import reset_load_shedding_state
     from routers.health import reset_server_draining
     from services.http_client import reset_all_circuit_breakers
 
     reset_all_circuit_breakers()
     reset_server_draining()
+    reset_load_shedding_state()
     yield
     reset_all_circuit_breakers()
     reset_server_draining()
+    reset_load_shedding_state()
