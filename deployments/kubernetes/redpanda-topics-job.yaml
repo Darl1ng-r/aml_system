@@ -1,0 +1,88 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Idempotent Redpanda Partitioned Topic & DLQ Provisioning Job (Scale Stage 2)
+# ════════════════════════════════════════════════════════════════════════════
+# Guarantees high-throughput topics are pre-partitioned (12p / 6p) with RF=3
+# and companion Dead-Letter Queues so KEDA can scale worker pods up to 12x
+# with zero idle consumer instances.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aml-redpanda-topics-init
+  namespace: aml-system
+  labels:
+    job: aml-redpanda-topics-init
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        job: aml-redpanda-topics-init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: topic-bootstrap
+        image: docker.redpanda.com/redpandadata/redpanda:v23.3.3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: KAFKA_SASL_USERNAME
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_USERNAME, optional: true } }
+        - name: KAFKA_SASL_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_PASSWORD, optional: true } }
+        command:
+        - /bin/sh
+        - -eu
+        - -c
+        - |
+          BROKERS="aml-redpanda-service:9093"
+          RPK_FLAGS="--brokers $BROKERS --tls-enabled --tls-truststore /etc/redpanda/certs/ca.crt --tls-cert /etc/redpanda/certs/tls.crt --tls-key /etc/redpanda/certs/tls.key"
+          if [ -n "${KAFKA_SASL_USERNAME:-}" ] && [ -n "${KAFKA_SASL_PASSWORD:-}" ]; then
+            RPK_FLAGS="$RPK_FLAGS --sasl-mechanism SCRAM-SHA-512 --user $KAFKA_SASL_USERNAME --password $KAFKA_SASL_PASSWORD"
+          fi
+          create_topic() {
+            TOPIC="$1"
+            PARTS="$2"
+            RF="$3"
+            RETENTION_MS="$4"
+            rpk topic create "$TOPIC" -p "$PARTS" -r "$RF" -c "retention.ms=$RETENTION_MS" $RPK_FLAGS || true
+          }
+          # Core transaction ingestion & scoring pipelines (12 partitions for KEDA 2->12 scaling)
+          create_topic "aml.transactions.raw" 12 3 604800000
+          create_topic "aml.transactions.raw.dlq" 3 3 2592000000
+          create_topic "aml.transactions.scored" 12 3 604800000
+          create_topic "aml.transactions.dlq" 3 3 2592000000
+          # Async export, regulatory packet, backtest & notification load-leveling queues
+          create_topic "aml.jobs.exports" 6 3 604800000
+          create_topic "aml.jobs.exports.dlq" 3 3 2592000000
+          create_topic "aml.jobs.notifications" 6 3 604800000
+          create_topic "aml.jobs.notifications.dlq" 3 3 2592000000
+          echo "All Redpanda partitioned topics & DLQs verified."
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+        volumeMounts:
+        - name: tls-certs
+          mountPath: /etc/redpanda/certs
+          readOnly: true
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret
+          optional: true

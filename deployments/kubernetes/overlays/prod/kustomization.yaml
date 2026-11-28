@@ -10,10 +10,13 @@ resources:
 - ../../pgbouncer.yaml
 - ../../redis.yaml
 - ../../redpanda.yaml
+- ../../redpanda-topics-job.yaml
 - ../../alembic-migration-job.yaml
 - ../../fastapi-app.yaml
 - ../../outbox-relay.yaml
 - ../../scoring-worker.yaml
+- ../../job-worker.yaml
+- ../../keda-scaledobjects.yaml
 - ../../fastapi-pdb.yaml
 - ../../workers-pdb.yaml
 - ../../ingress-tls.yaml

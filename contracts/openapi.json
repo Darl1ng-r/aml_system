@@ -141,6 +141,26 @@
         "title": "AlertPatch",
         "type": "object"
       },
+      "AsyncJobCreateRequest": {
+        "properties": {
+          "job_type": {
+            "maxLength": 64,
+            "minLength": 3,
+            "title": "Job Type",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "job_type"
+        ],
+        "title": "AsyncJobCreateRequest",
+        "type": "object"
+      },
       "AuditorRoomCreateRequest": {
         "properties": {
           "allowed_case_ids": {
@@ -3750,9 +3770,19 @@
     },
     "/api/v1/alerts/export/pdf": {
       "get": {
-        "description": "Generates a printable audit report off the asyncio event loop.",
+        "description": "Generates a printable audit report off the asyncio event loop, or queues asynchronously when async_mode=true.",
         "operationId": "export_alerts_pdf_api_v1_alerts_export_pdf_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "async_mode",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Async Mode",
+              "type": "boolean"
+            }
+          },
           {
             "in": "query",
             "name": "token",
@@ -3767,6 +3797,22 @@
                 }
               ],
               "title": "Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -4592,7 +4638,7 @@
     },
     "/api/v1/audit/examiner-packet/{case_id}": {
       "post": {
-        "description": "Exports a regulator-ready RS256-signed ZIP dossier verifiable via /.well-known/jwks.json.",
+        "description": "Exports a regulator-ready RS256-signed ZIP dossier (or queues asynchronously when async_mode=true).",
         "operationId": "export_signed_examiner_packet_api_v1_audit_examiner_packet__case_id__post",
         "parameters": [
           {
@@ -4602,6 +4648,16 @@
             "schema": {
               "title": "Case Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "async_mode",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Async Mode",
+              "type": "boolean"
             }
           },
           {
@@ -9904,6 +9960,242 @@
         "summary": "Get System Topology Health",
         "tags": [
           "Health"
+        ]
+      }
+    },
+    "/api/v1/jobs": {
+      "get": {
+        "description": "Lists tenant-scoped async jobs using deterministic keyset cursor pagination.",
+        "operationId": "list_async_jobs_api_v1_jobs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "List Async Jobs",
+        "tags": [
+          "Async Jobs & Exports"
+        ]
+      },
+      "post": {
+        "description": "Enqueues a heavy export, analytics, or notification job onto the Transactional Outbox + Redpanda.",
+        "operationId": "enqueue_async_job_api_v1_jobs_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AsyncJobCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Enqueue Async Job",
+        "tags": [
+          "Async Jobs & Exports"
+        ]
+      }
+    },
+    "/api/v1/jobs/{job_id}": {
+      "get": {
+        "description": "Returns current job status and a short-lived pre-signed S3 download URL when completed.",
+        "operationId": "get_async_job_status_api_v1_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          }
+        ],
+        "summary": "Get Async Job Status",
+        "tags": [
+          "Async Jobs & Exports"
         ]
       }
     },

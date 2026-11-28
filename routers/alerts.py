@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Annotated, List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -1285,11 +1285,38 @@ async def export_alerts_csv(
 
 @router.get("/export/pdf")
 async def export_alerts_pdf(
+    async_mode: bool = Query(default=False),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     current_user: dict = Depends(RoleChecker(["ADMIN", "ANALYST", "AUDITOR"])),
     _rate_limit=Depends(RateLimiter(limit=10, window=60)),
 ):
-    """Generates a printable audit report off the asyncio event loop."""
+    """Generates a printable audit report off the asyncio event loop, or queues asynchronously when async_mode=true."""
     tenant_id = enforce_tenant_data_scope(current_user)
+    if async_mode:
+        from fastapi.responses import JSONResponse
+        from repositories.jobs_repo import enqueue_async_job_atomic
+        from services.async_jobs import JOBS_EXPORTS_TOPIC
+
+        job, deduplicated = await enqueue_async_job_atomic(
+            tenant_id=str(tenant_id),
+            job_type="ALERT_PDF_EXPORT",
+            payload={"limit": 100},
+            requested_by=str(current_user.get("username") or current_user.get("id") or "analyst"),
+            requested_role=str(current_user.get("role") or "ANALYST"),
+            topic=JOBS_EXPORTS_TOPIC,
+            idempotency_key=idempotency_key,
+            conn_factory=get_async_db_conn,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "job_id": job["job_id"],
+                "job_type": job["job_type"],
+                "status": job["status"],
+                "deduplicated": deduplicated,
+                "status_url": f"/api/v1/jobs/{job['job_id']}",
+            },
+        )
     try:
         rows = await fetch_alerts_for_pdf_export_repo(
             tenant_id=tenant_id,

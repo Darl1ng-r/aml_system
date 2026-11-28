@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from routers import onboarding, screening, transactions, alerts, auth, rules, network
 from routers import health, metrics, fincen, str_batch, ml_feedback, watchlist, jwks
-from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, evidence, audit, customers, siem, risk_appetite, webhooks, sso, search, notifications, qa, rfi
+from routers import cases, accounts, ctr, compliance_reporting, privacy, locks, evidence, audit, customers, siem, risk_appetite, webhooks, sso, search, notifications, qa, rfi, jobs
 from database.neo4j_db import close_neo4j_driver
 from config import settings
 from observability.logging import setup_json_logging
@@ -548,6 +548,7 @@ app.include_router(notifications.router)
 app.include_router(qa.router)
 app.include_router(rfi.router)
 app.include_router(risk_appetite.router)
+app.include_router(jobs.router)
 
 # Mount static files directory for dashboard styling and frontend client logic
 class VersionedStaticFiles(StaticFiles):
@@ -559,8 +560,10 @@ class VersionedStaticFiles(StaticFiles):
             qs = (scope.get("query_string") or b"").decode("latin-1")
             if "v=" in qs:
                 response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                response.headers["CDN-Cache-Control"] = "public, max-age=31536000, immutable"
             else:
                 response.headers["Cache-Control"] = "public, max-age=300"
+                response.headers["CDN-Cache-Control"] = "public, max-age=300, stale-while-revalidate=60"
         return response
 
 
@@ -784,6 +787,7 @@ def _serve_authenticated_page(
     )
     headers = {
         "Cache-Control": "private, no-cache, must-revalidate",
+        "CDN-Cache-Control": "no-store",
         "Pragma": "no-cache",
         "ETag": etag,
     }

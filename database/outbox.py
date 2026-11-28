@@ -299,6 +299,10 @@ class OutboxRelayEngine:
             )
             headers = event.get("headers") or {}
             topic = headers.get("topic")
+            if not topic and event.get("aggregate_type") == "ASYNC_JOB_DISPATCH":
+                from services.async_jobs import resolve_topic_for_job_type
+
+                topic = resolve_topic_for_job_type(payload.get("job_type", ""))
             if not topic and event.get("event_type") == "aml.core.transaction.buffered.v1":
                 topic = "aml.transactions.raw"
 

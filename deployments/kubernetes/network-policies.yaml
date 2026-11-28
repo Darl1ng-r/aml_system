@@ -64,6 +64,7 @@ spec:
     - podSelector: { matchLabels: { app: aml-outbox-relay } }
     - podSelector: { matchLabels: { app: aml-scoring-worker } }
     - podSelector: { matchLabels: { app: aml-sync-worker } }
+    - podSelector: { matchLabels: { app: aml-job-worker } }
     ports:
     - protocol: TCP
       port: 6432
@@ -98,8 +99,44 @@ spec:
     - podSelector: { matchLabels: { app: aml-scoring-worker } }
     - podSelector: { matchLabels: { app: aml-sync-worker } }
     - podSelector: { matchLabels: { app: aml-outbox-relay } }
+    - podSelector: { matchLabels: { app: aml-job-worker } }
     - podSelector: { matchLabels: { job: aml-db-migrations } }
     - podSelector: { matchLabels: { app: aml-postgres } }
+    - podSelector: { matchLabels: { app: aml-postgres-replica } }
+    ports:
+    - { protocol: TCP, port: 5432 }
+  egress:
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
+    ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to:
+    - podSelector: { matchLabels: { app: aml-postgres } }
+    - podSelector: { matchLabels: { app: aml-postgres-replica } }
+    ports:
+    - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-apps-to-postgres-replica
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aml-postgres-replica
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector: { matchLabels: { app: aml-fastapi-app } }
+    - podSelector: { matchLabels: { app: aml-scoring-worker } }
+    - podSelector: { matchLabels: { app: aml-sync-worker } }
+    - podSelector: { matchLabels: { app: aml-outbox-relay } }
+    - podSelector: { matchLabels: { app: aml-job-worker } }
     ports:
     - { protocol: TCP, port: 5432 }
   egress:
@@ -150,6 +187,7 @@ spec:
     - podSelector: { matchLabels: { app: aml-scoring-worker } }
     - podSelector: { matchLabels: { app: aml-outbox-relay } }
     - podSelector: { matchLabels: { app: aml-sync-worker } }
+    - podSelector: { matchLabels: { app: aml-job-worker } }
     ports:
     - { protocol: TCP, port: 6379 }
 ---
@@ -170,6 +208,7 @@ spec:
     - podSelector: { matchLabels: { app: aml-scoring-worker } }
     - podSelector: { matchLabels: { app: aml-outbox-relay } }
     - podSelector: { matchLabels: { app: aml-sync-worker } }
+    - podSelector: { matchLabels: { app: aml-job-worker } }
     ports:
     - { protocol: TCP, port: 6379 }
 ---
@@ -208,6 +247,8 @@ spec:
     - podSelector: { matchLabels: { app: aml-outbox-relay } }
     - podSelector: { matchLabels: { app: aml-scoring-worker } }
     - podSelector: { matchLabels: { app: aml-sync-worker } }
+    - podSelector: { matchLabels: { app: aml-job-worker } }
+    - podSelector: { matchLabels: { job: aml-redpanda-topics-init } }
     ports:
     - { protocol: TCP, port: 9092 }
     - { protocol: TCP, port: 9093 }
@@ -257,6 +298,8 @@ spec:
   - to: [{ podSelector: { matchLabels: { app: aml-pgbouncer } } }]
     ports: [{ protocol: TCP, port: 6432 }]
   - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres-replica } } }]
     ports: [{ protocol: TCP, port: 5432 }]
   - to: [{ podSelector: { matchLabels: { app: aml-neo4j } } }]
     ports: [{ protocol: TCP, port: 7687 }, { protocol: TCP, port: 7474 }]
@@ -310,6 +353,8 @@ spec:
     ports: [{ protocol: TCP, port: 6432 }]
   - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
     ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres-replica } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
     ports: [{ protocol: TCP, port: 6379 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redis-cache } } }]
@@ -355,6 +400,8 @@ spec:
     ports: [{ protocol: TCP, port: 6432 }]
   - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
     ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres-replica } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
   - to: [{ podSelector: { matchLabels: { app: aml-neo4j } } }]
     ports: [{ protocol: TCP, port: 7687 }, { protocol: TCP, port: 7474 }]
   - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
@@ -386,6 +433,8 @@ spec:
     - { protocol: UDP, port: 53 }
     - { protocol: TCP, port: 53 }
   - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres-replica } } }]
     ports: [{ protocol: TCP, port: 5432 }]
   - to: [{ podSelector: { matchLabels: { app: aml-pgbouncer } } }]
     ports: [{ protocol: TCP, port: 6432 }]
@@ -431,6 +480,8 @@ spec:
     - { protocol: UDP, port: 53 }
     - { protocol: TCP, port: 53 }
   - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres-replica } } }]
     ports: [{ protocol: TCP, port: 5432 }]
   - to:
     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
@@ -486,3 +537,70 @@ spec:
     - { protocol: TCP, port: 53 }
   - to: [{ podSelector: { matchLabels: { app: aml-elasticsearch } } }]
     ports: [{ protocol: TCP, port: 9300 }]
+---
+# Stage 2: Async Export, Analytics & Notification Job Worker egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-job-worker-egress
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      app: aml-job-worker
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
+    ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to: [{ podSelector: { matchLabels: { app: aml-pgbouncer } } }]
+    ports: [{ protocol: TCP, port: 6432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-postgres-replica } } }]
+    ports: [{ protocol: TCP, port: 5432 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redis-cache } } }]
+    ports: [{ protocol: TCP, port: 6379 }]
+  - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
+    ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: vault } }
+    ports: [{ protocol: TCP, port: 8200 }]
+  # Public HTTPS for S3 object uploads & email/webhook relays (blocks RFC1918 & cloud metadata)
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+    ports: [{ protocol: TCP, port: 443 }]
+---
+# Stage 2: Redpanda partitioned topic bootstrap Job egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-redpanda-topics-init-egress
+  namespace: aml-system
+spec:
+  podSelector:
+    matchLabels:
+      job: aml-redpanda-topics-init
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector: { matchLabels: { k8s-app: kube-dns } }
+    ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
+  - to: [{ podSelector: { matchLabels: { app: aml-redpanda } } }]
+    ports: [{ protocol: TCP, port: 9092 }, { protocol: TCP, port: 9093 }]

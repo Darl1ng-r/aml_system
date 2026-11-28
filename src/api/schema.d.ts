@@ -31,6 +31,10 @@ export interface Schemas {
     sar_xml_generate?: boolean | null;
     status?: string | null;
   };
+  AsyncJobCreateRequest: {
+    job_type: string;
+    payload?: Record<string, unknown>;
+  };
   AuditorRoomCreateRequest: {
     allowed_case_ids: string[];
     examiner_org?: string;
@@ -463,6 +467,8 @@ export type ApiEndpoints = {
   "/api/v1/fincen/sars/{id}": "GET";
   "/api/v1/fincen/sars/{id}/status": "GET";
   "/api/v1/health/system": "GET";
+  "/api/v1/jobs": "GET" | "POST";
+  "/api/v1/jobs/{job_id}": "GET";
   "/api/v1/locks/{resource_type}/{resource_id}": "DELETE" | "GET" | "POST" | "PUT";
   "/api/v1/metrics/dashboard": "GET";
   "/api/v1/metrics/executive": "GET";

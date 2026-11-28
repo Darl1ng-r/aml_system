@@ -29,6 +29,13 @@ spec:
         fsGroup: 101
         seccompProfile:
           type: RuntimeDefault
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: aml-redpanda
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -60,6 +67,7 @@ spec:
             --default-log-level=info \
             --set redpanda.developer_mode=false \
             --set redpanda.auto_create_topics_enabled=true \
+            --set redpanda.default_topic_partitions=12 \
             --set redpanda.default_topic_replications=3 \
             --set redpanda.transaction_coordinator_replication=3 \
             --set redpanda.id_allocator_replication=3 \

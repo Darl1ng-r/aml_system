@@ -1,0 +1,151 @@
+# ════════════════════════════════════════════════════════════════════════════
+# KEDA Event-Driven Worker Autoscaling (Scale Pillar Stage 2)
+# ════════════════════════════════════════════════════════════════════════════
+# Scales background AML workers on Redpanda consumer-group lag and Outbox
+# backlog instead of lagging CPU metrics, with maxReplicaCount capped to
+# topic partition counts so zero scaled workers sit idle.
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: aml-kafka-trigger-auth
+  namespace: aml-system
+spec:
+  secretTargetRef:
+  - parameter: username
+    name: aml-secrets
+    key: KAFKA_SASL_USERNAME
+  - parameter: password
+    name: aml-secrets
+    key: KAFKA_SASL_PASSWORD
+  - parameter: ca
+    name: aml-internal-services-tls-secret
+    key: ca.crt
+  - parameter: cert
+    name: aml-internal-services-tls-secret
+    key: tls.crt
+  - parameter: key
+    name: aml-internal-services-tls-secret
+    key: tls.key
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: aml-scoring-worker-scaler
+  namespace: aml-system
+  labels:
+    app: aml-scoring-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aml-scoring-worker
+  pollingInterval: 15
+  cooldownPeriod: 180
+  minReplicaCount: 2
+  maxReplicaCount: 12
+  triggers:
+  - type: kafka
+    authenticationRef:
+      name: aml-kafka-trigger-auth
+    metadata:
+      bootstrapServers: aml-redpanda-service.aml-system.svc.cluster.local:9093
+      consumerGroup: aml-scoring-worker-group
+      topic: aml.transactions.raw
+      lagThreshold: "50"
+      activationLagThreshold: "5"
+      sasl: scram_sha512
+      tls: enable
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: aml-sync-worker-scaler
+  namespace: aml-system
+  labels:
+    app: aml-sync-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aml-sync-worker
+  pollingInterval: 15
+  cooldownPeriod: 180
+  minReplicaCount: 2
+  maxReplicaCount: 12
+  triggers:
+  - type: kafka
+    authenticationRef:
+      name: aml-kafka-trigger-auth
+    metadata:
+      bootstrapServers: aml-redpanda-service.aml-system.svc.cluster.local:9093
+      consumerGroup: aml_neo4j_sync_group
+      topic: aml.transactions.scored
+      lagThreshold: "100"
+      activationLagThreshold: "10"
+      sasl: scram_sha512
+      tls: enable
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: aml-job-worker-scaler
+  namespace: aml-system
+  labels:
+    app: aml-job-worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aml-job-worker
+  pollingInterval: 15
+  cooldownPeriod: 180
+  minReplicaCount: 2
+  maxReplicaCount: 6
+  triggers:
+  - type: kafka
+    authenticationRef:
+      name: aml-kafka-trigger-auth
+    metadata:
+      bootstrapServers: aml-redpanda-service.aml-system.svc.cluster.local:9093
+      consumerGroup: aml-job-worker-group
+      topic: aml.jobs.exports
+      lagThreshold: "10"
+      activationLagThreshold: "1"
+      sasl: scram_sha512
+      tls: enable
+  - type: kafka
+    authenticationRef:
+      name: aml-kafka-trigger-auth
+    metadata:
+      bootstrapServers: aml-redpanda-service.aml-system.svc.cluster.local:9093
+      consumerGroup: aml-job-worker-group
+      topic: aml.jobs.notifications
+      lagThreshold: "25"
+      activationLagThreshold: "2"
+      sasl: scram_sha512
+      tls: enable
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: aml-outbox-relay-scaler
+  namespace: aml-system
+  labels:
+    app: aml-outbox-relay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: aml-outbox-relay
+  pollingInterval: 15
+  cooldownPeriod: 180
+  minReplicaCount: 2
+  maxReplicaCount: 8
+  triggers:
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus-operated.monitoring.svc.cluster.local:9090
+      query: sum(aml_outbox_pending_events)
+      threshold: "100"
+      activationThreshold: "20"

@@ -44,3 +44,36 @@ spec:
   selector:
     matchLabels:
       app: aml-redpanda
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aml-redis-cache-pdb
+  namespace: aml-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: aml-redis-cache
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aml-postgres-replica-pdb
+  namespace: aml-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: aml-postgres-replica
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: aml-job-worker-pdb
+  namespace: aml-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: aml-job-worker

@@ -71,20 +71,29 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if path.startswith(("/rfi/", "/api/v1/rfi/public/", "/api/v1/audit/rooms/")):
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["Cache-Control"] = "no-store"
+            response.headers["CDN-Cache-Control"] = "no-store"
             response.headers["Pragma"] = "no-cache"
         else:
             response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
 
-        # P1-15: Prevent browser/proxy disk caching of ALL sensitive /api/* JSON & download responses
-        # unless the endpoint explicitly opted in (e.g. /.well-known/jwks.json or explicit public cache)
+        # P1-15 / Scale Stage 2: Prevent browser & CDN/edge proxy caching of ALL sensitive /api/*
+        # responses via both Cache-Control and RFC 9213 CDN-Cache-Control defense-in-depth.
         if path.startswith("/api/"):
             if "cache-control" not in response.headers:
                 response.headers["Cache-Control"] = "no-store"
                 response.headers["Pragma"] = "no-cache"
+            if "cdn-cache-control" not in response.headers:
+                cc_val = response.headers.get("Cache-Control", "").lower()
+                if "no-store" in cc_val or "private" in cc_val or "no-cache" in cc_val:
+                    response.headers["CDN-Cache-Control"] = "no-store"
             existing_vary = response.headers.get("Vary", "")
             vary_tokens = {v.strip() for v in existing_vary.split(",") if v.strip()}
             vary_tokens.update({"Origin", "Cookie"})
             response.headers["Vary"] = ", ".join(sorted(vary_tokens))
+        elif "cdn-cache-control" not in response.headers:
+            cc_val = response.headers.get("Cache-Control", "").lower()
+            if "no-store" in cc_val or "private" in cc_val:
+                response.headers["CDN-Cache-Control"] = "no-store"
 
         # Single canonical HSTS header (duplicate Ingress snippet removed in ingress-tls.yaml)
         response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"

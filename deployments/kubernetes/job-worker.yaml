@@ -1,0 +1,120 @@
+# ════════════════════════════════════════════════════════════════════════════
+# Dedicated Async Export, Analytics & Notification Job Worker (Scale Stage 2)
+# ════════════════════════════════════════════════════════════════════════════
+# Consumes `aml.jobs.exports` and `aml.jobs.notifications` off the FastAPI
+# request path, writes generated regulatory artifacts to S3, and scales via
+# KEDA on consumer lag (`2 -> 6` replicas across >= 3 Availability Zones).
+# ════════════════════════════════════════════════════════════════════════════
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aml-job-worker
+  namespace: aml-system
+  labels:
+    app: aml-job-worker
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: aml-job-worker
+  template:
+    metadata:
+      labels:
+        app: aml-job-worker
+    spec:
+      serviceAccountName: aml-fastapi-sa
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 35
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: aml-job-worker
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: aml-job-worker
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: job-worker
+        image: ghcr.io/aml-sentinel/aml-fastapi-app:${IMAGE_TAG}
+        imagePullPolicy: Always
+        command: ["python", "-m", "workers.job_worker"]
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - configMapRef:
+            name: aml-config
+        env:
+        - name: AML_APP_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: AML_APP_PASSWORD } }
+        - name: REDIS_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: REDIS_PASSWORD } }
+        - name: JWT_PRIVATE_KEY_PEM
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: JWT_PRIVATE_KEY_PEM } }
+        - name: PII_ENCRYPTION_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: PII_ENCRYPTION_KEY } }
+        - name: EVIDENCE_S3_ACCESS_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: EVIDENCE_S3_ACCESS_KEY, optional: true } }
+        - name: EVIDENCE_S3_SECRET_KEY
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: EVIDENCE_S3_SECRET_KEY, optional: true } }
+        - name: KAFKA_SASL_USERNAME
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_USERNAME, optional: true } }
+        - name: KAFKA_SASL_PASSWORD
+          valueFrom: { secretKeyRef: { name: aml-secrets, key: KAFKA_SASL_PASSWORD, optional: true } }
+        livenessProbe:
+          exec:
+            command: ["sh", "-c", "test -f /tmp/job_worker.hb && [ $(($(date +%s) - $(cat /tmp/job_worker.hb))) -lt 60 ]"]
+          initialDelaySeconds: 25
+          periodSeconds: 15
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+            ephemeral-storage: "256Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+            ephemeral-storage: "512Mi"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: prom-multiproc
+          mountPath: /tmp/prometheus_multiproc
+        - name: tls-certs
+          mountPath: /var/run/secrets/tls
+          readOnly: true
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 256Mi
+      - name: prom-multiproc
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: tls-certs
+        secret:
+          secretName: aml-internal-services-tls-secret

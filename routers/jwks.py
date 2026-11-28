@@ -30,6 +30,7 @@ def jwks(
     etag_val = f'"{hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]}"'
     cache_headers = {
         "Cache-Control": "public, max-age=300",
+        "CDN-Cache-Control": "public, max-age=300, stale-while-revalidate=60",
         "ETag": etag_val,
     }
     if if_none_match and etag_val in {t.strip().lstrip("W/") for t in if_none_match.split(",")}:

@@ -7,13 +7,15 @@ from contextlib import asynccontextmanager
 import asyncpg
 
 from config import settings
-from services.secrets_manager import get_postgres_dsn, get_postgres_replica_dsn
+from services.secrets_manager import get_postgres_dsn, get_postgres_replica_dsn, get_postgres_replica_dsns
 from services.tls_manager import get_ssl_context
 
 logger = logging.getLogger(__name__)
 
 db_pool = None
 db_replica_pool = None
+db_replica_pools: list = []
+_replica_rr_index: int = 0
 _pool_init_lock: asyncio.Lock | None = None
 _pool_init_lock_loop = None
 
@@ -32,8 +34,8 @@ def _pool_needs_init(pool) -> bool:
 
 
 async def init_db_pool():
-    """Initializes primary and read-replica asyncpg pools safely under asyncio.Lock."""
-    global db_pool, db_replica_pool
+    """Initializes primary and one or more read-replica asyncpg pools safely under asyncio.Lock."""
+    global db_pool, db_replica_pool, db_replica_pools, _replica_rr_index
     async with _get_pool_lock():
         pgbouncer_enabled = os.getenv("PGBOUNCER_ENABLED", "false").lower() == "true"
         pool_kwargs = {}
@@ -65,24 +67,39 @@ async def init_db_pool():
             )
 
         if _pool_needs_init(db_replica_pool):
-            try:
-                replica_dsn = get_postgres_replica_dsn()
-                ssl_ctx = get_ssl_context()
-                rep_max = max(1, int(getattr(settings, "postgres_replica_pool_max_size", 4)))
-                acq_timeout = max(1.0, float(getattr(settings, "postgres_acquire_timeout_seconds", 5.0)))
-                # P2-24: Cap replica pool at max_size=4 per worker (4 * 2 workers * 10 HPA pods = 80 < 200 max_connections)
-                db_replica_pool = await asyncpg.create_pool(
-                    dsn=replica_dsn,
-                    ssl=ssl_ctx,
-                    min_size=1,
-                    max_size=rep_max,
-                    timeout=acq_timeout,
-                    command_timeout=15.0,
-                    **pool_kwargs,
+            replica_dsns = get_postgres_replica_dsns()
+            ssl_ctx = get_ssl_context()
+            rep_max = max(1, int(getattr(settings, "postgres_replica_pool_max_size", 4)))
+            per_replica_max = max(1, rep_max // max(1, len(replica_dsns))) if len(replica_dsns) > 1 else rep_max
+            acq_timeout = max(1.0, float(getattr(settings, "postgres_acquire_timeout_seconds", 5.0)))
+            initialized_replicas = []
+            for idx, replica_dsn in enumerate(replica_dsns):
+                try:
+                    r_pool = await asyncpg.create_pool(
+                        dsn=replica_dsn,
+                        ssl=ssl_ctx,
+                        min_size=1,
+                        max_size=per_replica_max,
+                        timeout=acq_timeout,
+                        command_timeout=15.0,
+                        **pool_kwargs,
+                    )
+                    initialized_replicas.append(r_pool)
+                except Exception as e:
+                    logger.warning("Read replica #%d pool initialization failed: %s", idx + 1, e)
+
+            if initialized_replicas:
+                db_replica_pools = initialized_replicas
+                db_replica_pool = initialized_replicas[0]
+                _replica_rr_index = 0
+                logger.info(
+                    "Read replica asyncpg pool(s) initialized (count=%d, max_per_replica=%d).",
+                    len(initialized_replicas),
+                    per_replica_max,
                 )
-                logger.info("Read replica asyncpg connection pool initialized (max=%d).", rep_max)
-            except Exception as e:
-                logger.warning("Read replica pool initialization fallback to primary: %s", e)
+            else:
+                logger.warning("All read replica pools unavailable; falling back to primary pool.")
+                db_replica_pools = []
                 db_replica_pool = db_pool
 
         return db_pool
@@ -97,11 +114,20 @@ async def get_db_pool():
 
 
 async def close_db_pool():
-    global db_pool, db_replica_pool
-    if db_replica_pool and db_replica_pool is not db_pool:
+    global db_pool, db_replica_pool, db_replica_pools, _replica_rr_index
+    closed_ids: set[int] = set()
+    for r_pool in list(db_replica_pools):
+        if r_pool and r_pool is not db_pool and id(r_pool) not in closed_ids:
+            await r_pool.close()
+            closed_ids.add(id(r_pool))
+    if db_replica_pool and db_replica_pool is not db_pool and id(db_replica_pool) not in closed_ids:
         await db_replica_pool.close()
-        logger.info("Read replica asyncpg connection pool closed.")
+        closed_ids.add(id(db_replica_pool))
+    if closed_ids:
+        logger.info("Closed %d read replica asyncpg connection pool(s).", len(closed_ids))
+    db_replica_pools = []
     db_replica_pool = None
+    _replica_rr_index = 0
     if db_pool:
         await db_pool.close()
         db_pool = None
@@ -160,6 +186,20 @@ async def get_async_db_conn(tenant_id: str | None = None, auth_lookup: bool = Fa
             yield conn
 
 
+def _candidate_replica_pools() -> list:
+    """Returns ordered replica pools starting from the next round-robin slot."""
+    global _replica_rr_index
+    active = [p for p in db_replica_pools if p is not None and p is not db_pool]
+    # Honor direct test monkeypatching of `db_replica_pool`
+    if db_replica_pool is not None and db_replica_pool is not db_pool and db_replica_pool not in active:
+        return [db_replica_pool]
+    if not active:
+        return []
+    start = _replica_rr_index % len(active)
+    _replica_rr_index = (start + 1) % len(active)
+    return active[start:] + active[:start]
+
+
 @asynccontextmanager
 async def get_async_db_read_conn(
     tenant_id: str | None = None,
@@ -167,12 +207,13 @@ async def get_async_db_read_conn(
     prefer_primary: bool = False,
 ):
     """
-    Acquires a read-only database connection with automatic Read-After-Write (RAW)
-    primary stickiness and streaming replication lag failover:
+    Acquires a read-only database connection with multi-replica round-robin load balancing,
+    Read-After-Write (RAW) primary stickiness, and streaming replication lag failover:
       - Routes to Primary when `prefer_primary=True`, active RAW stickiness is set
         in `force_primary_read_var`, or observed replica lag exceeds
         `settings.replica_max_lag_seconds`.
-      - Otherwise acquires from the read-replica pool with fallback to Primary.
+      - Otherwise rotates across configured read-replica pools, failing over to sibling
+        replicas first and then Primary if all replicas fail.
     """
     global db_pool, db_replica_pool
     if _pool_needs_init(db_replica_pool) or _pool_needs_init(db_pool):
@@ -185,6 +226,7 @@ async def get_async_db_read_conn(
     acq_timeout = max(1.0, float(getattr(settings, "postgres_acquire_timeout_seconds", 5.0)))
     max_lag = max(0.1, float(getattr(settings, "replica_max_lag_seconds", 2.0)))
     observed_lag = get_observed_replica_lag_seconds()
+    replica_candidates = _candidate_replica_pools()
 
     use_primary = False
     routing_reason = "replica"
@@ -197,27 +239,38 @@ async def get_async_db_read_conn(
     elif observed_lag > max_lag:
         use_primary = True
         routing_reason = "primary_replica_lag"
-    elif db_replica_pool is None or db_replica_pool is db_pool:
+    elif not replica_candidates:
         use_primary = True
         routing_reason = "primary_shared_pool"
 
-    target_pool = db_pool if use_primary else db_replica_pool
-    pool_label = "primary" if target_pool is db_pool else "replica"
+    target_pool = db_pool
     conn = None
-    t0 = time.monotonic()
-    try:
-        conn = await target_pool.acquire(timeout=acq_timeout)
-        _emit_pool_metrics(pool_label, target_pool, time.monotonic() - t0)
-        record_db_read_routing(pool_label, routing_reason)
-    except Exception as e:
-        if target_pool is db_pool:
-            raise
-        logger.warning("Read replica acquire failed, falling back to primary pool: %s", e)
-        target_pool = db_pool
+    if use_primary:
         t0 = time.monotonic()
-        conn = await target_pool.acquire(timeout=acq_timeout)
-        _emit_pool_metrics("primary", target_pool, time.monotonic() - t0)
-        record_db_read_routing("primary", "primary_fallback")
+        conn = await db_pool.acquire(timeout=acq_timeout)
+        _emit_pool_metrics("primary", db_pool, time.monotonic() - t0)
+        record_db_read_routing("primary", routing_reason)
+    else:
+        last_err: Exception | None = None
+        for r_pool in replica_candidates:
+            t0 = time.monotonic()
+            try:
+                conn = await r_pool.acquire(timeout=acq_timeout)
+                target_pool = r_pool
+                _emit_pool_metrics("replica", r_pool, time.monotonic() - t0)
+                record_db_read_routing("replica", routing_reason)
+                break
+            except Exception as e:
+                last_err = e
+                logger.warning("Read replica acquire failed, trying next standby/primary: %s", e)
+
+        if conn is None:
+            logger.warning("All read replicas failed (%s); falling back to primary pool.", last_err)
+            target_pool = db_pool
+            t0 = time.monotonic()
+            conn = await db_pool.acquire(timeout=acq_timeout)
+            _emit_pool_metrics("primary", db_pool, time.monotonic() - t0)
+            record_db_read_routing("primary", "primary_fallback")
 
     try:
         async with conn.transaction(readonly=True):

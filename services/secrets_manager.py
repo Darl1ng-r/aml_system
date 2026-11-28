@@ -431,6 +431,40 @@ def get_postgres_replica_dsn() -> str:
     return _build_postgres_dsn(user, password, host, port, db)
 
 
+def get_postgres_replica_dsns() -> list[str]:
+    """
+    Returns one or more PostgreSQL read-replica DSNs.
+    When `POSTGRES_REPLICA_HOSTS` is set (comma-separated `host[:port]` entries),
+    returns one DSN per replica for round-robin pooling across 2+ streaming standbys.
+    """
+    store = _secret_store()
+    raw_hosts = (
+        store.get("postgres.replica_hosts")
+        or getattr(settings, "postgres_replica_hosts", "")
+        or ""
+    ).strip()
+    if not raw_hosts:
+        return [get_postgres_replica_dsn()]
+
+    user = store.get("postgres.user") or settings.postgres_user
+    default_port = str(store.get("postgres.replica_port") or settings.postgres_replica_port)
+    db = store.get("postgres.db") or settings.postgres_db
+    password = get_postgres_password()
+
+    dsns: list[str] = []
+    for entry in raw_hosts.split(","):
+        token = entry.strip()
+        if not token:
+            continue
+        if ":" in token:
+            host, port = token.rsplit(":", 1)
+        else:
+            host, port = token, default_port
+        dsns.append(_build_postgres_dsn(user, password, host.strip(), port.strip(), db))
+
+    return dsns or [get_postgres_replica_dsn()]
+
+
 def get_redis_password() -> Optional[str]:
     """Resolves Redis password dynamically from Vault -> mounted file -> env -> settings."""
     vault_pw = _secret_store().get("redis.password")

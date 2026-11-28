@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     postgres_port: int = 5433
     postgres_replica_host: str = "localhost"
     postgres_replica_port: int = 5434
+    # Optional comma-separated multi-replica endpoints ("host1:5432,host2:5432") for client-side round-robin
+    postgres_replica_hosts: str = ""
     postgres_db: str = "aml_db"
     postgres_user: str = "aml_app"
     postgres_password: str = ""

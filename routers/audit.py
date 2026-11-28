@@ -377,16 +377,41 @@ class AuditorRoomCreateRequest(BaseModel):
 @router.post("/examiner-packet/{case_id}")
 async def export_signed_examiner_packet(
     case_id: str,
+    async_mode: bool = Query(default=False),
     current_user: dict = Depends(RoleChecker(["MLRO", "ADMIN", "AUDITOR", "GLOBAL_AUDITOR", "SUPER_ADMIN"])),
     _rate_limit=Depends(RateLimiter(limit=15, window=60)),
 ):
-    """Exports a regulator-ready RS256-signed ZIP dossier verifiable via /.well-known/jwks.json."""
+    """Exports a regulator-ready RS256-signed ZIP dossier (or queues asynchronously when async_mode=true)."""
     try:
         case_uuid = uuid.UUID(case_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid case ID.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
+    if async_mode:
+        from fastapi.responses import JSONResponse
+        from repositories.jobs_repo import enqueue_async_job_atomic
+        from services.async_jobs import JOBS_EXPORTS_TOPIC
+
+        job, deduplicated = await enqueue_async_job_atomic(
+            tenant_id=str(tenant_id),
+            job_type="EXAMINER_PACKET_ZIP",
+            payload={"case_id": str(case_uuid)},
+            requested_by=str(current_user.get("username") or current_user.get("id") or "mlro"),
+            requested_role=str(current_user.get("role") or "MLRO"),
+            topic=JOBS_EXPORTS_TOPIC,
+            conn_factory=get_async_db_conn,
+        )
+        return JSONResponse(
+            status_code=_status.HTTP_202_ACCEPTED,
+            content={
+                "job_id": job["job_id"],
+                "job_type": job["job_type"],
+                "status": job["status"],
+                "deduplicated": deduplicated,
+                "status_url": f"/api/v1/jobs/{job['job_id']}",
+            },
+        )
     try:
         zip_bytes, manifest, zip_sha256 = await build_examiner_packet_repo(
             tenant_id=tenant_id,

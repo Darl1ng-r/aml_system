@@ -153,7 +153,7 @@ metadata:
   labels:
     app: aml-redis-cache
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: aml-redis-cache
@@ -163,6 +163,23 @@ spec:
         app: aml-redis-cache
     spec:
       automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 20
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: aml-redis-cache
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: aml-redis-cache
+              topologyKey: kubernetes.io/hostname
       securityContext:
         runAsNonRoot: true
         runAsUser: 999
