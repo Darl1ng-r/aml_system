@@ -16,6 +16,7 @@ import os
 import json
 import math
 import logging
+from decimal import Decimal
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,98 @@ AMOUNT_NORM_CAP = 100_000.0
 
 DEFAULT_CURRENCY = "US Dollar"
 HIGH_RISK_CURRENCIES = {"Ruble", "Yuan", "Shekel", "Dinar", "Iranian Rial"}
+
+# Canonicalizers bridging production ISO-4217 / uppercase channel codes to the IBM-AML training vocabulary
+_CURRENCY_TO_TRAINING: dict[str, str] = {
+    "USD": "US Dollar",
+    "US DOLLAR": "US Dollar",
+    "EUR": "Euro",
+    "EURO": "Euro",
+    "GBP": "UK Pound",
+    "UK POUND": "UK Pound",
+    "CHF": "Swiss Franc",
+    "SWISS FRANC": "Swiss Franc",
+    "CAD": "Canadian Dollar",
+    "CANADIAN DOLLAR": "Canadian Dollar",
+    "AUD": "Australian Dollar",
+    "AUSTRALIAN DOLLAR": "Australian Dollar",
+    "JPY": "Yen",
+    "YEN": "Yen",
+    "RUB": "Ruble",
+    "RUBLE": "Ruble",
+    "CNY": "Yuan",
+    "CNH": "Yuan",
+    "YUAN": "Yuan",
+    "ILS": "Shekel",
+    "SHEKEL": "Shekel",
+    "IQD": "Dinar",
+    "JOD": "Dinar",
+    "KWD": "Dinar",
+    "BHD": "Dinar",
+    "LYD": "Dinar",
+    "TND": "Dinar",
+    "DINAR": "Dinar",
+    "IRR": "Iranian Rial",
+    "IRANIAN RIAL": "Iranian Rial",
+    "SAR": "Saudi Riyal",
+    "SAUDI RIYAL": "Saudi Riyal",
+    "MXN": "Mexican Peso",
+    "MEXICAN PESO": "Mexican Peso",
+    "BRL": "Brazil Real",
+    "BRAZIL REAL": "Brazil Real",
+    "INR": "Rupee",
+    "RUPEE": "Rupee",
+    "BTC": "Bitcoin",
+    "BITCOIN": "Bitcoin",
+}
+
+_CHANNEL_TO_TRAINING: dict[str, str] = {
+    "CASH": "Cash",
+    "CHEQUE": "Cheque",
+    "CHECK": "Cheque",
+    "CREDIT CARD": "Credit Card",
+    "CREDIT_CARD": "Credit Card",
+    "CARD": "Credit Card",
+    "DEBIT_CARD": "Credit Card",
+    "ACH": "ACH",
+    "WIRE": "Wire",
+    "SWIFT": "Wire",
+    "CROSS_BORDER": "Wire",
+    "SEPA": "Wire",
+    "REINVESTMENT": "Reinvestment",
+    "BITCOIN": "Bitcoin",
+    "BTC": "Bitcoin",
+    "CRYPTO": "Bitcoin",
+    "VASP": "Bitcoin",
+    "DIGITAL_ASSET": "Bitcoin",
+    "OTHER": "Other",
+}
+
+
+def _finite_float(val: object, default: float = 0.0) -> float:
+    try:
+        f = float(val)  # type: ignore[arg-type]
+        return f if math.isfinite(f) else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _canonicalize_currency(currency: str | None) -> str:
+    if not currency:
+        return DEFAULT_CURRENCY
+    cleaned = str(currency).strip()
+    if not cleaned:
+        return DEFAULT_CURRENCY
+    return _CURRENCY_TO_TRAINING.get(cleaned.upper(), cleaned)
+
+
+def _canonicalize_channel(pay_format: str | None) -> str:
+    if not pay_format:
+        return "Wire"
+    cleaned = str(pay_format).strip()
+    if not cleaned:
+        return "Wire"
+    return _CHANNEL_TO_TRAINING.get(cleaned.upper(), cleaned if cleaned in PAYMENT_FORMATS else "Other")
 
 PAYMENT_FORMATS = {
     "Cash": 0,
@@ -106,29 +199,30 @@ class AMLAnomalyModel:
                 logger.exception(f"Failed to load XGBoost model: {e}. Falling back to legacy formula.")
                 self._mode = "fallback"
 
-        # ── Fallback: legacy logistic regression coefficients ─────────────────
-        if self._mode == "fallback":
-            self._intercept = -2.36
-            self._coefficients = {
-                "amount": 3.66, "sender_risk": 2.38,
-                "receiver_risk": 1.84, "velocity": 1.58
-            }
-            self._feature_means = {
-                "amount": 0.13, "sender_risk": 0.29,
-                "receiver_risk": 0.29, "velocity": 0.16
-            }
-            if os.path.exists(_PARAMS_PATH):
-                try:
-                    with open(_PARAMS_PATH) as f:
-                        params = json.load(f)
-                    self._intercept = params.get("intercept", self._intercept)
-                    self._coefficients = params.get("coefficients", self._coefficients)
-                    self._feature_means = params.get("feature_means", self._feature_means)
+        # ── Always initialize fallback logistic regression coefficients ───────
+        # Ensures runtime fallback from XGBoost inference errors never raises AttributeError.
+        self._intercept = -2.36
+        self._coefficients = {
+            "amount": 3.66, "sender_risk": 2.38,
+            "receiver_risk": 1.84, "velocity": 1.58
+        }
+        self._feature_means = {
+            "amount": 0.13, "sender_risk": 0.29,
+            "receiver_risk": 0.29, "velocity": 0.16
+        }
+        if os.path.exists(_PARAMS_PATH):
+            try:
+                with open(_PARAMS_PATH) as f:
+                    params = json.load(f)
+                self._intercept = params.get("intercept", self._intercept)
+                self._coefficients = params.get("coefficients", self._coefficients)
+                self._feature_means = params.get("feature_means", self._feature_means)
+                if self._mode == "fallback":
                     logger.info("Legacy logistic regression parameters loaded from model_params.json.")
-                except Exception as e:
-                    logger.warning(f"Could not load model_params.json: {e}. Using hardcoded defaults.")
-            else:
-                logger.warning("No trained model found. Using hardcoded fallback heuristics. Run scripts/train_model.py to train.")
+            except Exception as e:
+                logger.warning(f"Could not load model_params.json: {e}. Using hardcoded defaults.")
+        elif self._mode == "fallback":
+            logger.warning("No trained model found. Using hardcoded fallback heuristics. Run scripts/train_model.py to train.")
 
     # ── Feature construction ───────────────────────────────────────────────────
     @staticmethod
@@ -146,34 +240,48 @@ class AMLAnomalyModel:
     ) -> np.ndarray:
         """
         Constructs the 10-feature vector used during training.
-        Supports explicit received amount (for FX / cross-currency layering detection)
-        while maintaining strict backward-compatibility with domestic 1:1 transactions.
+        Canonicalizes ISO-4217 currency codes & uppercase channel names to training vocabulary
+        and sanitizes all non-finite/negative values.
         """
-        safe_amount = max(amount, 0.0)
+        safe_amount = max(_finite_float(amount, 0.0), 0.0)
         amount_log = math.log1p(safe_amount) / math.log1p(AMOUNT_NORM_CAP)
         amount_log = min(max(amount_log, 0.0), 1.0)
 
         # Feature 2: Amount ratio (amt_received / amt_paid) / 5.0 from training data schema.
         # For domestic/same-currency (where amt_recv == amt_paid), this is exactly 1.0 / 5.0 = 0.20.
         if amount_ratio is not None:
-            norm_amount_ratio = min(max(float(amount_ratio), 0.0), 1.0)
+            norm_amount_ratio = min(max(_finite_float(amount_ratio, 0.2), 0.0), 1.0)
         elif amount_received is not None and safe_amount > 0:
-            norm_amount_ratio = min(max(float(amount_received), 0.0) / max(safe_amount, 1e-6), 5.0) / 5.0
+            safe_recv = max(_finite_float(amount_received, 0.0), 0.0)
+            norm_amount_ratio = min(safe_recv / max(safe_amount, 1e-6), 5.0) / 5.0
         elif safe_amount > 0:
             norm_amount_ratio = 1.0 / 5.0
         else:
             norm_amount_ratio = 0.0
 
-        hour_norm = min(max(hour, 0), 23) / 23.0
+        safe_hour = int(min(max(_finite_float(hour, 12.0), 0.0), 23.0))
+        hour_norm = safe_hour / 23.0
 
-        is_geo_risk = 1.0 if currency_paid in HIGH_RISK_CURRENCIES else 0.0
-        currency_mismatch = 1.0 if currency_recv != currency_paid else 0.0
+        canon_paid = _canonicalize_currency(currency_paid)
+        canon_recv = _canonicalize_currency(currency_recv)
+        canon_fmt = _canonicalize_channel(pay_format)
 
-        pay_fmt_code = PAYMENT_FORMATS.get(pay_format, PAYMENT_FORMATS["Other"]) / 7.0
-        is_crypto = 1.0 if pay_format == "Bitcoin" else 0.0
-        is_cash = 1.0 if pay_format == "Cash" else 0.0
-        is_reinvestment = 1.0 if pay_format == "Reinvestment" else 0.0
-        is_round = 1.0 if (safe_amount > 0 and int(round(safe_amount * 100)) % 100000 == 0) else 0.0
+        is_geo_risk = 1.0 if canon_paid in HIGH_RISK_CURRENCIES else 0.0
+        currency_mismatch = 1.0 if canon_recv != canon_paid else 0.0
+
+        pay_fmt_code = PAYMENT_FORMATS.get(canon_fmt, PAYMENT_FORMATS["Other"]) / 7.0
+        is_crypto = 1.0 if canon_fmt == "Bitcoin" else 0.0
+        is_cash = 1.0 if canon_fmt == "Cash" else 0.0
+        is_reinvestment = 1.0 if canon_fmt == "Reinvestment" else 0.0
+
+        is_round = 0.0
+        if 0.0 < safe_amount <= 1e15:
+            try:
+                amt_dec = Decimal(f"{safe_amount:.2f}")
+                if amt_dec % Decimal("1000.00") == Decimal("0"):
+                    is_round = 1.0
+            except Exception:
+                is_round = 0.0
 
         return np.array([[
             amount_log, norm_amount_ratio, hour_norm, is_geo_risk,
@@ -223,18 +331,24 @@ class AMLAnomalyModel:
         """Convenience method accepting a feature dict, returning (risk_score, attributions)."""
         amt_recv = features.get("amount_received", features.get("amt_received", None))
         amt_ratio_val = features.get("amount_ratio", None)
+        currency_paid = features.get("currency", DEFAULT_CURRENCY)
+        currency_recv = (
+            features.get("currency_received")
+            or features.get("currency_recv")
+            or currency_paid
+        )
         res = self.predict_risk(
-            amount=float(features.get("amount", 0.0)),
-            sender_risk=float(features.get("sender_risk", 0.2)),
-            receiver_risk=float(features.get("receiver_risk", 0.2)),
-            velocity_count=int(features.get("velocity_24h", features.get("velocity_count", 1))),
-            hour=int(features.get("hour_of_day", features.get("hour", 12))),
-            currency_paid=features.get("currency", DEFAULT_CURRENCY),
-            currency_recv=features.get("currency", DEFAULT_CURRENCY),
+            amount=_finite_float(features.get("amount", 0.0), 0.0),
+            sender_risk=_finite_float(features.get("sender_risk", 0.2), 0.2),
+            receiver_risk=_finite_float(features.get("receiver_risk", 0.2), 0.2),
+            velocity_count=int(_finite_float(features.get("velocity_24h", features.get("velocity_count", 1)), 1.0)),
+            hour=int(_finite_float(features.get("hour_of_day", features.get("hour", 12)), 12.0)),
+            currency_paid=currency_paid,
+            currency_recv=currency_recv,
             pay_format=features.get("channel", "Wire"),
             explain=True,
-            amount_received=float(amt_recv) if amt_recv is not None else None,
-            amount_ratio=float(amt_ratio_val) if amt_ratio_val is not None else None
+            amount_received=_finite_float(amt_recv) if amt_recv is not None else None,
+            amount_ratio=_finite_float(amt_ratio_val) if amt_ratio_val is not None else None
         )
         return res["risk_score"], res["attributions"]
 
@@ -278,11 +392,16 @@ class AMLAnomalyModel:
             return self._predict_fallback(amount, sender_risk, receiver_risk, velocity_count)
 
     def _predict_fallback(self, amount, sender_risk, receiver_risk, velocity_count) -> dict:
-        """Legacy logistic regression formula (used before model is trained)."""
-        norm_amount = min(amount / 20000.0, 1.0)
-        norm_sender = min(max(sender_risk, 0.0), 1.0)
-        norm_receiver = min(max(receiver_risk, 0.0), 1.0)
-        norm_velocity = min(velocity_count / 10.0, 1.0)
+        """Legacy logistic regression formula (used before model is trained or on runtime fallback)."""
+        safe_amount = max(_finite_float(amount, 0.0), 0.0)
+        safe_sender = _finite_float(sender_risk, 0.2)
+        safe_receiver = _finite_float(receiver_risk, 0.2)
+        safe_velocity = max(_finite_float(velocity_count, 0.0), 0.0)
+
+        norm_amount = min(max(safe_amount / 20000.0, 0.0), 1.0)
+        norm_sender = min(max(safe_sender, 0.0), 1.0)
+        norm_receiver = min(max(safe_receiver, 0.0), 1.0)
+        norm_velocity = min(max(safe_velocity / 10.0, 0.0), 1.0)
 
         z = (
             self._intercept

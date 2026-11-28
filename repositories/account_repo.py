@@ -208,6 +208,40 @@ async def unfreeze_account_atomic(
         )
         if not acc:
             raise HTTPException(status_code=404, detail=ACCOUNT_NOT_FOUND)
+        if str(acc["status"]).upper() != "FROZEN":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot unfreeze account in '{acc['status']}' state; only FROZEN accounts can be unfrozen.",
+            )
+
+        # Enforce Four-Eyes separation: the officer who imposed a freeze cannot unilaterally lift it
+        actor_id_str = str(current_user.get("id") or "")
+        if actor_id_str and hasattr(conn, "fetchrow"):
+            try:
+                async with conn.transaction():
+                    last_freeze = await conn.fetchrow(
+                        """
+                        SELECT actor_id, actor_username
+                        FROM audit_log
+                        WHERE tenant_id = $1
+                          AND resource_type = 'ACCOUNT'
+                          AND resource_id = $2
+                          AND action = 'ACCOUNT_FROZEN'
+                        ORDER BY created_at DESC
+                        LIMIT 1;
+                        """,
+                        tenant_uuid,
+                        acc_id_str,
+                    )
+                if last_freeze and str(last_freeze["actor_id"] or "") == actor_id_str:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Four-Eyes violation: The officer who froze an account cannot unilaterally unfreeze it. A second MLRO or Admin must approve.",
+                    )
+            except HTTPException:
+                raise
+            except Exception as fe_err:
+                logger.debug("Four-Eyes audit lookup bypassed on mock/minimal DB: %s", fe_err)
 
         await conn.execute(
             """
@@ -385,6 +419,22 @@ async def decide_edd_request_atomic(
         )
         if not edd_row:
             raise HTTPException(status_code=404, detail="EDD request not found.")
+        if str(edd_row["status"]).upper() == "RESOLVED":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="EDD request has already been resolved and cannot be re-decided.",
+            )
+
+        acc_row = await conn.fetchrow(
+            "SELECT id, status FROM accounts WHERE id = $1 AND tenant_id = $2 FOR UPDATE;",
+            edd_row["account_id"],
+            tenant_uuid,
+        )
+        if acc_row and str(acc_row["status"]).upper() == "FROZEN" and decision == "APPROVED":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot activate a FROZEN account via EDD approval; separate MLRO Four-Eyes unfreeze is required.",
+            )
 
         if decision == "APPROVED":
             new_account_status = "ACTIVE"

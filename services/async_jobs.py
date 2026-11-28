@@ -257,16 +257,20 @@ async def execute_async_job(
             return {"job_id": str(job_uuid), "status": "COMPLETED"}
 
         if job_type == "RULE_BACKTEST_ANALYTICS":
-            from services.rule_backtest import run_rule_backtest_simulation
+            from services.rule_backtest import backtest_rule_config
 
-            rule_id = payload.get("rule_id")
-            if not rule_id:
-                raise ValueError("RULE_BACKTEST_ANALYTICS job requires payload.rule_id")
-            lookback_days = max(1, min(365, int(payload.get("lookback_days", 30))))
-            summary = await run_rule_backtest_simulation(
+            rule_name = payload.get("rule_name") or payload.get("rule_id")
+            if not rule_name:
+                raise ValueError("RULE_BACKTEST_ANALYTICS job requires payload.rule_name or payload.rule_id")
+            candidate_config = payload.get("candidate_config") or payload.get("config") or {}
+            lookback_days = max(1, min(180, int(payload.get("lookback_days", 30))))
+            sample_limit = max(10, min(5000, int(payload.get("sample_limit", 2000))))
+            summary = await backtest_rule_config(
                 tenant_id=tenant_id,
-                rule_id=str(rule_id),
+                rule_name=str(rule_name),
+                candidate_config=candidate_config if isinstance(candidate_config, dict) else {},
                 lookback_days=lookback_days,
+                sample_limit=sample_limit,
             )
             await complete_async_job_repo(
                 tenant_id=tenant_id,

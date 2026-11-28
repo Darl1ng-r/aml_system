@@ -325,12 +325,18 @@ def test_p2_4_ubo_resolver_computes_indirect_split_ownership_and_cycle_guard():
         {"parent_entity_name": "OpCo Trading", "parent_entity_type": "COMPANY", "child_company_name": "Shell A Ltd", "ownership_pct": 10.0, "jurisdiction": "VG"},
     ]
 
+    # Acyclic split ownership: 30%*50% + 30%*50% = 30.0%
+    tree_dag = resolve_ubo_ownership_tree(edges[:-1], target_company="OpCo Trading", threshold_pct=25.0)
+    assert tree_dag["cycles_detected"] is False
+    assert tree_dag["ultimate_beneficial_owners"][0]["effective_ownership_pct"] == 30.0
+
+    # With 30%*10% = 3% cross-holding loop: true economic stake = 30% / (1 - 0.03) = 30.93%
     tree = resolve_ubo_ownership_tree(edges, target_company="OpCo Trading", threshold_pct=25.0)
     assert tree["cycles_detected"] is True
     assert tree["ubo_count_above_threshold"] == 1
     oleg = tree["ultimate_beneficial_owners"][0]
     assert oleg["entity_name"] == "Oleg Volkov"
-    assert oleg["effective_ownership_pct"] == 30.0
+    assert oleg["effective_ownership_pct"] == 30.93
     assert oleg["exceeds_threshold"] is True
     assert oleg["is_split_ownership"] is True
     assert len(oleg["paths"]) == 2

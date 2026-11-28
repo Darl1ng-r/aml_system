@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, ROUND_HALF_UP, localcontext
 from typing import Any, Mapping
 
 # ISO 4217 currency minor-unit decimal exponents (default = 2)
@@ -82,6 +82,7 @@ CURRENCY_EXPONENTS: Mapping[str, int] = {
 }
 
 MAX_LEDGER_SCALE = 4
+MAX_MONEY_MAGNITUDE = Decimal("9999999999999999.99")  # NUMERIC(18, 2) ledger ceiling
 FX_RATE_QUANTUM = Decimal("0.00000001")  # 8 decimal places (matches NUMERIC(18, 8))
 LEDGER_QUANTUM = Decimal("0.0001")       # 4 decimal places (matches NUMERIC(19, 4))
 
@@ -92,6 +93,10 @@ class DomainError(Exception):
 
 class InvalidMoneyError(DomainError, ValueError):
     """Raised when a monetary amount, currency code, or FX rate is invalid or non-finite."""
+
+
+class FxRateUnavailableError(InvalidMoneyError):
+    """Raised when no authoritative or static FX conversion rate exists for a currency pair."""
 
 
 def normalize_currency(currency: str | None, default: str = "USD") -> str:
@@ -192,8 +197,17 @@ def quantize_amount(
 ) -> Decimal:
     """Quantizes a monetary amount to its ISO-4217 currency precision using explicit rounding."""
     dec = to_decimal(amount, field_name="amount")
+    if abs(dec) > MAX_MONEY_MAGNITUDE:
+        raise InvalidMoneyError(
+            f"amount magnitude {dec} exceeds maximum ledger capacity ({MAX_MONEY_MAGNITUDE})"
+        )
     quantum = get_currency_quantum(normalize_currency(currency))
-    return dec.quantize(quantum, rounding=rounding)
+    try:
+        with localcontext() as ctx:
+            ctx.prec = 60
+            return dec.quantize(quantum, rounding=rounding)
+    except InvalidOperation as exc:
+        raise InvalidMoneyError(f"cannot quantize amount {dec} to quantum {quantum}") from exc
 
 
 def invert_fx_rate(base_to_quote_rate: Any) -> Decimal:
@@ -202,7 +216,15 @@ def invert_fx_rate(base_to_quote_rate: Any) -> Decimal:
     rounded to 8 decimal places with ROUND_HALF_EVEN.
     """
     rate_dec = to_decimal(base_to_quote_rate, allow_negative=False, allow_zero=False, field_name="fx_rate")
-    return (Decimal("1") / rate_dec).quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN)
+    try:
+        with localcontext() as ctx:
+            ctx.prec = 60
+            inverted = (Decimal("1") / rate_dec).quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN)
+    except InvalidOperation as exc:
+        raise InvalidMoneyError(f"cannot invert extreme FX rate: {rate_dec}") from exc
+    if inverted <= Decimal("0"):
+        raise InvalidMoneyError(f"inverted FX rate underflowed to zero for rate {rate_dec}")
+    return inverted
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,8 +258,7 @@ class Money:
         return int((quantized.amount * (Decimal(10) ** exp)).to_integral_exact())
 
     def quantize(self, *, rounding: str = ROUND_HALF_EVEN) -> "Money":
-        quantum = get_currency_quantum(self.currency)
-        return Money(self.amount.quantize(quantum, rounding=rounding), self.currency)
+        return Money(quantize_amount(self.amount, self.currency, rounding=rounding), self.currency)
 
     def _assert_same_currency(self, other: "Money") -> None:
         if self.currency != other.currency:
@@ -281,15 +302,24 @@ def convert_money(
 ) -> FxConversionResult:
     """
     Pure FX normalization using exact fixed-point Decimal arithmetic.
+    Multiplies strictly by the recorded 8-dp `quantized_rate` so persisted audit
+    provenance satisfies `quantize(original_amount * fx_rate_applied) == amount_base`.
     """
     src_curr = normalize_currency(currency)
     dst_curr = normalize_currency(base_currency)
     orig_dec = to_decimal(amount, allow_negative=False, field_name="amount")
     rate_dec = to_decimal(fx_rate_to_base, allow_negative=False, allow_zero=False, field_name="fx_rate")
-    quantized_rate = rate_dec.quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN)
+    try:
+        with localcontext() as ctx:
+            ctx.prec = 60
+            quantized_rate = rate_dec.quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN)
+    except InvalidOperation as exc:
+        raise InvalidMoneyError(f"cannot quantize FX rate {rate_dec}") from exc
+    if quantized_rate <= Decimal("0"):
+        raise InvalidMoneyError(f"FX rate {rate_dec} quantized to non-positive value ({quantized_rate})")
 
     if src_curr == dst_curr and quantized_rate == Decimal("1.00000000"):
-        converted = orig_dec.quantize(get_currency_quantum(dst_curr), rounding=rounding)
+        converted = quantize_amount(orig_dec, dst_curr, rounding=rounding)
         return FxConversionResult(
             original_amount=orig_dec,
             original_currency=src_curr,
@@ -301,7 +331,10 @@ def convert_money(
             rounding_mode=rounding,
         )
 
-    converted = (orig_dec * rate_dec).quantize(get_currency_quantum(dst_curr), rounding=rounding)
+    with localcontext() as ctx:
+        ctx.prec = 60
+        raw_converted = orig_dec * quantized_rate
+    converted = quantize_amount(raw_converted, dst_curr, rounding=rounding)
     return FxConversionResult(
         original_amount=orig_dec,
         original_currency=src_curr,

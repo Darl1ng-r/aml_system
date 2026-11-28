@@ -108,7 +108,8 @@ async def _persist_whitelist_db(
                 if hasattr(db_conn, "execute"):
                     await db_conn.execute(insert_sql, *params)
     except Exception as e:
-        logger.debug(f"Whitelist database write bypassed/fallback: {e}")
+        logger.error("Whitelist database persistence failed (refusing phantom cache write): %s", e)
+        raise
 
 
 async def _populate_redis_whitelist(
@@ -131,11 +132,14 @@ async def _populate_redis_whitelist(
             if delta > 0:
                 ttl = delta
 
-        r_key_entity = _build_redis_key(tenant_id, rule_upper, norm_name)
-        await redis.setex(r_key_entity, ttl, json.dumps(entry))
+        # Scope-isolated cache keys: a customer-scoped whitelist MUST NEVER write to
+        # the tenant-wide entity key (which would suppress sanctions for every other customer!).
         if customer_id:
             r_key_cust = _build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True)
             await redis.setex(r_key_cust, ttl, json.dumps(entry))
+        else:
+            r_key_entity = _build_redis_key(tenant_id, rule_upper, norm_name)
+            await redis.setex(r_key_entity, ttl, json.dumps(entry))
     except Exception as e:
         logger.warning(f"Failed to populate Redis whitelist cache: {e}")
 
@@ -151,11 +155,13 @@ async def add_to_whitelist(
     conn=None
 ) -> Dict[str, Any]:
     """
-    Persists an adjudicated false positive disposition in PostgreSQL, updates L1 in-memory
-    store, writes to L2 Redis with TTL, and broadcasts invalidation across the cluster.
+    Persists an adjudicated false positive disposition in PostgreSQL FIRST, then updates
+    scope-isolated L1/L2 caches and broadcasts invalidation across the cluster.
     """
     entry_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
     norm_name = matched_entity_name.strip().lower()
     rule_upper = matched_rule.strip().upper()
 
@@ -172,19 +178,25 @@ async def add_to_whitelist(
         "notes": notes or "Adjudicated as false positive by compliance."
     }
 
-    cache_key = f"{tenant_id}:{rule_upper}:{norm_name}"
-    if len(_LOCAL_WHITELIST_STORE) >= 5000:
-        _LOCAL_WHITELIST_STORE.clear()
-    _LOCAL_WHITELIST_STORE[cache_key] = entry
-    cust_cache_key = None
-    if customer_id:
-        cust_cache_key = f"{tenant_id}:{rule_upper}:cust:{customer_id}"
-        _LOCAL_WHITELIST_STORE[cust_cache_key] = entry
-
+    # 1. Persist durably in PostgreSQL BEFORE populating any L1/L2 cache or pubsub broadcast
     await _persist_whitelist_db(
         entry_id, tenant_id, customer_id, matched_entity_name,
         rule_upper, cleared_by, now, expires_at, notes, conn=conn
     )
+
+    if len(_LOCAL_WHITELIST_STORE) >= 5000:
+        _LOCAL_WHITELIST_STORE.clear()
+
+    cache_key: Optional[str] = None
+    cust_cache_key: Optional[str] = None
+    if customer_id:
+        # Customer-scoped whitelist: ONLY populate customer-scoped cache key
+        cust_cache_key = f"{tenant_id}:{rule_upper}:cust:{customer_id}"
+        _LOCAL_WHITELIST_STORE[cust_cache_key] = entry
+    else:
+        cache_key = f"{tenant_id}:{rule_upper}:entity:{norm_name}"
+        _LOCAL_WHITELIST_STORE[cache_key] = entry
+
     await _populate_redis_whitelist(
         tenant_id, rule_upper, norm_name, customer_id, entry, now, expires_at
     )
@@ -210,7 +222,14 @@ def _is_entry_valid(entry: Optional[dict], now: datetime) -> bool:
     exp = entry.get("expires_at")
     if not exp:
         return True
-    return datetime.fromisoformat(exp.replace("Z", UTC_OFFSET_SUFFIX)) > now
+    try:
+        parsed = datetime.fromisoformat(str(exp).replace("Z", UTC_OFFSET_SUFFIX))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        return parsed > now_utc
+    except (ValueError, TypeError):
+        return False
 
 
 def _check_l1_whitelist(
@@ -222,10 +241,13 @@ def _check_l1_whitelist(
 ) -> bool:
     if entity_name:
         norm_name = entity_name.strip().lower()
-        cached = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:{rule_upper}:{norm_name}")
-        if not cached:
-            cached = _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:*:{norm_name}")
-        if _is_entry_valid(cached, now):
+        cached = (
+            _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:{rule_upper}:entity:{norm_name}")
+            or _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:*:entity:{norm_name}")
+            or _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:{rule_upper}:{norm_name}")
+            or _LOCAL_WHITELIST_STORE.get(f"{tenant_id}:*:{norm_name}")
+        )
+        if _is_entry_valid(cached, now) and not (cached or {}).get("customer_id"):
             return True
 
     if customer_id:
@@ -253,17 +275,20 @@ async def _check_l2_whitelist(
         keys_to_check = []
         if entity_name:
             norm_name = entity_name.strip().lower()
-            keys_to_check.append((f"{tenant_id}:{rule_upper}:{norm_name}", _build_redis_key(tenant_id, rule_upper, norm_name)))
-            keys_to_check.append((f"{tenant_id}:*:{norm_name}", _build_redis_key(tenant_id, "*", norm_name)))
+            keys_to_check.append((f"{tenant_id}:{rule_upper}:entity:{norm_name}", _build_redis_key(tenant_id, rule_upper, norm_name), False))
+            keys_to_check.append((f"{tenant_id}:*:entity:{norm_name}", _build_redis_key(tenant_id, "*", norm_name), False))
         if customer_id:
-            keys_to_check.append((f"{tenant_id}:{rule_upper}:cust:{customer_id}", _build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True)))
-            keys_to_check.append((f"{tenant_id}:*:cust:{customer_id}", _build_redis_key(tenant_id, "*", customer_id, is_customer=True)))
+            keys_to_check.append((f"{tenant_id}:{rule_upper}:cust:{customer_id}", _build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True), True))
+            keys_to_check.append((f"{tenant_id}:*:cust:{customer_id}", _build_redis_key(tenant_id, "*", customer_id, is_customer=True), True))
 
-        for l1_key, r_key in keys_to_check:
+        for l1_key, r_key, is_cust_scope in keys_to_check:
             raw_val = await redis.get(r_key)
             if raw_val:
                 entry = json.loads(raw_val)
                 if _is_entry_valid(entry, now):
+                    # Defense-in-depth: never let a customer-scoped row satisfy an entity-wide lookup
+                    if not is_cust_scope and entry.get("customer_id"):
+                        continue
                     _LOCAL_WHITELIST_STORE[l1_key] = entry
                     return True
     except Exception as e:
@@ -293,7 +318,7 @@ async def _query_l3_whitelist_row(
               AND disposition = 'FALSE_POSITIVE'
               AND (matched_rule = $2 OR matched_rule = '*')
               AND (
-                  (LOWER(matched_entity_name) = LOWER($3))
+                  (customer_id IS NULL AND LOWER(matched_entity_name) = LOWER($3))
                   OR ($4::text IS NOT NULL AND customer_id = $4::text)
               )
               AND (expires_at IS NULL OR expires_at > NOW())
@@ -328,13 +353,16 @@ async def _hydrate_redis_l2(
             return
         ttl = DEFAULT_WHITELIST_CACHE_TTL
         if expires_at_val and hasattr(expires_at_val, "__sub__"):
-            delta = int((expires_at_val - now).total_seconds())
+            exp_dt = expires_at_val if getattr(expires_at_val, "tzinfo", None) else expires_at_val.replace(tzinfo=timezone.utc)
+            delta = int((exp_dt - now).total_seconds())
             if delta > 0:
                 ttl = delta
-        if entity_name:
+        # Hydrate strictly into the matched row's own scope — NEVER poison entity-wide cache from a customer row!
+        row_cust_id = db_entry.get("customer_id")
+        if row_cust_id:
+            await redis.setex(_build_redis_key(tenant_id, rule_upper, str(row_cust_id), is_customer=True), ttl, json.dumps(db_entry))
+        elif entity_name:
             await redis.setex(_build_redis_key(tenant_id, rule_upper, entity_name), ttl, json.dumps(db_entry))
-        if customer_id:
-            await redis.setex(_build_redis_key(tenant_id, rule_upper, customer_id, is_customer=True), ttl, json.dumps(db_entry))
     except Exception:
         pass
 
@@ -368,10 +396,11 @@ async def _check_l3_db_whitelist(
             "expires_at": expires_at_str,
             "notes": row.get("notes")
         }
-        if entity_name:
-            _LOCAL_WHITELIST_STORE[f"{tenant_id}:{rule_upper}:{entity_name.strip().lower()}"] = db_entry
-        if customer_id:
-            _LOCAL_WHITELIST_STORE[f"{tenant_id}:{rule_upper}:cust:{customer_id}"] = db_entry
+        # Hydrate L1 strictly into the row's scope (customer-scoped vs entity-wide)
+        if db_entry.get("customer_id"):
+            _LOCAL_WHITELIST_STORE[f"{tenant_id}:{rule_upper}:cust:{db_entry['customer_id']}"] = db_entry
+        elif entity_name:
+            _LOCAL_WHITELIST_STORE[f"{tenant_id}:{rule_upper}:entity:{entity_name.strip().lower()}"] = db_entry
 
         await _hydrate_redis_l2(tenant_id, rule_upper, entity_name, customer_id, expires_at_val, now, db_entry)
         return True

@@ -83,6 +83,23 @@ def _collect_graph_nodes(graph: dict) -> set:
         nodes.update(targets)
     return nodes
 
+def _to_simple_digraph(graph: dict) -> dict[str, list[str]]:
+    """Projects a raw transaction multigraph onto a simple directed graph (unique edges, no self-loops)."""
+    simple: dict[str, list[str]] = {}
+    for u, targets in graph.items():
+        if u not in simple:
+            simple[u] = []
+        seen: set[str] = set()
+        for v in targets:
+            if v == u or v in seen:
+                continue
+            seen.add(v)
+            simple[u].append(v)
+            if v not in simple:
+                simple[v] = []
+    return simple
+
+
 def _brandes_bfs(graph: dict, s: str, all_nodes: set):
     from collections import deque
     S = []
@@ -115,20 +132,21 @@ def _brandes_accumulate(s: str, stack_s: list, path_p: dict, g: dict, cb: dict, 
 
 def compute_betweenness_centrality(graph: dict) -> dict:
     """
-    Implements Brandes' algorithm to compute Betweenness Centrality
-    for identifying intermediary/middleman accounts in the transaction flow.
+    Implements Brandes' algorithm on the simple directed graph projection to compute
+    normalized Betweenness Centrality in [0.0, 1.0] for intermediary/middleman accounts.
     Complexity: O(V * E)
     """
-    all_nodes = _collect_graph_nodes(graph)
+    simple = _to_simple_digraph(graph)
+    all_nodes = _collect_graph_nodes(simple)
     cb = dict.fromkeys(all_nodes, 0.0)
 
     for s in all_nodes:
-        stack_s, path_p, g = _brandes_bfs(graph, s, all_nodes)
+        stack_s, path_p, g = _brandes_bfs(simple, s, all_nodes)
         _brandes_accumulate(s, stack_s, path_p, g, cb, all_nodes)
 
     n = len(all_nodes)
     scale = (n - 1) * (n - 2) if n > 2 else 1.0
-    return {node: round(score / scale, 4) for node, score in cb.items()}
+    return {node: round(min(score / scale, 1.0), 4) for node, score in cb.items()}
 
 async def detect_circular_flows_postgres(
     conn=None,
@@ -155,9 +173,10 @@ async def detect_circular_flows_postgres(
         WHERE t.timestamp >= NOW() - ($1 || ' hours')::interval
           AND ($2::text IS NULL OR t.tenant_id = $2::uuid)
           AND t.status IN ('COMPLETED', 'PENDING')
+          AND s.account_number <> r.account_number
     ),
     paths AS (
-        -- Anchor: 1-hop path
+        -- Anchor: 1-hop path (excluding self-loops)
         SELECT 
             sender AS root,
             receiver AS current_node,
@@ -169,7 +188,7 @@ async def detect_circular_flows_postgres(
         
         UNION ALL
         
-        -- Recursive step: next hop must occur after previous hop
+        -- Recursive step: next hop must occur after previous hop and stop once cycle closes
         SELECT 
             p.root,
             w.receiver AS current_node,
@@ -180,6 +199,7 @@ async def detect_circular_flows_postgres(
         FROM paths p
         JOIN tx_window w ON p.current_node = w.sender
         WHERE p.depth < $3
+          AND p.current_node <> p.root
           AND w.timestamp >= p.last_time
           AND (w.receiver = p.root OR NOT (w.receiver = ANY(p.path)))
     )
@@ -221,12 +241,24 @@ def _calc_min_epoch(window_hours: int | None) -> int | None:
         return None
     return int(datetime.now(timezone.utc).timestamp()) - (window_hours * 3600)
 
-def _add_edge_to_graph(graph: dict, sender: str, receiver: str) -> None:
+def _add_edge_to_graph(
+    graph: dict,
+    sender: str,
+    receiver: str,
+    edge_weights: dict[tuple[str, str], int] | None = None,
+) -> None:
+    """Adds a unique directed edge (excluding self-loops) while optionally tracking multiplicity."""
+    if not sender or not receiver or sender == receiver:
+        return
     if sender not in graph:
         graph[sender] = []
     if receiver not in graph:
         graph[receiver] = []
-    graph[sender].append(receiver)
+    if receiver not in graph[sender]:
+        graph[sender].append(receiver)
+    if edge_weights is not None:
+        pair = (sender, receiver)
+        edge_weights[pair] = edge_weights.get(pair, 0) + 1
 
 async def _fetch_graph_neo4j(tenant_id: str | None, min_epoch: int | None, limit: int) -> tuple[dict, bool]:
     query = """
@@ -384,10 +416,14 @@ async def _detect_gds_betweenness(driver, tenant_id: str | None = None) -> tuple
         gds_query = """
         CALL gds.betweenness.stream('amlGraph')
         YIELD nodeId, score
-        WITH gds.util.asNode(nodeId) AS node, score
-        WHERE score > 0.0
+        WITH collect({node: gds.util.asNode(nodeId), score: score}) AS all_rows, count(*) AS total_nodes
+        UNWIND all_rows AS r
+        WITH r.node AS node, r.score AS raw_score,
+             CASE WHEN total_nodes > 2 THEN toFloat((total_nodes - 1) * (total_nodes - 2)) ELSE 1.0 END AS norm_scale
+        WHERE raw_score > 0.0
           AND ($tenant_id IS NULL OR node.tenant_id = $tenant_id)
-        RETURN node.account_number AS account_number, round(score, 4) AS betweenness_centrality
+        RETURN node.account_number AS account_number,
+               round(CASE WHEN raw_score / norm_scale > 1.0 THEN 1.0 ELSE raw_score / norm_scale END, 4) AS betweenness_centrality
         ORDER BY betweenness_centrality DESC
         LIMIT 50;
         """
@@ -403,7 +439,7 @@ async def _detect_gds_betweenness(driver, tenant_id: str | None = None) -> tuple
         logger.info(f"Neo4j GDS not active or projection missing ({e}), using bounded algorithmic fallback.")
         return intermediaries, False
 
-def _find_simple_cycle_in_scc(graph: dict, scc: list[str]) -> list[str] | None:
+def _find_simple_cycle_in_scc(graph: dict, scc: list[str], max_cycle_len: int = 10) -> list[str] | None:
     from collections import deque
     scc_set = set(scc)
     start = scc[0]
@@ -415,7 +451,7 @@ def _find_simple_cycle_in_scc(graph: dict, scc: list[str]) -> list[str] | None:
                 continue
             if nxt == start and len(path) >= 2:
                 return path
-            if nxt not in path and len(path) < min(len(scc) + 1, 6):
+            if nxt not in path and len(path) < min(len(scc) + 1, max_cycle_len):
                 queue.append((nxt, path + [nxt]))
     return None
 
@@ -436,10 +472,11 @@ def _compute_tarjan_cycle_fallback(graph: dict) -> list[dict]:
     return circular_flows
 
 def _compute_degree_fallback(graph: dict) -> tuple[list[dict], list[dict]]:
-    all_nodes = _collect_graph_nodes(graph)
+    simple = _to_simple_digraph(graph)
+    all_nodes = _collect_graph_nodes(simple)
     in_degrees = dict.fromkeys(all_nodes, 0)
     out_degrees = dict.fromkeys(all_nodes, 0)
-    for u, neighbors in graph.items():
+    for u, neighbors in simple.items():
         out_degrees[u] = len(neighbors)
         for v in neighbors:
             in_degrees[v] += 1
@@ -531,16 +568,22 @@ async def compute_transitive_counterparty_taint(
     decay_factor: float = 0.65
 ) -> float:
     """
-    Computes upstream illicit taint propagation using graph traversal.
+    Computes upstream illicit taint propagation using temporally causal graph traversal
+    (upstream transfer timestamp <= downstream transfer timestamp, cycle-free).
     If an account received funds from an upstream high-risk entity (risk_score >= 0.75)
-    up to max_hops away, transitive risk propagates decaying with hop distance.
-    Returns taint score in [0.0, 1.0].
+    up to `max_hops` away, transitive risk propagates decaying with hop distance.
+    Returns taint score clamped strictly to [0.0, 1.0].
     """
+    safe_hops = max(1, min(int(max_hops), 5))
+    safe_decay = min(max(float(decay_factor), 0.0), 1.0)
     try:
         driver = await get_async_neo4j_driver()
-        cypher_query = """
-        MATCH path = (origin:Account)-[t:TRANSFERS_TO*1..2]->(target:Account {account_number: $acc_num})
-        WHERE ($tenant_id IS NULL OR (
+        # Parameterize validated integer hop depth (1..5) and enforce acyclic nodes
+        cypher_query = f"""
+        MATCH path = (origin:Account)-[t:TRANSFERS_TO*1..{safe_hops}]->(target:Account {{account_number: $acc_num}})
+        WHERE origin <> target
+          AND size(apoc.coll.toSet(nodes(path))) = size(nodes(path))
+          AND ($tenant_id IS NULL OR (
             target.tenant_id = $tenant_id
             AND ALL(n IN nodes(path) WHERE n.tenant_id = $tenant_id)
             AND ALL(rel IN relationships(path) WHERE rel.tenant_id IS NULL OR rel.tenant_id = $tenant_id)
@@ -554,11 +597,11 @@ async def compute_transitive_counterparty_taint(
                 cypher_query,
                 acc_num=account_number,
                 tenant_id=tenant_id,
-                decay=decay_factor
+                decay=safe_decay
             )
             record = await result.single()
             if record and record["taint_score"] is not None:
-                return round(float(record["taint_score"]), 4)
+                return round(min(max(float(record["taint_score"]), 0.0), 1.0), 4)
     except Exception as e:
         logger.debug(f"Neo4j transitive taint bypassed ({e}); querying PostgreSQL 16 recursive CTE directly...")
         try:
@@ -570,11 +613,14 @@ async def compute_transitive_counterparty_taint(
                         SELECT 
                             s.id AS origin_id, 
                             s.risk_score, 
-                            1 AS hops
+                            1 AS hops,
+                            t.timestamp AS hop_ts,
+                            ARRAY[target.id, s.id]::uuid[] AS visited_path
                         FROM transactions t
                         JOIN accounts target ON t.receiver_account_id = target.id
                         JOIN accounts s ON t.sender_account_id = s.id
                         WHERE target.account_number = $1
+                          AND s.id <> target.id
                           AND ($2::text IS NULL OR t.tenant_id = $2::uuid)
                           AND t.status IN ('COMPLETED', 'PENDING')
                           
@@ -583,11 +629,15 @@ async def compute_transitive_counterparty_taint(
                         SELECT 
                             s.id AS origin_id, 
                             s.risk_score, 
-                            u.hops + 1 AS hops
+                            u.hops + 1 AS hops,
+                            t.timestamp AS hop_ts,
+                            u.visited_path || s.id
                         FROM upstream u
                         JOIN transactions t ON t.receiver_account_id = u.origin_id
                         JOIN accounts s ON t.sender_account_id = s.id
                         WHERE u.hops < $4
+                          AND t.timestamp <= u.hop_ts
+                          AND NOT (s.id = ANY(u.visited_path))
                           AND ($2::text IS NULL OR t.tenant_id = $2::uuid)
                           AND t.status IN ('COMPLETED', 'PENDING')
                     )
@@ -597,11 +647,11 @@ async def compute_transitive_counterparty_taint(
                     """,
                     account_number,
                     str(tenant_id) if tenant_id else None,
-                    decay_factor,
-                    max_hops
+                    safe_decay,
+                    safe_hops
                 )
                 if row and row["taint_score"] is not None:
-                    return round(float(row["taint_score"]), 4)
+                    return round(min(max(float(row["taint_score"]), 0.0), 1.0), 4)
         except Exception as pg_err:
             logger.warning(f"PostgreSQL transitive taint fallback warning: {pg_err}")
 

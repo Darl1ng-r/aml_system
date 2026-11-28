@@ -473,6 +473,8 @@ async def update_legacy_rules_config(
 
     async def _execute_global_update():
         try:
+            db_ok = False
+            disk_ok = False
             try:
                 from database.postgres import get_async_db_conn as _get_db
                 await persist_global_rules_config_atomic(
@@ -481,13 +483,26 @@ async def update_legacy_rules_config(
                     tenant_id=tenant_id,
                     conn_factory=_get_db,
                 )
+                db_ok = True
             except Exception as dbe:
-                logger.warning("Failed to persist rules to PostgreSQL (falling back to disk): %s", dbe)
+                logger.error("Failed to persist rules to PostgreSQL: %s", dbe)
 
             try:
                 await asyncio.to_thread(_write_config_sync, CONFIG_PATH, payload)
+                disk_ok = True
             except Exception as fe:
-                logger.warning("Failed to write local rules file: %s", fe)
+                logger.error("Failed to write local rules file: %s", fe)
+
+            if not db_ok and not disk_ok:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Failed to persist rules configuration to database and local storage.",
+                )
+            if not db_ok:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Failed to persist rules configuration to primary database.",
+                )
 
             RulesEngine.reload_config()
 

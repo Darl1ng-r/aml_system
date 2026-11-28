@@ -2,7 +2,9 @@ import asyncio
 import hashlib
 import logging
 import math
+from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor
+from datetime import timezone
 
 import numpy as np
 
@@ -158,10 +160,36 @@ class IsolationForestScratch:
         return float(score)
 
 
-# System-wide Singleton model & single-flight retrain lock (loop-aware)
+# System-wide baseline model + tenant-isolated bounded LRU model cache (max 256 tenants)
 _iforest_model: IsolationForestScratch | None = None
+_tenant_iforest_models: "OrderedDict[str, IsolationForestScratch]" = OrderedDict()
+_MAX_TENANT_MODELS = 256
 _retrain_lock: asyncio.Lock | None = None
 _retrain_lock_loop = None
+
+
+def set_tenant_iforest_model(tenant_id: str | None, model: IsolationForestScratch) -> None:
+    """Stores a trained Isolation Forest scoped strictly to `tenant_id` (or global baseline if None)."""
+    global _iforest_model
+    if not tenant_id:
+        _iforest_model = model
+        return
+    tid = str(tenant_id)
+    _tenant_iforest_models[tid] = model
+    _tenant_iforest_models.move_to_end(tid)
+    while len(_tenant_iforest_models) > _MAX_TENANT_MODELS:
+        _tenant_iforest_models.popitem(last=False)
+
+
+def get_tenant_iforest_model(tenant_id: str | None = None) -> IsolationForestScratch | None:
+    """Returns the tenant-specific Isolation Forest if trained, else the global baseline."""
+    if tenant_id:
+        tid = str(tenant_id)
+        m = _tenant_iforest_models.get(tid)
+        if m is not None:
+            _tenant_iforest_models.move_to_end(tid)
+            return m
+    return _iforest_model
 
 
 def _get_retrain_lock() -> asyncio.Lock:
@@ -173,9 +201,10 @@ def _get_retrain_lock() -> asyncio.Lock:
     return _retrain_lock
 
 
-def get_iforest_version() -> str:
-    if _iforest_model is not None:
-        return getattr(_iforest_model, "model_version", "iforest-v2")
+def get_iforest_version(tenant_id: str | None = None) -> str:
+    m = get_tenant_iforest_model(tenant_id)
+    if m is not None:
+        return getattr(m, "model_version", "iforest-v2")
     return "iforest-uninitialized"
 
 
@@ -204,7 +233,10 @@ def _extract_training_features(rows: list, high_risk_countries: list) -> np.ndar
         amount = float(raw_base if raw_base is not None else row["amount"])
         sender_risk = float(row["sender_risk"]) if row["sender_risk"] is not None else 0.1
         receiver_risk = float(row["receiver_risk"]) if row["receiver_risk"] is not None else 0.1
-        hour = row["timestamp"].hour
+        ts = row["timestamp"]
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(timezone.utc)
+        hour = ts.hour
 
         is_geo = 0
         for bic in [row["sender_bic"], row["receiver_bic"]]:
@@ -268,10 +300,14 @@ async def retrain_system_iforest(tenant_id: str | None = None):
             else:
                 X_train = _extract_training_features(rows, high_risk_countries)
 
-            _iforest_model = await _fit_model_in_executor(X_train)
+            trained_model = await _fit_model_in_executor(X_train)
+            set_tenant_iforest_model(tenant_id, trained_model)
+            if _iforest_model is None:
+                _iforest_model = trained_model
             logger.info(
-                "System-wide Isolation Forest trained (%s) on %d samples.",
-                _iforest_model.model_version,
+                "Isolation Forest trained (%s, tenant=%s) on %d samples.",
+                trained_model.model_version,
+                tenant_id or "global",
                 X_train.shape[0],
             )
         except Exception:
@@ -284,13 +320,14 @@ async def get_iforest_score(
     receiver_risk: float,
     hour: int,
     is_geo: int,
+    *,
+    tenant_id: str | None = None,
 ) -> float:
     """Offloads Isolation Forest tree traversal onto the bounded ML compute bulkhead."""
-    global _iforest_model
-    if _iforest_model is None:
-        await retrain_system_iforest()
-
-    model = _iforest_model
+    model = get_tenant_iforest_model(tenant_id)
+    if model is None:
+        await retrain_system_iforest(tenant_id=tenant_id)
+        model = get_tenant_iforest_model(tenant_id)
     if model is None:
         return 0.5
 
@@ -299,8 +336,15 @@ async def get_iforest_score(
     import time as _time
 
     t0 = _time.monotonic()
-    x = np.array([float(amount), float(sender_risk), float(receiver_risk), int(hour), int(is_geo)])
     try:
+        f_amount = float(amount)
+        f_sender = float(sender_risk)
+        f_receiver = float(receiver_risk)
+        f_hour = float(hour)
+        f_geo = float(is_geo)
+        if not all(math.isfinite(v) for v in (f_amount, f_sender, f_receiver, f_hour, f_geo)):
+            return 0.5
+        x = np.array([f_amount, f_sender, f_receiver, int(f_hour), int(f_geo)], dtype=np.float64)
         score = await run_ml_compute(model.compute_anomaly_score, x, timeout=1.5)
         record_ml_inference_duration("isolation_forest", "ok", _time.monotonic() - t0)
         return float(score)

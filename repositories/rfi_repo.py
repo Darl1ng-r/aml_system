@@ -48,6 +48,11 @@ async def create_case_rfi_atomic(
         )
         if not case_row:
             raise HTTPException(status_code=404, detail="Case not found.")
+        if str(case_row.get("status") or "").upper() == "CLOSED":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Deterministic state guard violation: Cannot issue RFI on a CLOSED case.",
+            )
 
         rfi_id = await conn.fetchval(
             """

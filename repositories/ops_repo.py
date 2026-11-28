@@ -458,21 +458,22 @@ async def fetch_queue_health_counts_repo(
         )
         pending_outbox = int(pending_outbox or 0)
         try:
-            published_60s = await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM transactional_outbox
-                WHERE tenant_id = $1::uuid AND status = 'PUBLISHED' AND updated_at >= NOW() - INTERVAL '60 seconds';
-                """,
-                str(tenant_id),
-            )
-            if isinstance(published_60s, (int, float)):
-                tx_rate_per_sec = round(float(published_60s) / 60.0, 2)
-            alerts_60s = await conn.fetchval(
-                "SELECT COUNT(*) FROM alerts WHERE tenant_id = $1::uuid AND created_at >= NOW() - INTERVAL '60 seconds';",
-                str(tenant_id),
-            )
-            if isinstance(alerts_60s, (int, float)):
-                alert_rate_per_sec = round(float(alerts_60s) / 60.0, 2)
+            async with conn.transaction():
+                published_60s = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM transactional_outbox
+                    WHERE tenant_id = $1::uuid AND status = 'PUBLISHED' AND published_at >= NOW() - INTERVAL '60 seconds';
+                    """,
+                    str(tenant_id),
+                )
+                if isinstance(published_60s, (int, float)):
+                    tx_rate_per_sec = round(float(published_60s) / 60.0, 2)
+                alerts_60s = await conn.fetchval(
+                    "SELECT COUNT(*) FROM alerts WHERE tenant_id = $1::uuid AND created_at >= NOW() - INTERVAL '60 seconds';",
+                    str(tenant_id),
+                )
+                if isinstance(alerts_60s, (int, float)):
+                    alert_rate_per_sec = round(float(alerts_60s) / 60.0, 2)
         except Exception:
             pass
     return pending_outbox, tx_rate_per_sec, alert_rate_per_sec

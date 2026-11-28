@@ -17,6 +17,8 @@ import signal
 import sys
 import uuid
 from datetime import datetime, timezone
+from enum import StrEnum
+from typing import Any
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -64,22 +66,57 @@ async def send_job_to_dlq(producer, source_topic: str, payload: dict, error: str
         return False
 
 
-async def process_job_message(msg, tp, dlq_producer, consumer) -> bool:
+class MessageOutcome(StrEnum):
+    COMMITTED = "COMMITTED"
+    DLQ_COMMITTED = "DLQ_COMMITTED"
+    BLOCKED = "BLOCKED"
+
+
+def _decode_job_payload(raw_value: Any) -> tuple[dict | None, str | None]:
+    if isinstance(raw_value, dict):
+        return raw_value, None
+    try:
+        text = raw_value.decode("utf-8") if isinstance(raw_value, (bytes, bytearray)) else str(raw_value)
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            return None, f"Expected JSON object payload, got {type(parsed).__name__}"
+        return parsed, None
+    except Exception as exc:
+        return None, f"Malformed JSON poison-pill payload: {type(exc).__name__}: {exc}"
+
+
+async def process_job_message_with_outcome(msg, tp, dlq_producer, consumer) -> MessageOutcome:
     """
-    Executes one Kafka job message with bounded retries, DLQ fallback, and manual offset commit.
-    Never commits the offset if BOTH execution and DLQ publishing fail (zero-loss guard).
+    Executes one Kafka job message with safe per-message JSON decode, bounded retries,
+    DLQ fallback, and manual offset commit. Returns 3-state `MessageOutcome` so the
+    partition loop seeks and breaks on `BLOCKED` (true zero-loss guarantee).
     """
-    payload = msg.value
     source_topic = getattr(tp, "topic", JOBS_EXPORTS_TOPIC)
-    job_id = payload.get("job_id", "unknown") if isinstance(payload, dict) else "unknown"
-    tenant_id = payload.get("tenant_id") if isinstance(payload, dict) else None
+    payload, decode_err = _decode_job_payload(msg.value)
+    if decode_err or payload is None:
+        raw_repr = (
+            msg.value.decode("utf-8", errors="replace")[:1000]
+            if isinstance(msg.value, (bytes, bytearray))
+            else str(msg.value)[:1000]
+        )
+        logger.error("[JOB POISON PILL] offset=%s on %s: %s; routing to DLQ.", msg.offset, tp, decode_err)
+        dlq_ok = await send_job_to_dlq(
+            dlq_producer, source_topic, {"job_id": "poison_pill", "raw_payload": raw_repr}, decode_err or "Malformed payload"
+        )
+        if not dlq_ok:
+            return MessageOutcome.BLOCKED
+        await consumer.commit({tp: msg.offset + 1})
+        return MessageOutcome.DLQ_COMMITTED
+
+    job_id = payload.get("job_id", "unknown")
+    tenant_id = payload.get("tenant_id")
     last_error = "Unknown async job error"
 
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         try:
             await execute_async_job(payload)
             await consumer.commit({tp: msg.offset + 1})
-            return True
+            return MessageOutcome.COMMITTED
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             logger.warning(
@@ -95,7 +132,7 @@ async def process_job_message(msg, tp, dlq_producer, consumer) -> bool:
                 await asyncio.sleep(full_jitter_backoff(0.5, attempt - 1, cap=10.0))
 
     logger.error("[JOB PERMANENT FAILURE] job=%s after %d attempts; routing to DLQ.", job_id, MAX_RETRY_ATTEMPTS)
-    dlq_ok = await send_job_to_dlq(dlq_producer, source_topic, payload if isinstance(payload, dict) else {"raw": str(payload)}, last_error)
+    dlq_ok = await send_job_to_dlq(dlq_producer, source_topic, payload, last_error)
     if not dlq_ok:
         logger.critical(
             "[ZERO-LOSS GUARD] Refusing to commit offset %s on %s for job=%s: both execution and DLQ failed.",
@@ -103,7 +140,7 @@ async def process_job_message(msg, tp, dlq_producer, consumer) -> bool:
             tp,
             job_id,
         )
-        return False
+        return MessageOutcome.BLOCKED
 
     if tenant_id and job_id != "unknown":
         try:
@@ -117,7 +154,30 @@ async def process_job_message(msg, tp, dlq_producer, consumer) -> bool:
             logger.warning("Could not update DEAD_LETTERED status for job=%s", job_id)
 
     await consumer.commit({tp: msg.offset + 1})
-    return False
+    return MessageOutcome.DLQ_COMMITTED
+
+
+async def process_job_message(msg, tp, dlq_producer, consumer) -> bool:
+    """Backward-compatible boolean wrapper returning True iff job executed & committed."""
+    outcome = await process_job_message_with_outcome(msg, tp, dlq_producer, consumer)
+    return outcome == MessageOutcome.COMMITTED
+
+
+async def process_job_partition_batch(batch: dict, dlq_producer, consumer) -> dict[str, int]:
+    counts = {"committed": 0, "dlq": 0, "blocked": 0}
+    for tp, messages in (batch or {}).items():
+        for msg in messages:
+            outcome = await process_job_message_with_outcome(msg, tp, dlq_producer, consumer)
+            if outcome == MessageOutcome.COMMITTED:
+                counts["committed"] += 1
+            elif outcome == MessageOutcome.DLQ_COMMITTED:
+                counts["dlq"] += 1
+            else:
+                counts["blocked"] += 1
+                if hasattr(consumer, "seek"):
+                    consumer.seek(tp, msg.offset)
+                break
+    return counts
 
 
 async def main() -> None:
@@ -155,7 +215,7 @@ async def main() -> None:
             group_id=CONSUMER_GROUP_ID,
             auto_offset_reset="earliest",
             enable_auto_commit=False,
-            value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            value_deserializer=None,
             max_poll_interval_ms=300_000,
             request_timeout_ms=10_000,
             **kafka_sec,
@@ -190,9 +250,7 @@ async def main() -> None:
                 )
             except asyncio.TimeoutError:
                 continue
-            for tp, messages in (batch or {}).items():
-                for msg in messages:
-                    await process_job_message(msg, tp, dlq_producer, consumer)
+            await process_job_partition_batch(batch or {}, dlq_producer, consumer)
     except Exception as e:
         if getattr(settings, "is_hardened", settings.is_production):
             logger.critical("CRITICAL: Async job worker failed in hardened environment: %s", e)

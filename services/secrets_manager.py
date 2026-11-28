@@ -431,6 +431,25 @@ def get_postgres_replica_dsn() -> str:
     return _build_postgres_dsn(user, password, host, port, db)
 
 
+def get_outbox_postgres_dsn() -> Optional[str]:
+    """
+    Returns dedicated least-privilege `aml_outbox_worker` DSN (with scoped BYPASSRLS on
+    `transactional_outbox`) from Vault (`postgres.outbox_dsn`) or `OUTBOX_DATABASE_URL`,
+    or constructs it from `AML_OUTBOX_WORKER_PASSWORD` if provided. Returns None if not configured.
+    """
+    store = _secret_store()
+    explicit = (store.get("postgres.outbox_dsn") or os.getenv("OUTBOX_DATABASE_URL", "")).strip()
+    if explicit:
+        return explicit
+    worker_pw = (store.get("postgres.outbox_worker_password") or os.getenv("AML_OUTBOX_WORKER_PASSWORD", "")).strip()
+    if worker_pw:
+        host = store.get("postgres.host") or settings.postgres_host
+        port = store.get("postgres.port") or str(settings.postgres_port)
+        db = store.get("postgres.db") or settings.postgres_db
+        return _build_postgres_dsn("aml_outbox_worker", worker_pw, host, port, db)
+    return None
+
+
 def get_postgres_replica_dsns() -> list[str]:
     """
     Returns one or more PostgreSQL read-replica DSNs.

@@ -508,9 +508,12 @@ def test_ubo_core_all_branches_split_stakes_cycles_clamping_and_depth():
     assert res["ubo_count_above_threshold"] == 1
     alice = res["ultimate_beneficial_owners"][0]
     assert alice["entity_name"] == "Alice"
-    assert alice["effective_ownership_pct"] == 65.0
+    # True economic ownership via absorbing Markov-chain Leontief solve:
+    # TargetCo -> ShellB (50%) -> TargetCo (20%) creates a 10% self-loop => factor 1/(1-0.10) = 1/0.90.
+    # Alice = (50% + 15%) / 0.90 = 72.22%; external unattributed = 25% / 0.90 = 27.78%.
+    assert alice["effective_ownership_pct"] == 72.22
     assert alice["is_split_ownership"] is True
-    assert res["unattributed_ownership_pct"] == 35.0
+    assert res["unattributed_ownership_pct"] == 27.78
 
     # Max depth guard
     depth_zero = resolve_ubo_ownership_tree_pure(edges, "TargetCo", max_depth=0)

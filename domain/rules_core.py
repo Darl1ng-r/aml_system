@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 from typing import Any, Mapping, Sequence
 
 from domain.money import normalize_currency, quantize_amount, to_decimal
+
+logger = logging.getLogger(__name__)
 
 # Statutory FinCEN BSA / EU TFR thresholds (exact fixed-point Decimal)
 CTR_REPORTING_THRESHOLD_USD = Decimal("10000.00")
@@ -30,6 +33,7 @@ DEFAULT_HARD_HOLD_TRIGGERS: frozenset[str] = frozenset({
     "ACCOUNT_FROZEN",
     "OFAC_SANCTIONS_MATCH",
     "SANCTIONS_SCREENING_UNAVAILABLE",
+    "FX_RATE_UNAVAILABLE",
 })
 
 
@@ -39,13 +43,48 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _dec(val: Any, default: str = "0") -> Decimal:
+def _amount_dec(val: Any, field: str = "amount") -> Decimal:
+    """Strict fail-closed monetary parser: rejects None, NaN, ±Inf, negative, and garbage."""
+    return to_decimal(val, allow_negative=False, field_name=field)
+
+
+def _cfg_dec(val: Any, default: str = "0") -> Decimal:
+    """Permissive parser strictly for optional rule-configuration numbers (logs warning on malformed config)."""
     if val is None:
         return Decimal(default)
     try:
         return to_decimal(val)
     except Exception:
+        logger.warning("Malformed numeric rule config value %r; falling back to default %s", val, default)
         return Decimal(default)
+
+
+# Backward-compatible alias for optional config fields
+_dec = _cfg_dec
+
+
+def _coerce_bool(val: Any, default: bool = True) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes", "y", "on"):
+        return True
+    if s in ("false", "0", "no", "n", "off", ""):
+        return False
+    return default
+
+
+def _coerce_int(val: Any, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
 
 
 def compute_ruleset_hash(config: Mapping[str, Any]) -> str:
@@ -181,28 +220,38 @@ def check_structuring_smurfing_pure(
     entity_prior_amounts: Sequence[Decimal],
 ) -> tuple[list[str], Decimal, list[Decimal]]:
     cfg = config.get("rules", {}).get("STRUCTURING_SMURFING", {})
-    threshold = _dec(cfg.get("threshold", "10000.00"), "10000.00")
-    min_tx_count = int(cfg.get("min_tx_count", 2))
-    amt_checked = quantize_amount(amount_usd, "USD", rounding=ROUND_HALF_UP)
+    threshold = _cfg_dec(cfg.get("threshold", "10000.00"), "10000.00")
+    min_tx_count = max(1, _coerce_int(cfg.get("min_tx_count", 2), 2))
+    amt_checked = quantize_amount(_amount_dec(amount_usd, "amount_usd"), "USD", rounding=ROUND_HALF_UP)
 
-    if not cfg.get("enabled", True):
-        entity_below = [amt_checked] if amt_checked < threshold else []
-        return [], amt_checked, entity_below
+    def _quantize_prior_list(items: Sequence[Decimal]) -> list[Decimal]:
+        out: list[Decimal] = []
+        for a in items:
+            try:
+                q = quantize_amount(_amount_dec(a, "prior_amount_usd"), "USD", rounding=ROUND_HALF_UP)
+                if Decimal("0") < q < threshold:
+                    out.append(q)
+            except Exception:
+                continue
+        return out
 
-    account_amts = [amt_checked, *(_dec(a) for a in account_prior_amounts)]
-    entity_amts = [amt_checked, *(_dec(a) for a in entity_prior_amounts)]
-
-    account_below = [a for a in account_amts if a < threshold]
-    entity_below = [a for a in entity_amts if a < threshold]
-
-    total_account = sum(account_below, Decimal("0"))
+    entity_below = ([amt_checked] if Decimal("0") < amt_checked < threshold else []) + _quantize_prior_list(entity_prior_amounts)
     total_entity = sum(entity_below, Decimal("0"))
 
+    if not cfg.get("enabled", True):
+        return [], total_entity, entity_below
+
+    account_below = ([amt_checked] if Decimal("0") < amt_checked < threshold else []) + _quantize_prior_list(account_prior_amounts)
+    total_account = sum(account_below, Decimal("0"))
+
     triggered: list[str] = []
-    if (total_entity >= threshold and len(entity_below) >= min_tx_count) or (
-        total_account >= threshold and len(account_below) >= min_tx_count
-    ):
-        triggered.append("STRUCTURING_VELOCITY_24H")
+    # Structuring only triggers on sub-threshold transactions (0 < tx < threshold);
+    # transparent above-threshold transfers are captured by LARGE_TRANSACTION_THRESHOLD / CTR.
+    if Decimal("0") < amt_checked < threshold:
+        if (total_entity >= threshold and len(entity_below) >= min_tx_count) or (
+            total_account >= threshold and len(account_below) >= min_tx_count
+        ):
+            triggered.append("STRUCTURING_VELOCITY_24H")
 
     return triggered, total_entity, entity_below
 
@@ -243,11 +292,16 @@ def check_rapid_movement_pure(
     cfg = config.get("rules", {}).get("RAPID_MOVEMENT_FUNDS", {})
     if not cfg.get("enabled", True):
         return []
-    if snap.last_incoming_amount_usd is None or snap.last_incoming_at is None:
+    if (
+        snap.last_incoming_amount_usd is None
+        or snap.last_incoming_at is None
+        or snap.last_incoming_amount_usd <= Decimal("0")
+        or amount_usd <= Decimal("0")
+    ):
         return []
 
-    window_minutes = int(cfg.get("window_minutes", 10))
-    ratio_thresh = _dec(cfg.get("amount_ratio_threshold", "0.90"), "0.90")
+    window_minutes = _coerce_int(cfg.get("window_minutes", 10), 10)
+    ratio_thresh = _cfg_dec(cfg.get("amount_ratio_threshold", "0.90"), "0.90")
     tx_utc = _ensure_utc(tx_timestamp)
     inc_utc = _ensure_utc(snap.last_incoming_at)
     elapsed_seconds = Decimal(str((tx_utc - inc_utc).total_seconds()))
@@ -317,12 +371,12 @@ def check_newly_incorporated_pure(
     cfg = config.get("rules", {}).get("NEWLY_INCORPORATED_HIGH_VALUE", {})
     if not cfg.get("enabled", True) or snap.account_created_at is None:
         return []
-    threshold = _dec(cfg.get("high_value_threshold", "50000.00"), "50000.00")
+    threshold = _cfg_dec(cfg.get("high_value_threshold", "50000.00"), "50000.00")
     if amount_usd < threshold:
         return []
-    account_age_days = int(cfg.get("account_age_days", cfg.get("newly_incorporated_days", 90)))
-    age_days = (_ensure_utc(tx_timestamp) - _ensure_utc(snap.account_created_at)).days
-    if age_days <= account_age_days:
+    account_age_days = max(0, _coerce_int(cfg.get("account_age_days", cfg.get("newly_incorporated_days", 90)), 90))
+    age_seconds = (_ensure_utc(tx_timestamp) - _ensure_utc(snap.account_created_at)).total_seconds()
+    if 0.0 <= age_seconds <= float(account_age_days * 86400):
         return ["NEWLY_INCORPORATED_HIGH_VALUE"]
     return []
 
@@ -331,8 +385,8 @@ def check_tbml_pure(config: Mapping[str, Any], amount_usd: Decimal, meta: Mappin
     cfg = config.get("rules", {}).get("TRADE_BASED_ML_OVER_UNDER_INVOICING", {})
     if not cfg.get("enabled", True):
         return []
-    var_thresh = _dec(cfg.get("unit_price_variance_threshold_pct", "35.0"), "35.0")
-    inv_thresh = _dec(cfg.get("invoice_amount_threshold", "100000.0"), "100000.0")
+    var_thresh = _cfg_dec(cfg.get("unit_price_variance_threshold_pct", "35.0"), "35.0")
+    inv_thresh = _cfg_dec(cfg.get("invoice_amount_threshold", "100000.0"), "100000.0")
     high_risk_goods = {
         str(g).upper()
         for g in cfg.get(
@@ -342,11 +396,12 @@ def check_tbml_pure(config: Mapping[str, Any], amount_usd: Decimal, meta: Mappin
     }
 
     declared_goods = str(meta.get("goods_category", "")).upper()
-    unit_price_variance = _dec(meta.get("unit_price_variance_pct", "0"), "0")
-    invoice_val = _dec(meta.get("invoice_amount", "0"), "0")
+    unit_price_variance = _cfg_dec(meta.get("unit_price_variance_pct", "0"), "0")
+    invoice_val = _cfg_dec(meta.get("invoice_amount", "0"), "0")
 
     is_high_risk = declared_goods in high_risk_goods
-    has_price_var = unit_price_variance >= var_thresh
+    # Both over-invoicing (+%) and under-invoicing (-%) violate TBML controls
+    has_price_var = abs(unit_price_variance) >= var_thresh
     has_inv_disc = invoice_val >= inv_thresh and (
         abs(amount_usd - invoice_val) / max(invoice_val, Decimal("1")) >= Decimal("0.20")
     )
@@ -369,13 +424,13 @@ def check_vasp_crypto_pure(
     if not is_vasp_transaction(meta, sender_bic, receiver_bic):
         return []
 
-    travel_thresh = _dec(cfg.get("travel_rule_threshold", "1000.00"), "1000.00")
-    travel_complete = bool(meta.get("travel_rule_complete", True))
+    travel_thresh = _cfg_dec(cfg.get("travel_rule_threshold", "1000.00"), "1000.00")
+    travel_complete = _coerce_bool(meta.get("travel_rule_complete"), default=True)
     if amount_usd >= travel_thresh and not travel_complete:
         return ["CRYPTO_FIAT_VASP_STRUCTURING"]
 
-    rapid_count = int(meta.get("rapid_conversion_count", 0))
-    max_conversions = int(cfg.get("max_consecutive_conversions", 3))
+    rapid_count = _coerce_int(meta.get("rapid_conversion_count"), default=0)
+    max_conversions = max(1, _coerce_int(cfg.get("max_consecutive_conversions", 3), 3))
     if rapid_count >= max_conversions:
         return ["CRYPTO_FIAT_VASP_STRUCTURING"]
     return []
@@ -413,9 +468,9 @@ def check_conduit_passthrough_pure(
     min_ratio = _dec(cfg.get("min_ratio", "0.85"), "0.85")
     max_ratio = _dec(cfg.get("max_ratio", "1.15"), "1.15")
 
-    if snap.conduit_inflow_24h_usd >= min_inflow:
+    if snap.conduit_inflow_24h_usd > Decimal("0") and snap.conduit_inflow_24h_usd >= min_inflow:
         total_out = snap.conduit_outflow_24h_usd + amount_usd
-        ratio = total_out / max(snap.conduit_inflow_24h_usd, Decimal("1"))
+        ratio = total_out / snap.conduit_inflow_24h_usd
         if min_ratio <= ratio <= max_ratio:
             return ["CONDUIT_RAPID_PASSTHROUGH"]
     return []
@@ -432,12 +487,12 @@ def check_amount_anomaly_pure(
         return []
 
     triggered: list[str] = []
-    jb_min = _dec(cfg.get("just_below_min", "9000.00"), "9000.00")
-    jb_max = _dec(cfg.get("just_below_max", "10000.00"), "10000.00")
-    rnd_min = _dec(cfg.get("round_number_min", "3000.00"), "3000.00")
-    divisor = max(_dec(cfg.get("round_divisor", "1000.00"), "1000.00"), Decimal("1"))
+    jb_min = _cfg_dec(cfg.get("just_below_min", "9000.00"), "9000.00")
+    jb_max = _cfg_dec(cfg.get("just_below_max", "10000.00"), "10000.00")
+    rnd_min = _cfg_dec(cfg.get("round_number_min", "3000.00"), "3000.00")
+    divisor = max(_cfg_dec(cfg.get("round_divisor", "1000.00"), "1000.00"), Decimal("1"))
 
-    amt_checked = quantize_amount(amount_usd, "USD", rounding=ROUND_HALF_UP)
+    amt_checked = quantize_amount(_amount_dec(amount_usd, "amount_usd"), "USD", rounding=ROUND_HALF_UP)
 
     is_just_below = jb_min <= amt_checked < jb_max
     if (
@@ -451,7 +506,10 @@ def check_amount_anomaly_pure(
     if is_just_below:
         triggered.append("JUST_BELOW_CTR_THRESHOLD")
 
-    if amt_checked >= rnd_min and (amt_checked % divisor == Decimal("0")):
+    with localcontext() as ctx:
+        ctx.prec = 60
+        is_round_div = amt_checked >= rnd_min and (amt_checked % divisor == Decimal("0"))
+    if is_round_div:
         triggered.append("ROUND_NUMBER_ANOMALY_1K")
 
     return triggered
@@ -514,18 +572,23 @@ def evaluate_ctr_and_structuring_pure(
     merchant: str | None,
     prior_24h_cash_usd: Decimal | str | int | float = Decimal("0"),
     prior_24h_cash_count: int = 0,
+    *,
+    prior_24h_sub_threshold_cash_usd: Decimal | str | int | float | None = None,
+    prior_24h_sub_threshold_cash_count: int | None = None,
 ) -> CTRDecision:
     """
     Pure BSA 31 CFR 1010.311 (CTR >= $10,000) & 31 CFR 1010.313 (structuring) evaluation
     using exact Decimal arithmetic with conservative ROUND_HALF_UP threshold rounding.
+    Fails closed (raises InvalidMoneyError) on NaN, ±Inf, negative, or non-numeric amounts.
     """
     is_cash = bool(
         (channel and channel.strip().upper() == "CASH")
         or (merchant and merchant.strip().upper() == "CASH")
     )
-    tx_usd = quantize_amount(_dec(amount_base_usd), "USD", rounding=ROUND_HALF_UP)
-    prior_usd = quantize_amount(_dec(prior_24h_cash_usd), "USD", rounding=ROUND_HALF_UP)
+    tx_usd = quantize_amount(_amount_dec(amount_base_usd, "amount_base_usd"), "USD", rounding=ROUND_HALF_UP)
+    prior_usd = quantize_amount(_amount_dec(prior_24h_cash_usd, "prior_24h_cash_usd"), "USD", rounding=ROUND_HALF_UP)
     total_agg = tx_usd + prior_usd
+    prior_count = max(0, _coerce_int(prior_24h_cash_count, 0))
 
     if not is_cash:
         return CTRDecision(
@@ -535,14 +598,37 @@ def evaluate_ctr_and_structuring_pure(
             tx_amount_usd=tx_usd,
             prior_24h_cash_usd=prior_usd,
             total_aggregate_cash_usd=total_agg,
-            prior_24h_cash_count=int(prior_24h_cash_count),
+            prior_24h_cash_count=prior_count,
         )
 
-    requires_ctr = tx_usd >= CTR_REPORTING_THRESHOLD_USD or total_agg >= CTR_REPORTING_THRESHOLD_USD
-    is_sub_threshold = CTR_STRUCTURING_LOW_USD <= tx_usd < CTR_REPORTING_THRESHOLD_USD
+    prior_sub_usd = (
+        quantize_amount(
+            _amount_dec(prior_24h_sub_threshold_cash_usd, "prior_24h_sub_threshold_cash_usd"),
+            "USD",
+            rounding=ROUND_HALF_UP,
+        )
+        if prior_24h_sub_threshold_cash_usd is not None
+        else prior_usd
+    )
+    prior_sub_count = (
+        max(0, _coerce_int(prior_24h_sub_threshold_cash_count, 0))
+        if prior_24h_sub_threshold_cash_count is not None
+        else prior_count
+    )
+
+    requires_ctr = tx_usd > Decimal("0") and (
+        tx_usd >= CTR_REPORTING_THRESHOLD_USD or total_agg >= CTR_REPORTING_THRESHOLD_USD
+    )
+    # 31 CFR 1010.313 structuring requires the current cash leg to be strictly below $10,000;
+    # transparent >= $10,000 cash transactions are CTR-reportable, not structuring.
+    is_below_ctr = Decimal("0") < tx_usd < CTR_REPORTING_THRESHOLD_USD
+    is_just_below = CTR_STRUCTURING_LOW_USD <= tx_usd < CTR_REPORTING_THRESHOLD_USD
     structuring = bool(
-        (is_sub_threshold and (prior_usd > Decimal("0") or prior_24h_cash_count >= 1))
-        or (prior_24h_cash_count >= 1 and total_agg >= CTR_STRUCTURING_AGG_USD)
+        is_below_ctr
+        and (
+            (is_just_below and (prior_sub_usd > Decimal("0") or prior_sub_count >= 1))
+            or (prior_sub_count >= 1 and (tx_usd + prior_sub_usd) >= CTR_STRUCTURING_AGG_USD)
+        )
     )
 
     return CTRDecision(
@@ -552,7 +638,7 @@ def evaluate_ctr_and_structuring_pure(
         tx_amount_usd=tx_usd,
         prior_24h_cash_usd=prior_usd,
         total_aggregate_cash_usd=total_agg,
-        prior_24h_cash_count=int(prior_24h_cash_count),
+        prior_24h_cash_count=prior_count,
     )
 
 
@@ -566,24 +652,32 @@ def evaluate_travel_rule_pure(
 ) -> tuple[bool, list[str]]:
     """
     Pure FATF Recommendation 16 / FinCEN ($3,000) & EU TFR (€1,000) Travel Rule verifier.
+    Fails closed on invalid monetary values and fails conservatively when non-USD/EUR
+    transfers omit `amount_usd`.
     """
     is_wire = bool(channel and channel.strip().upper() in {"WIRE", "SWIFT", "ACH", "CROSS_BORDER", "SEPA"})
     if not is_wire:
         return True, []
 
     curr = normalize_currency(currency)
+    amt_orig = _amount_dec(amount, "amount")
     if curr == "EUR":
-        amt_eur = quantize_amount(_dec(amount), "EUR", rounding=ROUND_HALF_UP)
+        amt_eur = quantize_amount(amt_orig, "EUR", rounding=ROUND_HALF_UP)
         if amt_eur < TRAVEL_RULE_THRESHOLD_EUR:
             return True, []
-    else:
+    elif curr == "USD":
         amt_usd_checked = quantize_amount(
-            _dec(amount_usd if amount_usd is not None else amount),
+            _amount_dec(amount_usd, "amount_usd") if amount_usd is not None else amt_orig,
             "USD",
             rounding=ROUND_HALF_UP,
         )
         if amt_usd_checked < TRAVEL_RULE_THRESHOLD_USD:
             return True, []
+    elif amount_usd is not None:
+        amt_usd_checked = quantize_amount(_amount_dec(amount_usd, "amount_usd"), "USD", rounding=ROUND_HALF_UP)
+        if amt_usd_checked < TRAVEL_RULE_THRESHOLD_USD:
+            return True, []
+    # Else: non-USD/EUR wire without FX-converted `amount_usd` -> fail conservative and require Travel Rule fields
 
     missing: list[str] = []
     if not originator_info.get("name") or len(str(originator_info["name"]).strip()) < 2:
@@ -612,7 +706,7 @@ def classify_transaction_decision(
     hard_hold_triggers: frozenset[str] = DEFAULT_HARD_HOLD_TRIGGERS,
 ) -> DecisionClassification:
     """Single authoritative hold, alert, and threat-level classifier shared by sync & async paths."""
-    score = _dec(dynamic_score, "0")
+    score = _amount_dec(dynamic_score, "dynamic_score")
     is_hard_hold = any(r in hard_hold_triggers for r in triggered_rules)
     alert_triggered = score >= Decimal("0.75") or len(triggered_rules) > 0
     decision = "HELD" if is_hard_hold else "APPROVED"

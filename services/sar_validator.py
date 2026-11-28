@@ -33,42 +33,119 @@ def _find_text_recursive(root: ET.Element, target_tags: set[str]) -> str:
     return ""
 
 
-def _validate_fincen_structure(root: ET.Element) -> List[str]:
+_NARRATIVE_TAGS = {"Narrative", "Description", "ActivityNarrativeText", "SuspiciousActivityNarrative", "Reason"}
+_AMOUNT_TAGS = {"Amount", "TotalSuspiciousAmount", "TransactionAmount", "AmountUSD"}
+
+
+def _parse_strict_non_negative_decimal(raw_text: str, field_label: str) -> tuple[Decimal | None, str | None]:
+    cleaned = raw_text.strip().replace(",", "").replace("$", "")
+    if not cleaned:
+        return None, f"Empty monetary amount in {field_label}."
+    try:
+        val = Decimal(cleaned)
+    except InvalidOperation:
+        return None, f"Non-numeric monetary amount '{raw_text.strip()}' in {field_label}."
+    if not val.is_finite():
+        return None, f"Non-finite monetary value '{raw_text.strip()}' in {field_label}."
+    if val < 0:
+        return None, f"Negative monetary value '{val}' in {field_label}."
+    return val, None
+
+
+def _validate_fincen_single_report(report_root: ET.Element) -> List[str]:
     errors: List[str] = []
-    root_name = _strip_ns(root.tag)
-    if root_name not in ("SuspiciousActivityReport", "EFilingBatchXML"):
-        errors.append(
-            f"Invalid FinCEN root element '<{root_name}>'; expected <SuspiciousActivityReport> or <EFilingBatchXML>."
-        )
+    if len(list(report_root)) == 0:
+        errors.append("FinCEN SAR XML is empty; missing required child sections (Header / ActivitySummary / Narrative).")
         return errors
 
-    # Verify at least one narrative / description / filing activity element exists
-    narrative = _find_text_recursive(
-        root,
-        {"Narrative", "Description", "ActivityNarrativeText", "SuspiciousActivityNarrative", "Reason"},
-    )
-    if not narrative or len(narrative) < 5:
-        # Allow minimal test fixture XMLs that contain <Activity> or <Header> + child content
-        has_children = len(list(root)) > 0
-        if not has_children:
-            errors.append("FinCEN SAR XML is empty; missing required child sections (Header / ActivitySummary / Narrative).")
+    # If explicit narrative tags are present, they must contain non-empty narrative text
+    present_narrative_elems = [elem for elem in report_root.iter() if _strip_ns(elem.tag) in _NARRATIVE_TAGS]
+    if present_narrative_elems:
+        if not any(elem.text and elem.text.strip() for elem in present_narrative_elems):
+            errors.append("FinCEN SAR <Narrative> / <Description> element cannot be empty.")
 
-    # Validate currency codes if present
-    for elem in root.iter():
+    # Validate ISO-4217 currency codes & finite non-negative monetary values
+    for elem in report_root.iter():
         local = _strip_ns(elem.tag)
         if local in ("Currency", "CurrencyCode") and elem.text and elem.text.strip():
             code = elem.text.strip().upper()
             if not _ISO_CURRENCY_RE.match(code):
                 errors.append(f"Invalid ISO-4217 currency code '{code}' in <{local}>.")
-        if local in ("Amount", "TotalSuspiciousAmount", "TransactionAmount") and elem.text and elem.text.strip():
-            try:
-                val = Decimal(elem.text.strip().replace(",", "").replace("$", ""))
-                if val < 0:
-                    errors.append(f"Negative monetary value '{val}' in <{local}>.")
-            except InvalidOperation:
-                errors.append(f"Non-numeric monetary amount '{elem.text.strip()}' in <{local}>.")
+        if local in _AMOUNT_TAGS:
+            if elem.text is None or not elem.text.strip():
+                errors.append(f"Empty monetary value in <{local}>.")
+            else:
+                _, err = _parse_strict_non_negative_decimal(elem.text, f"<{local}>")
+                if err:
+                    errors.append(err)
 
     return errors
+
+
+def _validate_fincen_batch(root: ET.Element) -> List[str]:
+    errors: List[str] = []
+    reports_node = next((c for c in root if _strip_ns(c.tag) == "Reports"), None)
+    if reports_node is None:
+        errors.append("BatchSuspiciousActivityReport missing required <Reports> container.")
+        return errors
+
+    child_reports = [c for c in reports_node if _strip_ns(c.tag) == "SuspiciousActivityReport"]
+    if not child_reports:
+        errors.append("BatchSuspiciousActivityReport contains zero <SuspiciousActivityReport> records.")
+        return errors
+
+    declared_count_str = root.attrib.get("total_records")
+    if declared_count_str is not None:
+        try:
+            declared_count = int(declared_count_str)
+            if declared_count != len(child_reports):
+                errors.append(
+                    f"BatchSuspiciousActivityReport total_records={declared_count} does not match "
+                    f"actual child report count ({len(child_reports)})."
+                )
+        except ValueError:
+            errors.append(f"Invalid total_records attribute '{declared_count_str}'.")
+
+    child_usd_sum = Decimal("0")
+    for idx, child in enumerate(child_reports):
+        child_errs = _validate_fincen_single_report(child)
+        errors.extend([f"Report[{idx}]: {e}" for e in child_errs])
+        usd_elem = next((e for e in child.iter() if _strip_ns(e.tag) == "AmountUSD"), None)
+        if usd_elem is None:
+            usd_elem = next((e for e in child.iter() if _strip_ns(e.tag) == "Amount"), None)
+        if usd_elem is not None and usd_elem.text and usd_elem.text.strip():
+            val, _ = _parse_strict_non_negative_decimal(usd_elem.text, "<AmountUSD>")
+            if val is not None:
+                child_usd_sum += val
+
+    header_node = next((c for c in root if _strip_ns(c.tag) == "BatchHeader"), None)
+    if header_node is not None and "total_batch_amount" in header_node.attrib:
+        batch_total, err = _parse_strict_non_negative_decimal(
+            header_node.attrib["total_batch_amount"], "BatchHeader@total_batch_amount"
+        )
+        if err:
+            errors.append(err)
+        elif batch_total is not None:
+            # Allow <= 0.01 per child for sum-then-round vs display-rounded child AmountUSD
+            tolerance = Decimal("0.01") * len(child_reports)
+            if abs(batch_total - child_usd_sum) > tolerance:
+                errors.append(
+                    f"BatchHeader total_batch_amount ({batch_total}) disagrees with child report sum ({child_usd_sum})."
+                )
+
+    return errors
+
+
+def _validate_fincen_structure(root: ET.Element) -> List[str]:
+    root_name = _strip_ns(root.tag)
+    if root_name == "BatchSuspiciousActivityReport":
+        return _validate_fincen_batch(root)
+    if root_name not in ("SuspiciousActivityReport", "EFilingBatchXML"):
+        return [
+            f"Invalid FinCEN root element '<{root_name}>'; expected <SuspiciousActivityReport>, "
+            "<EFilingBatchXML>, or <BatchSuspiciousActivityReport>."
+        ]
+    return _validate_fincen_single_report(root)
 
 
 def _validate_goaml_structure(root: ET.Element) -> List[str]:
@@ -102,10 +179,15 @@ def _validate_goaml_structure(root: ET.Element) -> List[str]:
 
     tx_node = next((c for c in root if _strip_ns(c.tag) == "transaction"), None)
     if tx_node is not None:
-        tx_children = {_strip_ns(c.tag) for c in tx_node}
+        tx_children = {_strip_ns(c.tag): c for c in tx_node}
         for tx_req in ("transactionnumber", "date_transaction", "amount_local"):
             if tx_req not in tx_children:
                 errors.append(f"goAML <transaction> missing required element <{tx_req}>.")
+        amt_node = tx_children.get("amount_local")
+        if amt_node is not None:
+            _, err = _parse_strict_non_negative_decimal(amt_node.text or "", "goAML <amount_local>")
+            if err:
+                errors.append(err)
 
     return errors
 

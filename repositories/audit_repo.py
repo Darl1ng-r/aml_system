@@ -214,10 +214,16 @@ async def fetch_audit_export_rows_repo(
 
 async def fetch_audit_log_detail_repo(
     *,
-    log_uuid: uuid.UUID,
+    log_id: int | str | uuid.UUID | None = None,
+    log_uuid: int | str | uuid.UUID | None = None,
     tenant_id: Any,
     read_conn_factory: Any = None,
 ) -> Any:
+    raw_id = log_id if log_id is not None else log_uuid
+    try:
+        numeric_id = int(str(raw_id))
+    except (ValueError, TypeError):
+        return None
     factory = _read_factory(read_conn_factory)
     async with factory(tenant_id=tenant_id) as conn:
         return await conn.fetchrow(
@@ -227,9 +233,9 @@ async def fetch_audit_log_detail_repo(
                    action, resource_type, resource_id,
                    before_state, after_state, details
             FROM audit_log
-            WHERE id = $1 AND tenant_id = $2;
+            WHERE id = $1::bigint AND tenant_id = $2;
             """,
-            log_uuid,
+            numeric_id,
             uuid.UUID(str(tenant_id)),
         )
 

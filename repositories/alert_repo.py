@@ -9,6 +9,7 @@ transactional WORM audit writes, and chunked export queries for alerts.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import uuid
@@ -672,26 +673,47 @@ async def fetch_alert_workbench_bundle_repo(
         esc_rows: list[Any] = []
         evidence_count = 0
         if include_workbench_extras:
+            async def _run_optional_query(coro_fn):
+                tx_factory = getattr(conn, "transaction", None)
+                if callable(tx_factory) and not inspect.iscoroutinefunction(tx_factory):
+                    sp = tx_factory()
+                    if hasattr(sp, "__aenter__"):
+                        async with sp:
+                            return await coro_fn()
+                return await coro_fn()
+
             try:
                 esc_rows = list(
-                    await conn.fetch(
-                        """
-                        SELECT id, escalated_by_name, from_tier, to_tier, escalation_reason, created_at
-                        FROM alert_escalations
-                        WHERE alert_id = $1
-                        ORDER BY created_at DESC
-                        LIMIT 20;
-                        """,
-                        alert_uuid,
+                    (
+                        await _run_optional_query(
+                            lambda: conn.fetch(
+                                """
+                                SELECT id, escalated_by_name, from_tier, to_tier,
+                                       escalation_reason, escalated_at AS created_at
+                                FROM alert_escalations
+                                WHERE alert_id = $1
+                                ORDER BY escalated_at DESC
+                                LIMIT 20;
+                                """,
+                                alert_uuid,
+                            )
+                        )
                     )
                     or []
                 )
             except Exception:
                 esc_rows = []
             try:
-                ev_val = await conn.fetchval(
-                    "SELECT COUNT(*) FROM case_evidence WHERE case_id = $1;",
-                    alert_uuid,
+                ev_val = await _run_optional_query(
+                    lambda: conn.fetchval(
+                        """
+                        SELECT COUNT(DISTINCT ce.id)
+                        FROM case_evidence ce
+                        JOIN case_alerts ca ON ca.case_id = ce.case_id
+                        WHERE ca.alert_id = $1;
+                        """,
+                        alert_uuid,
+                    )
                 )
                 evidence_count = int(ev_val or 0)
             except Exception:

@@ -7,13 +7,19 @@ from contextlib import asynccontextmanager
 import asyncpg
 
 from config import settings
-from services.secrets_manager import get_postgres_dsn, get_postgres_replica_dsn, get_postgres_replica_dsns
+from services.secrets_manager import (
+    get_outbox_postgres_dsn,
+    get_postgres_dsn,
+    get_postgres_replica_dsn,
+    get_postgres_replica_dsns,
+)
 from services.tls_manager import get_ssl_context
 
 logger = logging.getLogger(__name__)
 
 db_pool = None
 db_replica_pool = None
+db_outbox_pool = None
 db_replica_pools: list = []
 _replica_rr_index: int = 0
 _pool_init_lock: asyncio.Lock | None = None
@@ -113,8 +119,41 @@ async def get_db_pool():
     return db_pool
 
 
+async def get_outbox_db_pool():
+    """
+    Returns the dedicated least-privilege `aml_outbox_worker` pool (BYPASSRLS scoped
+    to `transactional_outbox`) when `OUTBOX_DATABASE_URL` / `AML_OUTBOX_WORKER_PASSWORD`
+    is configured; falls back to the primary pool in local dev/superuser setups.
+    """
+    global db_outbox_pool
+    outbox_dsn = get_outbox_postgres_dsn()
+    if not outbox_dsn:
+        return await get_db_pool()
+    async with _get_pool_lock():
+        if _pool_needs_init(db_outbox_pool):
+            pgbouncer_enabled = os.getenv("PGBOUNCER_ENABLED", "false").lower() == "true"
+            pool_kwargs = {"statement_cache_size": 0} if pgbouncer_enabled else {}
+            db_outbox_pool = await asyncpg.create_pool(
+                dsn=outbox_dsn,
+                ssl=get_ssl_context(),
+                min_size=1,
+                max_size=4,
+                timeout=max(1.0, float(getattr(settings, "postgres_acquire_timeout_seconds", 5.0))),
+                command_timeout=15.0,
+                **pool_kwargs,
+            )
+            logger.info("Dedicated aml_outbox_worker asyncpg pool initialized.")
+        return db_outbox_pool
+
+
 async def close_db_pool():
-    global db_pool, db_replica_pool, db_replica_pools, _replica_rr_index
+    global db_pool, db_replica_pool, db_outbox_pool, db_replica_pools, _replica_rr_index
+    if db_outbox_pool and db_outbox_pool is not db_pool:
+        try:
+            await db_outbox_pool.close()
+        except Exception:
+            pass
+    db_outbox_pool = None
     closed_ids: set[int] = set()
     for r_pool in list(db_replica_pools):
         if r_pool and r_pool is not db_pool and id(r_pool) not in closed_ids:

@@ -447,7 +447,33 @@ async def _verify_supabase_user(resolved_token: str, credentials_exception: HTTP
             raise credentials_exception
         user_id = user_data.get("id")
         if user_id:
-            await _verify_token_version(str(user_id), token_version=1, tenant_id=str(tenant_id))
+            # Verify account active state & DB token_version without hardcoding token_version=1
+            # (which permanently locked out Supabase users after a single session revocation).
+            sb_token_ver: int | None = None
+            try:
+                import uuid as _uuid
+                u_uuid = _uuid.UUID(str(user_id))
+                async with get_async_db_conn(tenant_id=str(tenant_id), auth_lookup=True) as conn:
+                    u_row = await conn.fetchrow(
+                        "SELECT token_version, is_active FROM users WHERE id = $1;",
+                        u_uuid,
+                    )
+                    if u_row is not None and (isinstance(u_row, dict) or hasattr(u_row, "keys")):
+                        u_map = dict(u_row)
+                        if u_map.get("is_active") is False:
+                            raise credentials_exception
+                        raw_v = u_map.get("token_version")
+                        if isinstance(raw_v, (int, float, str)):
+                            sb_token_ver = int(raw_v)
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+            await _verify_token_version(
+                str(user_id),
+                token_version=sb_token_ver if sb_token_ver is not None else 1,
+                tenant_id=str(tenant_id),
+            )
         from observability.middleware import user_id_var, tenant_id_var
         user_id_var.set(str(user_id))
         tenant_id_var.set(str(tenant_id))
@@ -793,10 +819,11 @@ class DownstreamAuthValidator:
 
         token = auth_header[7:].strip()
         payload = self.decode_token(token)
-        if payload.get("type") == "refresh":
+        tok_type = payload.get("type")
+        if tok_type is not None and tok_type != "access":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh tokens cannot be used for API authentication.",
+                detail="Only access tokens can be used for API authentication.",
                 headers={"WWW-Authenticate": "Bearer"},
             )
 

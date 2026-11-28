@@ -31,6 +31,7 @@ from database.redis_db import get_async_redis_client
 from domain.money import (
     FX_RATE_QUANTUM,
     FxConversionResult,
+    FxRateUnavailableError,
     InvalidMoneyError,
     convert_money,
     invert_fx_rate,
@@ -43,7 +44,11 @@ logger = logging.getLogger(__name__)
 
 FX_CACHE_TTL_SECONDS = 6 * 3600  # 6 hours
 
+# Explicit provenance timestamp for static reference fallback rates (never misrepresented as live "now")
+FALLBACK_RATES_AS_OF = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
 # Reference mid-market fallback rates expressed as: 1 <CURRENCY> = <VALUE> USD
+# Covers 100% of ISO-4217 currencies in domain/money.py:CURRENCY_EXPONENTS plus high-risk jurisdictions.
 FALLBACK_RATES_TO_USD_DECIMAL: Dict[str, Decimal] = {
     "USD": Decimal("1.0000"),
     "EUR": Decimal("1.0800"),
@@ -63,6 +68,9 @@ FALLBACK_RATES_TO_USD_DECIMAL: Dict[str, Decimal] = {
     "BHD": Decimal("2.6525"),
     "OMR": Decimal("2.5974"),
     "JOD": Decimal("1.4104"),
+    "IQD": Decimal("0.00076"),
+    "LYD": Decimal("0.2050"),
+    "TND": Decimal("0.3200"),
     "INR": Decimal("0.0119"),
     "MXN": Decimal("0.0500"),
     "BRL": Decimal("0.1750"),
@@ -84,6 +92,25 @@ FALLBACK_RATES_TO_USD_DECIMAL: Dict[str, Decimal] = {
     "NGN": Decimal("0.00062"),
     "EGP": Decimal("0.0205"),
     "ILS": Decimal("0.2700"),
+    # 0-decimal & emerging currencies listed in CURRENCY_EXPONENTS / FATF high-risk lists
+    "VND": Decimal("0.000039"),
+    "CLP": Decimal("0.00105"),
+    "COP": Decimal("0.00024"),
+    "PKR": Decimal("0.00360"),
+    "ARS": Decimal("0.00100"),
+    "IRR": Decimal("0.000024"),
+    "BIF": Decimal("0.00034"),
+    "DJF": Decimal("0.00562"),
+    "GNF": Decimal("0.000116"),
+    "ISK": Decimal("0.00725"),
+    "KMF": Decimal("0.00220"),
+    "PYG": Decimal("0.00013"),
+    "RWF": Decimal("0.00073"),
+    "UGX": Decimal("0.00027"),
+    "VUV": Decimal("0.00840"),
+    "XAF": Decimal("0.00165"),
+    "XOF": Decimal("0.00165"),
+    "XPF": Decimal("0.00905"),
 }
 
 # Backward-compatible float mapping for legacy callers
@@ -93,17 +120,21 @@ FALLBACK_RATES_TO_USD: Dict[str, float] = {
 
 
 def get_fallback_fx_rate_decimal(currency: str, base_currency: str = "USD") -> Decimal:
-    """Exact Decimal deterministic fallback FX rate (1 unit of `currency` in `base_currency`)."""
-    src = (currency or base_currency).upper().strip()
-    dst = (base_currency or "USD").upper().strip()
+    """
+    Exact Decimal deterministic fallback FX rate (1 unit of `currency` in `base_currency`).
+    Fails closed by raising `FxRateUnavailableError` for unsupported/unknown currencies
+    rather than silently assuming 1:1 USD parity.
+    """
+    src = normalize_currency(currency, default=base_currency)
+    dst = normalize_currency(base_currency, default="USD")
     if src == dst:
         return Decimal("1")
     src_to_usd = FALLBACK_RATES_TO_USD_DECIMAL.get(src)
     dst_to_usd = FALLBACK_RATES_TO_USD_DECIMAL.get(dst)
     if src_to_usd is not None and dst_to_usd:
         return (src_to_usd / dst_to_usd).quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN)
-    logger.warning("Unknown ISO-4217 currency '%s' or '%s'; defaulting FX rate to 1.0", src, dst)
-    return Decimal("1")
+    logger.warning("No FX fallback rate for currency pair %s -> %s; failing closed.", src, dst)
+    raise FxRateUnavailableError(f"No FX conversion rate available for currency pair {src}->{dst}")
 
 
 def get_fallback_fx_rate(currency: str, base_currency: str = "USD") -> float:
@@ -157,6 +188,20 @@ async def _fetch_live_rates_map(base_currency: str = "USD") -> Optional[Dict[str
             if resp.status_code == 200:
                 data = resp.json()
                 raw_rates = data.get("rates") or {}
+                raw_date = str(data.get("date") or "").strip()
+                if raw_date:
+                    try:
+                        parsed_q = datetime.fromisoformat(raw_date)
+                        quote_iso = (
+                            parsed_q.replace(tzinfo=timezone.utc)
+                            if parsed_q.tzinfo is None
+                            else parsed_q.astimezone(timezone.utc)
+                        ).isoformat()
+                    except ValueError:
+                        quote_iso = datetime.now(timezone.utc).isoformat()
+                else:
+                    quote_iso = datetime.now(timezone.utc).isoformat()
+
                 converted: Dict[str, str] = {base_currency: "1.00000000"}
                 for code, val in raw_rates.items():
                     if val is None:
@@ -167,8 +212,9 @@ async def _fetch_live_rates_map(base_currency: str = "USD") -> Optional[Dict[str
                             converted[code.upper()] = str(inv)
                     except InvalidMoneyError:
                         continue
-                _fx_local_cache[base_currency] = (_time.monotonic(), converted)
-                return converted
+                payload_envelope = {"rates": converted, "quoted_at": quote_iso}
+                _fx_local_cache[base_currency] = (_time.monotonic(), payload_envelope)
+                return payload_envelope
         except (CircuitOpenError, Exception) as e:
             logger.debug("Live FX rate fetch skipped/failed (%s); using fallback table.", e)
 
@@ -217,12 +263,30 @@ async def get_fx_rate_with_provenance(
         base_ttl=FX_CACHE_TTL_SECONDS,
         cache_none=False,
     )
-    if isinstance(rates_map, dict) and src in rates_map:
-        rate_dec = to_decimal(rates_map[src], allow_negative=False, allow_zero=False, field_name="fx_rate")
-        source = "ECB_LIVE" if source_holder["from_live"] else "REDIS_CACHE"
-        return rate_dec.quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN), source, quoted_at
+    if isinstance(rates_map, dict):
+        # Support both new structured envelope {"rates": {...}, "quoted_at": iso} and legacy flat map
+        if "rates" in rates_map and isinstance(rates_map["rates"], dict):
+            actual_rates = rates_map["rates"]
+            raw_q = rates_map.get("quoted_at")
+            if isinstance(raw_q, str) and raw_q.strip():
+                try:
+                    parsed_q = datetime.fromisoformat(raw_q.strip().replace("Z", "+00:00"))
+                    quoted_at = (
+                        parsed_q.replace(tzinfo=timezone.utc)
+                        if parsed_q.tzinfo is None
+                        else parsed_q.astimezone(timezone.utc)
+                    )
+                except ValueError:
+                    pass
+        else:
+            actual_rates = rates_map
 
-    return get_fallback_fx_rate_decimal(src, dst), "ISO_FALLBACK", quoted_at
+        if src in actual_rates:
+            rate_dec = to_decimal(actual_rates[src], allow_negative=False, allow_zero=False, field_name="fx_rate")
+            source = "ECB_LIVE" if source_holder["from_live"] else "REDIS_CACHE"
+            return rate_dec.quantize(FX_RATE_QUANTUM, rounding=ROUND_HALF_EVEN), source, quoted_at
+
+    return get_fallback_fx_rate_decimal(src, dst), "ISO_FALLBACK", FALLBACK_RATES_AS_OF
 
 
 async def get_fx_rate(currency: str | None, base_currency: str = "USD") -> float:
@@ -238,11 +302,8 @@ def _quantize_currency(
     base_currency: str = "USD",
     rounding: str = ROUND_HALF_UP,
 ) -> float:
-    try:
-        amt_dec = to_decimal(amount, allow_negative=False, field_name="amount")
-        rate_dec = to_decimal(rate, allow_negative=False, allow_zero=False, field_name="fx_rate")
-    except InvalidMoneyError:
-        return 0.0
+    amt_dec = to_decimal(amount, allow_negative=False, field_name="amount")
+    rate_dec = to_decimal(rate, allow_negative=False, allow_zero=False, field_name="fx_rate")
     converted = quantize_amount(amt_dec * rate_dec, base_currency, rounding=rounding)
     return float(converted)
 

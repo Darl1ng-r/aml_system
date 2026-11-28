@@ -28,7 +28,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable, Mapping, Optional
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
-from domain.money import FxConversionResult, to_decimal
+from domain.money import FxConversionResult, FxRateUnavailableError, quantize_amount, to_decimal
 from domain.rules_core import (
     CTRDecision,
     classify_transaction_decision,
@@ -321,7 +321,8 @@ class TransactionIngestionService:
             logger.debug("Baseline lookup prior to rules bypassed: %s", e_base)
         kyc_risk_tier = str(baseline.get("kyc_risk_tier", "STANDARD"))
 
-        # 2. Exact Decimal FX Normalization with provenance
+        # 2. Exact Decimal FX Normalization with provenance (fail closed -> HELD on unavailable FX)
+        fx_unavailable = False
         if deps.fx_converter is not None:
             raw_usd, raw_rate = await deps.fx_converter(float(amount_original), currency)
             fx_res = FxConversionResult(
@@ -335,13 +336,30 @@ class TransactionIngestionService:
                 rounding_mode=ROUND_HALF_UP,
             )
         else:
-            fx_res = await convert_to_base_currency_exact(
-                amount_original,
-                currency,
-                base_currency="USD",
-                evaluated_at=evaluated_at,
-                rounding=ROUND_HALF_UP,
-            )
+            try:
+                fx_res = await convert_to_base_currency_exact(
+                    amount_original,
+                    currency,
+                    base_currency="USD",
+                    evaluated_at=evaluated_at,
+                    rounding=ROUND_HALF_UP,
+                )
+            except FxRateUnavailableError:
+                fx_unavailable = True
+                logger.warning(
+                    "FX conversion unavailable for currency=%s; holding transaction under FX_RATE_UNAVAILABLE.",
+                    currency,
+                )
+                fx_res = FxConversionResult(
+                    original_amount=amount_original,
+                    original_currency=currency,
+                    amount_base=quantize_amount(amount_original, "USD", rounding=ROUND_HALF_UP),
+                    base_currency="USD",
+                    fx_rate_applied=Decimal("1"),
+                    source="FX_UNAVAILABLE",
+                    quoted_at=evaluated_at,
+                    rounding_mode=ROUND_HALF_UP,
+                )
 
         amount_base_usd_dec = fx_res.amount_base
         amount_base_usd_flt = float(amount_base_usd_dec)
@@ -401,6 +419,12 @@ class TransactionIngestionService:
             cfg_snapshot = await get_rules_config_async(tenant_id=tenant_str)
             ruleset_hash = compute_ruleset_hash(cfg_snapshot)
 
+        if fx_unavailable:
+            if "FX_RATE_UNAVAILABLE" not in triggered_rules:
+                triggered_rules.append("FX_RATE_UNAVAILABLE")
+            if "FX_RATE_UNAVAILABLE" not in degraded_rules:
+                degraded_rules.append("FX_RATE_UNAVAILABLE")
+
         # 4. Geographic Flag + Offloaded ML Inference
         is_geo = (
             int(is_geo_override)
@@ -421,13 +445,23 @@ class TransactionIngestionService:
 
         # 5. Isolation Forest + Transitive Graph Taint + Dynamic RBA Scoring
         try:
-            iforest_score = await deps.iforest_scorer(
-                amount=amount_base_usd_flt,
-                sender_risk=sender_risk,
-                receiver_risk=receiver_risk,
-                hour=tx_timestamp.hour,
-                is_geo=is_geo,
-            )
+            if deps.iforest_scorer is get_iforest_score:
+                iforest_score = await deps.iforest_scorer(
+                    amount=amount_base_usd_flt,
+                    sender_risk=sender_risk,
+                    receiver_risk=receiver_risk,
+                    hour=tx_timestamp.hour,
+                    is_geo=is_geo,
+                    tenant_id=tenant_str,
+                )
+            else:
+                iforest_score = await deps.iforest_scorer(
+                    amount=amount_base_usd_flt,
+                    sender_risk=sender_risk,
+                    receiver_risk=receiver_risk,
+                    hour=tx_timestamp.hour,
+                    is_geo=is_geo,
+                )
             jurisdiction_risk = float(baseline.get("jurisdiction_risk_score", 0.1))
             if is_geo == 1:
                 jurisdiction_risk = max(jurisdiction_risk, 0.85)

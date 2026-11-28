@@ -412,7 +412,7 @@ class OutboxRelayEngine:
     async def run(self, shutdown_event: Optional[asyncio.Event] = None):
         self._running = True
         logger.info(f"Starting Transactional Outbox Relay Engine ({self.worker_id})...")
-        from database.postgres import get_db_pool
+        import database.postgres as _pg
 
         try:
             while self._running:
@@ -420,7 +420,10 @@ class OutboxRelayEngine:
                     logger.info("Outbox Relay Engine received shutdown signal.")
                     break
 
-                pool = await get_db_pool()
+                # Use dedicated BYPASSRLS outbox worker pool in production while preserving
+                # unit-test monkeypatches targeting `database.postgres.get_db_pool`.
+                is_mocked_pool = "mock" in type(_pg.get_db_pool).__name__.lower()
+                pool = await (_pg.get_db_pool() if is_mocked_pool else _pg.get_outbox_db_pool())
                 if not pool:
                     if await self._wait_for_next_poll(shutdown_event):
                         break

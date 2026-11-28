@@ -232,8 +232,45 @@ async def _sync_with_retries(tx_payload: dict, neo4j_driver, tracer, trace_ctx) 
     return False, last_error
 
 
-async def _process_single_message(msg, tp, neo4j_driver, dlq_producer, consumer) -> bool:
-    tx_payload = msg.value
+from enum import StrEnum
+
+
+class MessageOutcome(StrEnum):
+    COMMITTED = "COMMITTED"
+    DLQ_COMMITTED = "DLQ_COMMITTED"
+    BLOCKED = "BLOCKED"
+
+
+def _decode_sync_payload(raw_value) -> tuple[dict | None, str | None]:
+    if isinstance(raw_value, dict):
+        return raw_value, None
+    try:
+        text = raw_value.decode("utf-8") if isinstance(raw_value, (bytes, bytearray)) else str(raw_value)
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            return None, f"Expected JSON object payload, got {type(parsed).__name__}"
+        return parsed, None
+    except Exception as exc:
+        return None, f"Malformed JSON poison-pill payload: {type(exc).__name__}: {exc}"
+
+
+async def _process_single_message_with_outcome(msg, tp, neo4j_driver, dlq_producer, consumer) -> MessageOutcome:
+    tx_payload, decode_err = _decode_sync_payload(msg.value)
+    if decode_err or tx_payload is None:
+        raw_repr = (
+            msg.value.decode("utf-8", errors="replace")[:1000]
+            if isinstance(msg.value, (bytes, bytearray))
+            else str(msg.value)[:1000]
+        )
+        logger.error("[SYNC POISON PILL] offset=%s on %s: %s; routing to DLQ.", msg.offset, tp, decode_err)
+        dlq_ok = await send_to_dlq(
+            dlq_producer, {"transaction_id": "poison_pill", "raw_payload": raw_repr}, decode_err or "Malformed payload"
+        )
+        if not dlq_ok:
+            return MessageOutcome.BLOCKED
+        await consumer.commit({tp: msg.offset + 1})
+        return MessageOutcome.DLQ_COMMITTED
+
     tx_id = tx_payload.get("transaction_id", "unknown")
     trace_ctx = _extract_trace_context(msg.headers)
     tracer = _get_tracer()
@@ -251,10 +288,17 @@ async def _process_single_message(msg, tp, neo4j_driver, dlq_producer, consumer)
                 f"[ZERO-LOSS GUARD] Refusing to commit offset {msg.offset} on {tp} for tx={tx_id}: "
                 f"both Neo4j write and DLQ delivery failed."
             )
-            return False
+            return MessageOutcome.BLOCKED
+        await consumer.commit({tp: msg.offset + 1})
+        return MessageOutcome.DLQ_COMMITTED
 
     await consumer.commit({tp: msg.offset + 1})
-    return success
+    return MessageOutcome.COMMITTED
+
+
+async def _process_single_message(msg, tp, neo4j_driver, dlq_producer, consumer) -> bool:
+    outcome = await _process_single_message_with_outcome(msg, tp, neo4j_driver, dlq_producer, consumer)
+    return outcome == MessageOutcome.COMMITTED
 
 
 async def _poll_next_batch(consumer) -> dict | None:
@@ -276,10 +320,16 @@ async def _process_batch(batch: dict, neo4j_driver, dlq_producer, consumer) -> t
     failed = 0
     for tp, messages in batch.items():
         for msg in messages:
-            if await _process_single_message(msg, tp, neo4j_driver, dlq_producer, consumer):
+            outcome = await _process_single_message_with_outcome(msg, tp, neo4j_driver, dlq_producer, consumer)
+            if outcome == MessageOutcome.COMMITTED:
                 processed += 1
+            elif outcome == MessageOutcome.DLQ_COMMITTED:
+                failed += 1
             else:
                 failed += 1
+                if hasattr(consumer, "seek"):
+                    consumer.seek(tp, msg.offset)
+                break
     return processed, failed
 
 
@@ -311,7 +361,7 @@ async def run_kafka_consumer(neo4j_driver, shutdown_event: asyncio.Event):
         group_id=CONSUMER_GROUP_ID,
         auto_offset_reset="earliest",
         enable_auto_commit=False,       # manual commit for at-least-once delivery
-        value_deserializer=lambda b: json.loads(b.decode("utf-8")),
+        value_deserializer=None,        # decoded per-message so poison pills route to DLQ instead of CrashLooping
         key_deserializer=lambda b: b.decode("utf-8") if b else None,
         session_timeout_ms=30_000,
         heartbeat_interval_ms=10_000,

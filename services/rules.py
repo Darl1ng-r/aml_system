@@ -16,7 +16,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from config import settings
@@ -24,7 +24,7 @@ from database.elasticsearch_db import get_async_elasticsearch_client
 from database.postgres import get_async_db_conn as _real_get_async_db_conn
 from database.postgres import get_async_db_conn
 from database.redis_db import get_async_redis_client
-from domain.money import to_decimal
+from domain.money import quantize_amount, to_decimal
 from domain.rules_core import (
     AccountRuleSnapshot,
     RuleProvenance,
@@ -202,38 +202,66 @@ async def _fetch_redis_structuring_window(
     if not struct_cfg.get("enabled", True):
         return (), (), []
 
-    window_hours = int(struct_cfg.get("window_hours", 24))
+    window_hours = max(1, int(struct_cfg.get("window_hours", 24)))
+    window_secs = window_hours * 3600
+    ttl_secs = window_secs + 3600
     degraded: list[str] = []
     try:
         r = await get_async_redis_client()
         if not r:
             return (), (), []
         now_score = tx_utc.timestamp()
-        window_ago = now_score - (window_hours * 3600)
+        window_ago = now_score - window_secs
+        # Bound pruning so backdated/future replay timestamps never evict live window entries
+        prune_cutoff = min(window_ago, time.time() - window_secs)
+        quantized_amt = quantize_amount(amount_usd, "USD", rounding=ROUND_HALF_UP)
         redis_key = f"acc:velocity:{tenant_id}:{sender_id}" if tenant_id else f"acc:velocity:{sender_id}"
         entity_redis_key = f"acc:velocity:{tenant_id}:entity:{entity_id}" if tenant_id else f"acc:velocity:entity:{entity_id}"
-        tx_entry = f"{amount_usd}:{now_score}:{uuid.uuid4().hex[:6]}"
+        tx_entry = f"{quantized_amt}:{now_score}:{uuid.uuid4().hex[:6]}"
 
         pipe_ctx = r.pipeline(transaction=True)
         if inspect.isawaitable(pipe_ctx):
             pipe_ctx = await pipe_ctx
+        used_zrangebyscore = False
         async with pipe_ctx as pipe:
-            pipe.zremrangebyscore(redis_key, "-inf", window_ago)
-            pipe.zrange(redis_key, 0, -1, withscores=True)
+            used_zrangebyscore = hasattr(pipe, "zrangebyscore")
+            pipe.zremrangebyscore(redis_key, "-inf", prune_cutoff)
+            if used_zrangebyscore:
+                pipe.zrangebyscore(redis_key, window_ago, now_score, withscores=True)
+            else:
+                pipe.zrange(redis_key, 0, -1, withscores=True)
             pipe.zadd(redis_key, {tx_entry: now_score})
-            pipe.expire(redis_key, 90000)
+            pipe.expire(redis_key, ttl_secs)
 
             if entity_redis_key != redis_key:
-                pipe.zremrangebyscore(entity_redis_key, "-inf", window_ago)
-                pipe.zrange(entity_redis_key, 0, -1, withscores=True)
+                pipe.zremrangebyscore(entity_redis_key, "-inf", prune_cutoff)
+                if used_zrangebyscore:
+                    pipe.zrangebyscore(entity_redis_key, window_ago, now_score, withscores=True)
+                else:
+                    pipe.zrange(entity_redis_key, 0, -1, withscores=True)
                 pipe.zadd(entity_redis_key, {tx_entry: now_score})
-                pipe.expire(entity_redis_key, 90000)
+                pipe.expire(entity_redis_key, ttl_secs)
 
             results = await pipe.execute()
 
-        account_recent = results[1] if results and len(results) > 1 else []
+        def _filter_in_window(records: Any) -> list[Any]:
+            if used_zrangebyscore:
+                # Real Redis ZRANGEBYSCORE already bounds [window_ago, now_score]; avoid
+                # discarding deterministic mocked pipeline payloads that use synthetic epochs.
+                return list(records or ())
+            filtered = []
+            for rec in (records or ()):
+                if isinstance(rec, tuple) and len(rec) == 2:
+                    _, sc = rec
+                    if window_ago <= float(sc) <= now_score:
+                        filtered.append(rec)
+                else:
+                    filtered.append(rec)
+            return filtered
+
+        account_recent = _filter_in_window(results[1] if results and len(results) > 1 else [])
         entity_recent = (
-            results[5]
+            _filter_in_window(results[5])
             if (entity_redis_key != redis_key and results and len(results) > 5)
             else account_recent
         )

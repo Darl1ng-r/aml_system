@@ -8,7 +8,9 @@ from domain.money import (
     CURRENCY_EXPONENTS,
     DomainError,
     FxConversionResult,
+    FxRateUnavailableError,
     InvalidMoneyError,
+    MAX_MONEY_MAGNITUDE,
     Money,
     convert_money,
     get_currency_exponent,
@@ -38,7 +40,7 @@ from domain.rules_core import (
     evaluate_travel_rule_pure,
     is_high_risk_geo_bic,
 )
-from domain.scoring_core import compute_dynamic_risk_pure
+from domain.scoring_core import TAINT_FLOOR_THRESHOLD, compute_dynamic_risk_pure
 from domain.ubo_core import resolve_ubo_ownership_tree_pure
 from domain.state_machine import (
     ALERT_TRANSITIONS,
@@ -79,13 +81,16 @@ __all__ = [
     "DomainError",
     "DomainStateTransitionError",
     "FxConversionResult",
+    "FxRateUnavailableError",
     "InvalidMoneyError",
+    "MAX_MONEY_MAGNITUDE",
     "Money",
     "RFIStatus",
     "RFI_TRANSITIONS",
     "RuleProvenance",
     "SARDraftStatus",
     "SAR_DRAFT_TRANSITIONS",
+    "TAINT_FLOOR_THRESHOLD",
     "TRAVEL_RULE_THRESHOLD_EUR",
     "TRAVEL_RULE_THRESHOLD_USD",
     "TransactionInput",

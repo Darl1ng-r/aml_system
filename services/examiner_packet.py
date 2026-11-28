@@ -208,8 +208,15 @@ async def build_signed_examiner_packet(
     )
     ev_rows = await conn.fetch(
         """
-        SELECT id, file_name, mime_type, file_size_bytes, sha256_digest,
-               storage_backend, scan_status, uploaded_by_username, uploaded_at
+        SELECT id,
+               filename AS file_name,
+               content_type AS mime_type,
+               file_size AS file_size_bytes,
+               sha256_digest,
+               storage_backend,
+               scan_status,
+               uploaded_by_name AS uploaded_by_username,
+               uploaded_at
         FROM case_evidence
         WHERE case_id = $1
         ORDER BY uploaded_at ASC;

@@ -103,13 +103,27 @@ def _resolve_rate_limit_client_ip(request: Request) -> str:
     return client_ip
 
 
+def _is_verified_api_key(request: Request) -> bool:
+    state = getattr(request, "state", None)
+    verified = getattr(state, "verified_api_key_id", None) if state is not None else None
+    return isinstance(verified, str) and bool(verified.strip())
+
+
 def _extract_identity(request: Request) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Extracts rate-limiting identity: (user_id, tenant_id, api_key_hash).
     Checks:
-      1. X-API-Key header (hashed via SHA-256 so each API key gets a dedicated bucket)
+      1. Verified API key identity attached to `request.state.verified_api_key_id`
+         (or hashed `X-API-Key` header, which is ALWAYS bounded by the client IP bucket
+         unless verified so arbitrary random headers cannot bypass limits or OOM Redis)
       2. Authorization: Bearer JWT or access_token cookie
     """
+    state = getattr(request, "state", None)
+    verified_key = getattr(state, "verified_api_key_id", None) if state is not None else None
+    if isinstance(verified_key, str) and verified_key.strip():
+        key_digest = hashlib.sha256(verified_key.strip().encode("utf-8")).hexdigest()[:24]
+        return None, None, key_digest
+
     headers = getattr(request, "headers", None)
     if headers is not None:
         raw_api_key = headers.get("X-API-Key") or headers.get("x-api-key")
@@ -288,8 +302,20 @@ class RateLimiter:
             user_id, tenant_id, api_key_hash = None, None, None
         else:
             user_id, tenant_id, api_key_hash = _extract_identity(request)
-        key, route_path = _build_rate_limit_key(request, client_ip, user_id, tenant_id, api_key_hash)
-        aggregate_key = _build_user_aggregate_key(route_path, user_id, tenant_id) if not api_key_hash else None
+
+        verified_key = bool(api_key_hash and _is_verified_api_key(request))
+        if api_key_hash and not verified_key:
+            # Unvalidated X-API-Key header MUST NOT bypass rate limits or allocate per-header
+            # keys in noeviction State Redis: force strictly onto the client-IP bucket!
+            key, route_path = _build_rate_limit_key(request, client_ip, None, None, None)
+            aggregate_key = key
+        else:
+            key, route_path = _build_rate_limit_key(request, client_ip, user_id, tenant_id, api_key_hash)
+            aggregate_key = (
+                _build_user_aggregate_key(route_path, user_id, tenant_id)
+                if not api_key_hash
+                else f"rate_limit:{route_path}:{client_ip}"
+            )
 
         from config import settings
         enforce_fail_closed = self.fail_closed and getattr(settings, "is_hardened", settings.is_production)
@@ -297,9 +323,18 @@ class RateLimiter:
         try:
             redis = await get_async_redis_client()
             if redis is not None:
-                headers = await _check_redis_rate_limit(
-                    redis, key, route_path, self.limit, self.window, aggregate_key=aggregate_key
-                )
+                if verified_key:
+                    # Verified API keys are checked against IP aggregate cap BEFORE creating/charging per-key ZSET
+                    await _check_redis_rate_limit(
+                        redis, aggregate_key, route_path, self.limit, self.window, aggregate_key=aggregate_key
+                    )
+                    headers = await _check_redis_rate_limit(
+                        redis, key, route_path, self.limit, self.window, aggregate_key=key
+                    )
+                else:
+                    headers = await _check_redis_rate_limit(
+                        redis, key, route_path, self.limit, self.window, aggregate_key=aggregate_key
+                    )
                 if hasattr(request, "state"):
                     request.state.rate_limit_headers = headers
                 return

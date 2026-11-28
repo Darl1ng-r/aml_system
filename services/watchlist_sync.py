@@ -647,27 +647,52 @@ async def trigger_ongoing_cdd_rescreening(tenant_id: str | None = None) -> dict:
     escalated_accounts = []
 
     try:
-        async with get_async_db_conn(tenant_id=tenant_id) as conn:
-            if tenant_id:
-                import uuid
-                rows = await conn.fetch(
-                    "SELECT id, owner_name, account_number, status, risk_score, tenant_id FROM accounts WHERE tenant_id = $1 LIMIT 500;",
-                    uuid.UUID(str(tenant_id))
-                )
-            else:
+        import uuid
+
+        target_tenants: list[str] = []
+        if tenant_id:
+            target_tenants = [str(tenant_id)]
+        else:
+            # Enumerate tenants explicitly and bind `app.current_tenant_id` per tenant so
+            # NOBYPASSRLS (`aml_app`) never blinds ongoing CDD re-screening!
+            try:
+                async with get_async_db_conn(tenant_id=None) as meta_conn:
+                    t_rows = await meta_conn.fetch("SELECT id FROM tenants ORDER BY created_at ASC LIMIT 500;")
+                    target_tenants = [str(r["id"]) for r in (t_rows or []) if r.get("id") or r["id"]]
+            except Exception as t_err:
+                logger.debug("Tenant enumeration fallback for ongoing CDD rescreening: %s", t_err)
+
+        if not target_tenants:
+            # Fallback for single-tenant or mocked DB harnesses
+            async with get_async_db_conn(tenant_id=None) as conn:
                 rows = await conn.fetch(
                     "SELECT id, owner_name, account_number, status, risk_score, tenant_id FROM accounts LIMIT 500;"
                 )
-
-            for acc in rows:
-                accounts_checked += 1
-                try:
-                    hit = await _rescreen_single_account(acc, es, conn, tenant_id)
-                    if hit:
-                        hits_detected += 1
-                        escalated_accounts.append(hit)
-                except Exception as se:
-                    logger.debug(f"Error screening account {acc['id']}: {se}")
+                for acc in (rows or []):
+                    accounts_checked += 1
+                    try:
+                        hit = await _rescreen_single_account(acc, es, conn, None)
+                        if hit:
+                            hits_detected += 1
+                            escalated_accounts.append(hit)
+                    except Exception as se:
+                        logger.debug(f"Error screening account {acc['id']}: {se}")
+        else:
+            for tid in target_tenants:
+                async with get_async_db_conn(tenant_id=tid) as conn:
+                    rows = await conn.fetch(
+                        "SELECT id, owner_name, account_number, status, risk_score, tenant_id FROM accounts WHERE tenant_id = $1 LIMIT 500;",
+                        uuid.UUID(tid),
+                    )
+                    for acc in (rows or []):
+                        accounts_checked += 1
+                        try:
+                            hit = await _rescreen_single_account(acc, es, conn, tid)
+                            if hit:
+                                hits_detected += 1
+                                escalated_accounts.append(hit)
+                        except Exception as se:
+                            logger.debug(f"Error screening account {acc['id']}: {se}")
     except Exception:
         logger.exception("Ongoing CDD re-screening failed")
 

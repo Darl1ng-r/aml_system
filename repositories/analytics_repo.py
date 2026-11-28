@@ -100,9 +100,9 @@ async def fetch_dashboard_metrics_repo(
         try:
             raw_avg = await conn.fetchval(
                 """
-                SELECT AVG(EXTRACT(EPOCH FROM (updated_at - created_at)) / 3600.0)
-                FROM alerts
-                WHERE status LIKE 'CLOSED%' AND updated_at IS NOT NULL AND created_at IS NOT NULL AND updated_at >= created_at;
+                SELECT AVG(EXTRACT(EPOCH FROM (closed_at - created_at)) / 3600.0)
+                FROM cases
+                WHERE status = 'CLOSED' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND closed_at >= created_at;
                 """
             )
             if isinstance(raw_avg, (int, float)):
@@ -483,7 +483,7 @@ async def fetch_sar_summary_repo(*, tenant_id: str, read_conn_factory: Any = Non
             SELECT
                 COUNT(*) AS total_drafts,
                 COUNT(*) FILTER (WHERE status = 'APPROVED') AS approved_drafts,
-                COUNT(*) FILTER (WHERE status = 'SUBMITTED') AS submitted_drafts,
+                COUNT(*) FILTER (WHERE status = 'FILED') AS submitted_drafts,
                 COUNT(*) FILTER (WHERE status = 'REJECTED') AS rejected_drafts
             FROM sar_drafts
             WHERE tenant_id = $1;
@@ -517,7 +517,7 @@ async def fetch_conversion_counts_repo(*, tenant_id: str, read_conn_factory: Any
         total_cases = await conn.fetchval("SELECT COUNT(*) FROM cases WHERE tenant_id = $1;", t_uuid) or 0
         filed_sars = (
             await conn.fetchval(
-                "SELECT COUNT(*) FROM sar_drafts WHERE tenant_id = $1 AND status = 'SUBMITTED';", t_uuid
+                "SELECT COUNT(*) FROM sar_drafts WHERE tenant_id = $1 AND status = 'FILED';", t_uuid
             )
             or 0
         )

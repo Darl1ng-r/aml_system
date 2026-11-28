@@ -297,9 +297,11 @@ async def onboard_individual_account_repo(
     owner_name: str,
     risk_score: float,
     dob_val: Optional[_date],
+    account_status: Optional[str] = None,
     conn_factory: Any = None,
 ) -> Any:
     factory = _write_factory(conn_factory)
+    persisted_status = account_status or ("HELD_FOR_REVIEW" if float(risk_score) >= 0.8 else "ACTIVE")
     async with factory(tenant_id=authorized_tenant_id) as conn:
         tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", authorized_tenant_id)
         if not tenant:
@@ -307,8 +309,8 @@ async def onboard_individual_account_repo(
 
         return await conn.fetchval(
             """
-            INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score, date_of_birth)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score, date_of_birth, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id;
             """,
             authorized_tenant_id,
@@ -317,6 +319,7 @@ async def onboard_individual_account_repo(
             owner_name,
             risk_score,
             dob_val,
+            persisted_status,
         )
 
 
@@ -327,9 +330,11 @@ async def onboard_corporate_account_repo(
     swift_bic: Optional[str],
     company_name: str,
     corp_risk_score: float,
+    account_status: Optional[str] = None,
     conn_factory: Any = None,
 ) -> Any:
     factory = _write_factory(conn_factory)
+    persisted_status = account_status or ("HELD_FOR_REVIEW" if float(corp_risk_score) >= 0.8 else "ACTIVE")
     async with factory(tenant_id=authorized_tenant_id) as conn:
         tenant = await conn.fetchrow("SELECT id FROM tenants WHERE id = $1;", authorized_tenant_id)
         if not tenant:
@@ -337,8 +342,8 @@ async def onboard_corporate_account_repo(
 
         return await conn.fetchval(
             """
-            INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO accounts (tenant_id, account_number, swift_bic, owner_name, risk_score, status)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id;
             """,
             authorized_tenant_id,
@@ -346,6 +351,7 @@ async def onboard_corporate_account_repo(
             swift_bic,
             company_name,
             corp_risk_score,
+            persisted_status,
         )
 
 

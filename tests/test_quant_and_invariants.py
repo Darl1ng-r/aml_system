@@ -33,15 +33,25 @@ def test_iterative_tarjan_scc_handles_1500_node_cycle_and_excludes_self_loop():
 def test_behavioral_frequencies_utc_conversion_and_continuous_span():
     tz_plus_3 = timezone(timedelta(hours=3))
     now_utc = datetime.now(timezone.utc)
-    # Two transactions 47 hours apart in +03:00 timezone (should be ~1.958 days, NOT truncated to 1 day)
+    # 1. Burst smoothing (< 7 days): two transactions 47h apart clamp to the 7-day floor (2/7 ~= 0.2857/day),
+    # eliminating the 60x burst discontinuity for newly active accounts.
     t_end = now_utc.astimezone(tz_plus_3)
-    t_start = (now_utc - timedelta(hours=47)).astimezone(tz_plus_3)
-    rows = [{"timestamp": t_start}, {"timestamp": t_end}]
+    t_start_burst = (now_utc - timedelta(hours=47)).astimezone(tz_plus_3)
+    daily_burst, weekly_burst, count_burst = _calculate_frequencies(
+        [{"timestamp": t_start_burst}, {"timestamp": t_end}]
+    )
+    assert count_burst == 2
+    assert abs(daily_burst - (2.0 / 7.0)) < 1e-6, f"Expected 7-day floor 2/7, got {daily_burst}"
+    assert abs(weekly_burst - 2.0) < 1e-6
 
-    daily_freq, weekly_freq, count_30 = _calculate_frequencies(rows)
+    # 2. Continuous fractional UTC span within (7, 30) days: 10d 12h (10.5 days) in +03:00 timezone
+    # must compute 2 / 10.5 ~= 0.190476 (NOT truncated integer .days -> 2/10 = 0.20).
+    t_start_mid = (now_utc - timedelta(days=10, hours=12)).astimezone(tz_plus_3)
+    daily_freq, weekly_freq, count_30 = _calculate_frequencies(
+        [{"timestamp": t_start_mid}, {"timestamp": t_end}]
+    )
     assert count_30 == 2
-    # 2 / (47/24) = 1.02127... (previous .days floor bug returned 2.0!)
-    assert 0.95 <= daily_freq <= 1.10, f"Unexpected daily_freq={daily_freq}"
+    assert 0.188 <= daily_freq <= 0.193, f"Unexpected continuous daily_freq={daily_freq}"
     assert abs(weekly_freq - daily_freq * 7.0) < 1e-6
 
 

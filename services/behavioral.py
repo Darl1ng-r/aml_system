@@ -40,13 +40,17 @@ def _compute_circular_hour_stats(hours: list[int]) -> tuple[float, float]:
     if not hours:
         return 0.0, 0.0
     import math
-    angles = [2.0 * math.pi * h / 24.0 for h in hours]
+    angles = [2.0 * math.pi * (float(h) % 24.0) / 24.0 for h in hours]
     sin_mean = float(np.mean([math.sin(a) for a in angles]))
     cos_mean = float(np.mean([math.cos(a) for a in angles]))
-    circ_hour = (math.atan2(sin_mean, cos_mean) * 24.0 / (2.0 * math.pi)) % 24.0
-    avg_hour_val = round(circ_hour, 2)
     R = min(math.sqrt(sin_mean**2 + cos_mean**2), 1.0)
     circ_dispersion = 2.0 * (1.0 - R) * ((24.0 / (2.0 * math.pi)) ** 2)
+    # Antipodal / uniform distribution has undefined circular mean (R ~= 0):
+    # avoid IEEE-754 sin(pi)=1.22e-16 atan2 noise by returning 0.0 with maximum dispersion.
+    if R < 1e-6:
+        return 0.0, round(float(circ_dispersion), 2)
+    circ_hour = (math.atan2(sin_mean, cos_mean) * 24.0 / (2.0 * math.pi)) % 24.0
+    avg_hour_val = round(circ_hour, 2) % 24.0
     return avg_hour_val, round(float(circ_dispersion), 2)
 
 
@@ -60,8 +64,10 @@ def _calculate_frequencies(rows: list) -> tuple[float, float, int]:
     utc_times = [_to_utc(r["timestamp"]) for r in rows]
     times_30 = [t for t in utc_times if t >= limit_30_days]
     count_30 = len(times_30)
-    if len(times_30) >= 2:
-        span_days = max((max(times_30) - min(times_30)).total_seconds() / 86400.0, 1.0)
+    if times_30:
+        # Smooth denominator clamped to [7, 30] days eliminates discontinuous 60x burst spikes
+        raw_span = (now - min(times_30)).total_seconds() / 86400.0
+        span_days = min(max(raw_span, 7.0), 30.0)
     else:
         span_days = 30.0
     daily_freq = count_30 / span_days
@@ -81,10 +87,25 @@ def _compute_baseline_stats_sync(account_id: str, rows: list) -> dict:
     if not rows:
         return _build_default_baseline(account_id)
 
-    amounts = [float(row["amount"]) for row in rows]
-    hours = [row["timestamp"].hour for row in rows]
+    import math
+
+    amounts: list[float] = []
+    for row in rows:
+        raw_amt = row["amount"]
+        if raw_amt is None:
+            continue
+        try:
+            f_amt = float(raw_amt)
+            if math.isfinite(f_amt):
+                amounts.append(f_amt)
+        except (ValueError, TypeError):
+            continue
+    if not amounts:
+        return _build_default_baseline(account_id)
+
+    hours = [_to_utc(row["timestamp"]).hour for row in rows if row.get("timestamp") is not None]
     receivers = [str(row["receiver_account_id"]) for row in rows]
-    countries = [row["country"] for row in rows if row["country"]]
+    countries = [str(row["country"]).strip().upper() for row in rows if row["country"] and str(row["country"]).strip()]
     merchants = [row["merchant"] for row in rows if row["merchant"]]
     devices = [row["device"] for row in rows if row["device"]]
     channels = [row["channel"] for row in rows if row["channel"]]
@@ -206,24 +227,7 @@ async def calculate_customer_baseline(account_id: str, tenant_id: str | None = N
 
     except Exception as e:
         logger.exception(f"Failed to calculate or cache customer baseline for {account_id}: {e}")
-        # Return fallback on error
-        return {
-            "account_id": account_id,
-            "avg_amount": 0.0,
-            "median_amount": 0.0,
-            "variance_amount": 0.0,
-            "daily_frequency": 0.0,
-            "weekly_frequency": 0.0,
-            "monthly_frequency": 0,
-            "unique_receivers_count": 0,
-            "unique_receiver_countries_count": 0,
-            "avg_hour": 0.0,
-            "variance_hour": 0.0,
-            "top_countries": [],
-            "top_merchants": [],
-            "top_devices": [],
-            "top_channels": []
-        }
+        return _build_default_baseline(account_id)
 
 async def get_customer_baseline(account_id: str, tenant_id: str | None = None) -> dict:
     """Retrieves baseline cache from database, or generates it if missing."""

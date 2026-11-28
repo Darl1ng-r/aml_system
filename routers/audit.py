@@ -328,14 +328,16 @@ async def get_audit_log_detail(
 ):
     """Retrieves single audit record including full before/after state diff JSON."""
     try:
-        log_uuid = uuid.UUID(id)
+        log_id = int(str(id).strip())
+        if log_id <= 0:
+            raise ValueError("non-positive id")
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid audit log ID format.")
+        raise HTTPException(status_code=404, detail="Audit record not found.")
 
     tenant_id = enforce_tenant_data_scope(current_user)
     try:
         row = await fetch_audit_log_detail_repo(
-            log_uuid=log_uuid,
+            log_id=log_id,
             tenant_id=tenant_id,
             read_conn_factory=get_async_db_read_conn,
         )

@@ -44,8 +44,9 @@ else
 end
 """
 
-# Track active background PER refresh keys per process to avoid duplicate refreshes
+# Track active background PER refresh keys & strong Task refs to prevent premature GC
 _active_per_refreshes: set[str] = set()
+_per_background_tasks: set[asyncio.Task[Any]] = set()
 
 
 def build_cache_key(
@@ -125,12 +126,19 @@ def _decode_envelope(raw: Any) -> tuple[bool, bool, Any, float, float]:
     if isinstance(parsed, dict) and parsed.get("__sentinel__") == NEGATIVE_SENTINEL:
         return True, True, None, 0.0, 0.0
     if isinstance(parsed, dict) and "v" in parsed and "exp" in parsed:
+        try:
+            exp_val = float(parsed.get("exp") or 0.0)
+            delta_val = float(parsed.get("delta") or 0.0)
+            if not (math.isfinite(exp_val) and math.isfinite(delta_val)):
+                return False, False, None, 0.0, 0.0
+        except (ValueError, TypeError):
+            return False, False, None, 0.0, 0.0
         return (
             True,
             False,
             parsed["v"],
-            float(parsed.get("exp") or 0.0),
-            float(parsed.get("delta") or 0.0),
+            exp_val,
+            delta_val,
         )
     # Backward compatibility with legacy raw JSON entries written before envelope adoption
     return True, False, parsed, 0.0, 0.0
@@ -250,7 +258,9 @@ class CacheAsideClient:
                 _active_per_refreshes.discard(cache_key)
 
         try:
-            asyncio.get_running_loop().create_task(_refresh_task())
+            task = asyncio.get_running_loop().create_task(_refresh_task())
+            _per_background_tasks.add(task)
+            task.add_done_callback(_per_background_tasks.discard)
         except RuntimeError:
             _active_per_refreshes.discard(cache_key)
 

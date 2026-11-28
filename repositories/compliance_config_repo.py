@@ -8,12 +8,15 @@ audit writes for institutional risk appetite settings and STR batch filings.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, Mapping, Optional
 
 from database.postgres import get_async_db_conn, get_async_db_read_conn
 from services.audit import record_audit_event_tx
+
+logger = logging.getLogger(__name__)
 
 
 # ── Risk Appetite Settings ────────────────────────────────────────────────────

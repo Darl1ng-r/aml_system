@@ -30,11 +30,14 @@ def compute_entity_correlation_key(subject_account_id: str | uuid.UUID | None) -
 
 
 def higher_priority(current_priority: str | None, incoming_priority: str | None) -> str:
-    cur = (current_priority or "MEDIUM").upper()
-    inc = (incoming_priority or "MEDIUM").upper()
-    if PRIORITY_RANK.get(inc, 2) > PRIORITY_RANK.get(cur, 2):
+    cur = (current_priority or "MEDIUM").upper().strip()
+    inc = (incoming_priority or "").upper().strip()
+    cur_valid = cur if cur in PRIORITY_RANK else "MEDIUM"
+    if inc not in PRIORITY_RANK:
+        return cur_valid
+    if PRIORITY_RANK[inc] > PRIORITY_RANK[cur_valid]:
         return inc
-    return cur if cur in PRIORITY_RANK else "MEDIUM"
+    return cur_valid
 
 
 async def correlate_alert_to_entity_case(
@@ -75,7 +78,7 @@ async def correlate_alert_to_entity_case(
             FROM cases
             WHERE tenant_id = $1
               AND correlation_key = $2
-              AND status IN ('OPEN', 'INVESTIGATING', 'PENDING_EDD')
+              AND status IN ('OPEN', 'IN_REVIEW', 'INVESTIGATING', 'PENDING_EDD', 'PENDING_SAR')
               AND created_at >= NOW() - ($3::int * INTERVAL '1 day')
             ORDER BY created_at DESC
             LIMIT 1;
@@ -216,13 +219,15 @@ async def batch_correlate_alerts(
         subj = row["sender_account_id"]
         label = row["owner_name"] or row["account_number"] or str(subj or row["alert_id"])[:8]
         title = f"Entity Investigation: {label} ({row['rule_name'] or 'AML_ALERT'})"
+        raw_threat = str(row["threat_level"] or "HIGH").upper().strip()
+        mapped_priority = "LOW" if raw_threat == "NONE" else (raw_threat if raw_threat in PRIORITY_RANK else "HIGH")
         res = await correlate_alert_to_entity_case(
             conn=conn,
             tenant_id=tenant_id,
             alert_id=row["alert_id"],
             subject_account_id=subj,
             title=title,
-            priority=row["threat_level"] or "HIGH",
+            priority=mapped_priority,
             actor_id=actor_id,
             actor_username=actor_username,
             window_days=window_days,

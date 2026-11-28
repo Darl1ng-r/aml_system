@@ -130,29 +130,34 @@ async def _fetch_sar_alert_row(
                 row = await db_conn.fetchrow(query, alert_uuid)
 
     if not row:
+        logger.warning(
+            "SAR narrative context lookup found no alert/transaction row for alert_id=%s; returning UNKNOWN placeholders without fabricating subject identities.",
+            alert_id,
+        )
         return {
             "alert_id": alert_id,
-            "rule_name": "STRUCTURING_VELOCITY_24H",
-            "threat_level": "CRITICAL",
-            "ai_risk_score": 0.92,
-            "explainability_payload": json.dumps({"ml_attributions": {}, "dynamic_risk": {"amount_zscore": 3.8}}),
-            "amount": 9800.0,
+            "rule_name": "UNKNOWN",
+            "threat_level": "UNKNOWN",
+            "ai_risk_score": 0.0,
+            "explainability_payload": json.dumps({"ml_attributions": {}, "dynamic_risk": {}}),
+            "amount": 0.0,
             "currency": "USD",
-            "tx_timestamp": datetime.now(timezone.utc),
-            "country": "US",
-            "merchant": "Branch Cashier #4",
-            "device": "Teller Terminal",
-            "channel": "CASH_DEPOSIT",
-            "sender_acc": "ACC_SEND_001",
-            "sender_name": "John Doe Enterprises",
-            "sender_bic": "CHASEUS3XXX",
-            "sender_tier": "HIGH",
-            "sender_created": datetime(2025, 1, 15, tzinfo=timezone.utc),
-            "sender_status": "ACTIVE",
-            "receiver_acc": "ACC_RECV_002",
-            "receiver_name": "Pacific Import Corp",
-            "receiver_bic": "BOFAUS3NXXX",
-            "receiver_tier": "STANDARD",
+            "tx_timestamp": None,
+            "country": None,
+            "merchant": None,
+            "device": None,
+            "channel": "UNKNOWN",
+            "sender_acc": "UNKNOWN",
+            "sender_name": "UNKNOWN",
+            "sender_bic": None,
+            "sender_tier": "UNKNOWN",
+            "sender_created": None,
+            "sender_status": "UNKNOWN",
+            "receiver_acc": "UNKNOWN",
+            "receiver_name": "UNKNOWN",
+            "receiver_bic": None,
+            "receiver_tier": "UNKNOWN",
+            "data_quality_warning": "Alert or linked transaction record not found; subject fields unavailable.",
         }
     return dict(row)
 
@@ -396,7 +401,7 @@ async def generate_grounded_sar_copilot(
             from database.postgres import get_async_db_read_conn
             if conn is not None and hasattr(conn, "fetch"):
                 ev_rows = await conn.fetch(
-                    "SELECT id, file_name, sha256_digest FROM case_evidence WHERE case_id = $1 ORDER BY uploaded_at ASC LIMIT 10;",
+                    "SELECT id, filename AS file_name, sha256_digest FROM case_evidence WHERE case_id = $1 ORDER BY uploaded_at ASC LIMIT 10;",
                     case_uuid,
                 )
                 nt_rows = await conn.fetch(
@@ -406,7 +411,7 @@ async def generate_grounded_sar_copilot(
             else:
                 async with get_async_db_read_conn(tenant_id=tenant_id) as db_conn:
                     ev_rows = await db_conn.fetch(
-                        "SELECT id, file_name, sha256_digest FROM case_evidence WHERE case_id = $1 ORDER BY uploaded_at ASC LIMIT 10;",
+                        "SELECT id, filename AS file_name, sha256_digest FROM case_evidence WHERE case_id = $1 ORDER BY uploaded_at ASC LIMIT 10;",
                         case_uuid,
                     )
                     nt_rows = await db_conn.fetch(

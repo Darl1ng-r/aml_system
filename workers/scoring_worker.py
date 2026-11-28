@@ -19,6 +19,7 @@ import os
 import signal
 import sys
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import Any
 
 # Ensure repository root is on Python path
@@ -31,7 +32,7 @@ from observability.logging import setup_json_logging
 from repositories.transaction_repo import ConcurrentAccountBlockError, DuplicateTransactionIdempotencyError
 from services.behavioral import calculate_customer_baseline, get_customer_baseline
 from services.dynamic_scorer import compute_dynamic_risk
-from services.fx_rates import convert_to_base_currency
+from services.fx_rates import convert_to_base_currency_exact
 from services.isolation_forest import get_iforest_score
 from services.ml_model import anomaly_model
 from services.rules import RulesEngine
@@ -214,20 +215,58 @@ async def send_raw_to_dlq(producer, payload: dict, error: str) -> bool:
         return False
 
 
-async def process_raw_message(msg, tp, dlq_producer, consumer) -> bool:
+class MessageOutcome(StrEnum):
+    COMMITTED = "COMMITTED"
+    DLQ_COMMITTED = "DLQ_COMMITTED"
+    BLOCKED = "BLOCKED"
+
+
+def _decode_kafka_payload(raw_value: Any) -> tuple[dict | None, str | None]:
+    if isinstance(raw_value, dict):
+        return raw_value, None
+    try:
+        text = raw_value.decode("utf-8") if isinstance(raw_value, (bytes, bytearray)) else str(raw_value)
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            return None, f"Expected JSON object payload, got {type(parsed).__name__}"
+        return parsed, None
+    except Exception as exc:
+        return None, f"Malformed JSON poison-pill payload: {type(exc).__name__}: {exc}"
+
+
+async def process_raw_message_with_outcome(msg, tp, dlq_producer, consumer) -> MessageOutcome:
     """
-    Scores one Kafka message with bounded retries, DLQ fallback, and manual offset commit.
-    Never commits the offset if BOTH scoring and DLQ publishing fail (zero-loss guarantee).
+    Scores one Kafka message with per-message poison-pill decoding, bounded retries,
+    DLQ fallback, and manual offset commit. Returns 3-state `MessageOutcome` so the
+    partition loop can `seek(tp, msg.offset)` and `break` on `BLOCKED` (true zero-loss).
     """
-    payload = msg.value
-    tx_id = payload.get("transaction_id", "unknown") if isinstance(payload, dict) else "unknown"
+    payload, decode_err = _decode_kafka_payload(msg.value)
+    if decode_err or payload is None:
+        raw_repr = (
+            msg.value.decode("utf-8", errors="replace")[:1000]
+            if isinstance(msg.value, (bytes, bytearray))
+            else str(msg.value)[:1000]
+        )
+        logger.error("[SCORING POISON PILL] offset=%s on %s: %s; routing to DLQ.", msg.offset, tp, decode_err)
+        dlq_ok = await send_raw_to_dlq(
+            dlq_producer,
+            {"transaction_id": "poison_pill", "raw_payload": raw_repr},
+            decode_err or "Malformed payload",
+        )
+        if not dlq_ok:
+            logger.critical("[ZERO-LOSS GUARD] Refusing to commit poison-pill offset %s on %s: DLQ failed.", msg.offset, tp)
+            return MessageOutcome.BLOCKED
+        await consumer.commit({tp: msg.offset + 1})
+        return MessageOutcome.DLQ_COMMITTED
+
+    tx_id = payload.get("transaction_id", "unknown")
     last_error = "Unknown scoring error"
 
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         try:
             await score_transaction(payload)
             await consumer.commit({tp: msg.offset + 1})
-            return True
+            return MessageOutcome.COMMITTED
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             logger.warning(
@@ -251,10 +290,39 @@ async def process_raw_message(msg, tp, dlq_producer, consumer) -> bool:
             tp,
             tx_id,
         )
-        return False
+        return MessageOutcome.BLOCKED
 
     await consumer.commit({tp: msg.offset + 1})
-    return False
+    return MessageOutcome.DLQ_COMMITTED
+
+
+async def process_raw_message(msg, tp, dlq_producer, consumer) -> bool:
+    """Backward-compatible boolean wrapper returning True iff message scored & committed."""
+    outcome = await process_raw_message_with_outcome(msg, tp, dlq_producer, consumer)
+    return outcome == MessageOutcome.COMMITTED
+
+
+async def process_partition_batch(batch: dict, dlq_producer, consumer) -> dict[str, int]:
+    """
+    Processes a Kafka `getmany` batch per partition with strict zero-loss ordering:
+    if a message returns `MessageOutcome.BLOCKED` (processing AND DLQ both failed),
+    seeks the consumer back to `msg.offset` and breaks out of that partition immediately
+    so later messages on the same partition can NEVER commit past the failed offset.
+    """
+    counts = {"committed": 0, "dlq": 0, "blocked": 0}
+    for tp, messages in (batch or {}).items():
+        for msg in messages:
+            outcome = await process_raw_message_with_outcome(msg, tp, dlq_producer, consumer)
+            if outcome == MessageOutcome.COMMITTED:
+                counts["committed"] += 1
+            elif outcome == MessageOutcome.DLQ_COMMITTED:
+                counts["dlq"] += 1
+            else:
+                counts["blocked"] += 1
+                if hasattr(consumer, "seek"):
+                    consumer.seek(tp, msg.offset)
+                break
+    return counts
 
 
 async def main():
@@ -291,7 +359,7 @@ async def main():
             group_id=CONSUMER_GROUP_ID,
             auto_offset_reset="earliest",
             enable_auto_commit=False,
-            value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            value_deserializer=None,
             max_poll_interval_ms=300_000,
             request_timeout_ms=10_000,
             **kafka_sec,
@@ -321,9 +389,7 @@ async def main():
                 )
             except asyncio.TimeoutError:
                 continue
-            for tp, messages in (batch or {}).items():
-                for msg in messages:
-                    await process_raw_message(msg, tp, dlq_producer, consumer)
+            await process_partition_batch(batch or {}, dlq_producer, consumer)
     except Exception as e:
         if getattr(settings, "is_hardened", settings.is_production):
             logger.critical("CRITICAL: Kafka scoring worker failed in hardened environment: %s", e)

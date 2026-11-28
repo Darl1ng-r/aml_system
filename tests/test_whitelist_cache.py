@@ -59,7 +59,7 @@ async def test_whitelist_l1_cache_hit():
 async def test_whitelist_l2_redis_hit_populates_l1():
     """Verifies that an L2 Redis hit populates L1 and avoids database queries."""
     tenant_id = str(uuid.uuid4())
-    norm_key = f"{tenant_id}:OFAC_SANCTIONS:acme corp"
+    norm_key = f"{tenant_id}:OFAC_SANCTIONS:entity:acme corp"
     cached_entry = {
         "matched_entity_name": "Acme Corp",
         "matched_rule": "OFAC_SANCTIONS",
@@ -82,7 +82,7 @@ async def test_whitelist_l2_redis_hit_populates_l1():
         assert result is True
         assert mock_redis.get.called
         assert not mock_db.called
-        # Check that L1 was populated
+        # Check that L1 was populated under strict entity scope namespace
         assert norm_key in _LOCAL_WHITELIST_STORE
 
 
@@ -90,7 +90,7 @@ async def test_whitelist_l2_redis_hit_populates_l1():
 async def test_whitelist_db_fallback_populates_l1_and_l2():
     """Verifies DB query on L1/L2 miss, which populates both L1 and Redis L2."""
     tenant_id = str(uuid.uuid4())
-    norm_key = f"{tenant_id}:OFAC_SANCTIONS:acme corp"
+    norm_key = f"{tenant_id}:OFAC_SANCTIONS:entity:acme corp"
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=None)

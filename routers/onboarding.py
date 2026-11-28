@@ -101,6 +101,7 @@ async def onboard_individual(
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid date_of_birth; expected YYYY-MM-DD.")
 
+    persisted_status = "ACTIVE" if (risk_score < 0.8 and not screening_failed) else "HELD_FOR_REVIEW"
     try:
         account_id = await onboard_individual_account_repo(
             authorized_tenant_id=authorized_tenant_id,
@@ -109,6 +110,7 @@ async def onboard_individual(
             owner_name=payload.name,
             risk_score=risk_score,
             dob_val=dob_val,
+            account_status=persisted_status,
             conn_factory=get_async_db_conn,
         )
         if response is not None:
@@ -153,7 +155,10 @@ async def _persist_corporate_account(
     payload: CorporateOnboard,
     corp_risk_score: float,
     response: Response | None,
+    *,
+    corp_screening_failed: bool = False,
 ) -> Any:
+    persisted_status = "ACTIVE" if (corp_risk_score < 0.8 and not corp_screening_failed) else "HELD_FOR_REVIEW"
     try:
         account_id = await onboard_corporate_account_repo(
             authorized_tenant_id=authorized_tenant_id,
@@ -161,6 +166,7 @@ async def _persist_corporate_account(
             swift_bic=payload.swift_bic,
             company_name=payload.company_name,
             corp_risk_score=corp_risk_score,
+            account_status=persisted_status,
             conn_factory=get_async_db_conn,
         )
         if response is not None:
@@ -238,7 +244,13 @@ async def onboard_corporate(
 ):
     authorized_tenant_id = enforce_tenant_data_scope(current_user, payload.tenant_id)
     corp_risk_score, corp_screening_failed = await _screen_corporate_and_ubos(payload.company_name, payload.ubos)
-    account_id = await _persist_corporate_account(authorized_tenant_id, payload, corp_risk_score, response)
+    account_id = await _persist_corporate_account(
+        authorized_tenant_id,
+        payload,
+        corp_risk_score,
+        response,
+        corp_screening_failed=corp_screening_failed,
+    )
 
     try:
         await _persist_neo4j_corporate_graph(neo4j_driver, account_id, payload, tenant_id=str(authorized_tenant_id))

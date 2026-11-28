@@ -25,6 +25,16 @@ from database.postgres import get_async_db_conn
 logger = logging.getLogger(__name__)
 
 
+def _alert_usd_decimal(alert: Dict[str, Any]) -> Decimal:
+    """Single authoritative USD amount extractor shared between XML compilation and DB storage."""
+    raw = alert.get("amount_base_usd")
+    if raw is None:
+        raw = alert.get("amount")
+    if raw is None:
+        return Decimal("0.00")
+    return Decimal(str(raw))
+
+
 class STRBatchEngine:
     """Engine responsible for compiling, validating, and sealing regulatory STR batch packages."""
 
@@ -42,14 +52,18 @@ class STRBatchEngine:
         ET.SubElement(header, "TransmitterTIN").text = "999887766"
 
         reports = ET.SubElement(root, "Reports")
-        total_amount_usd = Decimal("0.00")
+        # Sum exact unrounded Decimals first, then quantize once (100% parity with DB total_amount)
+        exact_total_usd = Decimal("0")
 
         for alert in alerts:
-            raw_amt = Decimal(str(alert.get("amount", 0.0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            usd_amt = Decimal(str(alert.get("amount_base_usd", alert.get("amount", 0.0)))).quantize(
+            raw_amt_val = alert.get("amount")
+            raw_amt = Decimal(str(raw_amt_val if raw_amt_val is not None else 0)).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
-            total_amount_usd += usd_amt
+            usd_exact = _alert_usd_decimal(alert)
+            usd_display = usd_exact.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            exact_total_usd += usd_exact
+
             report_el = ET.SubElement(reports, "SuspiciousActivityReport")
             report_el.set("report_id", str(alert["id"]))
 
@@ -58,14 +72,20 @@ class STRBatchEngine:
             ET.SubElement(subject, "ReceiverAccount").text = str(alert.get("receiver_acc", "UNKNOWN"))
 
             tx_details = ET.SubElement(report_el, "TransactionDetails")
-            ET.SubElement(tx_details, "Amount").text = str(raw_amt)
-            ET.SubElement(tx_details, "Currency").text = str(alert.get("currency", "USD"))
-            ET.SubElement(tx_details, "AmountUSD").text = str(usd_amt)
+            ET.SubElement(tx_details, "Amount").text = f"{raw_amt:.2f}"
+            ET.SubElement(tx_details, "Currency").text = str(alert.get("currency", "USD")).upper()
+            ET.SubElement(tx_details, "AmountUSD").text = f"{usd_display:.2f}"
             ET.SubElement(tx_details, "ThreatLevel").text = str(alert.get("threat_level", "CRITICAL"))
 
+            rule_name = str(alert.get("rule_name", "UNKNOWN"))
+            threat_level = str(alert.get("threat_level", "CRITICAL"))
             notes = ET.SubElement(report_el, "ComplianceJustification")
-            ET.SubElement(notes, "RuleTriggered").text = str(alert.get("rule_name", "UNKNOWN"))
+            ET.SubElement(notes, "RuleTriggered").text = rule_name
+            ET.SubElement(notes, "Narrative").text = (
+                f"Automated STR filing record for alert {alert['id']} triggered by {rule_name} (threat={threat_level})."
+            )
 
+        total_amount_usd = exact_total_usd.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         header.set("total_batch_amount", f"{total_amount_usd:.2f}")
         header.set("reporting_currency", "USD")
 
@@ -108,11 +128,11 @@ class STRBatchEngine:
             batch_id = f"STR-BATCH-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
             batch_xml = self.construct_batch_xml(batch_id, alerts_data)
 
-            # Compute SHA-256 Checksum & USD Decimal sum (V-06)
+            # Compute SHA-256 Checksum & USD Decimal sum (identical sum-then-round helper as XML)
             checksum = hashlib.sha256(batch_xml.encode("utf-8")).hexdigest()
             total_amount_dec = sum(
-                (Decimal(str(r.get("amount_base_usd", r["amount"]))) for r in alerts_data),
-                Decimal("0.00"),
+                (_alert_usd_decimal(r) for r in alerts_data),
+                Decimal("0"),
             ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             total_amount = float(total_amount_dec)
 

@@ -52,15 +52,18 @@ async def upsert_supabase_login_user_atomic(
             "SELECT mfa_enabled, is_active, token_version FROM users WHERE id = $1;",
             user_id,
         )
-        if existing_local and isinstance(existing_local, dict):
-            if existing_local.get("is_active") is False:
+        # Note: asyncpg.Record is NOT a subclass of dict (issubclass(asyncpg.Record, dict) == False).
+        # Use Mapping / non-None check so real PostgreSQL rows never silently skip is_active/MFA enforcement!
+        if existing_local is not None and (isinstance(existing_local, Mapping) or hasattr(existing_local, "keys")):
+            local_map = dict(existing_local)
+            if local_map.get("is_active") is False:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Incorrect username or password",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-            is_mfa_enabled = bool(existing_local.get("mfa_enabled", False))
-            token_version = int(existing_local.get("token_version") or 1)
+            is_mfa_enabled = bool(local_map.get("mfa_enabled", False))
+            token_version = int(local_map.get("token_version") or 1)
 
         await conn.execute(
             """
@@ -293,13 +296,19 @@ async def bump_user_token_version_on_compromise_repo(
     sub: str,
     tenant_id: str,
     conn_factory: Any = None,
-) -> None:
+) -> Optional[int]:
     factory = _write_factory(conn_factory)
     async with factory(tenant_id=tenant_id, auth_lookup=True) as conn:
-        await conn.execute(
-            "UPDATE users SET token_version = COALESCE(token_version, 1) + 1 WHERE id = $1;",
+        new_ver = await conn.fetchval(
+            """
+            UPDATE users
+            SET token_version = COALESCE(token_version, 1) + 1
+            WHERE id = $1
+            RETURNING token_version;
+            """,
             sub,
         )
+        return int(new_ver) if isinstance(new_ver, (int, float, str)) else None
 
 
 async def fetch_authoritative_user_for_refresh_repo(

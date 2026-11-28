@@ -11,6 +11,7 @@ import math
 import numpy as np
 import pytest
 
+from domain.money import FxRateUnavailableError, InvalidMoneyError
 from services.fx_rates import get_fallback_fx_rate, convert_to_base_currency_sync
 from services.ubo_resolver import resolve_ubo_ownership_tree
 from services.isolation_forest import c_factor, IsolationForestScratch
@@ -28,7 +29,9 @@ def test_fx_rates_identity_cross_currency_and_boundaries():
     # Zero amount and unknown currency fallback
     amt_zero, rate_zero = convert_to_base_currency_sync(0.0, "EUR", "USD")
     assert amt_zero == 0.0 and rate_zero == 1.08
-    assert get_fallback_fx_rate("ZZZ", "USD") == 1.0
+    # Unknown currency fails closed instead of silently assuming 1:1 USD parity
+    with pytest.raises(FxRateUnavailableError):
+        get_fallback_fx_rate("ZZZ", "USD")
 
 
 # ── 2. UBO Ownership Tree Math & Cycle Guards ────────────────────────────────
@@ -131,9 +134,9 @@ def test_fx_decimal_half_up_and_non_finite_safety():
     # Decimal ROUND_HALF_UP (vs float banker's rounding)
     amt, _ = convert_to_base_currency_sync(100.005, "USD", "USD")
     assert amt == 100.01
-    # Non-finite amounts return 0.0 safely instead of propagating NaN/Inf
-    amt_inf, _ = convert_to_base_currency_sync(float("inf"), "EUR", "USD")
-    assert amt_inf == 0.0
+    # Non-finite amounts fail closed (raise InvalidMoneyError) instead of silently returning 0.0
+    with pytest.raises(InvalidMoneyError):
+        convert_to_base_currency_sync(float("inf"), "EUR", "USD")
 
 
 def test_ubo_clamps_over_100_pct_and_reports_unattributed_equity():

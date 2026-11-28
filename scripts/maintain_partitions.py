@@ -23,8 +23,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import asyncpg
 
+from config import settings
 from observability.logging import setup_json_logging
-from services.secrets_manager import get_postgres_dsn
+from services.secrets_manager import get_outbox_postgres_dsn, get_postgres_dsn
 from services.tls_manager import get_ssl_context
 
 logger = logging.getLogger("aml.partition_maintenance")
@@ -35,8 +36,19 @@ async def run_partition_maintenance(
     outbox_weeks_ahead: int = 8,
     audit_months_ahead: int = 12,
     outbox_retention_weeks: int = 2,
+    require_drop_privilege: bool | None = None,
 ) -> dict[str, int]:
-    conn = await asyncpg.connect(dsn=get_postgres_dsn(), ssl=get_ssl_context(), timeout=15.0)
+    is_hardened = bool(getattr(settings, "is_hardened", settings.is_production))
+    enforce_drop_priv = is_hardened if require_drop_privilege is None else bool(require_drop_privilege)
+    outbox_dsn = get_outbox_postgres_dsn()
+    if not outbox_dsn and is_hardened:
+        raise RuntimeError(
+            "CRITICAL (RLS Data-Loss Guard): OUTBOX_DATABASE_URL / AML_OUTBOX_WORKER_PASSWORD "
+            "must be configured for partition maintenance in hardened environments so "
+            "drop_expired_outbox_partitions() cannot be blinded by NOBYPASSRLS."
+        )
+    dsn = outbox_dsn or get_postgres_dsn()
+    conn = await asyncpg.connect(dsn=dsn, ssl=get_ssl_context(), timeout=15.0)
     try:
         outbox_created = await conn.fetchval(
             "SELECT ensure_outbox_weekly_partitions(2, $1);",
@@ -46,10 +58,29 @@ async def run_partition_maintenance(
             "SELECT ensure_audit_monthly_partitions(2, $1);",
             int(audit_months_ahead),
         )
-        outbox_dropped = await conn.fetchval(
-            "SELECT drop_expired_outbox_partitions($1);",
-            int(outbox_retention_weeks),
+        # Fail-closed RLS verification before dropping ANY outbox partition:
+        # if the connected role lacks BYPASSRLS and is not a superuser, RLS would hide
+        # PENDING/PROCESSING tenant rows and cause silent data loss!
+        can_see_all_tenants = await conn.fetchval(
+            "SELECT COALESCE(rolbypassrls OR rolsuper, FALSE) FROM pg_roles WHERE rolname = current_user;"
         )
+        if not can_see_all_tenants:
+            if enforce_drop_priv:
+                raise PermissionError(
+                    "Refusing to run drop_expired_outbox_partitions() under a NOBYPASSRLS role: "
+                    "RLS would hide unpublished tenant outbox events."
+                )
+            logger.warning(
+                "Skipping drop_expired_outbox_partitions() in non-hardened dev mode because connected "
+                "PostgreSQL role lacks BYPASSRLS; configure OUTBOX_DATABASE_URL (aml_outbox_worker) "
+                "to enable safe expired-outbox partition pruning."
+            )
+            outbox_dropped = 0
+        else:
+            outbox_dropped = await conn.fetchval(
+                "SELECT drop_expired_outbox_partitions($1);",
+                int(outbox_retention_weeks),
+            )
         summary = {
             "outbox_partitions_created": int(outbox_created or 0),
             "audit_partitions_created": int(audit_created or 0),

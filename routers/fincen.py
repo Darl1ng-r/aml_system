@@ -708,13 +708,13 @@ async def preview_sar_xml(
             "SUSPICIOUS_ACTIVITY",
             "HIGH",
             0.85,
-            payload.amount if payload.amount is not None else Decimal("15000.00"),
+            payload.amount if payload.amount is not None else Decimal("0.00"),
             payload.currency or "USD",
             datetime.now(timezone.utc),
-            "ORIG-ACCOUNT-001",
-            payload.sender_name or "Subject Organization Inc.",
-            "DEST-ACCOUNT-002",
-            payload.receiver_name or "Counterparty LLC",
+            "UNKNOWN",
+            payload.sender_name or "UNKNOWN",
+            "UNKNOWN",
+            payload.receiver_name or "UNKNOWN",
         )
 
     if payload.format.upper() == "GOAML":
@@ -740,7 +740,21 @@ async def export_sar_draft_xml(
     if fmt_upper not in ("FINCEN", "GOAML"):
         raise HTTPException(status_code=400, detail="Invalid export format. Must be 'FINCEN' or 'GOAML'.")
 
-    draft_data = await get_sar_draft(id=id, current_user=current_user)
+    try:
+        draft_uuid = uuid.UUID(id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=INVALID_DRAFT_ID)
+
+    tenant_id = enforce_tenant_data_scope(current_user)
+    draft_row = await fetch_sar_draft_detail_repo(
+        draft_uuid=draft_uuid,
+        tenant_id=str(tenant_id),
+        conn_factory=get_async_db_conn,
+    )
+    if not draft_row:
+        raise HTTPException(status_code=404, detail=SAR_DRAFT_NOT_FOUND)
+
+    draft_data = _format_sar_draft_response(draft_row)
     alert_info = draft_data.get("alert_details", {})
 
     prev_req = SARPreviewRequest(

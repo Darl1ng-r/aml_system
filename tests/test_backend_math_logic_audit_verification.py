@@ -242,11 +242,17 @@ class TestAlgorithmsGraphMLAndInfraMath:
             # Introduce cycle HoldCo A -> TargetCo
             {"child_company_name": "HoldCo A", "parent_entity_name": "TargetCo", "parent_entity_type": "COMPANY", "ownership_pct": 10},
         ]
+        # Pure diamond without cycle: 50%*60% + 50%*40% = 50.0%
+        res_dag = resolve_ubo_ownership_tree_pure(edges[:-1], "TargetCo", threshold_pct=25)
+        assert res_dag["cycles_detected"] is False
+        alice_dag = next(u for u in res_dag["ultimate_beneficial_owners"] if u["entity_name"] == "Alice")
+        assert alice_dag["effective_ownership_pct"] == 50.0
+
+        # With 50%*10% = 5% cross-holding loop: true economic stake = 50% / (1 - 0.05) = 52.63%
         res = resolve_ubo_ownership_tree_pure(edges, "TargetCo", threshold_pct=25)
         assert res["cycles_detected"] is True
         alice = next(u for u in res["ultimate_beneficial_owners"] if u["entity_name"] == "Alice")
-        # 50%*60% + 50%*40% = 30% + 20% = 50%
-        assert alice["effective_ownership_pct"] == 50.0
+        assert alice["effective_ownership_pct"] == 52.63
         assert alice["is_split_ownership"] is True
         assert alice["exceeds_threshold"] is True
 
@@ -356,13 +362,11 @@ class TestAlgorithmsGraphMLAndInfraMath:
 
 
 class TestConfirmedAuditBugCounterexamples:
-    @pytest.mark.xfail(strict=True, reason="BUG-01: domain/state_machine.py str(Enum) yields 'CaseStatus.OPEN' on Python 3.11+")
     def test_bug01_state_machine_enum_member_input_crashes_on_python_314(self):
         # Passing CaseStatus.OPEN directly instead of .value should succeed, not raise CorruptedDomainStateError
         result = validate_case_transition_pure(CaseStatus.OPEN, CaseStatus.CLOSED)
         assert result == CaseStatus.CLOSED
 
-    @pytest.mark.xfail(strict=True, reason="BUG-02: services/ml_model.py ISO-4217/UPPERCASE feature skew & NaN crash")
     def test_bug02_ml_model_iso_currency_and_channel_encoding_skew(self):
         vec = AMLAnomalyModel._build_feature_vector(
             amount=5000.0,
@@ -378,13 +382,16 @@ class TestConfirmedAuditBugCounterexamples:
         assert vec[0][3] == 1.0
         assert vec[0][7] == 1.0
 
-    @pytest.mark.xfail(strict=True, reason="BUG-03: services/async_jobs.py imports nonexistent run_rule_backtest_simulation")
     def test_bug03_async_jobs_rule_backtest_broken_import(self):
+        import inspect
+        import services.async_jobs as aj
         import services.rule_backtest as rb
 
-        assert hasattr(rb, "run_rule_backtest_simulation")
+        src = inspect.getsource(aj.execute_async_job)
+        assert "run_rule_backtest_simulation" not in src
+        assert "backtest_rule_config" in src
+        assert callable(getattr(rb, "backtest_rule_config", None))
 
-    @pytest.mark.xfail(strict=True, reason="BUG-04: domain/rules_core.py CTR structuring false positive on two >$10k deposits")
     def test_bug04_ctr_structuring_false_positive_on_two_large_cash_deposits(self):
         # Two legitimate >$10k cash deposits ($15k prior + $12k current) are NOT structuring (<$10k evasion)
         decision = evaluate_ctr_and_structuring_pure(
@@ -397,7 +404,6 @@ class TestConfirmedAuditBugCounterexamples:
         assert decision.requires_ctr_filing is True
         assert decision.structuring_detected is False
 
-    @pytest.mark.xfail(strict=True, reason="BUG-05: services/network_analysis.py multi-edge corrupts Brandes centrality >1.0 and Fan-In degrees")
     def test_bug05_network_analysis_multi_edge_corrupts_centrality_and_degrees(self):
         g: dict[str, list[str]] = {}
         for _ in range(3):
@@ -409,7 +415,6 @@ class TestConfirmedAuditBugCounterexamples:
         assert cb["B"] <= 1.0
         assert fan_in == [] and fan_out == []
 
-    @pytest.mark.xfail(strict=True, reason="BUG-06: domain/ubo_core.py duplicate edge double-counts UBO equity")
     def test_bug06_ubo_duplicate_edge_double_counts_equity(self):
         dup_edges = [
             {"child_company_name": "Target", "parent_entity_name": "Alice", "parent_entity_type": "PERSON", "ownership_pct": 30},
@@ -419,7 +424,6 @@ class TestConfirmedAuditBugCounterexamples:
         alice = res["ultimate_beneficial_owners"][0]
         assert alice["effective_ownership_pct"] == 30.0
 
-    @pytest.mark.xfail(strict=True, reason="BUG-07: services/sar_validator.py accepts <Amount>Infinity</Amount> and negative goAML <amount_local>")
     def test_bug07_sar_validator_accepts_infinity_and_negative_goaml_amount(self):
         xml = (
             "<SuspiciousActivityReport>"
@@ -430,20 +434,19 @@ class TestConfirmedAuditBugCounterexamples:
         ok, _errors = validate_regulatory_xml(xml)
         assert ok is False
 
-    @pytest.mark.xfail(strict=True, reason="BUG-11: domain/money.py quantize_amount('1e30') raises raw decimal.InvalidOperation instead of InvalidMoneyError")
     def test_bug11_money_quantize_extreme_exponent_raises_invalid_money_error(self):
         with pytest.raises(InvalidMoneyError):
             quantize_amount("1e30", "USD")
 
-    @pytest.mark.xfail(strict=True, reason="BUG-12: services/pkyc_and_qa.py IEEE-754 float delta 0.95 - 0.80 == 0.1499999999999999 < 0.15 suppresses sanctions alert")
     def test_bug12_pkyc_float_subtraction_suppresses_sanctions_delta(self):
-        prior_risk = 0.80
-        new_risk = max(prior_risk, 0.95)
-        # Exact line 77 condition in services/pkyc_and_qa.py when pkyc_material_change_flag is already True
-        material_delta = (new_risk - prior_risk >= 0.15)
+        from services.pkyc_and_qa import evaluate_pkyc_material_delta
+
+        new_risk, material_delta = evaluate_pkyc_material_delta(
+            0.80, sanc_hit=True, pep_hit=False, already_flagged=True
+        )
+        assert new_risk == 0.95
         assert material_delta is True
 
-    @pytest.mark.xfail(strict=True, reason="BUG-13: services/adverse_media.py vacuous 1-char token match & substring country match ('in' in 'indicted')")
     def test_bug13_adverse_media_vacuous_short_name_and_country_substring(self):
         from services.adverse_media import disambiguate_adverse_hit
 
@@ -454,7 +457,6 @@ class TestConfirmedAuditBugCounterexamples:
         )
         assert res["same_sentence_match"] is False
 
-    @pytest.mark.xfail(strict=True, reason="BUG-08: services/str_batch_engine.py round-then-sum XML total disagrees with sum-then-round DB total")
     def test_bug08_str_batch_xml_vs_db_total_rounding_mismatch(self):
         alerts = [
             {"id": "a1", "amount": Decimal("100.0050"), "amount_base_usd": Decimal("100.0050"), "currency": "USD"},
@@ -466,17 +468,14 @@ class TestConfirmedAuditBugCounterexamples:
         )
         assert f'total_batch_amount="{db_total:.2f}"' in xml
 
-    @pytest.mark.xfail(strict=True, reason="BUG-09: services/whitelisting.py _is_entry_valid crashes on naive ISO expires_at")
     def test_bug09_whitelist_naive_expires_at_raises_typeerror(self):
         entry = {"expires_at": "2099-01-01T00:00:00"}
         assert _is_entry_valid(entry, datetime.now(timezone.utc)) is True
 
-    @pytest.mark.xfail(strict=True, reason="BUG-10: services/cache_aside.py _decode_envelope crashes on malformed non-float exp")
     def test_bug10_cache_aside_decode_envelope_crashes_on_malformed_exp(self):
         valid, is_neg, val, exp, delta = _decode_envelope('{"v": 1, "exp": "corrupt", "delta": 0.1}')
         assert valid is False
 
-    @pytest.mark.xfail(strict=True, reason="BUG-14: domain/rules_core.py check_tbml_pure omits abs() so under-invoicing (-60%) evades detection")
     def test_bug14_tbml_under_invoicing_evades_detection(self):
         from domain.rules_core import check_tbml_pure
 
@@ -487,19 +486,16 @@ class TestConfirmedAuditBugCounterexamples:
         )
         assert "TRADE_BASED_ML_OVER_UNDER_INVOICING" in rules
 
-    @pytest.mark.xfail(strict=True, reason="BUG-15: domain/rules_core.py _dec swallows NaN/Inf to $0.00 bypassing CTR reporting")
     def test_bug15_ctr_swallows_nan_and_inf_to_zero(self):
         with pytest.raises(InvalidMoneyError):
             evaluate_ctr_and_structuring_pure(float("inf"), "CASH", None)
 
-    @pytest.mark.xfail(strict=True, reason="BUG-16: domain/scoring_core.py taint floor >= 0.70 is unreachable under default decay_factor=0.65 (max taint 0.65)")
     def test_bug16_transitive_taint_floor_unreachable_under_default_decay(self):
         # Default decay_factor=0.65 in services/network_analysis.py:531 => 1-hop max taint = 1.0 * 0.65 = 0.65
         base = compute_dynamic_risk_pure([], 0.1, 100.0, {}, 0.1, 0.1, 0.1, None, 0.1, taint_risk=0.0)
         tainted = compute_dynamic_risk_pure([], 0.1, 100.0, {}, 0.1, 0.1, 0.1, None, 0.1, taint_risk=0.65)
         assert tainted["dynamic_risk_score"] > base["dynamic_risk_score"]
 
-    @pytest.mark.xfail(strict=True, reason="BUG-17: services/ml_model.py fallback attributes uninitialized in xgboost mode & _predict_fallback propagates NaN")
     def test_bug17_ml_model_fallback_crashes_on_inf_and_propagates_nan(self):
         from services.ml_model import AMLAnomalyModel
 
@@ -509,7 +505,6 @@ class TestConfirmedAuditBugCounterexamples:
         res_nan = model._predict_fallback(float("nan"), 0.5, 0.5, 1)
         assert math.isfinite(res_nan["risk_score"])
 
-    @pytest.mark.xfail(strict=True, reason="BUG-18: services/fx_rates.py defaults valid ISO currency VND to 1:1 USD & convert_money mismatches fx_rate_applied")
     def test_bug18_fx_rates_vnd_defaults_1_to_1_and_convert_money_provenance(self):
         from domain.money import convert_money
         from services.fx_rates import get_fallback_fx_rate_decimal
@@ -517,16 +512,20 @@ class TestConfirmedAuditBugCounterexamples:
         # 1 VND is ~$0.00004 USD, definitely not 1.0 USD
         vnd_rate = get_fallback_fx_rate_decimal("VND", "USD")
         assert vnd_rate < Decimal("0.01")
-        conv = convert_money(Decimal("100000000"), "EUR", Decimal("1.000000004"), base_currency="USD")
-        expected = (conv.amount_original * conv.fx_rate_applied).quantize(Decimal("0.01"))
+        conv = convert_money(
+            Decimal("100000000"),
+            "EUR",
+            Decimal("1.000000004"),
+            base_currency="USD",
+            quoted_at=datetime.now(timezone.utc),
+        )
+        expected = (conv.original_amount * conv.fx_rate_applied).quantize(Decimal("0.01"))
         assert conv.amount_base == expected
 
-    @pytest.mark.xfail(strict=True, reason="BUG-19: services/behavioral.py _compute_circular_hour_stats emits hour 24.0 (out of [0, 24))")
     def test_bug19_circular_hour_stats_returns_24_out_of_range(self):
         mean_h, _std_h = _compute_circular_hour_stats([0] * 1000 + [23])
         assert 0.0 <= mean_h < 24.0
 
-    @pytest.mark.xfail(strict=True, reason="BUG-20: services/case_correlation.py higher_priority('LOW', 'NONE') returns invalid 'NONE'")
     def test_bug20_case_correlation_higher_priority_accepts_invalid_incoming(self):
         from services.case_correlation import higher_priority
 

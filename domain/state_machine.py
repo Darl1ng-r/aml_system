@@ -15,12 +15,17 @@ with zero coupling to FastAPI/HTTP transport.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Mapping, Set, Type, TypeVar
 
 from domain.money import DomainError
 
 StatusT = TypeVar("StatusT", bound=Enum)
+
+
+def _normalize_status(val: object) -> str:
+    raw = val.value if isinstance(val, Enum) else str(val)
+    return str(raw).strip().upper()
 
 
 class CorruptedDomainStateError(DomainError):
@@ -85,7 +90,7 @@ class DomainStateTransitionError(DomainError):
 
 # ── 1. Investigation Cases ────────────────────────────────────────────────────
 
-class CaseStatus(str, Enum):
+class CaseStatus(StrEnum):
     OPEN = "OPEN"
     IN_REVIEW = "IN_REVIEW"
     INVESTIGATING = "INVESTIGATING"
@@ -127,7 +132,7 @@ CASE_TRANSITIONS: Mapping[CaseStatus, Set[CaseStatus]] = {
 
 # ── 2. Alerts ─────────────────────────────────────────────────────────────────
 
-class AlertStatus(str, Enum):
+class AlertStatus(StrEnum):
     NEW = "NEW"
     OPEN = "OPEN"
     CLAIMED = "CLAIMED"
@@ -183,10 +188,11 @@ ALERT_TRANSITIONS: Mapping[AlertStatus, Set[AlertStatus]] = {
 
 # ── 3. FinCEN SAR Drafts ──────────────────────────────────────────────────────
 
-class SARDraftStatus(str, Enum):
+class SARDraftStatus(StrEnum):
     DRAFT = "DRAFT"
     PENDING_MLRO_REVIEW = "PENDING_MLRO_REVIEW"
     APPROVED = "APPROVED"
+    FILING_PENDING = "FILING_PENDING"
     REJECTED = "REJECTED"
     FILED = "FILED"
 
@@ -204,7 +210,13 @@ SAR_DRAFT_TRANSITIONS: Mapping[SARDraftStatus, Set[SARDraftStatus]] = {
         SARDraftStatus.PENDING_MLRO_REVIEW,
     },
     SARDraftStatus.APPROVED: {
+        SARDraftStatus.FILING_PENDING,
         SARDraftStatus.FILED,
+    },
+    SARDraftStatus.FILING_PENDING: {
+        SARDraftStatus.FILED,
+        SARDraftStatus.APPROVED,
+        SARDraftStatus.REJECTED,
     },
     SARDraftStatus.FILED: set(),  # Terminal regulatory filing record
 }
@@ -212,7 +224,7 @@ SAR_DRAFT_TRANSITIONS: Mapping[SARDraftStatus, Set[SARDraftStatus]] = {
 
 # ── 4. BSA Currency Transaction Reports (CTR) ─────────────────────────────────
 
-class CTRFilingStatus(str, Enum):
+class CTRFilingStatus(StrEnum):
     PENDING = "PENDING"
     FILED = "FILED"
     EXEMPT = "EXEMPT"
@@ -236,7 +248,7 @@ CTR_TRANSITIONS: Mapping[CTRFilingStatus, Set[CTRFilingStatus]] = {
 
 # ── 5. External Requests for Information (RFI) ────────────────────────────────
 
-class RFIStatus(str, Enum):
+class RFIStatus(StrEnum):
     OPEN = "OPEN"
     SUBMITTED = "SUBMITTED"
     CANCELLED = "CANCELLED"
@@ -265,18 +277,20 @@ def validate_transition(
     allow_noop: bool = True,
 ) -> StatusT:
     """Generic deterministic FSM guard returning the validated target status enum."""
+    cur_str = _normalize_status(current_status)
+    tgt_str = _normalize_status(target_status)
     try:
-        current_enum = status_enum(str(current_status).strip().upper())
+        current_enum = status_enum(cur_str)
     except ValueError as exc:
-        raise CorruptedDomainStateError(entity_type, str(current_status)) from exc
+        raise CorruptedDomainStateError(entity_type, cur_str) from exc
 
     try:
-        target_enum = status_enum(str(target_status).strip().upper())
+        target_enum = status_enum(tgt_str)
     except ValueError as exc:
         raise DomainStateTransitionError(
             entity_type,
             current_enum.value,
-            str(target_status),
+            tgt_str,
             invalid_target=True,
             valid_states=[s.value for s in status_enum],
         ) from exc

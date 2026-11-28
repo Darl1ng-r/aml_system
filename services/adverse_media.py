@@ -100,7 +100,7 @@ def disambiguate_adverse_hit(
         }
 
     text_lower = article_text.lower()
-    name_tokens = [t for t in subject_name.lower().split() if len(t) > 1]
+    name_tokens = [t for t in re.findall(r"[a-z0-9]+", subject_name.lower()) if len(t) > 1]
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", text_lower) if s.strip()]
 
     same_sentence = False
@@ -111,17 +111,21 @@ def disambiguate_adverse_hit(
         for kw in ADVERSE_TAXONOMIES.get(cat, [])
     ]
 
-    for sent in sentences:
-        if all(tok in sent for tok in name_tokens) and any(kw in sent for kw in all_matched_kws):
-            same_sentence = True
-            matched_excerpt = sent[:260]
-            break
+    if name_tokens:
+        token_patterns = [re.compile(rf"\b{re.escape(tok)}\b") for tok in name_tokens]
+        for sent in sentences:
+            if all(p.search(sent) for p in token_patterns) and any(kw in sent for kw in all_matched_kws):
+                same_sentence = True
+                matched_excerpt = sent[:260]
+                break
 
     benign_hits = sum(1 for m in BENIGN_NAMESAKE_MARKERS if m in text_lower)
     confidence = 0.78 if same_sentence else 0.42
 
-    if country and country.strip().lower() in text_lower:
-        confidence += 0.10
+    if country and country.strip():
+        country_pat = re.compile(rf"\b{re.escape(country.strip().lower())}\b")
+        if country_pat.search(text_lower):
+            confidence += 0.10
     if entity_type and entity_type.upper() == "CORPORATE" and any(
         sfx in text_lower for sfx in ("ltd", "llc", "corp", "holdings", "inc", "s.a.", "gmbh")
     ):

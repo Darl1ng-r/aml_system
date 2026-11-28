@@ -166,19 +166,13 @@ async def update_risk_appetite_settings(
                 edd_threshold=payload.edd_mandatory_score_threshold,
                 write_conn_factory=get_async_db_conn,
             )
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.warning("PostgreSQL risk_appetite write fallback to cache: %s", e)
-            await record_audit_event_async(
-                action="UPDATE_RISK_APPETITE",
-                actor_id=str(current_user.get("sub", current_user.get("username"))),
-                actor_role=current_user.get("role", "MLRO"),
-                resource_type="RISK_APPETITE",
-                resource_id=t_key,
-                tenant_id=t_key,
-                actor_username=updated_by,
-                before_state=default_before,
-                after_state=updated_data,
-                details={"sla_hours": payload.sar_filing_sla_hours, "edd_threshold": payload.edd_mandatory_score_threshold},
+            logger.exception("PostgreSQL risk_appetite persistence failed for tenant %s: %s", t_key, e)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to persist risk appetite settings to database.",
             )
 
         _tenant_appetite_cache[t_key] = updated_data

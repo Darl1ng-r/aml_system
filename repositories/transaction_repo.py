@@ -450,6 +450,8 @@ async def _evaluate_and_persist_ctr_tx(
 
     prior_24h_cash = Decimal("0")
     cash_count_24h = 0
+    prior_24h_sub_cash: Optional[Decimal] = None
+    prior_24h_sub_count: Optional[int] = None
     try:
         rolling_cash_row = await _run_in_savepoint(
             conn,
@@ -459,7 +461,14 @@ async def _evaluate_and_persist_ctr_tx(
                     SELECT customer_id FROM accounts WHERE id = $1
                 )
                 SELECT COALESCE(SUM(COALESCE(t.amount_base_usd, t.amount)), 0) AS total_cash_24h,
-                       COUNT(t.id) AS cash_count_24h
+                       COUNT(t.id) AS cash_count_24h,
+                       COALESCE(
+                           SUM(COALESCE(t.amount_base_usd, t.amount))
+                           FILTER (WHERE COALESCE(t.amount_base_usd, t.amount) < 10000),
+                           0
+                       ) AS sub_threshold_cash_24h,
+                       COUNT(t.id)
+                       FILTER (WHERE COALESCE(t.amount_base_usd, t.amount) < 10000) AS sub_threshold_cash_count_24h
                 FROM transactions t
                 JOIN accounts a ON t.sender_account_id = a.id
                 WHERE (
@@ -467,6 +476,7 @@ async def _evaluate_and_persist_ctr_tx(
                     OR ((SELECT customer_id FROM customer_scope) IS NULL AND t.sender_account_id = $1)
                 )
                   AND t.id != $2::uuid
+                  AND COALESCE(UPPER(t.status), 'COMPLETED') NOT IN ('FAILED', 'CANCELLED', 'REJECTED', 'REVERSED')
                   AND (UPPER(COALESCE(t.channel, '')) = 'CASH' OR UPPER(COALESCE(t.merchant, '')) = 'CASH')
                   AND t.timestamp >= ($3::timestamptz - INTERVAL '24 hours')
                   AND t.timestamp <= $3::timestamptz;
@@ -479,6 +489,9 @@ async def _evaluate_and_persist_ctr_tx(
         if rolling_cash_row:
             prior_24h_cash = _dec(_row_val(rolling_cash_row, "total_cash_24h", 0))
             cash_count_24h = int(_row_val(rolling_cash_row, "cash_count_24h", 0))
+            if "sub_threshold_cash_24h" in rolling_cash_row:
+                prior_24h_sub_cash = _dec(_row_val(rolling_cash_row, "sub_threshold_cash_24h", 0))
+                prior_24h_sub_count = int(_row_val(rolling_cash_row, "sub_threshold_cash_count_24h", 0))
     except Exception as ex_ctr:
         logger.warning("Failed to query 24h rolling cash aggregation: %s", ex_ctr)
 
@@ -488,21 +501,64 @@ async def _evaluate_and_persist_ctr_tx(
         merchant=merchant,
         prior_24h_cash_usd=prior_24h_cash,
         prior_24h_cash_count=cash_count_24h,
+        prior_24h_sub_threshold_cash_usd=prior_24h_sub_cash,
+        prior_24h_sub_threshold_cash_count=prior_24h_sub_count,
     )
 
     if ctr_decision.requires_ctr_filing:
-        await conn.execute(
-            """
-            INSERT INTO ctr_filings (tenant_id, transaction_id, account_id, amount, currency, cash_in_out, status)
-            VALUES ($1, $2, $3, $4, $5, 'DEPOSIT', 'PENDING')
-            ON CONFLICT (tenant_id, transaction_id) WHERE transaction_id IS NOT NULL DO NOTHING;
-            """,
-            tenant_id,
-            uuid.UUID(tx_id),
-            sender_id,
-            amount_original,
-            currency,
-        )
+        # Derive cash direction safely from channel/merchant hints (default DEPOSIT)
+        hint = f"{channel or ''} {merchant or ''}".upper()
+        if "WITHDRAW" in hint or "ATM" in hint:
+            cash_direction = "WITHDRAWAL"
+        elif "EXCHANGE" in hint or "FX" in hint:
+            cash_direction = "EXCHANGE"
+        else:
+            cash_direction = "DEPOSIT"
+
+        # 31 CFR 1010.313 requires filing the aggregated 24h reportable cash total
+        aggregated_usd = ctr_decision.total_aggregate_cash_usd
+        aggregated_tx_count = ctr_decision.prior_24h_cash_count + 1
+        ctr_amount = aggregated_usd if (currency or "USD").upper() == "USD" else amount_original
+
+        try:
+            await _run_in_savepoint(
+                conn,
+                lambda: conn.execute(
+                    """
+                    INSERT INTO ctr_filings (
+                        tenant_id, transaction_id, account_id, amount, currency,
+                        cash_in_out, status, aggregate_amount_usd, aggregated_tx_count
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', $7, $8)
+                    ON CONFLICT (tenant_id, transaction_id) WHERE transaction_id IS NOT NULL DO NOTHING;
+                    """,
+                    tenant_id,
+                    uuid.UUID(tx_id),
+                    sender_id,
+                    ctr_amount,
+                    currency,
+                    cash_direction,
+                    aggregated_usd,
+                    aggregated_tx_count,
+                ),
+            )
+        except Exception:
+            await _run_in_savepoint(
+                conn,
+                lambda: conn.execute(
+                    """
+                    INSERT INTO ctr_filings (tenant_id, transaction_id, account_id, amount, currency, cash_in_out, status)
+                    VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')
+                    ON CONFLICT (tenant_id, transaction_id) WHERE transaction_id IS NOT NULL DO NOTHING;
+                    """,
+                    tenant_id,
+                    uuid.UUID(tx_id),
+                    sender_id,
+                    ctr_amount,
+                    currency,
+                    cash_direction,
+                ),
+            )
 
     if ctr_decision.structuring_detected:
         structuring_payload = {

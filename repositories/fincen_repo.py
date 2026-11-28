@@ -61,7 +61,8 @@ async def check_preflight_alert_tx(
         """
         SELECT id, fincen_tracking_id, fincen_filing_status, fincen_submitted_at
         FROM alerts
-        WHERE id = $1;
+        WHERE id = $1
+        FOR UPDATE;
         """,
         alert_uuid,
     )
@@ -74,6 +75,14 @@ async def check_preflight_alert_tx(
     )
     if is_mismatched:
         return True
+
+    filing_status = str(extract_row_field(existing, "fincen_filing_status") or "").upper()
+    if filing_status == "FILING_PENDING":
+        await clear_idemp_fn(idemp_key, tenant_id=str(tenant_id) if tenant_id else None)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="SAR filing is already in progress (FILING_PENDING) for this alert; duplicate transmission blocked.",
+        )
 
     tracking_id = extract_row_field(existing, "fincen_tracking_id")
     if isinstance(tracking_id, str) and tracking_id:
@@ -101,7 +110,8 @@ async def validate_maker_checker_tx(
                 """
                 SELECT id, alert_id, status, drafted_by, reviewed_by, reviewed_by_username, xml_payload
                 FROM sar_drafts
-                WHERE id = $1 AND ($2::text IS NULL OR tenant_id = $2::uuid);
+                WHERE id = $1 AND ($2::text IS NULL OR tenant_id = $2::uuid)
+                FOR UPDATE;
                 """,
                 d_uuid,
                 str(tenant_id) if tenant_id else None,
@@ -117,7 +127,8 @@ async def validate_maker_checker_tx(
             FROM sar_drafts
             WHERE alert_id = $1 AND status = 'APPROVED'
               AND ($2::text IS NULL OR tenant_id = $2::uuid)
-            ORDER BY created_at DESC LIMIT 1;
+            ORDER BY created_at DESC LIMIT 1
+            FOR UPDATE;
             """,
             alert_uuid,
             str(tenant_id) if tenant_id else None,
@@ -194,6 +205,32 @@ async def preflight_and_lock_alert_for_filing_atomic(
             """,
             alert_uuid,
         )
+        # Atomically lock the approved SAR draft into FILING_PENDING before committing preflight
+        # and initiating outbound FinCEN HTTP transmission (eliminates double-filing race).
+        draft_id = extract_row_field(draft_to_validate, "id") if draft_to_validate else None
+        if draft_id and not is_mismatched_mock:
+            try:
+                tx_factory = getattr(conn, "transaction", None)
+                if callable(tx_factory) and not inspect.iscoroutinefunction(tx_factory):
+                    sp = tx_factory()
+                    if hasattr(sp, "__aenter__"):
+                        async with sp:
+                            await conn.execute(
+                                "UPDATE sar_drafts SET status = 'FILING_PENDING', updated_at = NOW() WHERE id = $1 AND status = 'APPROVED';",
+                                draft_id,
+                            )
+                    else:
+                        await conn.execute(
+                            "UPDATE sar_drafts SET status = 'FILING_PENDING', updated_at = NOW() WHERE id = $1 AND status = 'APPROVED';",
+                            draft_id,
+                        )
+                else:
+                    await conn.execute(
+                        "UPDATE sar_drafts SET status = 'FILING_PENDING', updated_at = NOW() WHERE id = $1 AND status = 'APPROVED';",
+                        draft_id,
+                    )
+            except Exception as lock_err:
+                logger.debug("SAR draft FILING_PENDING transition skipped on mock/legacy schema: %s", lock_err)
         return draft_to_validate
 
 
@@ -209,6 +246,14 @@ async def mark_alert_filing_failed_repo(
             "UPDATE alerts SET fincen_filing_status = 'FAILED' WHERE id = $1;",
             alert_uuid,
         )
+        # Release any draft held in FILING_PENDING back to APPROVED on transient transport failure
+        try:
+            await conn.execute(
+                "UPDATE sar_drafts SET status = 'APPROVED', updated_at = NOW() WHERE alert_id = $1 AND status = 'FILING_PENDING';",
+                alert_uuid,
+            )
+        except Exception:
+            pass
 
 
 async def fetch_draft_xml_fallback_repo(
@@ -245,46 +290,64 @@ async def persist_fincen_receipt_atomic(
     conn_factory: Any = None,
 ) -> None:
     factory = conn_factory or get_async_db_conn
+    receipt_status = str(receipt.get("status") or "ACCEPTED").upper().strip()
+    is_rejected = receipt_status in ("REJECTED", "FAILED", "ERROR")
+    target_draft_status = "REJECTED" if is_rejected else "FILED"
+    persisted_tracking_id = None if is_rejected else receipt.get("fincen_tracking_id")
+
     async with factory(tenant_id=tenant_id) as conn:
         await conn.execute(
             """
             UPDATE alerts
             SET fincen_tracking_id = $1,
                 fincen_filing_status = $2,
-                fincen_submitted_at = NOW()
+                fincen_submitted_at = CASE WHEN $4 THEN fincen_submitted_at ELSE NOW() END
             WHERE id = $3;
             """,
-            receipt["fincen_tracking_id"],
-            receipt["status"],
+            persisted_tracking_id,
+            receipt_status,
             alert_uuid,
+            is_rejected,
         )
         if draft_to_validate and draft_to_validate.get("id"):
             try:
-                async def _mark_draft_filed():
-                    await conn.execute(
-                        """
-                        UPDATE sar_drafts
-                        SET status = 'FILED',
-                            fincen_tracking_id = $2,
-                            xsd_validated = TRUE,
-                            continuing_activity_due_at = NOW() + INTERVAL '90 days',
-                            updated_at = NOW()
-                        WHERE id = $1;
-                        """,
-                        draft_to_validate["id"],
-                        receipt.get("fincen_tracking_id"),
-                    )
+                async def _mark_draft_status():
+                    if is_rejected:
+                        await conn.execute(
+                            """
+                            UPDATE sar_drafts
+                            SET status = 'REJECTED',
+                                updated_at = NOW()
+                            WHERE id = $1;
+                            """,
+                            draft_to_validate["id"],
+                        )
+                    else:
+                        await conn.execute(
+                            """
+                            UPDATE sar_drafts
+                            SET status = $3,
+                                fincen_tracking_id = $2,
+                                xsd_validated = TRUE,
+                                continuing_activity_due_at = NOW() + INTERVAL '90 days',
+                                updated_at = NOW()
+                            WHERE id = $1;
+                            """,
+                            draft_to_validate["id"],
+                            persisted_tracking_id,
+                            target_draft_status,
+                        )
 
                 tx_factory = getattr(conn, "transaction", None)
                 if callable(tx_factory) and not inspect.iscoroutinefunction(tx_factory):
                     sp = tx_factory()
                     if hasattr(sp, "__aenter__"):
                         async with sp:
-                            await _mark_draft_filed()
+                            await _mark_draft_status()
                     else:
-                        await _mark_draft_filed()
+                        await _mark_draft_status()
                 else:
-                    await _mark_draft_filed()
+                    await _mark_draft_status()
             except Exception as ex_draft:
                 logger.warning(
                     "Could not update sar_drafts filing receipt for draft %s: %s",
@@ -295,11 +358,11 @@ async def persist_fincen_receipt_atomic(
         await enqueue_webhook_event_tx(
             conn=conn,
             tenant_id=str(tenant_id),
-            event_type="SAR_FILED",
+            event_type="SAR_FILING_REJECTED" if is_rejected else "SAR_FILED",
             aggregate_id=alert_id,
             payload={
                 "alert_id": alert_id,
-                "fincen_tracking_id": receipt["fincen_tracking_id"],
+                "fincen_tracking_id": receipt.get("fincen_tracking_id"),
                 "status": receipt["status"],
                 "submitted_by": current_user["username"],
             },
@@ -307,7 +370,7 @@ async def persist_fincen_receipt_atomic(
 
         await record_audit_event_tx(
             conn=conn,
-            action="FINCEN_SAR_FILED",
+            action="FINCEN_SAR_REJECTED" if is_rejected else "FINCEN_SAR_FILED",
             actor_id=str(current_user.get("id") or current_user.get("username") or "unknown"),
             actor_username=current_user.get("username", "mlro"),
             actor_role=current_user.get("role", "MLRO"),
@@ -560,13 +623,18 @@ async def update_sar_draft_atomic(
         current_etag = sar_draft_etag(draft)
         check_if_match(request, current_etag, resource_label=f"SAR draft {draft_uuid}")
 
-        if draft["status"] in ("PENDING_MLRO_REVIEW", "APPROVED", "FILED"):
+        if draft["status"] in ("PENDING_MLRO_REVIEW", "APPROVED", "FILING_PENDING", "FILED"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot edit SAR draft in '{draft['status']}' state.",
             )
 
         new_status = requested_status or draft["status"]
+        if str(new_status).upper() in ("APPROVED", "FILING_PENDING", "FILED"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Four-Eyes violation: SAR drafts cannot be approved or filed directly via draft update; use the dedicated MLRO review workflow.",
+            )
         validate_sar_draft_transition(str(draft["status"]), str(new_status))
 
         updated_ts = await conn.fetchval(
@@ -606,17 +674,17 @@ async def fetch_alert_for_sar_preview_repo(
         return await conn.fetchrow(
             """
             SELECT a.id, a.rule_name, a.threat_level, a.ai_risk_score,
-                   COALESCE(t.amount, 10000.0) as amount,
-                   COALESCE(t.currency, 'USD') as currency,
-                   COALESCE(t.timestamp, NOW()) as timestamp,
-                   COALESCE(t.sender_account_id, 'ACC-ORIGINATOR') as s_acc,
-                   COALESCE(s_acc.owner_name, 'Sender Entity') as s_owner,
-                   COALESCE(t.receiver_account_id, 'ACC-BENEFICIARY') as r_acc,
-                   COALESCE(r_acc.owner_name, 'Receiver Entity') as r_owner
+                   COALESCE(t.amount, 0.0) AS amount,
+                   COALESCE(t.currency, 'USD') AS currency,
+                   COALESCE(t.timestamp, NOW()) AS timestamp,
+                   COALESCE(s_acc.account_number, t.sender_account_id::text, 'UNKNOWN') AS s_acc,
+                   COALESCE(s_acc.owner_name, 'UNKNOWN') AS s_owner,
+                   COALESCE(r_acc.account_number, t.receiver_account_id::text, 'UNKNOWN') AS r_acc,
+                   COALESCE(r_acc.owner_name, 'UNKNOWN') AS r_owner
             FROM alerts a
             LEFT JOIN transactions t ON a.transaction_id = t.id
-            LEFT JOIN accounts s_acc ON t.sender_account_id = s_acc.account_number
-            LEFT JOIN accounts r_acc ON t.receiver_account_id = r_acc.account_number
+            LEFT JOIN accounts s_acc ON t.sender_account_id = s_acc.id
+            LEFT JOIN accounts r_acc ON t.receiver_account_id = r_acc.id
             WHERE a.id = $1;
             """,
             alert_uuid,
@@ -635,12 +703,14 @@ async def fetch_alert_for_narrative_context_repo(
             """
             SELECT a.rule_name, a.threat_level, a.ai_risk_score,
                    t.amount, t.currency, t.timestamp,
-                   t.sender_account_id, s_acc.owner_name as s_owner,
-                   t.receiver_account_id, r_acc.owner_name as r_owner
+                   COALESCE(s_acc.account_number, t.sender_account_id::text) AS sender_account_id,
+                   s_acc.owner_name AS s_owner,
+                   COALESCE(r_acc.account_number, t.receiver_account_id::text) AS receiver_account_id,
+                   r_acc.owner_name AS r_owner
             FROM alerts a
             LEFT JOIN transactions t ON a.transaction_id = t.id
-            LEFT JOIN accounts s_acc ON t.sender_account_id = s_acc.account_number
-            LEFT JOIN accounts r_acc ON t.receiver_account_id = r_acc.account_number
+            LEFT JOIN accounts s_acc ON t.sender_account_id = s_acc.id
+            LEFT JOIN accounts r_acc ON t.receiver_account_id = r_acc.id
             WHERE a.id = $1;
             """,
             alert_uuid,

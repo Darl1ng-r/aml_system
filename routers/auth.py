@@ -799,12 +799,22 @@ async def _handle_token_compromise(
 ):
     await redis.setex(f"token:family_revoked:{family_id}", 30 * 86400, "1")
     if sub:
-        await redis.incr(f"user:token_version:{sub}")
+        new_db_ver: int | None = None
         try:
             uuid.UUID(str(sub))
-            await bump_user_token_version_on_compromise_repo(sub=sub, tenant_id=tenant_id)
+            new_db_ver = await bump_user_token_version_on_compromise_repo(sub=sub, tenant_id=tenant_id)
         except Exception as db_err:
             logger.warning("Failed to bump token_version on compromise: %s", db_err)
+
+        # Always write authoritative DB token_version with TTL (never `redis.incr` from expired 0 -> 1!)
+        if new_db_ver is not None:
+            await redis.set(f"user:token_version:{sub}", str(new_db_ver), ex=86400)
+        else:
+            # If DB bump failed or non-UUID test sub, delete any stale key so next check reads DB
+            if hasattr(redis, "delete"):
+                await redis.delete(f"user:token_version:{sub}")
+            else:
+                await redis.incr(f"user:token_version:{sub}")
 
     log_audit_event(
         event_type="SECURITY_ALERT",
@@ -1307,7 +1317,13 @@ async def mfa_setup(
     except HTTPException:
         raise
     except Exception as db_err:
-        logger.debug("MFA existing-state check skipped in test/mock env: %s", db_err)
+        if getattr(settings, "is_hardened", settings.is_production):
+            logger.error("MFA existing-state check failed (fail-closed): %s", db_err)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Unable to verify existing MFA enrollment state; please retry.",
+            )
+        logger.warning("MFA existing-state check failed in non-hardened env: %s", db_err)
 
     secret = generate_totp_secret()
     otpauth_uri = get_totp_uri(secret, username=username)

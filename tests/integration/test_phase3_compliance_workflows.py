@@ -90,8 +90,9 @@ async def test_account_cip_and_freeze_enforcement():
     assert freeze_res["status"] == "FROZEN"
     assert freeze_res["freezing_order_ref"] == "OFAC-ORDER-2026-891"
 
-    # 3. Unfreeze Account
-    unfreeze_res = await unfreeze_account(id=account_id, current_user=mlro)
+    # 3. Unfreeze Account (Four-Eyes: second MLRO required to lift a freeze)
+    mlro_2 = {"id": str(uuid.uuid4()), "username": "mlro_supervisor_2", "role": "MLRO", "tenant_id": TENANT_ID}
+    unfreeze_res = await unfreeze_account(id=account_id, current_user=mlro_2)
     assert unfreeze_res["status"] == "ACTIVE"
 
 

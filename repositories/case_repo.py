@@ -300,15 +300,10 @@ async def add_case_note_atomic(
         if not case_row:
             raise HTTPException(status_code=404, detail=CASE_NOT_FOUND)
 
-        if case_row["status"] == "CLOSED" and current_user.get("role") not in (
-            "ADMIN",
-            "MLRO",
-            "TENANT_ADMIN",
-            "SUPER_ADMIN",
-        ):
+        if str(case_row["status"]).upper() == "CLOSED":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid workflow state: Cannot append notes to a CLOSED case without MLRO or Admin authorization.",
+                detail="Deterministic state guard violation: Case is already CLOSED and cannot be modified.",
             )
 
         note_id = await conn.fetchval(
@@ -352,6 +347,12 @@ async def update_case_atomic(
 
         current_etag = _case_row_etag(case_row)
         check_if_match(request, current_etag, resource_label=f"case {case_uuid}")
+
+        if str(case_row["status"]).upper() == "CLOSED":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Deterministic state guard violation: Case is already CLOSED and cannot be modified.",
+            )
 
         if payload.status:
             validate_case_transition(case_row["status"], payload.status)
@@ -540,6 +541,13 @@ async def insert_case_evidence_atomic(
         resolved_case_uuid = await resolve_case_uuid_tx(
             conn, raw_case_uuid, tenant_id, current_user, auto_create=True
         )
+        if hasattr(conn, "fetchval"):
+            case_status = await conn.fetchval("SELECT status FROM cases WHERE id = $1;", resolved_case_uuid)
+            if isinstance(case_status, str) and case_status.upper() == "CLOSED":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Deterministic state guard violation: Cannot attach evidence to a CLOSED case.",
+                )
         await conn.execute(
             """
             INSERT INTO case_evidence (

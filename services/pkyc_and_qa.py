@@ -14,6 +14,7 @@ import logging
 import math
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from observability.logging import log_audit_event
@@ -21,6 +22,28 @@ from routers.screening import perform_pep_search, perform_sanctions_search
 from services.notifications import create_notification
 
 logger = logging.getLogger("aml.pkyc_qa")
+
+
+def evaluate_pkyc_material_delta(
+    prior_risk: float | Decimal,
+    *,
+    sanc_hit: bool,
+    pep_hit: bool,
+    already_flagged: bool,
+) -> tuple[float, bool]:
+    """
+    Exact Decimal pKYC risk-delta evaluator (immune to IEEE-754 0.95 - 0.80 < 0.15 drift).
+    Any newly detected sanctions hit on an account below 0.95 ALWAYS triggers material_delta.
+    """
+    prior_dec = Decimal(str(prior_risk or 0.0))
+    target_dec = Decimal("0.95") if sanc_hit else (Decimal("0.78") if pep_hit else prior_dec)
+    new_dec = max(prior_dec, target_dec)
+    newly_sanctioned = bool(sanc_hit and prior_dec < Decimal("0.95"))
+    material_delta = newly_sanctioned or (
+        (bool(sanc_hit) or bool(pep_hit))
+        and (new_dec - prior_dec >= Decimal("0.15") or not bool(already_flagged))
+    )
+    return float(new_dec), material_delta
 
 
 async def run_pkyc_delta_rescreen(
@@ -73,8 +96,12 @@ async def run_pkyc_delta_rescreen(
 
         sanc_hit = bool(sanc_res and sanc_res.get("match_found"))
         pep_hit = bool(pep_res and pep_res.get("match_found"))
-        new_risk = max(prior_risk, 0.95 if sanc_hit else (0.78 if pep_hit else prior_risk))
-        material_delta = (sanc_hit or pep_hit) and (new_risk - prior_risk >= 0.15 or not acc["pkyc_material_change_flag"])
+        new_risk, material_delta = evaluate_pkyc_material_delta(
+            prior_risk,
+            sanc_hit=sanc_hit,
+            pep_hit=pep_hit,
+            already_flagged=bool(acc["pkyc_material_change_flag"]),
+        )
 
         update_ids.append(acc_id)
         update_risks.append(new_risk)
@@ -247,29 +274,40 @@ async def sample_closed_false_positives_for_qa(
 
     eligible = await conn.fetch(
         """
-        SELECT a.id AS alert_id,
-               a.status,
-               COALESCE(u.username, '') AS analyst_username,
-               ca.case_id
-        FROM alerts a
-        LEFT JOIN users u ON a.assigned_officer_id = u.id
-        LEFT JOIN case_alerts ca ON ca.alert_id = a.id
-        WHERE a.status = 'CLOSED_FALSE_POSITIVE'
-          AND NOT EXISTS (
-              SELECT 1 FROM qa_reviews q
-              WHERE q.tenant_id = $1 AND q.alert_id = a.id
-          )
+        WITH dedup_eligible AS (
+            SELECT DISTINCT ON (a.id)
+                   a.id AS alert_id,
+                   a.status,
+                   COALESCE(u.username, '') AS analyst_username,
+                   ca.case_id
+            FROM alerts a
+            LEFT JOIN users u ON a.assigned_officer_id = u.id
+            LEFT JOIN case_alerts ca ON ca.alert_id = a.id
+            WHERE a.status = 'CLOSED_FALSE_POSITIVE'
+              AND NOT EXISTS (
+                  SELECT 1 FROM qa_reviews q
+                  WHERE q.tenant_id = $1 AND q.alert_id = a.id
+              )
+            ORDER BY a.id, ca.case_id
+        ),
+        counted AS (
+            SELECT d.*, COUNT(*) OVER () AS total_eligible
+            FROM dedup_eligible d
+        )
+        SELECT alert_id, status, analyst_username, case_id, total_eligible
+        FROM counted
         ORDER BY RANDOM()
         LIMIT $2;
         """,
         tenant_uuid,
-        cap * 10,
+        cap,
     )
 
-    total_eligible = len(eligible or [])
-    if total_eligible == 0:
+    if not eligible:
         return {"sampled_count": 0, "eligible_pool": 0, "reviews": []}
 
+    first_row = eligible[0]
+    total_eligible = int(first_row["total_eligible"]) if "total_eligible" in first_row else len(eligible)
     target_count = min(cap, max(1, math.ceil(total_eligible * rate)))
     chosen = list(eligible)[:target_count]
 
