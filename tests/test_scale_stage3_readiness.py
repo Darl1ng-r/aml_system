@@ -181,13 +181,15 @@ async def test_stage3_chaos_drill_1_kill_cache_redis_fails_open_fast():
         async def set(self, *args, **kwargs):
             raise TimeoutError("Cache Redis socket dead")
 
+    from services.cache_aside import cache_aside as _cache_aside
+
     transport = httpx.ASGITransport(app=app)
     with patch("services.auth._verify_token_version", AsyncMock(return_value=None)), \
          patch("routers.compliance_reporting.fetch_sar_summary_repo", mock_fetch), \
-         patch("services.cache_aside.get_async_cache_redis_client", AsyncMock(return_value=_DeadCacheRedis())):
+         patch.object(_cache_aside, "_redis_factory", AsyncMock(return_value=_DeadCacheRedis())):
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             t0 = time.monotonic()
-            resp = await ac.get("/api/v1/reports/sar-summary", headers=_auth_headers("MLRO"))
+            resp = await ac.get("/api/v1/reports/sar-summary", headers=_auth_headers("MLRO", TENANT_B))
             elapsed_ms = (time.monotonic() - t0) * 1000.0
             assert resp.status_code == 200
             assert resp.json()["total_sar_drafts"] == 11

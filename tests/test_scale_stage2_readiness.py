@@ -174,7 +174,7 @@ async def test_stage2_ha_cache_redis_and_compliance_reporting_cache_aside():
         async def get(self, key):
             return fake_store.get(key)
 
-        async def set(self, key, val, ex=None, nx=False):
+        async def set(self, key, val, ex=None, px=None, nx=False):
             if nx and key in fake_store:
                 return False
             fake_store[key] = val
@@ -185,11 +185,13 @@ async def test_stage2_ha_cache_redis_and_compliance_reporting_cache_aside():
                 fake_store.pop(args[0], None)
             return 1
 
+    from services.cache_aside import cache_aside as _cache_aside
+
     fake_redis = _FakeCacheRedis()
     transport = httpx.ASGITransport(app=app)
     with patch("services.auth._verify_token_version", AsyncMock(return_value=None)), \
          patch("routers.compliance_reporting.fetch_sar_summary_repo", mock_fetch), \
-         patch("services.cache_aside.get_async_cache_redis_client", AsyncMock(return_value=fake_redis)):
+         patch.object(_cache_aside, "_redis_factory", AsyncMock(return_value=fake_redis)):
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
             r1 = await ac.get("/api/v1/reports/sar-summary", headers=_auth_headers("MLRO", TENANT_B))
             r2 = await ac.get("/api/v1/reports/sar-summary", headers=_auth_headers("MLRO", TENANT_B))

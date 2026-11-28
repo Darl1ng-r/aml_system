@@ -57,9 +57,10 @@ def classify_request_priority(path: str, method: str = "GET") -> str:
     """Maps an HTTP path + method deterministically to its load-shedding priority tier."""
     lower = (path or "").lower()
 
-    # P0: Health probes, cryptographic keys, authentication, core payment ingestion & CTR
+    # P0: Health probes, operational topology, cryptographic keys, auth, core payment ingestion & CTR
     if (
         lower.startswith("/health")
+        or lower.startswith("/api/v1/health")
         or lower.startswith("/.well-known/")
         or lower.startswith("/api/v1/auth/")
         or lower.startswith("/api/v1/transactions")
@@ -106,13 +107,16 @@ def _primary_db_pool_utilization() -> float:
         pool = _pg.db_pool
         if pool is None or not hasattr(pool, "get_size") or not hasattr(pool, "get_max_size"):
             return 0.0
-        max_sz = int(pool.get_max_size() or 0)
-        if max_sz <= 0:
+        raw_max = pool.get_max_size()
+        raw_size = pool.get_size()
+        raw_idle = pool.get_idle_size() if hasattr(pool, "get_idle_size") else 0
+        # Guard against unconfigured test MagicMocks whose __int__() silently returns 1
+        if not isinstance(raw_max, int) or not isinstance(raw_size, int) or not isinstance(raw_idle, int):
             return 0.0
-        size = int(pool.get_size() or 0)
-        idle = int(pool.get_idle_size() or 0) if hasattr(pool, "get_idle_size") else 0
-        in_use = max(0, size - idle)
-        return min(1.0, in_use / float(max_sz))
+        if raw_max <= 0:
+            return 0.0
+        in_use = max(0, raw_size - raw_idle)
+        return min(1.0, in_use / float(raw_max))
     except Exception:
         return 0.0
 
